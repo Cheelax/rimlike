@@ -1,0 +1,19 @@
+{
+  "name": "@rimlike/protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Types, codec et logique de lockstep partagés par le client et le serveur relais. Zéro dépendance runtime.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^4.0.0"
+  }
+}

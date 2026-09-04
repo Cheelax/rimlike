@@ -5,8 +5,11 @@
   "scripts": {
     "build:wasm": "wasm-pack build crates/sim-wasm --release --target web --out-dir ../../apps/client/src/wasm --out-name sim",
     "dev": "pnpm build:wasm && pnpm --filter client dev",
+    "dev:server": "pnpm --filter server dev",
     "build": "pnpm build:wasm && pnpm --filter client build",
     "test": "cargo test --workspace",
+    "test:protocol": "pnpm --filter @rimlike/protocol test",
+    "test:server": "pnpm --filter server test",
     "lint": "cargo clippy --workspace --all-targets -- -D warnings && pnpm --filter client typecheck",
     "fmt": "cargo fmt --all"
   }

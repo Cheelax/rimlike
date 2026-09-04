@@ -36,4 +36,6 @@ meurt en deux jours.
 - `crates/sim` : la simulation. Aucun flottant, aucune horloge, aucune dépendance au rendu.
 - `crates/sim-wasm` : frontière wasm-bindgen, seule porte entre Rust et JS.
 - `apps/client` : rendu et UI.
-- `docs/` : plan, décisions.
+- `packages/protocol` : messages et logique lockstep du multijoueur, sans I/O.
+- `apps/server` : serveur relais WebSocket (ne simule pas, ne décode pas les commandes).
+- `docs/` : plan, décisions, protocole réseau.

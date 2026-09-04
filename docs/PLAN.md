@@ -211,7 +211,17 @@ de l'humeur (pauses, crises), météo, premiers événements aléatoires du stor
 
 **Jalon** : une colonie de 3 pawns survit quelques jours, on a envie d'y rejouer.
 
-### Phase 3 — Multi sur une carte (2-3 semaines)
+### Phase 3 — Multi sur une carte (2-3 semaines) — fondations livrées le 2026-09-04
+
+Fait : `packages/protocol` (types de messages, codec JSON + base64, ordonnanceur
+lockstep pur : `Scheduler`, `HashLedger`, `BundleHistory`) et `apps/server` (relais
+WebSocket : salles, hôte, horloge par bundles de 3 ticks, ordre des commandes garanti par
+arrivée puis id de joueur, hashes toutes les 300 ticks et signal de désync, rejoint en cours
+par snapshot de l'hôte et rejeu d'un historique borné à 2000 bundles, heartbeat). 57 tests
+dont dix sur de vrais WebSockets. Doc : `docs/protocol.md`. Le serveur ne décode jamais les
+commandes : ce sont des octets postcard opaques. Reste à faire : encodeurs de commandes et
+`apply_encoded` dans `sim-wasm`, mode réseau du client (lobby, exécution par bundle, envoi
+des hashes, snapshot à la demande), sim dans un Worker. Livré par un sous-agent Opus.
 - Serveur relais : lobby, ordonnancement des commandes par tick, redistribution.
 - Lockstep 2-4 joueurs sur la même carte, hash de désync, resync par snapshot.
 - Rejoindre en cours de partie.
@@ -256,6 +266,10 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-04 : fondations phase 3 livrées. Lockstep « le serveur n'attend personne » :
+  horloge continue, bundles de 3 ticks, retardataires qui rattrapent. Les ticks vides sont
+  omis des bundles. Le serveur est en TypeScript pur et ne dépend pas du sim : il ne
+  décode rien, donc un changement de `Command` ne le touche pas.
 - 2026-09-04 : phase 2d livrée. Les pillards sont des `Pawn` ordinaires avec une
   `faction` : même rendu, même pathfinding, mêmes tampons ; seule la boucle de décision
   diffère (IA courte au lieu de la recherche de jobs). Les morts sont retirés en fin de

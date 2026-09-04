@@ -17,8 +17,13 @@ multijoueur sur un globe partagé. Trois couches indépendantes :
 - `apps/client` : Vite + React + Three.js. Lit l'état du sim, envoie des commandes.
   Aucune règle de jeu côté TypeScript.
 
-Le futur serveur monde (`apps/server`, phase 4) relaie les commandes et gère le globe ;
-il ne simule pas les cartes.
+- `packages/protocol` : types de messages, codec et logique lockstep pure (sans I/O),
+  partagés entre serveur et client. Zéro dépendance runtime.
+- `apps/server` : relais WebSocket (salles, horloge par bundles, ordre des commandes,
+  hashes, snapshots pour les rejoignants). Il ne simule pas et ne décode jamais les
+  commandes. Voir `docs/protocol.md`.
+
+Le futur serveur monde (phase 4) s'appuiera sur ce relais pour gérer le globe.
 
 ## Commandes
 
@@ -29,6 +34,9 @@ pnpm test             # cargo test --workspace (dont le test de déterminisme)
 pnpm lint             # cargo clippy -D warnings + tsc --noEmit
 pnpm build:wasm       # à relancer après TOUTE modification Rust avant de tester le client
 pnpm build            # WASM + typecheck + build de production
+pnpm test:protocol    # tests du paquet protocole (vitest)
+pnpm test:server      # tests du serveur relais, vrais WebSockets sur port éphémère
+pnpm dev:server       # serveur relais sur :8787 (GET /health)
 cargo fmt --all       # la CI vérifie le formatage
 ```
 

@@ -39,3 +39,19 @@ jobs:
       - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+
+  network:
+    name: réseau (protocole + serveur relais)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @rimlike/protocol typecheck
+      - run: pnpm --filter server typecheck
+      - run: pnpm test:protocol
+      - run: pnpm test:server
