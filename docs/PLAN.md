@@ -192,8 +192,19 @@ Priorité d'un colon libre : dormir > manger > construire > livrer > cuisiner > 
 désigné > cultiver > ranger > flâner. À faire plus tard : réfrigération, bill de cuisine
 réglable, croissance dépendant de la lumière et de la saison.
 
-**2d. Menaces.** Points de vie simples, premier raid, combat de mêlée, blessures, mort,
-enterrement. Premier vrai test de la colonie.
+**2d. Menaces — livrée le 2026-09-04.** Points de vie (1000), dégâts de famine quand la
+faim est à zéro (mort en deux jours), guérison lente quand on mange, deux fois plus vite
+au lit ; blessé on ralentit et l'humeur baisse ; mort = cadavre au sol (se décompose en
+trois jours, non transportable) et deuil de deux jours pour la colonie. Pillards : bande de
+1 + colons/2 (max 6) qui entre par un bord relié à la colonie, fonce sur le colon
+atteignable le plus proche, frappe en mêlée toutes les secondes, fuit sous 30 % de PV ou
+quand personne n'est atteignable (les murs comptent). Colons : défense automatique dans un
+rayon de 8 cases, ordre d'attaque au clic droit sur un ennemi. Storyteller minimal : trois
+jours de grâce puis un raid tous les 2 à 4 jours. Journal d'événements (raid, morts,
+fuites) et notifications à l'écran ; bouton « Raid » en dev. Pas d'enterrement ni de
+soins actifs : viendront avec la santé détaillée. Livré par un sous-agent Opus sur
+consigne cadrée, vérifié par l'orchestrateur (42 tests, raid joué dans le navigateur :
+deux pillards tués, un colon perdu).
 
 **2e. Confort et pilotage.** Tableau de priorités de travail par colon, effets concrets
 de l'humeur (pauses, crises), météo, premiers événements aléatoires du storyteller.
@@ -245,6 +256,14 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-04 : phase 2d livrée. Les pillards sont des `Pawn` ordinaires avec une
+  `faction` : même rendu, même pathfinding, mêmes tampons ; seule la boucle de décision
+  diffère (IA courte au lieu de la recherche de jobs). Les morts sont retirés en fin de
+  tick, jamais pendant la boucle des pawns, pour ne pas décaler les indices. Le journal
+  d'événements est borné à 32 entrées et fait partie de l'état : la sauvegarde le porte.
+- 2026-09-04 : passage en mode orchestrateur : Fable rédige des consignes cadrées, des
+  sous-agents (Opus pour la conception, Sonnet pour le mécanique) implémentent sur des
+  périmètres disjoints, Fable vérifie et commite. Première tranche ainsi livrée : 2d.
 - 2026-09-04 : phase 2c livrée. Les plants sont un élément de case (`Crop`, `CropRipe`)
   plus une liste `crops` pour l'avancement, même schéma que les buissons qui repoussent.
   La nourriture porte une date de péremption par pile ; les jobs qui visaient une pile

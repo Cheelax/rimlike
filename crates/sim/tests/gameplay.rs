@@ -1,9 +1,12 @@
 //! Boucle de ressources et besoins, sur des cartes dessinées à la main.
 
 use sim::pawn::RESTED;
-use sim::pawn::{HUNGRY, NEED_MAX, TIRED};
+use sim::pawn::{HP_MAX, HP_WOUNDED, HUNGRY, NEED_MAX, TIRED};
 use sim::testmap::map_from;
-use sim::{BuildKind, Command, Designation, Feature, ItemKind, Job, Material, Sim, Terrain, Zone};
+use sim::{
+    BuildKind, Command, Designation, EventKind, Faction, Feature, ItemKind, Job, Material, Sim,
+    Terrain, Zone,
+};
 
 const DAY: u64 = sim::TICKS_PER_DAY as u64;
 
@@ -517,4 +520,134 @@ fn unreachable_food_spoils() {
     s.step(&[]);
     assert!(s.items().iter().all(|i| i.kind != ItemKind::Berries));
     assert!(s.pawns().iter().all(|p| p.carrying.is_none()));
+}
+
+// ----------------------------------------------------------------------
+// Menaces
+// ----------------------------------------------------------------------
+
+fn has_event(s: &Sim, kind: EventKind) -> bool {
+    s.events().iter().any(|e| e.kind == kind)
+}
+
+fn raiders(s: &Sim) -> usize {
+    s.pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Raider)
+        .count()
+}
+
+#[test]
+fn raid_spawns_hostiles_and_colony_defends() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Berries, 60, 6, 6);
+    s.step(&[Command::TriggerRaid]);
+    // Trois colons donnent deux pillards.
+    assert_eq!(raiders(&s), 2, "pillards : {:?}", s.pawns());
+    assert!(has_event(&s, EventKind::Raid));
+    let colonists_before = s.pawns().len() - raiders(&s);
+
+    assert!(
+        run_until(&mut s, 2 * DAY, |s| raiders(s) == 0),
+        "pillards encore là : {:?}",
+        s.pawns()
+    );
+    assert!(
+        s.pawns()
+            .iter()
+            .all(|p| p.faction == Faction::Colony && p.is_alive())
+    );
+    assert!(!s.pawns().is_empty(), "la colonie a été anéantie");
+    assert!(
+        s.pawns().len() <= colonists_before,
+        "des colons sont apparus de nulle part"
+    );
+    assert!(
+        has_event(&s, EventKind::RaiderDied) || has_event(&s, EventKind::RaiderLeft),
+        "aucun pillard mort ni parti : {:?}",
+        s.events()
+    );
+}
+
+#[test]
+fn starvation_wounds_then_kills_and_leaves_a_corpse() {
+    let mut s = clearing();
+    let id = s.pawns()[0].id;
+    s.pawn_mut(id).unwrap().hunger = 0;
+    assert!(
+        run_until(&mut s, DAY, |s| s
+            .pawns()
+            .iter()
+            .find(|p| p.id == id)
+            .is_some_and(|p| p.hp < HP_WOUNDED)),
+        "le colon affamé n'est pas blessé"
+    );
+    assert!(
+        run_until(&mut s, 3 * DAY, |s| !s.pawns().iter().any(|p| p.id == id)),
+        "le colon affamé n'est pas mort"
+    );
+    assert!(s.items().iter().any(|i| i.kind == ItemKind::Corpse));
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::ColonistDied && e.arg == id),
+        "événements : {:?}",
+        s.events()
+    );
+    assert!(s.pawns().iter().all(|p| p.grief_ticks > 0));
+}
+
+#[test]
+fn wounded_pawn_heals_when_fed() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Berries, 60, 6, 6);
+    let id = s.pawns()[0].id;
+    s.pawn_mut(id).unwrap().hp = HP_MAX / 2;
+    assert!(
+        run_until(&mut s, DAY, |s| s.pawns()[0].hp > 700),
+        "PV = {}",
+        s.pawns()[0].hp
+    );
+}
+
+#[test]
+fn attack_order_targets_enemy() {
+    let mut s = clearing();
+    s.step(&[Command::TriggerRaid]);
+    let colonist = s
+        .pawns()
+        .iter()
+        .find(|p| p.faction == Faction::Colony)
+        .unwrap()
+        .id;
+    let raider = s
+        .pawns()
+        .iter()
+        .find(|p| p.faction == Faction::Raider)
+        .unwrap()
+        .id;
+    s.step(&[Command::Attack {
+        pawn: colonist,
+        target: raider,
+    }]);
+    let p = s.pawns().iter().find(|p| p.id == colonist).unwrap();
+    assert_eq!(p.job, Job::Attack { target: raider });
+}
+
+#[test]
+fn first_raid_waits_for_grace_period() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Berries, 200, 6, 6);
+    for _ in 0..3 * DAY - 1 {
+        s.step(&[]);
+        assert!(
+            !has_event(&s, EventKind::Raid),
+            "raid au tick {} : trop tôt",
+            s.tick()
+        );
+    }
+    assert!(
+        run_until(&mut s, DAY, |s| has_event(s, EventKind::Raid)),
+        "aucun raid après la période de grâce"
+    );
 }

@@ -14,7 +14,7 @@ import {
 } from "./terrain";
 
 const FX_ONE = 256;
-export const PAWN_STRIDE = 10;
+export const PAWN_STRIDE = 12;
 export const ITEM_STRIDE = 5;
 export const PAWN_FLAGS = { MOVING: 1, SLEEPING: 2, WORKING: 4, STARVING: 8, CARRYING: 16 } as const;
 const MAX_ITEMS = 2048;
@@ -22,12 +22,23 @@ const MAX_BLUEPRINTS = 2048;
 
 const PAWN_COLORS = [0xd94f4f, 0x4f8fd9, 0xe0b040, 0x8f4fd9, 0x3fb08f, 0xd97f2f];
 const SKIN = 0xf1c9a5;
+/** Contrat avec `pawn::Faction` et `pawn::HP_MAX`. */
+const FACTION_RAIDER = 1;
+const PAWN_HP_MAX = 1000;
+const RAIDER_COLOR = 0x7a1f1f;
+/** Largeur de la barre de vie, en cases. */
+const HP_BAR_WIDTH = 0.5;
+const HP_BAR_EMPTY = new THREE.Color(0xd94f4f);
+const HP_BAR_FULL = new THREE.Color(0x6ab04c);
 
 interface PawnView {
   group: THREE.Group;
   carry: THREE.Mesh;
   carryMat: THREE.MeshLambertMaterial;
   zz: THREE.Mesh;
+  hpBack: THREE.Mesh;
+  hpFill: THREE.Mesh;
+  hpMat: THREE.MeshBasicMaterial;
 }
 
 export interface TilePos {
@@ -495,7 +506,7 @@ export class Renderer {
       }
       let view = this.pawns.get(id);
       if (!view) {
-        view = this.createPawn(id);
+        view = this.createPawn(id, cur[o + 10] === FACTION_RAIDER);
         this.pawns.set(id, view);
       }
       const g = view.group;
@@ -511,6 +522,18 @@ export class Renderer {
       const carrying = (flags & PAWN_FLAGS.CARRYING) !== 0;
       view.carry.visible = carrying;
       if (carrying) view.carryMat.color.setHex(ITEM_COLORS[cur[o + 8]] ?? 0xffffff);
+      // Barre de vie : visible seulement quand le pawn est blessé.
+      const hp = cur[o + 11];
+      const wounded = hp < PAWN_HP_MAX;
+      view.hpBack.visible = wounded;
+      view.hpFill.visible = wounded;
+      if (wounded) {
+        const ratio = Math.max(0, Math.min(1, hp / PAWN_HP_MAX));
+        view.hpFill.scale.x = Math.max(ratio, 0.001);
+        // Le remplissage se vide vers la droite : son bord gauche ne bouge pas.
+        view.hpFill.position.x = (-HP_BAR_WIDTH * (1 - ratio)) / 2;
+        view.hpMat.color.copy(HP_BAR_EMPTY).lerp(HP_BAR_FULL, ratio);
+      }
       if (id === this.selectedId) {
         this.selection.visible = true;
         this.selection.position.set(x, 0.03, z);
@@ -536,9 +559,9 @@ export class Renderer {
     return null;
   }
 
-  private createPawn(id: number): PawnView {
+  private createPawn(id: number, hostile: boolean): PawnView {
     const group = new THREE.Group();
-    const color = PAWN_COLORS[id % PAWN_COLORS.length];
+    const color = hostile ? RAIDER_COLOR : PAWN_COLORS[id % PAWN_COLORS.length];
     const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.32, 4, 10), new THREE.MeshLambertMaterial({ color }));
     body.position.y = 0.4;
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), new THREE.MeshLambertMaterial({ color: SKIN }));
@@ -555,13 +578,24 @@ export class Renderer {
     );
     zz.position.set(0.15, 1.05, 0);
     zz.visible = false;
+    const hpBack = new THREE.Mesh(
+      new THREE.BoxGeometry(HP_BAR_WIDTH, 0.06, 0.06),
+      new THREE.MeshBasicMaterial({ color: 0x14181e }),
+    );
+    hpBack.position.set(0, 1.02, 0);
+    hpBack.visible = false;
+    const hpMat = new THREE.MeshBasicMaterial({ color: HP_BAR_FULL.getHex() });
+    const hpFill = new THREE.Mesh(new THREE.BoxGeometry(HP_BAR_WIDTH, 0.06, 0.06), hpMat);
+    // Un cheveu au-dessus du fond : pas de faces coplanaires qui scintillent.
+    hpFill.position.set(0, 1.03, 0);
+    hpFill.visible = false;
     for (const m of [body, head, nose, carry]) {
       m.castShadow = true;
       m.userData.pawnId = id;
     }
-    group.add(body, head, nose, carry, zz);
+    group.add(body, head, nose, carry, zz, hpBack, hpFill);
     this.pawnRoot.add(group);
-    return { group, carry, carryMat, zz };
+    return { group, carry, carryMat, zz, hpBack, hpFill, hpMat };
   }
 
   setSelected(id: number | null): void {

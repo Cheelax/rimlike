@@ -81,6 +81,10 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             y1: h / 2 + 6,
         });
     }
+    if t == 6000 {
+        // Le combat consomme du RNG : les deux sims doivent rester identiques.
+        cmds.push(Command::TriggerRaid);
+    }
     if t == 4000 {
         cmds.push(Command::CancelBuild {
             x0: w / 2 - 6,

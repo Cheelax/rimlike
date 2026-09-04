@@ -10,10 +10,12 @@ pub enum ItemKind {
     Berries = 2,
     Vegetables = 3,
     Meal = 4,
+    /// Dépouille d'un pawn mort. Ne se transporte pas, se décompose.
+    Corpse = 5,
 }
 
 impl ItemKind {
-    pub const COUNT: usize = 5;
+    pub const COUNT: usize = 6;
 
     pub fn from_u8(v: u8) -> ItemKind {
         match v {
@@ -21,7 +23,8 @@ impl ItemKind {
             1 => ItemKind::Stone,
             2 => ItemKind::Berries,
             3 => ItemKind::Vegetables,
-            _ => ItemKind::Meal,
+            4 => ItemKind::Meal,
+            _ => ItemKind::Corpse,
         }
     }
 
@@ -31,12 +34,17 @@ impl ItemKind {
             ItemKind::Berries => Some(200_000),
             ItemKind::Vegetables => Some(150_000),
             ItemKind::Meal => Some(900_000),
-            ItemKind::Wood | ItemKind::Stone => None,
+            ItemKind::Wood | ItemKind::Stone | ItemKind::Corpse => None,
         }
     }
 
     pub fn is_food(self) -> bool {
         self.nutrition().is_some()
+    }
+
+    /// Un colon peut-il ranger cette pile ? Les cadavres restent où ils tombent.
+    pub fn haulable(self) -> bool {
+        self != ItemKind::Corpse
     }
 
     /// Nourriture crue, transformable en repas au feu de camp.
@@ -50,7 +58,7 @@ impl ItemKind {
             ItemKind::Meal => 0,
             ItemKind::Berries => 1,
             ItemKind::Vegetables => 2,
-            ItemKind::Wood | ItemKind::Stone => u32::MAX,
+            ItemKind::Wood | ItemKind::Stone | ItemKind::Corpse => u32::MAX,
         }
     }
 
@@ -77,6 +85,7 @@ impl ItemKind {
             ItemKind::Berries => Some(TICKS_PER_DAY * 3),
             ItemKind::Vegetables => Some(TICKS_PER_DAY * 4),
             ItemKind::Meal => Some(TICKS_PER_DAY * 2),
+            ItemKind::Corpse => Some(TICKS_PER_DAY * 3),
             ItemKind::Wood | ItemKind::Stone => None,
         }
     }

@@ -48,8 +48,8 @@ export const BLUEPRINT_STRIDE = 8;
 export const ZONE = { None: 0, Stockpile: 1, Growing: 2 } as const;
 export const DESIGNATION = { None: 0, Chop: 1, Mine: 2, Harvest: 3 } as const;
 
-export const ITEM_NAMES = ["bois", "pierre", "baies", "légumes", "repas"] as const;
-export const ITEM_COLORS: readonly number[] = [0x9c6b3c, 0x8d8d8d, 0xc9304a, 0x5aa02c, 0xf0c070];
+export const ITEM_NAMES = ["bois", "pierre", "baies", "légumes", "repas", "cadavres"] as const;
+export const ITEM_COLORS: readonly number[] = [0x9c6b3c, 0x8d8d8d, 0xc9304a, 0x5aa02c, 0xf0c070, 0x5c4a3a];
 
 export const JOB_LABELS = [
   "inactif",
@@ -64,4 +64,25 @@ export const JOB_LABELS = [
   "construit",
   "sème",
   "cuisine",
+  "attaque",
+  "fuit",
 ] as const;
+
+/** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
+export const EVENT_STRIDE = 4;
+
+/** Texte de notification pour un événement du sim. */
+export function eventLabel(kind: number, arg: number): string {
+  switch (kind) {
+    case 1:
+      return `Raid ! ${arg} pillard(s) approchent`;
+    case 2:
+      return "Un colon est mort";
+    case 3:
+      return "Un pillard est mort";
+    case 4:
+      return "Un pillard a fui";
+    default:
+      return "";
+  }
+}

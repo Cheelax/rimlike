@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { PAWN_STRIDE, Renderer, type TilePos, type TileRect } from "./render/Renderer";
-import { BLUEPRINT_STRIDE, BUILD_KIND, DESIGNATION, ITEM_NAMES, JOB_LABELS, MATERIAL_NAMES, ZONE } from "./render/terrain";
+import {
+  BLUEPRINT_STRIDE,
+  BUILD_KIND,
+  DESIGNATION,
+  EVENT_STRIDE,
+  eventLabel,
+  ITEM_NAMES,
+  JOB_LABELS,
+  MATERIAL_NAMES,
+  ZONE,
+} from "./render/terrain";
 import { SimHandle } from "./sim/SimHandle";
 
 const TICKS_PER_SECOND = 60;
@@ -9,6 +19,11 @@ const BASE_TICK_MS = 1000 / TICKS_PER_SECOND;
 const MAX_TICKS_PER_FRAME = 8;
 const CLICK_TOLERANCE_PX = 5;
 const SAVE_KEY = "rimlike.save.v1";
+/** Contrat avec `pawn::Faction` et `pawn::HP_MAX`. */
+const FACTION_RAIDER = 1;
+const HP_MAX = 1000;
+/** Durée d'affichage d'une notification. */
+const TOAST_MS = 6000;
 
 type Tool =
   | "select"
@@ -54,6 +69,8 @@ interface PawnInfo {
   hunger: number;
   rest: number;
   mood: number;
+  hp: number;
+  hostile: boolean;
   job: string;
   carrying: string | null;
 }
@@ -69,6 +86,8 @@ interface Stats {
   paused: boolean;
   stored: number[];
   blueprints: number;
+  colonists: number;
+  hostiles: number;
   selected: PawnInfo | null;
 }
 
@@ -81,14 +100,22 @@ const INITIAL: Stats = {
   fps: 0,
   speed: 1,
   paused: false,
-  stored: [0, 0, 0, 0, 0],
+  stored: [0, 0, 0, 0, 0, 0],
   blueprints: 0,
+  colonists: 0,
+  hostiles: 0,
   selected: null,
 };
 
 interface Actions {
   save(): void;
   load(): void;
+  triggerRaid(): void;
+}
+
+interface Toast {
+  id: number;
+  text: string;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -116,6 +143,7 @@ export function App() {
   const [material, setMaterialState] = useState<number>(0);
   const [stats, setStats] = useState<Stats>(INITIAL);
   const [notice, setNotice] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const setTool = (t: Tool) => {
@@ -137,6 +165,7 @@ export function App() {
     let renderer: Renderer | undefined;
     let sim: SimHandle | undefined;
     const cleanups: Array<() => void> = [];
+    const toastTimers: number[] = [];
 
     (async () => {
       const created = await SimHandle.create({ seed: 42n, width: 128, height: 128 });
@@ -162,6 +191,7 @@ export function App() {
       let ticksInWindow = 0;
       let framesInWindow = 0;
       let windowStart = last;
+      let lastEventSeq = -1;
 
       const syncStatic = () => {
         const mv = sim!.mapVersion();
@@ -253,9 +283,15 @@ export function App() {
               curPawns = sim.pawns();
               selected = null;
               renderer?.setSelected(null);
+              // Les événements de la sauvegarde sont du passé : on ne les notifie pas.
+              const evs = sim.events();
+              lastEventSeq = evs.length >= EVENT_STRIDE ? evs[evs.length - EVENT_STRIDE] : -1;
               flash("Partie chargée");
             })
             .catch((e: unknown) => flash(`Chargement impossible : ${String(e)}`));
+        },
+        triggerRaid() {
+          sim?.triggerRaid();
         },
       };
 
@@ -270,6 +306,13 @@ export function App() {
         cleanups.push(() => target.removeEventListener(type as string, fn as EventListener));
       };
       const toolColor = () => TOOLS.find((t) => t.id === toolRef.current)?.color ?? 0xffffff;
+      /** Camp d'un pawn, lu dans le dernier tampon du sim. `-1` s'il a disparu. */
+      const factionOf = (id: number) => {
+        for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
+          if (curPawns[o] === id) return curPawns[o + 10];
+        }
+        return -1;
+      };
       const applyTool = (rect: TileRect) => {
         if (!sim) return;
         switch (toolRef.current) {
@@ -343,8 +386,14 @@ export function App() {
           selected = renderer.pickPawn(e.clientX, e.clientY);
           renderer.setSelected(selected);
         } else if (start.button === 2 && selected !== null) {
-          const tile = renderer.pickTile(e.clientX, e.clientY);
-          if (tile) sim.moveTo(selected, tile.x, tile.y);
+          // Clic droit sur un ennemi : ordre d'attaque. Sinon : déplacement.
+          const target = renderer.pickPawn(e.clientX, e.clientY);
+          if (target !== null && factionOf(target) === FACTION_RAIDER) {
+            sim.attack(selected, target);
+          } else {
+            const tile = renderer.pickTile(e.clientX, e.clientY);
+            if (tile) sim.moveTo(selected, tile.x, tile.y);
+          }
         }
       });
       on(canvas, "pointerleave", () => renderer?.setHover(null));
@@ -434,20 +483,38 @@ export function App() {
         const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
         const mm = String(minutes % 60).padStart(2, "0");
         let info: PawnInfo | null = null;
-        if (selected !== null) {
-          for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
-            if (curPawns[o] !== selected) continue;
-            const ck = curPawns[o + 8];
-            info = {
-              id: selected,
-              tile: { x: Math.floor(curPawns[o + 1] / 256), y: Math.floor(curPawns[o + 2] / 256) },
-              hunger: curPawns[o + 4] / 10,
-              rest: curPawns[o + 5] / 10,
-              mood: curPawns[o + 6] / 10,
-              job: JOB_LABELS[curPawns[o + 7]] ?? "?",
-              carrying: ck >= 0 ? `${curPawns[o + 9]} ${ITEM_NAMES[ck]}` : null,
-            };
-          }
+        let colonists = 0;
+        let hostiles = 0;
+        for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
+          const hostile = curPawns[o + 10] === FACTION_RAIDER;
+          if (hostile) hostiles++;
+          else colonists++;
+          if (curPawns[o] !== selected) continue;
+          const ck = curPawns[o + 8];
+          info = {
+            id: curPawns[o],
+            tile: { x: Math.floor(curPawns[o + 1] / 256), y: Math.floor(curPawns[o + 2] / 256) },
+            hunger: curPawns[o + 4] / 10,
+            rest: curPawns[o + 5] / 10,
+            mood: curPawns[o + 6] / 10,
+            hp: (curPawns[o + 11] * 100) / HP_MAX,
+            hostile,
+            job: JOB_LABELS[curPawns[o + 7]] ?? "?",
+            carrying: ck >= 0 ? `${curPawns[o + 9]} ${ITEM_NAMES[ck]}` : null,
+          };
+        }
+        // Notifications : un toast par événement du sim jamais vu.
+        const events = sim.events();
+        for (let o = 0; o + EVENT_STRIDE <= events.length; o += EVENT_STRIDE) {
+          const seq = events[o];
+          if (seq <= lastEventSeq) continue;
+          lastEventSeq = seq;
+          const text = eventLabel(events[o + 2], events[o + 3]);
+          if (!text) continue;
+          setToasts((prev) => [...prev, { id: seq, text }]);
+          toastTimers.push(
+            window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== seq)), TOAST_MS),
+          );
         }
         setStats({
           tick: sim.tick(),
@@ -460,6 +527,8 @@ export function App() {
           paused,
           stored: Array.from(sim.storedTotals()),
           blueprints: sim.blueprints().length / BLUEPRINT_STRIDE,
+          colonists,
+          hostiles,
           selected: info,
         });
         ticksInWindow = 0;
@@ -472,6 +541,7 @@ export function App() {
       disposed = true;
       cancelAnimationFrame(raf);
       clearInterval(interval);
+      for (const t of toastTimers) clearTimeout(t);
       for (const c of cleanups) c();
       renderer?.dispose();
       sim?.dispose();
@@ -492,7 +562,22 @@ export function App() {
           {stats.paused ? <b> · PAUSE</b> : ` · x${stats.speed}`}
         </div>
         <div>
-          stock : {ITEM_NAMES.map((n, i) => `${stats.stored[i] ?? 0} ${n}`).join(" · ")}
+          <b>{stats.colonists}</b> colon{stats.colonists > 1 ? "s" : ""}
+          {stats.hostiles > 0 ? (
+            <>
+              {" · "}
+              <b>{stats.hostiles}</b> ennemi{stats.hostiles > 1 ? "s" : ""}
+            </>
+          ) : (
+            ""
+          )}
+        </div>
+        <div>
+          stock :{" "}
+          {ITEM_NAMES.map((n, i) => [n, stats.stored[i] ?? 0] as const)
+            .filter(([n, v]) => n !== "cadavres" || v > 0)
+            .map(([n, v]) => `${v} ${n}`)
+            .join(" · ")}
           {stats.blueprints > 0 ? ` · ${stats.blueprints} chantier${stats.blueprints > 1 ? "s" : ""}` : ""}
         </div>
         <div className="help">
@@ -504,13 +589,14 @@ export function App() {
       {sel && (
         <div className="panel">
           <div className="panel-title">
-            Colon {sel.id} · ({sel.tile.x}, {sel.tile.y})
+            {sel.hostile ? "Ennemi" : "Colon"} {sel.id} · ({sel.tile.x}, {sel.tile.y})
           </div>
           <div className="panel-job">{sel.job}{sel.carrying ? ` · porte ${sel.carrying}` : ""}</div>
+          <Bar label="PV" value={sel.hp} />
           <Bar label="Faim" value={sel.hunger} />
           <Bar label="Repos" value={sel.rest} />
           <Bar label="Humeur" value={sel.mood} />
-          <div className="help">clic droit sur une case : y aller</div>
+          <div className="help">clic droit : y aller, ou attaquer un ennemi</div>
         </div>
       )}
 
@@ -536,6 +622,11 @@ export function App() {
         <span className="sep" />
         <button onClick={() => actionsRef.current?.save()}>Sauver</button>
         <button onClick={() => actionsRef.current?.load()}>Charger</button>
+        {import.meta.env.DEV && (
+          <button onClick={() => actionsRef.current?.triggerRaid()} title="Déclencher un raid (dev)">
+            Raid
+          </button>
+        )}
       </div>
       {tool !== "select" && (
         <div className="tool-hint">
@@ -549,6 +640,15 @@ export function App() {
                   ? `Tracez un rectangle pour poser des plans de ${TOOLS.find((t) => t.id === tool)?.label.toLowerCase()} en ${WOOD_ONLY.has(tool) ? "bois" : MATERIAL_NAMES[material]}`
                   : "Tracez un rectangle sur les éléments à traiter"}{" "}
           · clic droit ou Échap pour revenir à la sélection
+        </div>
+      )}
+      {toasts.length > 0 && (
+        <div className="toasts">
+          {toasts.map((t) => (
+            <div key={t.id} className="toast">
+              {t.text}
+            </div>
+          ))}
         </div>
       )}
       {notice && <div className="notice">{notice}</div>}

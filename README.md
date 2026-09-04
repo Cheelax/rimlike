@@ -26,7 +26,10 @@ gauche, Échap ou clic droit pour revenir à la sélection. Les colons cherchent
 travail : ils construisent, livrent les matériaux aux chantiers, cuisinent au feu de camp,
 exécutent les désignations, sèment et récoltent les cultures, puis rangent les objets dans
 les zones de stockage. Un colon affamé mange le meilleur plat disponible, un colon fatigué
-va dormir dans un lit libre. La nourriture se gâte avec le temps.
+va dormir dans un lit libre. La nourriture se gâte avec le temps. Après trois jours, des
+pillards attaquent régulièrement : les colons menacés se défendent seuls, et un clic droit
+sur un ennemi avec un colon sélectionné ordonne l'attaque. Un colon qui ne mange plus
+meurt en deux jours.
 
 ## Structure
 

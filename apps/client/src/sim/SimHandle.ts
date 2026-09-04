@@ -65,6 +65,14 @@ export class SimHandle {
     this.inner.cancel_build(x0, y0, x1, y1);
   }
 
+  attack(pawn: number, target: number): void {
+    this.inner.attack(pawn, target);
+  }
+
+  triggerRaid(): void {
+    this.inner.trigger_raid();
+  }
+
   tick(): number {
     return this.inner.tick();
   }
@@ -129,6 +137,10 @@ export class SimHandle {
     return new Int32Array(
       new Int32Array(this.wasm.memory.buffer, this.inner.blueprints_ptr(), this.inner.blueprints_len()),
     );
+  }
+
+  events(): Int32Array {
+    return new Int32Array(new Int32Array(this.wasm.memory.buffer, this.inner.events_ptr(), this.inner.events_len()));
   }
 
   dispose(): void {

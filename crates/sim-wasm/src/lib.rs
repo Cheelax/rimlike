@@ -5,12 +5,15 @@ use sim::{BuildKind, Designation, ItemKind, Job, Material, Zone};
 use wasm_bindgen::prelude::*;
 
 /// Entiers par pawn dans le tampon de rendu :
-/// id, x, y, flags, faim ‰, repos ‰, humeur ‰, code de job, genre porté (-1 = rien), quantité portée.
-pub const PAWN_STRIDE: usize = 10;
+/// id, x, y, flags, faim ‰, repos ‰, humeur ‰, code de job, genre porté (-1 = rien),
+/// quantité portée, camp, PV.
+pub const PAWN_STRIDE: usize = 12;
 /// Entiers par pile : id, genre, quantité, x, y.
 pub const ITEM_STRIDE: usize = 5;
 /// Entiers par chantier : id, type, matériau, x, y, livré, requis, avancement.
 pub const BLUEPRINT_STRIDE: usize = 8;
+/// Entiers par événement : seq, tick, genre, argument.
+pub const EVENT_STRIDE: usize = 4;
 
 const FLAG_MOVING: i32 = 1;
 const FLAG_SLEEPING: i32 = 2;
@@ -25,6 +28,7 @@ pub struct WasmSim {
     pawn_buffer: Vec<i32>,
     item_buffer: Vec<i32>,
     blueprint_buffer: Vec<i32>,
+    event_buffer: Vec<i32>,
 }
 
 #[wasm_bindgen]
@@ -91,6 +95,16 @@ impl WasmSim {
     pub fn cancel_build(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) {
         self.pending
             .push(sim::Command::CancelBuild { x0, y0, x1, y1 });
+    }
+
+    /// Envoie un colon attaquer un ennemi.
+    pub fn attack(&mut self, pawn: u32, target: u32) {
+        self.pending.push(sim::Command::Attack { pawn, target });
+    }
+
+    /// Déclenche un raid tout de suite (outil de dev).
+    pub fn trigger_raid(&mut self) {
+        self.pending.push(sim::Command::TriggerRaid);
     }
 
     // --- Lecture ---
@@ -202,6 +216,18 @@ impl WasmSim {
     pub fn blueprints_len(&self) -> usize {
         self.blueprint_buffer.len()
     }
+
+    pub fn event_stride(&self) -> usize {
+        EVENT_STRIDE
+    }
+
+    pub fn events_ptr(&self) -> *const i32 {
+        self.event_buffer.as_ptr()
+    }
+
+    pub fn events_len(&self) -> usize {
+        self.event_buffer.len()
+    }
 }
 
 impl WasmSim {
@@ -212,6 +238,7 @@ impl WasmSim {
             pawn_buffer: Vec::new(),
             item_buffer: Vec::new(),
             blueprint_buffer: Vec::new(),
+            event_buffer: Vec::new(),
         };
         s.refresh_buffers();
         s
@@ -251,6 +278,8 @@ impl WasmSim {
                 p.job.code(),
                 ckind,
                 ccount,
+                p.faction as i32,
+                p.hp as i32,
             ]);
         }
         self.item_buffer.clear();
@@ -274,6 +303,15 @@ impl WasmSim {
                 b.delivered as i32,
                 b.needed as i32,
                 b.progress as i32,
+            ]);
+        }
+        self.event_buffer.clear();
+        for e in self.inner.events() {
+            self.event_buffer.extend_from_slice(&[
+                e.seq as i32,
+                e.tick as i32,
+                e.kind as i32,
+                e.arg as i32,
             ]);
         }
         let _ = ItemKind::COUNT;

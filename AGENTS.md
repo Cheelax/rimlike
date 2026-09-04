@@ -75,12 +75,13 @@ Les valeurs numériques des enums sont un contrat, à modifier des deux côtés 
 | `map::Terrain`, `Feature`, `Zone`, `Designation` | `apps/client/src/render/terrain.ts` |
 | `items::ItemKind` | `terrain.ts` (`ITEM_NAMES`, `ITEM_COLORS`) |
 | `build::BuildKind`, `Material` | `terrain.ts` (`BUILD_KIND`, `MATERIAL`, `WALL_COLORS`, `DOOR_COLORS`) |
+| `pawn::Faction` (0 colonie, 1 pillard), `EventKind` | `Renderer.ts`, `App.tsx` (index 10 du tampon pawn), `terrain.ts` (`eventLabel`) |
 | `pawn::Job::code()` | `terrain.ts` (`JOB_LABELS`) |
-| `sim-wasm` : `PAWN_STRIDE` = 10, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`) |
+| `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |
 
 Les vues mémoire (`tiles`, `features`, `zones`, `designations`) sont en zéro-copie sur la
 mémoire WASM : à recréer après chaque appel au sim, jamais conservées. `pawns()`,
-`items()` et `blueprints()` renvoient des copies. Le client rebâtit ses meshes quand `map_version` ou
+`items()`, `blueprints()` et `events()` renvoient des copies. Le client rebâtit ses meshes quand `map_version` ou
 `overlay_version` change, pas à chaque frame.
 
 ## Conventions côté client
@@ -109,6 +110,7 @@ s.designate(1, px - 10, py - 10, px + 10, py + 10);   // couper les arbres autou
 s.build(0, 0, px - 5, py - 5, px + 5, py - 5);        // plans de mur en bois (kind, matériau, rect)
 s.step(5000); Array.from(s.storedTotals());           // [bois, pierre, baies] rangés
 s.blueprints().length / 8;                            // chantiers restants
+s.triggerRaid(); s.step(3000); s.events();            // raid immédiat, puis journal (seq, tick, kind, arg)
 d.paused = false;
 ```
 

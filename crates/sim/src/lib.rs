@@ -14,6 +14,7 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod build;
+pub mod combat;
 pub mod farm;
 pub mod fixed;
 pub mod hash;
@@ -33,7 +34,7 @@ pub use farm::Crop;
 pub use items::{ItemKind, ItemStack};
 pub use jobs::{Regrow, Reservation};
 pub use map::{Designation, Feature, Map, Rect, Terrain, Zone};
-pub use pawn::{Job, Pawn};
+pub use pawn::{Faction, Job, Pawn};
 pub use rng::Rng;
 
 /// Ticks de simulation par seconde de jeu.
@@ -42,6 +43,28 @@ pub const TICKS_PER_SECOND: u32 = 60;
 pub const TICKS_PER_DAY: u32 = TICKS_PER_SECOND * 60 * 4;
 /// La partie commence le matin, pas à minuit.
 const DAY_START_OFFSET: u32 = TICKS_PER_DAY * 3 / 10;
+/// Événements gardés pour le client. Au-delà, le plus ancien est oublié.
+const MAX_EVENTS: usize = 32;
+
+/// Fait notable de la partie, poussé au client pour affichage.
+/// Les valeurs sont un contrat avec `apps/client/src/render/terrain.ts`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum EventKind {
+    Raid = 1,
+    ColonistDied = 2,
+    RaiderDied = 3,
+    RaiderLeft = 4,
+}
+
+/// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameEvent {
+    pub seq: u32,
+    pub tick: u64,
+    pub kind: EventKind,
+    pub arg: u32,
+}
 
 /// Ordre émis par un joueur. Appliqué au début du tick où il est planifié.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +100,10 @@ pub enum Command {
     },
     /// Annule les plans du rectangle et rend les matériaux déjà livrés.
     CancelBuild { x0: i32, y0: i32, x1: i32, y1: i32 },
+    /// Envoie un pawn en attaquer un autre, d'un camp différent.
+    Attack { pawn: u32, target: u32 },
+    /// Fait entrer un raid tout de suite (débogage, tests).
+    TriggerRaid,
 }
 
 #[derive(Debug)]
@@ -106,6 +133,11 @@ pub struct Sim {
     regrow: Vec<Regrow>,
     blueprints: Vec<Blueprint>,
     crops: Vec<Crop>,
+    /// Faits notables récents, du plus ancien au plus récent.
+    events: Vec<GameEvent>,
+    next_event_seq: u32,
+    /// Tick du prochain raid.
+    next_raid_at: u64,
     /// Compteur d'ids partagé par tout ce qui a un id.
     next_id: u32,
 }
@@ -135,9 +167,13 @@ impl Sim {
             regrow: Vec::new(),
             blueprints: Vec::new(),
             crops: Vec::new(),
+            events: Vec::new(),
+            next_event_seq: 0,
+            next_raid_at: 0,
             next_id: 1,
         };
         sim.spawn_starting_pawns(3);
+        sim.schedule_first_raid();
         sim
     }
 
@@ -283,6 +319,26 @@ impl Sim {
                     }
                 }
             }
+            Command::Attack { pawn, target } => {
+                let Some(i) = self.pawns.iter().position(|p| p.id == pawn && p.is_alive()) else {
+                    return;
+                };
+                let Some(k) = self
+                    .pawns
+                    .iter()
+                    .position(|p| p.id == target && p.is_alive())
+                else {
+                    return;
+                };
+                if self.pawns[i].faction == self.pawns[k].faction {
+                    return;
+                }
+                self.abandon_job(i);
+                self.pawns[i].job = Job::Attack { target };
+            }
+            Command::TriggerRaid => {
+                self.spawn_raid();
+            }
         }
     }
 
@@ -290,8 +346,26 @@ impl Sim {
         self.tick_regrowth();
         self.tick_crops();
         self.tick_spoilage();
+        self.tick_storyteller();
         for i in 0..self.pawns.len() {
             self.tick_pawn(i);
+        }
+        self.remove_dead();
+    }
+
+    /// Enregistre un fait notable pour le client. La file est bornée : le
+    /// client suit les `seq` qu'il a déjà vus.
+    fn push_event(&mut self, kind: EventKind, arg: u32) {
+        let seq = self.next_event_seq;
+        self.next_event_seq += 1;
+        self.events.push(GameEvent {
+            seq,
+            tick: self.tick,
+            kind,
+            arg,
+        });
+        if self.events.len() > MAX_EVENTS {
+            self.events.remove(0);
         }
     }
 
@@ -332,6 +406,11 @@ impl Sim {
 
     pub fn items(&self) -> &[ItemStack] {
         &self.items
+    }
+
+    /// Faits notables récents, du plus ancien au plus récent.
+    pub fn events(&self) -> &[GameEvent] {
+        &self.events
     }
 
     /// Total d'objets rangés en zone de stockage, par genre.

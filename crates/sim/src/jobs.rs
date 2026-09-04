@@ -10,7 +10,7 @@ use crate::farm::{self, Crop};
 use crate::items::{ItemKind, ItemStack, STACK_MAX};
 use crate::map::{Designation, Feature, Zone, chebyshev};
 use crate::path;
-use crate::pawn::{HUNGER_DECAY, Job, NEED_MAX, REST_DECAY, REST_RECOVERY, RESTED};
+use crate::pawn::{Faction, HUNGER_DECAY, Job, NEED_MAX, REST_DECAY, REST_RECOVERY, RESTED};
 use crate::{Sim, TICKS_PER_DAY};
 
 /// Nombre maximal de candidats pour lesquels on tente un A* par recherche.
@@ -28,11 +28,28 @@ fn yield_of(kind: Designation) -> Option<(ItemKind, u32)> {
 
 impl Sim {
     pub(crate) fn tick_pawn(&mut self, i: usize) {
+        if !self.pawns[i].is_alive() {
+            return;
+        }
+        self.tick_health(i);
+        if self.pawns[i].faction == Faction::Raider {
+            // Les pillards ne mangent ni ne dorment : ils viennent, ils frappent.
+            match self.pawns[i].job.clone() {
+                Job::Attack { target } => self.do_attack(i, target),
+                Job::Flee => self.do_flee(i),
+                _ => self.raider_ai(i),
+            }
+            return;
+        }
         self.decay_needs(i);
+        self.defend_if_threatened(i);
         if self.pawns[i].is_starving()
             && !matches!(
                 self.pawns[i].job,
-                Job::Eat { .. } | Job::Sleep { .. } | Job::Move { manual: true }
+                Job::Eat { .. }
+                    | Job::Sleep { .. }
+                    | Job::Move { manual: true }
+                    | Job::Attack { .. }
             )
             && self.food_available()
         {
@@ -73,6 +90,8 @@ impl Sim {
                 picked,
                 progress,
             } => self.do_cook(i, campfire, item, picked, progress),
+            Job::Attack { target } => self.do_attack(i, target),
+            Job::Flee => self.do_flee(i),
         }
     }
 
@@ -357,7 +376,11 @@ impl Sim {
     }
 
     /// Chemin vers la case voisine franchissable la plus proche du colon.
-    fn path_adjacent(&self, from: (u32, u32), target: (u32, u32)) -> Option<Vec<path::Tile>> {
+    pub(crate) fn path_adjacent(
+        &self,
+        from: (u32, u32),
+        target: (u32, u32),
+    ) -> Option<Vec<path::Tile>> {
         let mut neighbours: Vec<(u32, u32, u32)> = Vec::new();
         for dy in -1i32..=1 {
             for dx in -1i32..=1 {
@@ -387,7 +410,7 @@ impl Sim {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, s)| s.reserved_by.is_none() && !self.is_stored(s))
+            .filter(|(_, s)| s.kind.haulable() && s.reserved_by.is_none() && !self.is_stored(s))
             .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
             .collect();
         candidates.sort_unstable();

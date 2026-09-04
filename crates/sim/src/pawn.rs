@@ -22,6 +22,21 @@ pub const STARVING: u32 = 100_000;
 pub const TIRED: u32 = 250_000;
 pub const RESTED: u32 = 950_000;
 
+/// Points de vie d'un pawn en pleine forme.
+pub const HP_MAX: u32 = 1000;
+/// En dessous : blessé (vitesse et humeur en baisse).
+pub const HP_WOUNDED: u32 = HP_MAX / 2;
+/// En dessous : grièvement blessé.
+pub const HP_BADLY_WOUNDED: u32 = HP_MAX / 4;
+
+/// Camp d'un pawn. Les valeurs sont un contrat avec le client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum Faction {
+    Colony = 0,
+    Raider = 1,
+}
+
 /// Ce que fait un colon. Le chemin courant vit dans `Pawn::path`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Job {
@@ -73,6 +88,12 @@ pub enum Job {
         picked: bool,
         progress: u32,
     },
+    /// Se rapproche d'un ennemi puis le frappe au corps à corps.
+    Attack {
+        target: u32,
+    },
+    /// Quitte la carte par le bord le plus proche.
+    Flee,
 }
 
 impl Job {
@@ -98,6 +119,8 @@ impl Job {
             Job::Farm { sow: true, .. } => 10,
             Job::Farm { sow: false, .. } => 4,
             Job::Cook { .. } => 11,
+            Job::Attack { .. } => 12,
+            Job::Flee => 13,
         }
     }
 }
@@ -118,6 +141,14 @@ pub struct Pawn {
     pub last_sleep_in_bed: bool,
     /// Qualité du dernier repas : 1 cuisiné, 0 neutre, -1 cru désagréable.
     pub last_meal_quality: i8,
+    pub hp: u32,
+    pub faction: Faction,
+    /// Ticks restants avant de pouvoir frapper à nouveau.
+    pub attack_cooldown: u32,
+    /// Ticks de deuil restants après la mort d'un colon.
+    pub grief_ticks: u32,
+    /// Le pawn a quitté la carte : il est retiré au prochain nettoyage.
+    pub gone: bool,
 }
 
 impl Pawn {
@@ -134,11 +165,21 @@ impl Pawn {
             carrying: None,
             last_sleep_in_bed: true,
             last_meal_quality: 0,
+            hp: HP_MAX,
+            faction: Faction::Colony,
+            attack_cooldown: 0,
+            grief_ticks: 0,
+            gone: false,
         }
     }
 
     pub fn tile(&self) -> (u32, u32) {
         (fixed::to_int(self.x) as u32, fixed::to_int(self.y) as u32)
+    }
+
+    /// Un pawn mort ou parti n'est plus simulé et disparaît du tampon de rendu.
+    pub fn is_alive(&self) -> bool {
+        self.hp > 0 && !self.gone
     }
 
     pub fn is_moving(&self) -> bool {
@@ -182,12 +223,26 @@ impl Pawn {
             -1 => -60_000,
             _ => 0,
         };
+        if self.grief_ticks > 0 {
+            m -= 150_000;
+        }
+        if self.hp < HP_WOUNDED {
+            m -= 100_000;
+        }
         m.clamp(0, i64::from(NEED_MAX)) as u32
     }
 
-    /// Vitesse en pourcentage de la nominale.
+    /// Vitesse en pourcentage de la nominale. Les malus de blessure ne se
+    /// cumulent pas entre eux : on garde le plus sévère.
     pub fn speed_percent(&self) -> u32 {
-        if self.is_starving() { 60 } else { 100 }
+        let base = if self.is_starving() { 60 } else { 100 };
+        if self.hp < HP_BADLY_WOUNDED {
+            base * 50 / 100
+        } else if self.hp < HP_WOUNDED {
+            base * 70 / 100
+        } else {
+            base
+        }
     }
 
     /// Remplace le chemin courant. `path` est dans l'ordre de parcours.
