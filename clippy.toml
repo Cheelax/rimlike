@@ -1,0 +1,11 @@
+# Garde-fous de déterminisme pour le sim (voir docs/PLAN.md §2.1).
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "ordre d'itération aléatoire par design : utiliser BTreeMap ou un Vec trié" },
+  { path = "std::collections::HashSet", reason = "ordre d'itération aléatoire par design : utiliser BTreeSet ou un Vec trié" },
+  { path = "std::hash::RandomState", reason = "hasher seedé aléatoirement" },
+  { path = "std::time::Instant", reason = "pas d'horloge système dans le sim" },
+  { path = "std::time::SystemTime", reason = "pas d'horloge système dans le sim" },
+]
+disallowed-methods = [
+  { path = "std::collections::hash_map::DefaultHasher::new", reason = "hasher SipHash non stable entre versions : utiliser sim::hash::fnv1a64" },
+]

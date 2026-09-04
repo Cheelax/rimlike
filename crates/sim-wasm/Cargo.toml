@@ -1,0 +1,18 @@
+[package]
+name = "sim-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Frontière wasm-bindgen autour de `sim`. Seul point de contact entre le sim et le JS."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sim = { path = "../sim" }
+wasm-bindgen = { workspace = true }
+console_error_panic_hook = { workspace = true }
+
+[package.metadata.wasm-pack.profile.release]
+# wasm-opt désactivé tant que le téléchargement de binaryen n'est pas vérifié sur cette machine.
+wasm-opt = false

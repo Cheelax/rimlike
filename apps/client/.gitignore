@@ -1,0 +1,10 @@
+# Rust
+/target/
+# Node
+node_modules/
+dist/
+# Artefact généré par wasm-pack (reconstruit par `pnpm build:wasm`)
+/apps/client/src/wasm/
+# Divers
+.DS_Store
+*.log

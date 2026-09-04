@@ -21,14 +21,16 @@ Le multi sur une carte se fera en **lockstep** : chaque client exécute la même
 simulation et on n'échange que les commandes des joueurs. Cela impose :
 
 - Boucle à ticks fixes (ex. 60 ticks/s de jeu), indépendante du rendu.
-- RNG seedé maison (xoshiro128** ou mulberry32), un flux par sous-système si besoin.
-  Jamais `Math.random`, `Date.now`, `performance.now` dans le sim.
+- RNG seedé (xoshiro128**), un flux par sous-système si besoin. Jamais d'horloge
+  système ni d'entropie dans le sim.
 - Logique en **entiers** (positions en 1/256 de case, durées en ticks, stats en
-  millièmes). Pas de `Math.sin/cos/sqrt/pow` : résultats non garantis entre moteurs JS.
-  Tables précalculées ou fixed-point si nécessaire.
-- Ordre d'itération stable : entités triées par id, jamais dépendre d'un ordre de
-  `Set`/`Map` non maîtrisé.
-- Le sim n'importe rien du rendu ni du réseau. Il tourne en Node pour les tests.
+  millièmes). **Aucun `f32`/`f64` dans le crate sim** : interdit par
+  `#![deny(clippy::float_arithmetic)]`. Trig et racines via tables ou fixed-point.
+- Ordre d'itération stable : pas de `HashMap`/`HashSet` std (ordre aléatoire par
+  design), interdits via `clippy.toml` `disallowed-types`. `BTreeMap`, `Vec` triés,
+  ou hasher fixe.
+- Le sim n'importe rien du rendu ni du réseau. Il compile en natif pour les tests et
+  en WASM pour le navigateur, à partir du même code.
 - **Test de non-régression permanent** : deux sims, même seed, mêmes commandes,
   hash d'état identique après N ticks. Lancé en CI.
 
@@ -112,20 +114,23 @@ Points techniques :
 |---|---|
 | Langage | TypeScript partout, strict |
 | Monorepo | pnpm workspaces + turborepo |
-| Sim | TS pur, ECS léger maison (arrays typés, ids entiers) |
+| Sim | **Rust**, crate pur sans dépendance au rendu ni au réseau. Compilé en WASM (navigateur) et en natif (tests, serveur). ECS léger maison en SoA |
+| Pont sim ↔ client | wasm-bindgen ; interface volontairement minuscule : `step(commands)`, `snapshot()`, `hash()`, vues mémoire pour le rendu |
 | Client | Vite, Three.js, React, Zustand pour l'état UI |
-| Serveur | Node, Fastify + ws, Drizzle + SQLite (Postgres plus tard) |
+| Serveur | Node, Fastify + ws, Drizzle + SQLite (Postgres plus tard). Peut charger le sim Rust en natif via napi-rs si un jour il doit simuler des cartes |
 | Tests | Vitest ; test de déterminisme en CI |
 | Assets | GLTF voxel/low-poly, données de jeu en JSON/YAML (moddable) |
 
 Structure :
 ```
 rimlike/
+  crates/
+    sim/        # Rust : simulation déterministe, zéro dépendance, testé en natif
+    sim-wasm/   # Rust : wrapper wasm-bindgen autour de sim, seule frontière avec le JS
   packages/
-    sim/        # simulation déterministe, zéro dépendance
-    protocol/   # commandes, snapshots, hash, codecs binaires
-    world/      # géométrie du globe, biomes, pathfinding monde
-    content/    # définitions : objets, recettes, plantes, traits (data)
+    protocol/   # TS : types des commandes, codecs, messages réseau
+    world/      # TS : géométrie du globe, biomes, pathfinding monde
+  content/      # définitions : objets, recettes, plantes, traits (data, lu par le sim)
   apps/
     client/     # Vite + Three + React
     server/     # serveur monde + relais
@@ -135,7 +140,10 @@ rimlike/
 ## 6. Phases
 
 ### Phase 0 — Squelette (1-2 jours)
-Monorepo, lint, Vitest, CI GitHub Actions, page Vite vide avec une scène three.
+Cargo workspace + pnpm workspace, crate `sim` avec tick fixe, RNG et hash d'état,
+test de déterminisme natif, wrapper `sim-wasm`, client Vite qui charge le WASM et
+affiche une scène three vide avec le compteur de ticks. Lints anti-float et
+anti-HashMap. CI GitHub Actions (cargo test + build client).
 
 ### Phase 1 — Fondations déterministes + rendu (2-3 semaines)
 - Boucle ticks fixes, RNG, fixed-point, ECS.
@@ -183,6 +191,7 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
 | Perf JS pour des centaines de pawns | ECS en arrays typés, pathfinding avec cache de régions (flow fields / HPA*) en phase 2 si besoin, sim dans un Worker |
 | Pipeline d'assets 3D coûteux | Style voxel, packs CC0 au départ, contenu générique (couleurs par matériau) |
 | Le multi monde est un gouffre | Phases 1-2 donnent un jeu solo complet et autonome. Le multi se greffe dessus, pas l'inverse |
+| Onglet en arrière-plan : le navigateur bride `requestAnimationFrame` à ~2/s, le client décroche du lockstep | Dès la phase 3, le sim tourne dans un Web Worker cadencé par timer, le thread principal ne fait que rendre. Constaté en phase 0 |
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
@@ -191,5 +200,13 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   coop sur carte unique. Impose la séparation serveur-monde / sim-carte.
 - 2026-09-04 : rendu Three.js vue du dessus pseudo-3D, style low-poly/voxel.
   Repli 2D possible car sim isolé.
-- 2026-09-04 : TypeScript full-stack, monorepo pnpm.
+- 2026-09-04 : **sim en Rust** (WASM + natif), client Three.js/React en TS, serveur
+  Node en TS. Motifs : déterminisme imposé par le typage, marge de perf, même binaire
+  côté client et serveur. Go écarté (WASM médiocre). Unreal écarté (pas de web,
+  réseau inadapté au lockstep, workflow éditeur).
+- 2026-09-04 : réécriture éventuelle : le **client** est remplaçable à faible coût
+  (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
+  dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-04 : phase 0 livrée. Leçon : l'init wasm-bindgen doit être mémoïsée côté JS,
+  sinon deux appels concurrents (React StrictMode) instancient deux mémoires.
