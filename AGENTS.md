@@ -41,7 +41,10 @@ pnpm test:protocol    # tests du paquet protocole (vitest)
 pnpm test:server      # tests du serveur relais, vrais WebSockets sur port éphémère
 pnpm test:client      # tests du client lockstep contre le vrai serveur en mémoire (vitest)
 pnpm test:world       # tests du globe (géométrie, biomes, itinéraires)
-pnpm dev:server       # serveur relais sur :8787 (GET /health)
+pnpm dev:server       # relais + serveur monde sur :8787 (GET /health, GET /world)
+                      # env : PORT, WORLD_SEED (1), WORLD_SUBDIVISIONS (4),
+                      # WORLD_STATE_FILE (apps/server/data/world-state.json ; vide = mémoire),
+                      # WORLD_PERSIST=0 pour désactiver la persistance
 cargo fmt --all       # la CI vérifie le formatage
 cargo run -p sim-cli --release -- bench --size 128 --ticks 20000   # référence de perf du sim
 cargo run -p sim-cli --release -- verify --seed 1 --size 64 --ticks 10000 --scenario demo

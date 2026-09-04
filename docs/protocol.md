@@ -708,15 +708,75 @@ Ce que le client doit gérer en plus du mode salle :
 - `world_settlements` → remplacer la liste et recolorer les cases possédées ;
 - `world_error` → un message à l'écran, pas une déconnexion.
 
-### 11.8 Ce qui n'est pas encore fait
+### 11.8 Persistance
+
+Le seul état qui existerait à perdre est celui de `WorldState` (colonies et
+derniers snapshots de conservation) : le reste (salles en jeu, connexions)
+repart de toute façon d'un état neuf à chaque redémarrage. `apps/server/src/persistence.ts`
+(`WorldStore`) écrit et relit cet état dans **un fichier JSON unique**.
+
+**Format sur disque** — l'en-tête sert à valider le fichier avant d'y toucher,
+`state` est exactement `WorldState.toJSON()` (§11.6 pour les snapshots) :
+
+```json
+{
+  "version": 1,
+  "worldSeed": 1,
+  "subdivisions": 4,
+  "savedAt": 1757000000000,
+  "state": {
+    "seed": 1,
+    "subdivisions": 4,
+    "settlements": [
+      { "tile": 1732, "owner": "alice", "room": "tile-1732", "seed": 2007225770, "createdAt": 1757000000000 }
+    ],
+    "snapshots": [
+      { "room": "tile-1732", "tick": 1800, "data": "AQIDBA==", "width": 64, "height": 64, "savedAt": 1757000000000 }
+    ]
+  }
+}
+```
+
+**Configuration**, lue une fois par `index.ts` (`startServer` lui-même ne lit
+jamais l'environnement, il reçoit des options explicites) :
+
+| variable | défaut | rôle |
+|---|---|---|
+| `WORLD_STATE_FILE` | `apps/server/data/world-state.json` | chemin du fichier ; vide désactive |
+| `WORLD_PERSIST` | (non défini) | `0` désactive, quel que soit `WORLD_STATE_FILE` |
+
+Persistance désactivée = **mode mémoire** : aucune écriture, comme avant cette
+tranche. C'est le comportement par défaut de `startServer` quand
+`worldStateFile` n'est pas précisé, et donc celui de tous les tests qui ne le
+précisent pas.
+
+- **Écriture atomique** : dans `<fichier>.tmp` puis renommage, pour qu'un
+  lecteur ou un crash en cours d'écriture ne voie jamais un JSON à moitié
+  écrit. Le dossier du fichier est créé s'il n'existe pas.
+- **Débounce** : `scheduleSave()`, déclenché par une fondation, un abandon ou
+  un snapshot de conservation reçu, n'écrit qu'une fois toutes les
+  `SAVE_DEBOUNCE_MS` (2000, injectable) malgré des changements rapprochés.
+- Une écriture qui échoue (disque plein, permissions) est journalisée sur
+  stderr et n'interrompt jamais le serveur.
+- **Arrêt propre** (`SIGINT`/`SIGTERM`, gérés par `index.ts`) : une dernière
+  sauvegarde a lieu avant de quitter, dans `RunningServer.close()`.
+- **Chargement au démarrage** : fichier absent → monde vide, rien d'anormal.
+  `worldSeed`/`subdivisions` du fichier différents du globe qui vient d'être
+  régénéré (biomes recalculés, potentiellement différents case par case), ou
+  JSON illisible/incohérent (`WorldState.fromJSON` qui échoue) → le fichier
+  est **ignoré**, renommé `<fichier>.ignored-<horodatage>.json` plutôt que
+  supprimé, avec un avertissement clair sur stderr : les colonies ne peuvent
+  pas survivre à un changement de globe.
+- `GET /health` expose l'état de la persistance :
+  `persistence: { enabled, file, lastSavedAt }` (`lastSavedAt` : `null` tant
+  qu'aucune écriture n'a encore eu lieu).
+
+### 11.9 Ce qui n'est pas encore fait
 
 - **Caravanes** : `findRoute` existe dans `packages/world`, aucun message ne
   les expose. Pas de déplacement entre cases.
 - **Avance rapide abstraite** des cartes gelées : le temps ne passe pas dans
   une colonie vide.
-- **Persistance disque** : `WorldState` est entièrement sérialisable en JSON
-  (`toJSON` / `fromJSON`, snapshots en base64) mais rien n'est écrit. Un
-  redémarrage du serveur perd les colonies et les snapshots.
 - **Comptes** : l'identité est le nom, sans mot de passe ni jeton.
 - **Horloge globale** du monde : il n'y en a pas encore, seulement l'horloge
   par salle.

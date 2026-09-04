@@ -30,6 +30,7 @@ import {
 import { WORLD_WIRE_VERSION, serializeWorld } from "@rimlike/world";
 import { WebSocketServer, type WebSocket } from "ws";
 
+import { WorldStore } from "./persistence.js";
 import { Room, type RoomOptions } from "./room.js";
 import {
   DEFAULT_WORLD_SEED,
@@ -52,6 +53,16 @@ export interface ServerOptions {
   readonly worldSeed?: number;
   /** Subdivisions du globe. Défaut : `DEFAULT_WORLD_SUBDIVISIONS`. */
   readonly worldSubdivisions?: number;
+  /**
+   * Fichier où persister `WorldState` (colonies, snapshots de conservation).
+   * Omis, `null` ou vide : mode mémoire, sans aucune écriture disque — c'est
+   * le défaut, y compris pour tous les tests qui ne précisent pas ce champ.
+   * `index.ts` le résout depuis `WORLD_STATE_FILE`/`WORLD_PERSIST` avant
+   * d'appeler `startServer` ; ce module ne lit jamais l'environnement lui-même.
+   */
+  readonly worldStateFile?: string | null;
+  /** Délai de débounce des sauvegardes, injectable pour les tests. Défaut : `SAVE_DEBOUNCE_MS`. */
+  readonly saveDebounceMs?: number;
 }
 
 export interface RunningServer {
@@ -60,6 +71,8 @@ export interface RunningServer {
   readonly roomCount: number;
   /** État du monde : colonies et derniers snapshots connus. */
   readonly world: WorldState;
+  /** État de la persistance disque : le même contenu que `GET /health`. */
+  readonly persistence: { readonly enabled: boolean; readonly file: string | null; readonly lastSavedAt: number | null };
   room(name: string): Room | undefined;
   close(): Promise<void>;
 }
@@ -133,7 +146,38 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const worldSeed = options.worldSeed ?? DEFAULT_WORLD_SEED;
   const worldSubdivisions = options.worldSubdivisions ?? DEFAULT_WORLD_SUBDIVISIONS;
   const globe = sharedWorld(worldSubdivisions, worldSeed);
-  const worldState = new WorldState({ world: globe });
+
+  // Persistance disque : désactivée par défaut (mode mémoire), y compris pour
+  // tous les tests qui ne précisent pas `worldStateFile`. Voir `persistence.ts`.
+  const worldStateFile = options.worldStateFile ?? null;
+  const persistenceEnabled = worldStateFile !== null && worldStateFile !== "";
+  const store = persistenceEnabled
+    ? new WorldStore({
+        file: worldStateFile,
+        worldSeed,
+        subdivisions: worldSubdivisions,
+        debounceMs: options.saveDebounceMs,
+      })
+    : null;
+
+  let worldState: WorldState;
+  if (store !== null) {
+    const loaded = await store.load(globe);
+    if (loaded.kind === "loaded") {
+      worldState = loaded.state;
+      log(
+        `[monde] état rechargé depuis ${worldStateFile} — ${worldState.settlementCount} colonie(s), ` +
+          `${worldState.snapshotCount} snapshot(s) conservé(s)`,
+      );
+    } else {
+      worldState = new WorldState({ world: globe });
+      if (loaded.kind === "ignored") {
+        log(`[monde] fichier d'état ignoré (${loaded.reason}) — le monde repart à vide, voir le détail sur stderr`);
+      }
+    }
+  } else {
+    worldState = new WorldState({ world: globe });
+  }
   const generatedAt = Date.now();
 
   /**
@@ -204,6 +248,11 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
           subdivisions: worldState.subdivisions,
           tiles: worldState.tileCount,
           settlements: worldState.settlementCount,
+        },
+        persistence: {
+          enabled: persistenceEnabled,
+          file: persistenceEnabled ? worldStateFile : null,
+          lastSavedAt: store?.lastSavedAt ?? null,
         },
       });
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -327,6 +376,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
           return;
         }
         const settlement = result.settlement;
+        store?.scheduleSave(worldState);
         send(
           socket,
           encodeMessage({
@@ -368,6 +418,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
           worldFail(socket, result.code, abandonErrorText(result.code, message.tile));
           return;
         }
+        store?.scheduleSave(worldState);
         log(`[monde] ${name} abandonne la case ${message.tile}`);
         broadcastSettlements();
         return;
@@ -410,7 +461,9 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
           }
         : {}),
       onSnapshot: (report) => {
-        worldState.saveSnapshot(name, report);
+        if (worldState.saveSnapshot(name, report)) {
+          store?.scheduleSave(worldState);
+        }
       },
     });
   };
@@ -531,6 +584,13 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     port,
     url: `ws://127.0.0.1:${port}`,
     world: worldState,
+    get persistence() {
+      return {
+        enabled: persistenceEnabled,
+        file: persistenceEnabled ? worldStateFile : null,
+        lastSavedAt: store?.lastSavedAt ?? null,
+      };
+    },
     get roomCount(): number {
       return rooms.size;
     },
@@ -550,6 +610,11 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       connections.clear();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+      // Dernière sauvegarde avant de quitter : un arrêt propre (SIGINT/SIGTERM,
+      // voir index.ts) ne doit pas perdre les changements les plus récents.
+      if (store !== null) {
+        await store.save(worldState);
+      }
     },
   };
 }

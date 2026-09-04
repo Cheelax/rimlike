@@ -7,8 +7,16 @@
  * | `HOST` | toutes | interface d'écoute |
  * | `WORLD_SEED` | 1 | graine du globe |
  * | `WORLD_SUBDIVISIONS` | 4 | subdivisions (4 = 2 562 cases, 5 = 10 242 en production) |
+ * | `WORLD_STATE_FILE` | `apps/server/data/world-state.json` | fichier de persistance du monde ; vide désactive |
+ * | `WORLD_PERSIST` | (non défini) | `0` désactive la persistance, quel que soit `WORLD_STATE_FILE` |
+ *
+ * `startServer` lui-même ne lit jamais l'environnement (voir `server.ts`) :
+ * c'est ce module qui le fait, une fois, et lui passe des options explicites —
+ * ce qui inclut la résolution de la persistance disque via
+ * `resolveWorldStateFile` (`persistence.ts`).
  */
 
+import { resolveWorldStateFile } from "./persistence.js";
 import { startServer } from "./server.js";
 import { DEFAULT_WORLD_SEED, DEFAULT_WORLD_SUBDIVISIONS } from "./world.js";
 
@@ -30,14 +38,22 @@ const port = readInteger("PORT", 8787, 0, 65535);
 const worldSeed = readInteger("WORLD_SEED", DEFAULT_WORLD_SEED, 0, Number.MAX_SAFE_INTEGER);
 const worldSubdivisions = readInteger("WORLD_SUBDIVISIONS", DEFAULT_WORLD_SUBDIVISIONS, 0, 6);
 
+const worldStateFile = resolveWorldStateFile(process.env);
+
 const server = await startServer({
   port,
   worldSeed,
   worldSubdivisions,
+  worldStateFile,
   ...(process.env.HOST !== undefined ? { host: process.env.HOST } : {}),
 });
 console.log(
   `[serveur] écoute sur le port ${server.port} — santé : http://127.0.0.1:${server.port}/health, globe : http://127.0.0.1:${server.port}/world`,
+);
+console.log(
+  worldStateFile === null
+    ? "[serveur] persistance du monde désactivée (mode mémoire)"
+    : `[serveur] persistance du monde : ${worldStateFile}`,
 );
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

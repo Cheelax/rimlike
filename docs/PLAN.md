@@ -259,9 +259,10 @@ avec ETag sur `GET /world` ; connexion monde (`world_join`), colonies par case (
 `visit`, `abandon`, une salle `tile-N` par case avec seed dérivé du monde), diffusion des
 colonies et des joueurs ; snapshot de conservation demandé à l'hôte toutes les 30 s et
 réutilisé pour rouvrir la salle quand quelqu'un revient (le temps ne s'écoule pas
-entre-temps : avance rapide à faire). 30 tests serveur de plus. Reste : rendu du globe et
-choix de la case côté client, caravanes, avance rapide, persistance disque, comptes. Livré
-par deux sous-agents Opus.
+entre-temps : avance rapide à faire). 30 tests serveur de plus. Persistance disque livrée le
+2026-09-05 (Sonnet) : état du monde et snapshots dans un JSON écrit atomiquement et
+débouncé, rechargé au démarrage, mis en quarantaine si le globe a changé. Reste : rendu du
+globe et choix de la case côté client (en cours), caravanes, avance rapide, comptes.
 - Globe hexagonal, rendu du globe, biomes, choix de case de départ.
 - Serveur autoritaire persistant : cases, propriétaires, horloge globale.
 - Cartes gelées + avance rapide abstraite.

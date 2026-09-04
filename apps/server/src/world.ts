@@ -20,10 +20,11 @@
  *   assumée de la v1, à remplacer par de vrais comptes avant toute mise en
  *   ligne publique.
  *
- * **Rien n'est écrit sur disque dans cette tranche.** `toJSON` / `fromJSON`
- * existent pour que la persistance soit un branchement et non une réécriture :
- * l'état complet (colonies + dernier snapshot de chaque salle) est un objet
- * JSON. Un redémarrage du serveur perd donc tout, y compris les colonies.
+ * `toJSON` / `fromJSON` font l'aller-retour complet (colonies + dernier
+ * snapshot de chaque salle) en un objet JSON : c'est ce que `WorldStore`
+ * (`persistence.ts`) écrit et relit sur disque, pour qu'un redémarrage du
+ * serveur ne perde ni les colonies ni leurs snapshots conservés. Ce module
+ * n'y touche pas lui-même — il reste pur — voir `docs/protocol.md` §11.8.
  */
 
 import { base64ToBytes, bytesToBase64, type Settlement } from "@rimlike/protocol";
@@ -105,7 +106,7 @@ export type AbandonResult =
   | { readonly ok: true; readonly settlement: Settlement }
   | { readonly ok: false; readonly code: "bad_tile" | "not_settled" | "not_owner" };
 
-/** Forme JSON de `WorldState`, pour une persistance future. */
+/** Forme JSON de `WorldState`, telle qu'écrite sur disque par `WorldStore`. */
 export interface WorldStateJson {
   readonly seed: number;
   readonly subdivisions: number;

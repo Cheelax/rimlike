@@ -144,6 +144,8 @@ describe("GET /world", () => {
       ok: true,
       rooms: 0,
       world: { seed: DEFAULT_WORLD_SEED, subdivisions: SUBDIVISIONS, tiles: 162, settlements: 0 },
+      // Persistance non précisée à `startServer` : mode mémoire (persistence.test.ts la teste).
+      persistence: { enabled: false, file: null, lastSavedAt: null },
     });
   });
 });

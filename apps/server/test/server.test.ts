@@ -37,15 +37,18 @@ describe("santé", () => {
     // `world` décrit le globe servi : c'est le premier contrôle de cohérence
     // entre un client et un serveur (docs/protocol.md §11).
     const world = { seed: 1, subdivisions: 4, tiles: 2562, settlements: 0 };
+    // Persistance non précisée à `startServer` : mode mémoire, comme dans
+    // tous les tests qui ne le demandent pas explicitement (persistence.test.ts).
+    const persistence = { enabled: false, file: null, lastSavedAt: null };
     const response = await fetch(`http://127.0.0.1:${server.port}/health`);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, rooms: 0, world });
+    expect(await response.json()).toEqual({ ok: true, rooms: 0, world, persistence });
 
     const alice = await connect();
     alice.send({ type: "join", room: "demo", name: "alice" });
     await alice.next("welcome");
     const second = await fetch(`http://127.0.0.1:${server.port}/health`);
-    expect(await second.json()).toEqual({ ok: true, rooms: 1, world });
+    expect(await second.json()).toEqual({ ok: true, rooms: 1, world, persistence });
   });
 
   it("renvoie 404 ailleurs", async () => {
