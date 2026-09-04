@@ -29,7 +29,9 @@ les zones de stockage. Un colon affamé mange le meilleur plat disponible, un co
 va dormir dans un lit libre. La nourriture se gâte avec le temps. Après trois jours, des
 pillards attaquent régulièrement : les colons menacés se défendent seuls, et un clic droit
 sur un ennemi avec un colon sélectionné ordonne l'attaque. Un colon qui ne mange plus
-meurt en deux jours.
+meurt en deux jours. La touche J ouvre le tableau des priorités de travail par colon. Un
+colon au moral trop bas craque et erre un moment ; la pluie fait pousser les cultures, l'orage
+pèse sur le moral ; des voyageurs rejoignent la colonie de temps en temps.
 
 ## Structure
 

@@ -1,11 +1,11 @@
 //! Boucle de ressources et besoins, sur des cartes dessinées à la main.
 
 use sim::pawn::RESTED;
-use sim::pawn::{HP_MAX, HP_WOUNDED, HUNGRY, NEED_MAX, TIRED};
+use sim::pawn::{BREAK_TICKS, HP_MAX, HP_WOUNDED, HUNGRY, MOOD_BREAK, NEED_MAX, TIRED};
 use sim::testmap::map_from;
 use sim::{
     BuildKind, Command, Designation, EventKind, Faction, Feature, ItemKind, Job, Material, Sim,
-    Terrain, Zone,
+    Terrain, Weather, WorkType, Zone,
 };
 
 const DAY: u64 = sim::TICKS_PER_DAY as u64;
@@ -537,6 +537,13 @@ fn raiders(s: &Sim) -> usize {
         .count()
 }
 
+fn colonists(s: &Sim) -> usize {
+    s.pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Colony)
+        .count()
+}
+
 #[test]
 fn raid_spawns_hostiles_and_colony_defends() {
     let mut s = clearing();
@@ -650,4 +657,264 @@ fn first_raid_waits_for_grace_period() {
         run_until(&mut s, DAY, |s| has_event(s, EventKind::Raid)),
         "aucun raid après la période de grâce"
     );
+}
+
+// ----------------------------------------------------------------------
+// Confort et pilotage
+// ----------------------------------------------------------------------
+
+#[test]
+fn priorities_disable_and_reorder_work() {
+    // (a) Cuisine désactivée pour le colon 0 : les autres s'en chargent.
+    let mut s = clearing();
+    s.map_mut().set_feature(8, 3, Feature::Campfire);
+    s.spawn_item(ItemKind::Berries, 30, 3, 6);
+    let id0 = s.pawns()[0].id;
+    s.step(&[Command::SetPriority {
+        pawn: id0,
+        work: WorkType::Cook,
+        priority: 0,
+    }]);
+    let mut someone_else_cooked = false;
+    for _ in 0..DAY {
+        s.step(&[]);
+        for p in s.pawns() {
+            let cooking = matches!(p.job, Job::Cook { .. });
+            assert!(
+                !(cooking && p.id == id0),
+                "le colon 0 cuisine malgré une priorité nulle, tick {}",
+                s.tick()
+            );
+            someone_else_cooked |= cooking;
+        }
+    }
+    assert!(someone_else_cooked, "personne n'a cuisiné");
+
+    // (b) Rangement avant travail désigné, les autres colons au repos.
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Wood, 20, 6, 6);
+    let ids: Vec<u32> = s.pawns().iter().map(|p| p.id).collect();
+    let mut cmds = vec![
+        Command::Designate {
+            kind: Designation::Chop,
+            x0: 0,
+            y0: 1,
+            x1: 0,
+            y1: 1,
+        },
+        Command::SetZone {
+            zone: Zone::Stockpile,
+            x0: 8,
+            y0: 5,
+            x1: 9,
+            y1: 6,
+        },
+        Command::SetPriority {
+            pawn: ids[0],
+            work: WorkType::Haul,
+            priority: 1,
+        },
+        Command::SetPriority {
+            pawn: ids[0],
+            work: WorkType::Designated,
+            priority: 4,
+        },
+    ];
+    for &id in &ids[1..] {
+        for work in WorkType::ALL {
+            cmds.push(Command::SetPriority {
+                pawn: id,
+                work,
+                priority: 0,
+            });
+        }
+    }
+    s.step(&cmds);
+    let mut first: Option<Job> = None;
+    for _ in 0..DAY {
+        let job = s.pawns()[0].job.clone();
+        if !matches!(job, Job::Idle | Job::Move { .. }) {
+            first = Some(job);
+            break;
+        }
+        s.step(&[]);
+    }
+    assert!(
+        matches!(first, Some(Job::Haul { .. })),
+        "premier travail du colon 0 : {first:?}"
+    );
+}
+
+#[test]
+fn low_mood_triggers_break_then_relief() {
+    let mut s = clearing();
+    let id = s.pawns()[0].id;
+    let p = s.pawn_mut(id).unwrap();
+    p.hunger = 0;
+    p.last_sleep_in_bed = false;
+    assert!(
+        s.pawns()[0].mood() < MOOD_BREAK,
+        "humeur = {}",
+        s.pawns()[0].mood()
+    );
+    assert!(
+        run_until(&mut s, DAY, |s| s
+            .pawns()
+            .iter()
+            .find(|p| p.id == id)
+            .is_some_and(|p| matches!(p.job, Job::Break { .. }))),
+        "le colon désespéré n'a pas craqué"
+    );
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::ColonistBreak && e.arg == id),
+        "événements : {:?}",
+        s.events()
+    );
+    for _ in 0..u64::from(BREAK_TICKS) + 5 {
+        s.step(&[]);
+    }
+    let p = s
+        .pawns()
+        .iter()
+        .find(|p| p.id == id)
+        .expect("le colon est encore vivant");
+    assert!(
+        !matches!(p.job, Job::Break { .. }),
+        "crise sans fin : {:?}",
+        p.job
+    );
+    assert!(p.relief_ticks > 0, "le colon ne s'est pas défoulé");
+}
+
+#[test]
+fn mood_changes_work_speed() {
+    /// Un plan de sol, du bois à côté, et seul le colon 0 sait construire.
+    fn setup(happy: bool) -> Sim {
+        let mut s = clearing();
+        s.spawn_item(ItemKind::Wood, 10, 7, 6);
+        let ids: Vec<u32> = s.pawns().iter().map(|p| p.id).collect();
+        let p = s.pawn_mut(ids[0]).unwrap();
+        if happy {
+            p.hunger = 950_000;
+            p.last_meal_quality = 1;
+            p.last_sleep_in_bed = true;
+        } else {
+            p.hunger = 250_000;
+            p.last_sleep_in_bed = false;
+        }
+        let mut cmds = vec![Command::Build {
+            kind: BuildKind::Floor,
+            material: Material::Wood,
+            x0: 8,
+            y0: 6,
+            x1: 8,
+            y1: 6,
+        }];
+        for &id in &ids[1..] {
+            cmds.push(Command::SetPriority {
+                pawn: id,
+                work: WorkType::Build,
+                priority: 0,
+            });
+        }
+        s.step(&cmds);
+        s
+    }
+    fn floor_done_at(s: &mut Sim) -> u64 {
+        assert!(
+            run_until(s, 2 * DAY, |s| s.blueprints().is_empty()),
+            "sol jamais bâti : {:?}",
+            s.blueprints()
+        );
+        s.tick()
+    }
+    let mut sad = setup(false);
+    let mut happy = setup(true);
+    let sad_at = floor_done_at(&mut sad);
+    let happy_at = floor_done_at(&mut happy);
+    assert!(
+        happy_at < sad_at,
+        "heureux {happy_at} vs morose {sad_at} : l'humeur ne change rien"
+    );
+}
+
+#[test]
+fn rain_doubles_crop_growth() {
+    fn ripe_at(w: Weather) -> u64 {
+        let mut s = clearing();
+        s.force_weather(w, u64::MAX);
+        s.step(&[Command::SetZone {
+            zone: Zone::Growing,
+            x0: 5,
+            y0: 5,
+            x1: 5,
+            y1: 5,
+        }]);
+        assert!(
+            run_until(&mut s, 4 * DAY, |s| s
+                .map()
+                .features()
+                .contains(&(Feature::CropRipe as u8))),
+            "aucun plant mûr par temps {w:?}"
+        );
+        s.tick()
+    }
+    let wet = ripe_at(Weather::Rain);
+    let dry = ripe_at(Weather::Clear);
+    assert!(
+        wet * 100 <= dry * 60,
+        "pluie {wet} vs sec {dry} : la pluie n'accélère pas assez"
+    );
+}
+
+#[test]
+fn weather_eventually_changes() {
+    let mut s = Sim::new(7, 32, 32);
+    let mut seen = [false; 3];
+    for _ in 0..6 * DAY {
+        seen[s.weather() as usize] = true;
+        s.step(&[]);
+    }
+    assert!(
+        seen.iter().filter(|&&v| v).count() >= 2,
+        "météo figée : {seen:?}"
+    );
+}
+
+#[test]
+fn wanderer_joins_after_a_few_days() {
+    let mut s = clearing();
+    let mut joined_at: Option<(usize, usize)> = None;
+    // Le journal est borné : on suit les `seq` déjà vus, comme le client.
+    let mut last_seq: i64 = -1;
+    for t in 0..6 * DAY {
+        // Sans nourriture sur la carte, on les garde en vie à la main.
+        if t % 1000 == 0 {
+            let ids: Vec<u32> = s.pawns().iter().map(|p| p.id).collect();
+            for id in ids {
+                if let Some(p) = s.pawn_mut(id) {
+                    p.hunger = NEED_MAX;
+                }
+            }
+        }
+        let before = colonists(&s);
+        s.step(&[]);
+        let mut fresh = false;
+        for e in s.events() {
+            if i64::from(e.seq) > last_seq {
+                last_seq = i64::from(e.seq);
+                fresh |= e.kind == EventKind::WandererJoined;
+            }
+        }
+        if fresh && joined_at.is_none() {
+            joined_at = Some((before, colonists(&s)));
+        }
+    }
+    let Some((before, after)) = joined_at else {
+        panic!("aucun voyageur en six jours");
+    };
+    // Un raid a pu coûter un colon avant : ce qui compte est le colon gagné.
+    assert_eq!(after, before + 1, "le voyageur n'a pas rejoint la colonie");
 }

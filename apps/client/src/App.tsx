@@ -9,6 +9,9 @@ import {
   ITEM_NAMES,
   JOB_LABELS,
   MATERIAL_NAMES,
+  PRIORITY_STRIDE,
+  WEATHER_LABELS,
+  WORK_LABELS,
   ZONE,
 } from "./render/terrain";
 import { SimHandle } from "./sim/SimHandle";
@@ -24,6 +27,22 @@ const FACTION_RAIDER = 1;
 const HP_MAX = 1000;
 /** Durée d'affichage d'une notification. */
 const TOAST_MS = 6000;
+/** Contrat avec `pawn::Job::code()` : la crise de moral. */
+const JOB_BREAK = 14;
+
+/** Étiquette d'humeur, en pourcentage. */
+function moodLabel(mood: number): string {
+  if (mood >= 70) return "heureux";
+  if (mood >= 40) return "bien";
+  if (mood >= 20) return "morose";
+  return "au bord de la crise";
+}
+
+/** Priorité suivante (`dir` 1) ou précédente (`dir` -1) : 1→2→3→4→0→1. */
+function nextPriority(p: number, dir: 1 | -1): number {
+  if (dir === 1) return p === 0 ? 1 : p === 4 ? 0 : p + 1;
+  return p === 1 ? 0 : p === 0 ? 4 : p - 1;
+}
 
 type Tool =
   | "select"
@@ -69,6 +88,8 @@ interface PawnInfo {
   hunger: number;
   rest: number;
   mood: number;
+  moodLabel: string;
+  breaking: boolean;
   hp: number;
   hostile: boolean;
   job: string;
@@ -84,11 +105,14 @@ interface Stats {
   fps: number;
   speed: number;
   paused: boolean;
+  weather: number;
   stored: number[];
   blueprints: number;
   colonists: number;
   hostiles: number;
   selected: PawnInfo | null;
+  /** Copie du tampon des priorités : `[id, p0..p5]` par colon. */
+  priorities: number[];
 }
 
 const INITIAL: Stats = {
@@ -100,17 +124,21 @@ const INITIAL: Stats = {
   fps: 0,
   speed: 1,
   paused: false,
+  weather: 0,
   stored: [0, 0, 0, 0, 0, 0],
   blueprints: 0,
   colonists: 0,
   hostiles: 0,
   selected: null,
+  priorities: [],
 };
 
 interface Actions {
   save(): void;
   load(): void;
   triggerRaid(): void;
+  setPriority(pawn: number, work: number, priority: number): void;
+  currentPriority(pawn: number, work: number): number | null;
 }
 
 interface Toast {
@@ -142,6 +170,7 @@ export function App() {
   const [tool, setToolState] = useState<Tool>("select");
   const [material, setMaterialState] = useState<number>(0);
   const [stats, setStats] = useState<Stats>(INITIAL);
+  const [showWork, setShowWork] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -229,6 +258,7 @@ export function App() {
         renderer!.syncBlueprints(sim!.blueprints());
         const alpha = paused ? 1 : Math.min(acc / tickMs, 1);
         renderer!.syncPawns(curPawns, prevPawns, alpha);
+        renderer!.setWeather(sim!.weather());
         renderer!.setTimeOfDay(sim!.timeOfDay() / sim!.ticksPerDay());
         renderer!.render(dt / 1000);
       };
@@ -292,6 +322,19 @@ export function App() {
         },
         triggerRaid() {
           sim?.triggerRaid();
+        },
+        setPriority(pawn, work, priority) {
+          sim?.setPriority(pawn, work, priority);
+        },
+        currentPriority(pawn, work) {
+          // Valeur vivante du sim, pas celle affichée (rafraîchie toutes les 500 ms) :
+          // deux clics rapprochés doivent s'enchaîner correctement.
+          if (!sim) return null;
+          const pr = sim.priorities();
+          for (let o = 0; o + PRIORITY_STRIDE <= pr.length; o += PRIORITY_STRIDE) {
+            if (pr[o] === pawn) return pr[o + 1 + work];
+          }
+          return null;
         },
       };
 
@@ -416,6 +459,10 @@ export function App() {
           setMaterial(materialRef.current === 0 ? 1 : 0);
           return;
         }
+        if (k === "J") {
+          setShowWork((v) => !v);
+          return;
+        }
         switch (k) {
           case "Q":
             renderer?.rotate(-1);
@@ -491,12 +538,15 @@ export function App() {
           else colonists++;
           if (curPawns[o] !== selected) continue;
           const ck = curPawns[o + 8];
+          const mood = curPawns[o + 6] / 10;
           info = {
             id: curPawns[o],
             tile: { x: Math.floor(curPawns[o + 1] / 256), y: Math.floor(curPawns[o + 2] / 256) },
             hunger: curPawns[o + 4] / 10,
             rest: curPawns[o + 5] / 10,
-            mood: curPawns[o + 6] / 10,
+            mood,
+            moodLabel: moodLabel(mood),
+            breaking: curPawns[o + 7] === JOB_BREAK,
             hp: (curPawns[o + 11] * 100) / HP_MAX,
             hostile,
             job: JOB_LABELS[curPawns[o + 7]] ?? "?",
@@ -525,11 +575,14 @@ export function App() {
           fps: Math.round(framesInWindow / dt),
           speed,
           paused,
+          weather: sim.weather(),
           stored: Array.from(sim.storedTotals()),
           blueprints: sim.blueprints().length / BLUEPRINT_STRIDE,
           colonists,
           hostiles,
           selected: info,
+          // Relu dans le tampon du sim : jamais une copie qui dériverait.
+          priorities: Array.from(sim.priorities()),
         });
         ticksInWindow = 0;
         framesInWindow = 0;
@@ -553,12 +606,20 @@ export function App() {
   if (error) return <div className="error">{error}</div>;
 
   const sel = stats.selected;
+  const workRows: { id: number; prio: number[] }[] = [];
+  for (let o = 0; o + PRIORITY_STRIDE <= stats.priorities.length; o += PRIORITY_STRIDE) {
+    workRows.push({ id: stats.priorities[o], prio: stats.priorities.slice(o + 1, o + PRIORITY_STRIDE) });
+  }
+  const cyclePriority = (pawn: number, work: number, shown: number, dir: 1 | -1) => {
+    const current = actionsRef.current?.currentPriority(pawn, work) ?? shown;
+    actionsRef.current?.setPriority(pawn, work, nextPriority(current, dir));
+  };
   return (
     <>
       <canvas ref={canvasRef} className="scene" />
       <div className="hud">
         <div>
-          jour <b>{stats.day}</b> · <b>{stats.hour}</b> · tick {stats.tick}
+          jour <b>{stats.day}</b> · <b>{stats.hour}</b> · {WEATHER_LABELS[stats.weather] ?? "?"} · tick {stats.tick}
           {stats.paused ? <b> · PAUSE</b> : ` · x${stats.speed}`}
         </div>
         <div>
@@ -596,6 +657,10 @@ export function App() {
           <Bar label="Faim" value={sel.hunger} />
           <Bar label="Repos" value={sel.rest} />
           <Bar label="Humeur" value={sel.mood} />
+          <div className="panel-mood">
+            {sel.moodLabel}
+            {sel.breaking ? <b> · craque !</b> : ""}
+          </div>
           <div className="help">clic droit : y aller, ou attaquer un ennemi</div>
         </div>
       )}
@@ -620,6 +685,13 @@ export function App() {
           {MATERIAL_NAMES[material]} <span className="key">T</span>
         </button>
         <span className="sep" />
+        <button
+          className={showWork ? "active" : ""}
+          onClick={() => setShowWork((v) => !v)}
+          title="Touche J : priorités de travail"
+        >
+          Travail <span className="key">J</span>
+        </button>
         <button onClick={() => actionsRef.current?.save()}>Sauver</button>
         <button onClick={() => actionsRef.current?.load()}>Charger</button>
         {import.meta.env.DEV && (
@@ -640,6 +712,45 @@ export function App() {
                   ? `Tracez un rectangle pour poser des plans de ${TOOLS.find((t) => t.id === tool)?.label.toLowerCase()} en ${WOOD_ONLY.has(tool) ? "bois" : MATERIAL_NAMES[material]}`
                   : "Tracez un rectangle sur les éléments à traiter"}{" "}
           · clic droit ou Échap pour revenir à la sélection
+        </div>
+      )}
+      {showWork && (
+        // Frère du canvas : ses écouteurs souris ne voient pas ces clics.
+        <div className="work-panel" onContextMenu={(e) => e.preventDefault()}>
+          <div className="panel-title">Travail</div>
+          <table className="work-table">
+            <thead>
+              <tr>
+                <th />
+                {WORK_LABELS.map((label) => (
+                  <th key={label}>{label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {workRows.map((row) => (
+                <tr key={row.id}>
+                  <th>Colon {row.id}</th>
+                  {row.prio.map((p, w) => (
+                    <td key={w}>
+                      <button
+                        className={`work-cell p${p}`}
+                        onClick={() => cyclePriority(row.id, w, p, 1)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          cyclePriority(row.id, w, p, -1);
+                        }}
+                        title={`${WORK_LABELS[w]} · clic : priorité suivante, clic droit : précédente`}
+                      >
+                        {p === 0 ? "—" : p}
+                      </button>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="help">1 = urgent, 4 = quand il n'y a rien d'autre, — = jamais</div>
         </div>
       )}
       {toasts.length > 0 && (

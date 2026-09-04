@@ -64,6 +64,7 @@ impl Sim {
         }
         self.pawns[i].attack_cooldown = self.pawns[i].attack_cooldown.saturating_sub(1);
         self.pawns[i].grief_ticks = self.pawns[i].grief_ticks.saturating_sub(1);
+        self.pawns[i].relief_ticks = self.pawns[i].relief_ticks.saturating_sub(1);
     }
 
     // ------------------------------------------------------------------
@@ -76,14 +77,84 @@ impl Sim {
         self.next_raid_at = grace + u64::from(self.rng.below(TICKS_PER_DAY / 2));
     }
 
-    /// Déclenche les raids à l'heure dite et programme le suivant.
+    /// Déclenche les événements à l'heure dite et programme les suivants.
     pub(crate) fn tick_storyteller(&mut self) {
+        if self.tick >= self.next_wanderer_at {
+            self.spawn_wanderer();
+            let three_days = u64::from(TICKS_PER_DAY) * 3;
+            self.next_wanderer_at =
+                self.tick + three_days + u64::from(self.rng.below(TICKS_PER_DAY * 2));
+        }
         if self.tick < self.next_raid_at {
             return;
         }
         self.spawn_raid();
         let two_days = u64::from(TICKS_PER_DAY) * 2;
         self.next_raid_at = self.tick + two_days + u64::from(self.rng.below(TICKS_PER_DAY * 2));
+    }
+
+    /// Case de bord d'où la colonie est vraiment atteignable : sinon un
+    /// arrivant resterait planté derrière un mur ou de l'eau.
+    fn find_entry_tile(&mut self) -> Option<(u32, u32)> {
+        let colonists = self.living_tiles(Faction::Colony);
+        if colonists.is_empty() {
+            return None;
+        }
+        let edges = self.edge_tiles();
+        if edges.is_empty() {
+            return None;
+        }
+        for _ in 0..ENTRY_DRAWS {
+            let e = edges[self.rng.below(edges.len() as u32) as usize];
+            if self.can_reach_any(e, &colonists) {
+                return Some(e);
+            }
+        }
+        None
+    }
+
+    /// Un colon de passage s'installe. Renvoie vrai s'il a trouvé sa place.
+    pub fn spawn_wanderer(&mut self) -> bool {
+        if self
+            .pawns
+            .iter()
+            .all(|p| !p.is_alive() || p.faction != Faction::Colony)
+        {
+            return false;
+        }
+        let Some(entry) = self.find_entry_tile() else {
+            return false;
+        };
+        let mut r: i32 = 0;
+        while r < 8 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs() != r && dy.abs() != r {
+                        continue;
+                    }
+                    let x = entry.0 as i32 + dx;
+                    let y = entry.1 as i32 + dy;
+                    if !self.map.in_bounds(x, y) {
+                        continue;
+                    }
+                    let tile = (x as u32, y as u32);
+                    if !self.map.passable(tile.0, tile.1)
+                        || self.pawns.iter().any(|p| p.tile() == tile)
+                    {
+                        continue;
+                    }
+                    // `Pawn::at_tile` donne déjà la colonie et les priorités par défaut.
+                    let id = self.spawn_pawn(tile.0, tile.1);
+                    let k = self.pawns.len() - 1;
+                    self.pawns[k].hunger = 600_000;
+                    self.pawns[k].rest = 700_000;
+                    self.push_event(EventKind::WandererJoined, id);
+                    return true;
+                }
+            }
+            r += 1;
+        }
+        false
     }
 
     /// Fait entrer un groupe de pillards par un bord de la carte depuis lequel
@@ -94,21 +165,7 @@ impl Sim {
             return 0;
         }
         let count = (1 + colonists.len() as u32 / 2).min(MAX_RAIDERS);
-        let edges = self.edge_tiles();
-        if edges.is_empty() {
-            return 0;
-        }
-        // Une entrée d'où l'on peut vraiment rejoindre un colon : sinon le raid
-        // resterait planté derrière un mur ou de l'eau.
-        let mut entry = None;
-        for _ in 0..ENTRY_DRAWS {
-            let e = edges[self.rng.below(edges.len() as u32) as usize];
-            if self.can_reach_any(e, &colonists) {
-                entry = Some(e);
-                break;
-            }
-        }
-        let Some(entry) = entry else {
+        let Some(entry) = self.find_entry_tile() else {
             return 0;
         };
         let mut spawned = 0;

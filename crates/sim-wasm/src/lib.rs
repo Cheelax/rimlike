@@ -1,7 +1,7 @@
 //! API minimale exposée au navigateur. Tout ce qui est ici doit rester
 //! trivial : la logique vit dans `sim`, testée en natif.
 
-use sim::{BuildKind, Designation, ItemKind, Job, Material, Zone};
+use sim::{BuildKind, Designation, Faction, ItemKind, Job, Material, WorkType, Zone};
 use wasm_bindgen::prelude::*;
 
 /// Entiers par pawn dans le tampon de rendu :
@@ -14,6 +14,9 @@ pub const ITEM_STRIDE: usize = 5;
 pub const BLUEPRINT_STRIDE: usize = 8;
 /// Entiers par événement : seq, tick, genre, argument.
 pub const EVENT_STRIDE: usize = 4;
+/// Entiers par colon dans le tampon des priorités : id, puis une priorité par
+/// type de travail (`sim::WORK_TYPES`).
+pub const PRIORITY_STRIDE: usize = 1 + sim::WORK_TYPES;
 
 const FLAG_MOVING: i32 = 1;
 const FLAG_SLEEPING: i32 = 2;
@@ -29,6 +32,7 @@ pub struct WasmSim {
     item_buffer: Vec<i32>,
     blueprint_buffer: Vec<i32>,
     event_buffer: Vec<i32>,
+    priority_buffer: Vec<i32>,
 }
 
 #[wasm_bindgen]
@@ -102,6 +106,16 @@ impl WasmSim {
         self.pending.push(sim::Command::Attack { pawn, target });
     }
 
+    /// Règle la priorité d'un travail pour un colon. `work` suit
+    /// `sim::WorkType`, `priority` va de 1 (haute) à 4 (basse), 0 désactive.
+    pub fn set_priority(&mut self, pawn: u32, work: u8, priority: u8) {
+        self.pending.push(sim::Command::SetPriority {
+            pawn,
+            work: WorkType::from_u8(work),
+            priority,
+        });
+    }
+
     /// Déclenche un raid tout de suite (outil de dev).
     pub fn trigger_raid(&mut self) {
         self.pending.push(sim::Command::TriggerRaid);
@@ -119,6 +133,11 @@ impl WasmSim {
 
     pub fn time_of_day(&self) -> u32 {
         self.inner.time_of_day()
+    }
+
+    /// Météo courante, suivant `sim::Weather`.
+    pub fn weather(&self) -> u8 {
+        self.inner.weather() as u8
     }
 
     /// Hash d'état en hexadécimal, pour l'affichage et la détection de désync.
@@ -228,6 +247,18 @@ impl WasmSim {
     pub fn events_len(&self) -> usize {
         self.event_buffer.len()
     }
+
+    pub fn priority_stride(&self) -> usize {
+        PRIORITY_STRIDE
+    }
+
+    pub fn priorities_ptr(&self) -> *const i32 {
+        self.priority_buffer.as_ptr()
+    }
+
+    pub fn priorities_len(&self) -> usize {
+        self.priority_buffer.len()
+    }
 }
 
 impl WasmSim {
@@ -239,6 +270,7 @@ impl WasmSim {
             item_buffer: Vec::new(),
             blueprint_buffer: Vec::new(),
             event_buffer: Vec::new(),
+            priority_buffer: Vec::new(),
         };
         s.refresh_buffers();
         s
@@ -302,8 +334,19 @@ impl WasmSim {
                 b.y as i32,
                 b.delivered as i32,
                 b.needed as i32,
-                b.progress as i32,
+                // Le sim compte les avancements en centièmes de tick.
+                (b.progress / 100) as i32,
             ]);
+        }
+        self.priority_buffer.clear();
+        for p in self.inner.pawns() {
+            if p.faction != Faction::Colony {
+                continue;
+            }
+            self.priority_buffer.push(p.id as i32);
+            for &prio in &p.priorities {
+                self.priority_buffer.push(i32::from(prio));
+            }
         }
         self.event_buffer.clear();
         for e in self.inner.events() {

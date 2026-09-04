@@ -5,6 +5,7 @@ use crate::fixed::{self, FX_HALF, Fx};
 use crate::items::ItemKind;
 use crate::map::{Designation, Map};
 use crate::path::Tile;
+use crate::work::WORK_TYPES;
 
 /// Vitesse nominale : 1/256 de case par tick. 18 ≈ 4,2 cases/s à 60 ticks/s.
 pub const BASE_SPEED: Fx = 18;
@@ -21,6 +22,17 @@ pub const HUNGRY: u32 = 300_000;
 pub const STARVING: u32 = 100_000;
 pub const TIRED: u32 = 250_000;
 pub const RESTED: u32 = 950_000;
+
+/// En dessous de cette humeur, un colon peut craquer et tout lâcher.
+pub const MOOD_BREAK: u32 = 200_000;
+/// En dessous : le colon traîne des pieds, il travaille moins vite.
+pub const MOOD_SAD: u32 = 400_000;
+/// Au-dessus : le colon est heureux, il travaille plus vite.
+pub const MOOD_HAPPY: u32 = 700_000;
+/// Durée d'une crise : un quart de journée à errer sans rien faire.
+pub const BREAK_TICKS: u32 = TICKS_PER_DAY / 4;
+/// Après s'être défoulé, le colon garde un bonus d'humeur une journée.
+pub const RELIEF_TICKS: u32 = TICKS_PER_DAY;
 
 /// Points de vie d'un pawn en pleine forme.
 pub const HP_MAX: u32 = 1000;
@@ -94,6 +106,10 @@ pub enum Job {
     },
     /// Quitte la carte par le bord le plus proche.
     Flee,
+    /// Crise de moral : le colon lâche tout et erre jusqu'à `until`.
+    Break {
+        until: u64,
+    },
 }
 
 impl Job {
@@ -121,6 +137,7 @@ impl Job {
             Job::Cook { .. } => 11,
             Job::Attack { .. } => 12,
             Job::Flee => 13,
+            Job::Break { .. } => 14,
         }
     }
 }
@@ -149,6 +166,14 @@ pub struct Pawn {
     pub grief_ticks: u32,
     /// Le pawn a quitté la carte : il est retiré au prochain nettoyage.
     pub gone: bool,
+    /// Priorité de chaque type de travail, indexée par `WorkType` :
+    /// 1 la plus haute, 4 la plus basse, 0 désactivé.
+    pub priorities: [u8; WORK_TYPES],
+    /// Ticks restants du bonus d'humeur qui suit une crise.
+    pub relief_ticks: u32,
+    /// Le colon est dehors sous l'orage (recopié du sim à chaque tick, parce
+    /// que `mood()` ne voit que le pawn).
+    pub outdoor_storm: bool,
 }
 
 impl Pawn {
@@ -170,6 +195,9 @@ impl Pawn {
             attack_cooldown: 0,
             grief_ticks: 0,
             gone: false,
+            priorities: [3; WORK_TYPES],
+            relief_ticks: 0,
+            outdoor_storm: false,
         }
     }
 
@@ -229,7 +257,27 @@ impl Pawn {
         if self.hp < HP_WOUNDED {
             m -= 100_000;
         }
+        // Le colon s'est défoulé : ça va mieux pendant un moment.
+        if self.relief_ticks > 0 {
+            m += 80_000;
+        }
+        // Tout le monde est dehors sous l'orage : les toits viendront plus tard.
+        if self.outdoor_storm {
+            m -= 50_000;
+        }
         m.clamp(0, i64::from(NEED_MAX)) as u32
+    }
+
+    /// Vitesse de travail en centièmes : l'humeur décide de l'ardeur.
+    pub fn work_step(&self) -> u32 {
+        let mood = self.mood();
+        if mood >= MOOD_HAPPY {
+            120
+        } else if mood < MOOD_SAD {
+            80
+        } else {
+            100
+        }
     }
 
     /// Vitesse en pourcentage de la nominale. Les malus de blessure ne se

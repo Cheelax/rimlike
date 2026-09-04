@@ -22,6 +22,20 @@ const MAX_ITEMS = 2048;
 const ITEM_CORPSE = 5;
 const MAX_BLUEPRINTS = 2048;
 
+/** Contrat avec `sim::Weather`. */
+const WEATHER = { Clear: 0, Rain: 1, Storm: 2 } as const;
+/** Gouttes de pluie instanciées. Purement décoratif : `Math.random` est permis ici. */
+const RAIN_DROPS = 600;
+/** Demi-largeur de la zone de pluie autour du centre de la vue, en cases. */
+const RAIN_SPREAD = 30;
+const RAIN_HEIGHT = 12;
+const RAIN_SPEED = 14;
+const STORM_RAIN_SPEED = 20;
+/** Frames pendant lesquelles un éclair sur-éclaire la scène. */
+const FLASH_FRAMES = 2;
+/** Teinte vers laquelle le fond tire par mauvais temps. */
+const OVERCAST = new THREE.Color(0x2a3038);
+
 const PAWN_COLORS = [0xd94f4f, 0x4f8fd9, 0xe0b040, 0x8f4fd9, 0x3fb08f, 0xd97f2f];
 const SKIN = 0xf1c9a5;
 /** Contrat avec `pawn::Faction` et `pawn::HP_MAX`. */
@@ -75,6 +89,8 @@ export class Renderer {
   private readonly pawns = new Map<number, PawnView>();
   private readonly items: THREE.InstancedMesh;
   private readonly blueprints: THREE.InstancedMesh;
+  private readonly rain: THREE.InstancedMesh;
+  private readonly rainPos = new Float32Array(RAIN_DROPS * 3);
   private mapMeshes: THREE.Object3D[] = [];
   private overlayMeshes: THREE.Object3D[] = [];
   private mapW = 0;
@@ -84,6 +100,10 @@ export class Renderer {
   private azimuth = 0;
   private targetAzimuth = 0;
   private clock = 0;
+  private weather: number = WEATHER.Clear;
+  /** Frames d'éclair restantes, et délai avant le suivant en secondes. */
+  private flashFrames = 0;
+  private nextFlash = 0;
   private readonly onResize = () => this.resize();
 
   constructor(private readonly canvas: HTMLCanvasElement) {
@@ -145,6 +165,18 @@ export class Renderer {
     );
     this.blueprints.count = 0;
     this.scene.add(this.blueprints);
+
+    this.rain = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.02, 0.5, 0.02),
+      new THREE.MeshBasicMaterial({ color: 0xa8c8ff, transparent: true, opacity: 0.5, depthWrite: false }),
+      RAIN_DROPS,
+    );
+    this.rain.castShadow = false;
+    this.rain.receiveShadow = false;
+    this.rain.frustumCulled = false;
+    this.rain.visible = false;
+    this.scene.add(this.rain);
+    this.seedRain();
 
     window.addEventListener("resize", this.onResize);
     this.resize();
@@ -444,6 +476,64 @@ export class Renderer {
     if (this.blueprints.instanceColor) this.blueprints.instanceColor.needsUpdate = true;
   }
 
+  /** Météo courante (`sim::Weather`) : pilote la pluie, les éclairs et la lumière. */
+  setWeather(kind: number): void {
+    if (kind === this.weather) return;
+    // Le premier éclair attend son tour comme les suivants.
+    if (kind === WEATHER.Storm) this.nextFlash = 4 + Math.random() * 5;
+    this.weather = kind;
+  }
+
+  /** Répartit les gouttes autour du centre de la vue, à des hauteurs variées. */
+  private seedRain(): void {
+    for (let i = 0; i < RAIN_DROPS; i++) this.respawnDrop(i, Math.random() * RAIN_HEIGHT);
+  }
+
+  private respawnDrop(i: number, y: number): void {
+    const t = this.controls.target;
+    this.rainPos[i * 3] = t.x + (Math.random() * 2 - 1) * RAIN_SPREAD;
+    this.rainPos[i * 3 + 1] = y;
+    this.rainPos[i * 3 + 2] = t.z + (Math.random() * 2 - 1) * RAIN_SPREAD;
+  }
+
+  /**
+   * Fait tomber la pluie et lâche un éclair de temps en temps sous l'orage.
+   * Purement décoratif : l'aléa du rendu n'entre jamais dans le sim.
+   */
+  private updateWeather(dt: number): void {
+    const wet = this.weather !== WEATHER.Clear;
+    this.rain.visible = wet;
+    if (!wet) {
+      this.flashFrames = 0;
+      this.nextFlash = 0;
+      return;
+    }
+    const speed = this.weather === WEATHER.Storm ? STORM_RAIN_SPEED : RAIN_SPEED;
+    const mat = new THREE.Matrix4();
+    for (let i = 0; i < RAIN_DROPS; i++) {
+      let y = this.rainPos[i * 3 + 1] - speed * dt;
+      if (y < 0) {
+        // La goutte repart en haut, recentrée sur la vue courante.
+        this.respawnDrop(i, RAIN_HEIGHT);
+        y = RAIN_HEIGHT;
+      } else {
+        this.rainPos[i * 3 + 1] = y;
+      }
+      this.rain.setMatrixAt(i, mat.makeTranslation(this.rainPos[i * 3], y, this.rainPos[i * 3 + 2]));
+    }
+    this.rain.instanceMatrix.needsUpdate = true;
+    if (this.weather !== WEATHER.Storm) return;
+    this.nextFlash -= dt;
+    if (this.nextFlash <= 0) {
+      this.flashFrames = FLASH_FRAMES;
+      this.nextFlash = 4 + Math.random() * 5;
+    }
+    if (this.flashFrames > 0) {
+      this.flashFrames--;
+      this.sun.intensity *= 6;
+    }
+  }
+
   /** Place la caméra sur la carte et dimensionne la caméra d'ombre. */
   private frame(): void {
     const cx = this.mapW / 2;
@@ -686,6 +776,14 @@ export class Renderer {
     this.sky.color.setHex(0x55679a).lerp(new THREE.Color(0xbfd4ff), day);
     this.sky.groundColor.setHex(0x2b3140).lerp(new THREE.Color(0x6b5a3a), day);
     (this.scene.background as THREE.Color).setHex(0x06080e).lerp(new THREE.Color(0x0b0f14), day);
+
+    // Le mauvais temps assombrit et grise tout, l'orage plus encore.
+    if (this.weather !== WEATHER.Clear) {
+      const storm = this.weather === WEATHER.Storm;
+      this.sun.intensity *= storm ? 0.4 : 0.6;
+      this.sky.intensity *= storm ? 0.6 : 0.75;
+      (this.scene.background as THREE.Color).lerp(OVERCAST, storm ? 0.5 : 0.35);
+    }
   }
 
   resize(): void {
@@ -703,6 +801,7 @@ export class Renderer {
 
   render(dtSeconds: number): void {
     this.clock += dtSeconds;
+    this.updateWeather(dtSeconds);
     if (Math.abs(this.targetAzimuth - this.azimuth) > 1e-4) {
       this.azimuth += (this.targetAzimuth - this.azimuth) * 0.18;
       if (Math.abs(this.targetAzimuth - this.azimuth) < 1e-3) this.azimuth = this.targetAzimuth;

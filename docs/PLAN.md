@@ -206,10 +206,20 @@ soins actifs : viendront avec la santé détaillée. Livré par un sous-agent Op
 consigne cadrée, vérifié par l'orchestrateur (42 tests, raid joué dans le navigateur :
 deux pillards tués, un colon perdu).
 
-**2e. Confort et pilotage.** Tableau de priorités de travail par colon, effets concrets
-de l'humeur (pauses, crises), météo, premiers événements aléatoires du storyteller.
+**2e. Confort et pilotage — livrée le 2026-09-05.** Tableau de priorités de travail par
+colon (six types, 1 à 4 ou désactivé, panneau « Travail » cliquable, touche J) ; humeur avec
+effets : sous 20 % un colon craque (quart de journée à errer, puis soulagement d'un jour),
+vitesse de travail ×1,2 au-dessus de 70 % et ×0,8 sous 40 % (avancements en centièmes) ;
+météo clair / pluie / orage tirée au sort par périodes d'un quart à une journée, pluie qui
+double la croissance des cultures, orage qui pèse sur l'humeur (tout le monde est dehors
+tant qu'il n'y a pas de toits) ; particules de pluie et éclairs au rendu ; un voyageur
+rejoint la colonie à partir du jour 4 puis tous les 3 à 5 jours. Livré par un sous-agent
+Opus, vérifié par l'orchestrateur (48 tests, orage et panneau vus dans le navigateur).
 
 **Jalon** : une colonie de 3 pawns survit quelques jours, on a envie d'y rejouer.
+**Atteint le 2026-09-05** : les cinq tranches sont livrées. Le jeu solo est complet dans
+ses grandes lignes ; la profondeur (santé détaillée, compétences, recherche, commerce)
+reste pour la phase 5.
 
 ### Phase 3 — Multi sur une carte (2-3 semaines) — fondations livrées le 2026-09-04
 
@@ -266,6 +276,10 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-05 : phase 2e livrée, phase 2 complète. Les avancements de travail passent en
+  centièmes de tick pour que l'humeur module la vitesse sans flottant. La météo et le
+  moral sont des états du sim (sérialisés, déterministes), leurs effets visuels restent
+  côté client et peuvent utiliser `Math.random` : le rendu ne rentre jamais dans le hash.
 - 2026-09-04 : fondations phase 3 livrées. Lockstep « le serveur n'attend personne » :
   horloge continue, bundles de 3 ticks, retardataires qui rattrapent. Les ticks vides sont
   omis des bundles. Le serveur est en TypeScript pur et ne dépend pas du sim : il ne

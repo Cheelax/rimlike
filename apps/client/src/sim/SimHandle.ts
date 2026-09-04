@@ -69,6 +69,11 @@ export class SimHandle {
     this.inner.attack(pawn, target);
   }
 
+  /** `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé. */
+  setPriority(pawn: number, work: number, priority: number): void {
+    this.inner.set_priority(pawn, work, priority);
+  }
+
   triggerRaid(): void {
     this.inner.trigger_raid();
   }
@@ -83,6 +88,11 @@ export class SimHandle {
 
   timeOfDay(): number {
     return this.inner.time_of_day();
+  }
+
+  /** Météo courante, suivant `sim::Weather`. */
+  weather(): number {
+    return this.inner.weather();
   }
 
   hash(): string {
@@ -141,6 +151,13 @@ export class SimHandle {
 
   events(): Int32Array {
     return new Int32Array(new Int32Array(this.wasm.memory.buffer, this.inner.events_ptr(), this.inner.events_len()));
+  }
+
+  /** Priorités de travail : `[id, p0..p5]` par colon. Copie. */
+  priorities(): Int32Array {
+    return new Int32Array(
+      new Int32Array(this.wasm.memory.buffer, this.inner.priorities_ptr(), this.inner.priorities_len()),
+    );
   }
 
   dispose(): void {

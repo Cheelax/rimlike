@@ -51,6 +51,14 @@ export const DESIGNATION = { None: 0, Chop: 1, Mine: 2, Harvest: 3 } as const;
 export const ITEM_NAMES = ["bois", "pierre", "baies", "légumes", "repas", "cadavres"] as const;
 export const ITEM_COLORS: readonly number[] = [0x9c6b3c, 0x8d8d8d, 0xc9304a, 0x5aa02c, 0xf0c070, 0x5c4a3a];
 
+/** Contrat avec `sim::WorkType` : index = valeur de l'enum. */
+export const WORK_LABELS = ["Construire", "Livrer", "Cuisiner", "Désignations", "Cultiver", "Ranger"] as const;
+/** Contrat avec `sim-wasm::PRIORITY_STRIDE` : [id, p0..p5] par colon. */
+export const PRIORITY_STRIDE = 7;
+
+/** Contrat avec `sim::Weather` : index = valeur de l'enum. */
+export const WEATHER_LABELS = ["Clair", "Pluie", "Orage"] as const;
+
 export const JOB_LABELS = [
   "inactif",
   "se déplace",
@@ -66,6 +74,7 @@ export const JOB_LABELS = [
   "cuisine",
   "attaque",
   "fuit",
+  "craque",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
@@ -82,6 +91,10 @@ export function eventLabel(kind: number, arg: number): string {
       return "Un pillard est mort";
     case 4:
       return "Un pillard a fui";
+    case 5:
+      return "Un voyageur rejoint la colonie";
+    case 6:
+      return "Un colon craque";
     default:
       return "";
   }

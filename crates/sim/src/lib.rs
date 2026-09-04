@@ -26,6 +26,8 @@ pub mod path;
 pub mod pawn;
 pub mod rng;
 pub mod testmap;
+pub mod weather;
+pub mod work;
 
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +38,8 @@ pub use jobs::{Regrow, Reservation};
 pub use map::{Designation, Feature, Map, Rect, Terrain, Zone};
 pub use pawn::{Faction, Job, Pawn};
 pub use rng::Rng;
+pub use weather::Weather;
+pub use work::{WORK_TYPES, WorkType};
 
 /// Ticks de simulation par seconde de jeu.
 pub const TICKS_PER_SECOND: u32 = 60;
@@ -55,6 +59,8 @@ pub enum EventKind {
     ColonistDied = 2,
     RaiderDied = 3,
     RaiderLeft = 4,
+    WandererJoined = 5,
+    ColonistBreak = 6,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -102,6 +108,13 @@ pub enum Command {
     CancelBuild { x0: i32, y0: i32, x1: i32, y1: i32 },
     /// Envoie un pawn en attaquer un autre, d'un camp différent.
     Attack { pawn: u32, target: u32 },
+    /// Règle la priorité d'un type de travail pour un colon.
+    /// `priority` : 1 la plus haute, 4 la plus basse, 0 désactivé.
+    SetPriority {
+        pawn: u32,
+        work: WorkType,
+        priority: u8,
+    },
     /// Fait entrer un raid tout de suite (débogage, tests).
     TriggerRaid,
 }
@@ -138,6 +151,11 @@ pub struct Sim {
     next_event_seq: u32,
     /// Tick du prochain raid.
     next_raid_at: u64,
+    /// Tick d'arrivée du prochain voyageur.
+    next_wanderer_at: u64,
+    weather: Weather,
+    /// Tick où la météo courante s'arrête.
+    weather_until: u64,
     /// Compteur d'ids partagé par tout ce qui a un id.
     next_id: u32,
 }
@@ -170,10 +188,16 @@ impl Sim {
             events: Vec::new(),
             next_event_seq: 0,
             next_raid_at: 0,
+            next_wanderer_at: 0,
+            weather: Weather::Clear,
+            weather_until: 0,
             next_id: 1,
         };
         sim.spawn_starting_pawns(3);
         sim.schedule_first_raid();
+        // La première journée reste claire un moment, le temps de s'installer.
+        sim.weather_until = u64::from(TICKS_PER_DAY / 2 + sim.rng.below(TICKS_PER_DAY / 2));
+        sim.next_wanderer_at = u64::from(4 * TICKS_PER_DAY + sim.rng.below(TICKS_PER_DAY));
         sim
     }
 
@@ -336,6 +360,19 @@ impl Sim {
                 self.abandon_job(i);
                 self.pawns[i].job = Job::Attack { target };
             }
+            Command::SetPriority {
+                pawn,
+                work,
+                priority,
+            } => {
+                let Some(p) = self.pawns.iter_mut().find(|p| p.id == pawn) else {
+                    return;
+                };
+                if p.faction == Faction::Raider {
+                    return;
+                }
+                p.priorities[work as usize] = priority.min(4);
+            }
             Command::TriggerRaid => {
                 self.spawn_raid();
             }
@@ -344,6 +381,7 @@ impl Sim {
 
     fn update(&mut self) {
         self.tick_regrowth();
+        self.tick_weather();
         self.tick_crops();
         self.tick_spoilage();
         self.tick_storyteller();

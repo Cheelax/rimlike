@@ -1,7 +1,7 @@
 //! Le test qui protège tout le projet : deux simulations nourries des mêmes
 //! entrées doivent produire exactement le même état.
 
-use sim::{BuildKind, Command, Designation, Material, Sim, TICKS_PER_DAY, Zone};
+use sim::{BuildKind, Command, Designation, Material, Sim, TICKS_PER_DAY, WorkType, Zone};
 
 const TICKS: u64 = 10_000;
 
@@ -80,6 +80,16 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             x1: w / 2 - 2,
             y1: h / 2 + 6,
         });
+    }
+    if t == 90 {
+        // Les priorités de travail changent l'ordre des recherches de job.
+        if let Some(p) = sim.pawns().first() {
+            cmds.push(Command::SetPriority {
+                pawn: p.id,
+                work: WorkType::Haul,
+                priority: 1,
+            });
+        }
     }
     if t == 6000 {
         // Le combat consomme du RNG : les deux sims doivent rester identiques.

@@ -2,19 +2,28 @@
 //! Toutes les recherches parcourent des `Vec` dans l'ordre des indices et
 //! départagent par distance puis coordonnées : déterministe.
 //!
-//! Ordre de priorité d'un colon libre : dormir > manger > construire > livrer
-//! des matériaux > cuisiner > travail désigné > cultiver > ranger > flâner.
+//! Ordre de priorité d'un colon libre : dormir > manger > les travaux dans
+//! l'ordre réglé par le joueur (`Pawn::priorities`) > flâner.
 
 use crate::build;
 use crate::farm::{self, Crop};
 use crate::items::{ItemKind, ItemStack, STACK_MAX};
 use crate::map::{Designation, Feature, Zone, chebyshev};
 use crate::path;
-use crate::pawn::{Faction, HUNGER_DECAY, Job, NEED_MAX, REST_DECAY, REST_RECOVERY, RESTED};
-use crate::{Sim, TICKS_PER_DAY};
+use crate::pawn::{
+    BREAK_TICKS, Faction, HUNGER_DECAY, Job, MOOD_BREAK, NEED_MAX, RELIEF_TICKS, REST_DECAY,
+    REST_RECOVERY, RESTED,
+};
+use crate::work::WorkType;
+use crate::{EventKind, Sim, TICKS_PER_DAY, Weather};
 
 /// Nombre maximal de candidats pour lesquels on tente un A* par recherche.
 const PATH_ATTEMPTS: usize = 6;
+/// Un colon en crise ne change de direction que tous ces ticks.
+const BREAK_WANDER_INTERVAL: u64 = 30;
+/// Chance par tick qu'un colon au moral à zéro craque : une fois toutes les
+/// dix secondes de jeu en moyenne.
+const BREAK_CHANCE: u32 = 600;
 
 /// Production d'un travail terminé.
 fn yield_of(kind: Designation) -> Option<(ItemKind, u32)> {
@@ -31,6 +40,7 @@ impl Sim {
         if !self.pawns[i].is_alive() {
             return;
         }
+        self.pawns[i].outdoor_storm = self.weather == Weather::Storm;
         self.tick_health(i);
         if self.pawns[i].faction == Faction::Raider {
             // Les pillards ne mangent ni ne dorment : ils viennent, ils frappent.
@@ -55,6 +65,7 @@ impl Sim {
         {
             self.abandon_job(i);
         }
+        self.break_if_desperate(i);
         match self.pawns[i].job.clone() {
             Job::Idle => self.find_job(i),
             Job::Move { .. } => {
@@ -92,6 +103,59 @@ impl Sim {
             } => self.do_cook(i, campfire, item, picked, progress),
             Job::Attack { target } => self.do_attack(i, target),
             Job::Flee => self.do_flee(i),
+            Job::Break { until } => self.do_break(i, until),
+        }
+    }
+
+    /// Un colon au bout du rouleau finit par tout lâcher. La défense
+    /// automatique reste prioritaire : elle abandonne la crise.
+    fn break_if_desperate(&mut self, i: usize) {
+        if self.pawns[i].mood() >= MOOD_BREAK
+            || matches!(
+                self.pawns[i].job,
+                Job::Break { .. }
+                    | Job::Sleep { .. }
+                    | Job::Eat { .. }
+                    | Job::Attack { .. }
+                    | Job::Move { manual: true }
+            )
+            || !self.rng.chance(1, BREAK_CHANCE)
+        {
+            return;
+        }
+        self.abandon_job(i);
+        let until = self.tick + u64::from(BREAK_TICKS);
+        self.pawns[i].job = Job::Break { until };
+        let id = self.pawns[i].id;
+        self.push_event(EventKind::ColonistBreak, id);
+    }
+
+    /// Pendant une crise, le colon erre au hasard autour de lui.
+    fn do_break(&mut self, i: usize, until: u64) {
+        if self.tick >= until {
+            self.pawns[i].path.clear();
+            self.pawns[i].job = Job::Idle;
+            self.pawns[i].relief_ticks = RELIEF_TICKS;
+            return;
+        }
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        if self.tick % BREAK_WANDER_INTERVAL != 0 || !self.rng.chance(1, 3) {
+            return;
+        }
+        let (px, py) = self.pawns[i].tile();
+        let tx = px as i32 + self.rng.range_i32(-6, 7);
+        let ty = py as i32 + self.rng.range_i32(-6, 7);
+        if !self.map.in_bounds(tx, ty) || !self.map.passable(tx as u32, ty as u32) {
+            return;
+        }
+        // Le chemin est posé, mais le job reste la crise jusqu'à son terme.
+        if let Some(path) = path::find_path(&self.map, (px, py), (tx as u32, ty as u32))
+            && !path.is_empty()
+        {
+            self.pawns[i].set_path(path);
         }
     }
 
@@ -161,16 +225,27 @@ impl Sim {
         if self.pawns[i].is_hungry() && self.try_start_eat(i) {
             return;
         }
-        if self.try_start_build(i)
-            || self.try_start_deliver(i)
-            || self.try_start_cook(i)
-            || self.try_start_work(i)
-            || self.try_start_farm(i)
-            || self.try_start_haul(i)
-        {
-            return;
+        // Priorité 1 d'abord, et à priorité égale l'ordre de `WorkType::ALL`.
+        for prio in 1..=4 {
+            for work in WorkType::ALL {
+                if self.pawns[i].priorities[work as usize] == prio && self.try_start(work, i) {
+                    return;
+                }
+            }
         }
         self.idle_wander(i);
+    }
+
+    /// Tente de démarrer un travail de la famille demandée.
+    fn try_start(&mut self, work: WorkType, i: usize) -> bool {
+        match work {
+            WorkType::Build => self.try_start_build(i),
+            WorkType::Deliver => self.try_start_deliver(i),
+            WorkType::Cook => self.try_start_cook(i),
+            WorkType::Designated => self.try_start_work(i),
+            WorkType::Farm => self.try_start_farm(i),
+            WorkType::Haul => self.try_start_haul(i),
+        }
     }
 
     /// Flâner autour de soi de temps en temps.
@@ -519,8 +594,8 @@ impl Sim {
             self.abandon_job(i);
             return;
         }
-        let progress = progress + 1;
-        if progress < kind.work_ticks() {
+        let progress = progress + self.pawns[i].work_step();
+        if progress < kind.work_ticks() * 100 {
             self.pawns[i].job = Job::Work {
                 kind,
                 x,
@@ -730,8 +805,8 @@ impl Sim {
         if kind.adjacent_only() && self.pawns.iter().any(|p| p.tile() == target) {
             return;
         }
-        self.blueprints[k].progress += 1;
-        if self.blueprints[k].progress < kind.work_ticks() {
+        self.blueprints[k].progress += self.pawns[i].work_step();
+        if self.blueprints[k].progress < kind.work_ticks() * 100 {
             return;
         }
         self.complete_blueprint(k);
@@ -894,8 +969,8 @@ impl Sim {
             self.abandon_job(i);
             return;
         }
-        let progress = progress + 1;
-        if progress < farm::COOK_TICKS {
+        let progress = progress + self.pawns[i].work_step();
+        if progress < farm::COOK_TICKS * 100 {
             self.pawns[i].job = Job::Cook {
                 campfire,
                 item,
@@ -980,11 +1055,11 @@ impl Sim {
             self.abandon_job(i);
             return;
         }
-        let progress = progress + 1;
+        let progress = progress + self.pawns[i].work_step();
         let needed = if sow {
-            farm::SOW_TICKS
+            farm::SOW_TICKS * 100
         } else {
-            farm::HARVEST_TICKS
+            farm::HARVEST_TICKS * 100
         };
         if progress < needed {
             self.pawns[i].job = Job::Farm {
@@ -1009,11 +1084,13 @@ impl Sim {
     }
 
     pub(crate) fn tick_crops(&mut self) {
+        // Sous la pluie, les plants poussent deux fois plus vite.
+        let step = if self.weather.is_wet() { 2 } else { 1 };
         for k in 0..self.crops.len() {
             if self.crops[k].growth >= farm::GROW_TICKS {
                 continue;
             }
-            self.crops[k].growth += 1;
+            self.crops[k].growth = (self.crops[k].growth + step).min(farm::GROW_TICKS);
             if self.crops[k].growth == farm::GROW_TICKS {
                 let (x, y) = (self.crops[k].x, self.crops[k].y);
                 if self.map.feature(x, y) == Feature::Crop {

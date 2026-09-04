@@ -84,12 +84,15 @@ Les valeurs numériques des enums sont un contrat, à modifier des deux côtés 
 | `items::ItemKind` | `terrain.ts` (`ITEM_NAMES`, `ITEM_COLORS`) |
 | `build::BuildKind`, `Material` | `terrain.ts` (`BUILD_KIND`, `MATERIAL`, `WALL_COLORS`, `DOOR_COLORS`) |
 | `pawn::Faction` (0 colonie, 1 pillard), `EventKind` | `Renderer.ts`, `App.tsx` (index 10 du tampon pawn), `terrain.ts` (`eventLabel`) |
+| `work::WorkType` (6 types), `weather::Weather` (0 clair, 1 pluie, 2 orage) | `terrain.ts` (`WORK_LABELS`, `WEATHER_LABELS`), `Renderer.ts` (`setWeather`) |
 | `pawn::Job::code()` | `terrain.ts` (`JOB_LABELS`) |
-| `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |
+| `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, `PRIORITY_STRIDE` = 7, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |
 
 Les vues mémoire (`tiles`, `features`, `zones`, `designations`) sont en zéro-copie sur la
 mémoire WASM : à recréer après chaque appel au sim, jamais conservées. `pawns()`,
-`items()`, `blueprints()` et `events()` renvoient des copies. Le client rebâtit ses meshes quand `map_version` ou
+`items()`, `blueprints()`, `events()` et `priorities()` renvoient des copies. Les avancements
+de travail sont en centièmes de tick dans le sim (l'humeur module la vitesse) ; le tampon des
+chantiers les émet divisés par 100. Le client rebâtit ses meshes quand `map_version` ou
 `overlay_version` change, pas à chaque frame.
 
 ## Conventions côté client
