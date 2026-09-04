@@ -1,11 +1,13 @@
 //! Boucle de ressources et besoins, sur des cartes dessinées à la main.
 
+use sim::combat::HEAL_INTERVAL;
+use sim::health::{BLEED_TICKS, BLOOD_MAX, DOWNED_BLOOD};
 use sim::pawn::RESTED;
 use sim::pawn::{BREAK_TICKS, HP_MAX, HP_WOUNDED, HUNGRY, MOOD_BREAK, NEED_MAX, TIRED};
 use sim::testmap::map_from;
 use sim::{
-    BuildKind, Command, Designation, EventKind, Faction, Feature, ItemKind, Job, Material, Sim,
-    Terrain, Weather, WorkType, Zone,
+    BodyPart, BuildKind, Command, Designation, EventKind, Faction, Feature, ItemKind, Job,
+    Material, Pawn, Sim, Terrain, Weather, WorkType, Zone,
 };
 
 const DAY: u64 = sim::TICKS_PER_DAY as u64;
@@ -34,6 +36,28 @@ fn clearing() -> Sim {
         "............",
     ]);
     Sim::from_map(1, map)
+}
+
+/// Même clairière, avec une cellule de roche fermée au centre. Le colon 0 y
+/// naît (c'est la case la plus proche du centre) et personne ne peut l'y
+/// rejoindre : les deux autres apparaissent au deuxième anneau. Sert à
+/// observer une blessure sans qu'un camarade vienne la panser.
+fn walled_clearing() -> Sim {
+    let map = map_from(&[
+        "............",
+        "............",
+        "............",
+        ".....###....",
+        ".....#.#....",
+        ".....###....",
+        "............",
+        "............",
+    ]);
+    Sim::from_map(1, map)
+}
+
+fn find_pawn(s: &Sim, id: u32) -> Option<&Pawn> {
+    s.pawns().iter().find(|p| p.id == id)
 }
 
 #[test]
@@ -609,9 +633,15 @@ fn wounded_pawn_heals_when_fed() {
     let mut s = clearing();
     s.spawn_item(ItemKind::Berries, 60, 6, 6);
     let id = s.pawns()[0].id;
-    s.pawn_mut(id).unwrap().hp = HP_MAX / 2;
+    s.inflict_injury(id, BodyPart::Torso, 200);
+    assert_eq!(
+        s.pawns()[0].hp,
+        HP_MAX - 200,
+        "les PV dérivent des blessures"
+    );
     assert!(
-        run_until(&mut s, DAY, |s| s.pawns()[0].hp > 700),
+        run_until(&mut s, DAY, |s| find_pawn(s, id)
+            .is_some_and(|p| p.hp > 950)),
         "PV = {}",
         s.pawns()[0].hp
     );
@@ -1047,5 +1077,237 @@ fn work_xp_levels_up_and_emits_event() {
             .any(|e| e.kind == EventKind::LevelUp && e.arg == worker),
         "aucun événement LevelUp pour ce colon : {:?}",
         s.events()
+    );
+}
+
+// ----------------------------------------------------------------------
+// Santé détaillée : blessures, colons à terre, sauvetage et soins
+// ----------------------------------------------------------------------
+
+#[test]
+fn wounds_bleed_then_close_and_heal() {
+    let mut s = walled_clearing();
+    let id = s.pawns()[0].id;
+    assert_eq!(
+        s.pawns()[0].tile(),
+        (6, 4),
+        "le blessé n'est pas dans sa cellule"
+    );
+    s.inflict_injury(id, BodyPart::LeftLeg, 80);
+    {
+        let p = &s.pawns()[0];
+        assert_eq!(p.injuries.len(), 1);
+        assert_eq!(p.injuries[0].bleeding, 20, "saignement = sévérité / 4");
+        assert_eq!(p.hp, HP_MAX - 80, "les PV dérivent de la sévérité");
+        assert_eq!(p.blood, BLOOD_MAX);
+    }
+
+    // Tant que la plaie est ouverte, le sang baisse.
+    for _ in 0..400 {
+        s.step(&[]);
+    }
+    let bleeding_blood = s.pawns()[0].blood;
+    assert!(bleeding_blood < BLOOD_MAX, "le sang n'a pas baissé");
+    assert!(
+        s.pawns()[0].is_bleeding(),
+        "la plaie s'est refermée bien trop tôt"
+    );
+
+    // Puis elle se referme d'elle-même, sans que personne n'ait pansé.
+    assert!(
+        run_until(&mut s, u64::from(BLEED_TICKS) + 200, |s| !s.pawns()[0]
+            .is_bleeding()),
+        "la plaie saigne encore après {BLEED_TICKS} ticks"
+    );
+    let low = s.pawns()[0].blood;
+    assert!(low < bleeding_blood, "le sang n'a pas continué de baisser");
+    assert!(
+        low >= DOWNED_BLOOD && !s.pawns()[0].is_downed(),
+        "une plaie modérée ne doit pas mettre à terre : sang = {low}"
+    );
+    assert!(
+        s.pawns()[0].injuries[0].severity > 0,
+        "la blessure a guéri avant d'avoir fini de saigner"
+    );
+    assert!(
+        s.pawns()[0].injuries.iter().all(|i| !i.tended),
+        "personne ne peut atteindre la cellule"
+    );
+
+    // La blessure finit par disparaître et le sang se refait.
+    let bound = 2 * 80 * HEAL_INTERVAL;
+    assert!(
+        run_until(&mut s, bound, |s| s.pawns()[0].injuries.is_empty()),
+        "blessure toujours là après {bound} ticks : {:?}",
+        s.pawns()[0].injuries
+    );
+    assert_eq!(s.pawns()[0].hp, HP_MAX, "les PV ne sont pas revenus au max");
+    assert!(s.pawns()[0].blood > low, "le sang ne s'est pas refait");
+}
+
+#[test]
+fn heavy_bleeding_downs_then_rescue_and_tend() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Berries, 200, 6, 6);
+    s.map_mut().set_feature(8, 6, Feature::Bed);
+    let id = s.pawns()[0].id;
+    // Deux plaies ouvertes sur un colon déjà à moitié vidé de son sang.
+    s.inflict_injury(id, BodyPart::Torso, 60);
+    s.inflict_injury(id, BodyPart::LeftLeg, 60);
+    s.pawn_mut(id).unwrap().blood = 305;
+
+    assert!(
+        run_until(&mut s, 300, |s| find_pawn(s, id)
+            .is_some_and(|p| p.is_downed())),
+        "le colon exsangue ne s'écroule pas"
+    );
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::ColonistDowned && e.arg == id),
+        "aucun événement d'écroulement : {:?}",
+        s.events()
+    );
+
+    // Un camarade vient le chercher et le dépose dans le lit.
+    assert!(
+        run_until(&mut s, 3000, |s| s
+            .events()
+            .iter()
+            .any(|e| e.kind == EventKind::ColonistRescued && e.arg == id)),
+        "personne ne l'a porté au lit"
+    );
+    assert_eq!(
+        find_pawn(&s, id).map(|p| p.tile()),
+        Some((8, 6)),
+        "le blessé n'est pas sur la case du lit"
+    );
+
+    // Puis on le panse : plus rien ne saigne.
+    assert!(
+        run_until(&mut s, 3000, |s| s
+            .events()
+            .iter()
+            .any(|e| e.kind == EventKind::ColonistTended && e.arg == id)),
+        "personne ne l'a soigné"
+    );
+    let p = find_pawn(&s, id).expect("le blessé est encore là");
+    assert!(!p.is_bleeding(), "il saigne encore après le soin");
+    assert!(p.injuries.iter().all(|i| i.tended));
+
+    // Le sang se refait, il se relève, et il est toujours vivant.
+    assert!(
+        run_until(&mut s, 2 * DAY, |s| find_pawn(s, id)
+            .is_some_and(|p| !p.is_downed())),
+        "toujours à terre : {:?}",
+        find_pawn(&s, id).map(|p| (p.blood, p.hp))
+    );
+    assert!(find_pawn(&s, id).is_some(), "le colon secouru est mort");
+}
+
+#[test]
+fn untended_massive_bleeding_kills() {
+    let mut s = walled_clearing();
+    let id = s.pawns()[0].id;
+    s.inflict_injury(id, BodyPart::Torso, 400);
+    let mut was_downed = false;
+    for _ in 0..2000 {
+        if find_pawn(&s, id).is_none() {
+            break;
+        }
+        was_downed |= find_pawn(&s, id).is_some_and(|p| p.is_downed());
+        s.step(&[]);
+    }
+    assert!(was_downed, "il n'est jamais tombé avant de mourir");
+    assert!(
+        find_pawn(&s, id).is_none(),
+        "le colon isolé n'est pas mort de son hémorragie : {:?}",
+        find_pawn(&s, id).map(|p| (p.blood, p.hp))
+    );
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::ColonistDied && e.arg == id),
+        "événements : {:?}",
+        s.events()
+    );
+    assert!(
+        s.items()
+            .iter()
+            .any(|i| i.kind == ItemKind::Corpse && (i.x, i.y) == (6, 4)),
+        "pas de cadavre dans la cellule : {:?}",
+        s.items()
+    );
+}
+
+#[test]
+fn raiders_ignore_downed_colonists() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Berries, 200, 6, 6);
+    let id = s.pawns()[0].id;
+    // Plaie légère mais colon exsangue : il reste à terre longtemps.
+    s.inflict_injury(id, BodyPart::LeftLeg, 40);
+    s.pawn_mut(id).unwrap().blood = 200;
+    s.step(&[]);
+    assert!(
+        find_pawn(&s, id).is_some_and(|p| p.is_downed()),
+        "le colon n'est pas à terre avant le raid"
+    );
+    let before = find_pawn(&s, id).map(|p| p.total_severity()).unwrap_or(0);
+
+    s.step(&[Command::TriggerRaid]);
+    assert_eq!(raiders(&s), 2, "pillards : {:?}", s.pawns());
+    let mut fought = false;
+    for _ in 0..4000 {
+        if raiders(&s) == 0 {
+            break;
+        }
+        s.step(&[]);
+        let p = find_pawn(&s, id).expect("le colon à terre a été achevé");
+        assert!(
+            p.total_severity() <= before,
+            "un pillard l'a frappé au sol : {} > {before}",
+            p.total_severity()
+        );
+        assert!(p.is_downed(), "il s'est relevé pendant le raid");
+        fought |= s
+            .pawns()
+            .iter()
+            .any(|q| q.id != id && matches!(q.job, Job::Attack { .. }));
+    }
+    assert!(fought, "les colons debout ne se sont jamais battus");
+}
+
+#[test]
+fn mobility_slows_walking() {
+    fn travel(injured: bool) -> u64 {
+        let mut s = clearing();
+        let id = s.pawns()[0].id;
+        if injured {
+            s.inflict_injury(id, BodyPart::LeftLeg, 400);
+            assert!(s.pawns()[0].mobility_percent() < 100);
+            assert!(
+                s.pawns()[0].hp > HP_WOUNDED,
+                "seule la mobilité doit expliquer l'écart"
+            );
+        }
+        s.step(&[Command::MoveTo {
+            pawn: id,
+            x: 0,
+            y: 7,
+        }]);
+        let start = s.tick();
+        assert!(
+            run_until(&mut s, DAY, |s| find_pawn(s, id)
+                .is_some_and(|p| p.tile() == (0, 7))),
+            "le colon n'atteint pas sa destination (blessé : {injured})"
+        );
+        s.tick() - start
+    }
+    let fast = travel(false);
+    let slow = travel(true);
+    assert!(
+        slow > fast,
+        "jambe blessée {slow} ticks, jambe saine {fast} ticks"
     );
 }

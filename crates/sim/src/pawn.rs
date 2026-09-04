@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::TICKS_PER_DAY;
 use crate::fixed::{self, FX_HALF, Fx};
+use crate::health::{BLOOD_MAX, Injury};
 use crate::items::ItemKind;
 use crate::map::{Designation, Map};
 use crate::path::Tile;
@@ -34,7 +35,8 @@ pub const BREAK_TICKS: u32 = TICKS_PER_DAY / 4;
 /// Après s'être défoulé, le colon garde un bonus d'humeur une journée.
 pub const RELIEF_TICKS: u32 = TICKS_PER_DAY;
 
-/// Points de vie d'un pawn en pleine forme.
+/// Points de vie d'un pawn en pleine forme. **Valeur dérivée** : voir
+/// `Pawn::hp` et `Pawn::recompute_hp` (module `health`).
 pub const HP_MAX: u32 = 1000;
 /// En dessous : blessé (vitesse et humeur en baisse).
 pub const HP_WOUNDED: u32 = HP_MAX / 2;
@@ -110,6 +112,20 @@ pub enum Job {
     Break {
         until: u64,
     },
+    /// À terre : trop peu de sang ou de conscience pour faire quoi que ce
+    /// soit. Le pawn est hors combat jusqu'à ce qu'il se relève.
+    Downed,
+    /// Porte un colon à terre jusqu'au lit réservé. `picked` : il l'a en bras
+    /// (le blessé suit alors la position du porteur à chaque tick).
+    Rescue {
+        target: u32,
+        picked: bool,
+    },
+    /// Panse les blessures d'un autre colon.
+    Tend {
+        target: u32,
+        progress: u32,
+    },
 }
 
 impl Job {
@@ -138,6 +154,9 @@ impl Job {
             Job::Attack { .. } => 12,
             Job::Flee => 13,
             Job::Break { .. } => 14,
+            Job::Downed => 15,
+            Job::Rescue { .. } => 16,
+            Job::Tend { .. } => 17,
         }
     }
 }
@@ -160,7 +179,19 @@ pub struct Pawn {
     pub last_sleep_in_bed: bool,
     /// Qualité du dernier repas : 1 cuisiné, 0 neutre, -1 cru désagréable.
     pub last_meal_quality: i8,
+    /// **Valeur dérivée**, pas la source de vérité : `hp = HP_MAX - somme des
+    /// sévérités`, remis à jour par `Pawn::recompute_hp` après tout changement
+    /// de blessure ou de sang, et forcé à 0 quand le pawn meurt. Le champ est
+    /// conservé pour ne pas casser les tampons de rendu ; pour blesser
+    /// quelqu'un, passer par `Pawn::add_injury` ou `Sim::inflict_injury`.
     pub hp: u32,
+    /// Blessures en cours, dans l'ordre où elles ont été reçues (au plus
+    /// `health::MAX_INJURIES`).
+    pub injuries: Vec<Injury>,
+    /// Volume sanguin, 0..=`health::BLOOD_MAX`. À zéro, le pawn meurt.
+    pub blood: u32,
+    /// Colon à terre porté en ce moment (job `Rescue` avec `picked`).
+    pub carrying_pawn: Option<u32>,
     pub faction: Faction,
     /// Ticks restants avant de pouvoir frapper à nouveau.
     pub attack_cooldown: u32,
@@ -201,6 +232,9 @@ impl Pawn {
             last_sleep_in_bed: true,
             last_meal_quality: 0,
             hp: HP_MAX,
+            injuries: Vec::new(),
+            blood: BLOOD_MAX,
+            carrying_pawn: None,
             faction: Faction::Colony,
             attack_cooldown: 0,
             grief_ticks: 0,
@@ -280,7 +314,8 @@ impl Pawn {
     }
 
     /// Vitesse de travail en centièmes pour le type de travail donné :
-    /// l'humeur décide de l'ardeur, le niveau de compétence de l'efficacité.
+    /// l'humeur décide de l'ardeur, le niveau de compétence de l'efficacité,
+    /// et les bras font le reste.
     pub fn work_step(&self, work: WorkType) -> u32 {
         let mood = self.mood();
         let mood_percent = if mood >= MOOD_HAPPY {
@@ -291,20 +326,22 @@ impl Pawn {
             100
         };
         let level = self.skills[work as usize].level;
-        mood_percent * work::skill_percent(level) / 100
+        mood_percent * work::skill_percent(level) / 100 * self.manipulation_percent() / 100
     }
 
-    /// Vitesse en pourcentage de la nominale. Les malus de blessure ne se
-    /// cumulent pas entre eux : on garde le plus sévère.
+    /// Vitesse en pourcentage de la nominale. Les malus globaux de blessure ne
+    /// se cumulent pas entre eux (on garde le plus sévère) ; la mobilité, elle,
+    /// vient s'y multiplier : des jambes abîmées ralentissent en plus.
     pub fn speed_percent(&self) -> u32 {
         let base = if self.is_starving() { 60 } else { 100 };
-        if self.hp < HP_BADLY_WOUNDED {
+        let wounded = if self.hp < HP_BADLY_WOUNDED {
             base * 50 / 100
         } else if self.hp < HP_WOUNDED {
             base * 70 / 100
         } else {
             base
-        }
+        };
+        wounded * self.mobility_percent() / 100
     }
 
     /// Remplace le chemin courant. `path` est dans l'ordre de parcours.

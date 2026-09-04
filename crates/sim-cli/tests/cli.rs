@@ -133,7 +133,7 @@ fn top_level_help_exits_zero() {
 
 #[test]
 fn subcommand_help_exits_zero() {
-    for sub in ["run", "verify", "snapshot", "bench"] {
+    for sub in ["run", "verify", "snapshot", "bench", "fuzz"] {
         let output = bin()
             .args([sub, "--help"])
             .output()
@@ -178,6 +178,115 @@ fn snapshot_at_greater_than_ticks_is_exit_code_2() {
         .output()
         .expect("le binaire doit s'exécuter");
     assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn fuzz_runs_and_reports_structured_result() {
+    // Le fuzz peut légitimement trouver un bug dans le sim (code 1) : on ne
+    // teste que la forme du rapport, jamais le verdict.
+    let output = bin()
+        .args([
+            "fuzz", "--seed", "1", "--size", "32", "--ticks", "1500", "--runs", "2",
+        ])
+        .output()
+        .expect("le binaire doit s'exécuter");
+    let code = output.status.code();
+    assert!(
+        code == Some(0) || code == Some(1),
+        "code inattendu : {code:?}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if code == Some(0) {
+        assert!(
+            stdout.contains("run 0 : OK"),
+            "pas de ligne de run OK : {stdout}"
+        );
+        assert!(
+            stdout.contains("résumé :"),
+            "pas de résumé final : {stdout}"
+        );
+        assert!(
+            stdout.contains("commandes par variante"),
+            "pas de stats par variante : {stdout}"
+        );
+    } else {
+        assert!(
+            stdout.contains("PANIQUE :")
+                || stdout.contains("DÉSYNC :")
+                || stdout.contains("SNAPSHOT INVALIDE :"),
+            "rapport de problème absent : {stdout}"
+        );
+    }
+}
+
+#[test]
+fn fuzz_with_zero_commands_matches_scenario_none() {
+    let run_output = bin()
+        .args([
+            "run",
+            "--seed",
+            "5",
+            "--size",
+            "16",
+            "--ticks",
+            "300",
+            "--scenario",
+            "none",
+        ])
+        .output()
+        .expect("le binaire doit s'exécuter");
+    assert!(run_output.status.success());
+    let run_stdout = String::from_utf8_lossy(&run_output.stdout);
+    let run_hash = run_stdout
+        .lines()
+        .find(|l| l.contains("hash final"))
+        .unwrap_or_else(|| panic!("pas de ligne « hash final » : {run_stdout}"))
+        .rsplit(':')
+        .next()
+        .expect("une valeur après « : »")
+        .trim()
+        .to_string();
+
+    let fuzz_output = bin()
+        .args([
+            "fuzz",
+            "--seed",
+            "5",
+            "--size",
+            "16",
+            "--ticks",
+            "300",
+            "--commands-per-tick",
+            "0",
+            "--runs",
+            "1",
+        ])
+        .output()
+        .expect("le binaire doit s'exécuter");
+    assert!(
+        fuzz_output.status.success(),
+        "code = {:?}",
+        fuzz_output.status.code()
+    );
+    let fuzz_stdout = String::from_utf8_lossy(&fuzz_output.stdout);
+    let ok_line = fuzz_stdout
+        .lines()
+        .find(|l| l.starts_with("run 0 : OK"))
+        .unwrap_or_else(|| panic!("pas de ligne « run 0 : OK » : {fuzz_stdout}"));
+    let fuzz_hash = ok_line
+        .rsplit(' ')
+        .next()
+        .expect("un hash en fin de ligne")
+        .trim();
+
+    assert!(
+        ok_line.contains("0 commandes"),
+        "la ligne devrait annoncer 0 commandes : {ok_line}"
+    );
+    assert_eq!(
+        run_hash, fuzz_hash,
+        "hash différent avec --commands-per-tick 0 : {fuzz_stdout}"
+    );
 }
 
 #[test]

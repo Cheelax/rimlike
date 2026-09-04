@@ -4,10 +4,14 @@
 //! `(distance, x, y, id)` avant de tenter un chemin : l'ordre est total, donc
 //! identique sur tous les clients.
 
+use crate::health::{
+    self, BLEED_INTERVAL, BLOOD_MAX, BLOOD_REGEN_INTERVAL, DOWNED_BLOOD, DOWNED_CONSCIOUSNESS,
+    UP_BLOOD, UP_CONSCIOUSNESS,
+};
 use crate::items::ItemKind;
-use crate::map::chebyshev;
+use crate::map::{Feature, chebyshev};
 use crate::path;
-use crate::pawn::{Faction, HP_MAX, Job, NEED_MAX};
+use crate::pawn::{Faction, Job, NEED_MAX};
 use crate::{EventKind, Sim, TICKS_PER_DAY};
 
 /// Ticks entre deux coups d'un même pawn.
@@ -26,6 +30,10 @@ pub const STARVE_DAMAGE_INTERVAL: u64 = 28;
 pub const HEAL_INTERVAL: u64 = 60;
 /// Deux fois plus vite au lit.
 pub const HEAL_INTERVAL_BED: u64 = 30;
+// `tick_injuries` s'appuie dessus pour ne consulter la carte qu'un tick sur
+// `HEAL_INTERVAL_BED` : le plus long des deux intervalles doit être un
+// multiple du plus court.
+const _: () = assert!(HEAL_INTERVAL % HEAL_INTERVAL_BED == 0);
 /// Jours de tranquillité avant le premier raid.
 pub const GRACE_DAYS: u32 = 3;
 /// Durée du deuil après la mort d'un colon.
@@ -45,26 +53,114 @@ impl Sim {
     // Santé
     // ------------------------------------------------------------------
 
-    /// Faim qui tue lentement, cicatrisation quand on est nourri, et
-    /// décompte des minuteries de combat et de deuil.
+    /// Faim qui ronge, plaies qui se referment et cicatrisent, sang qui se
+    /// perd ou se refait, écroulement et relevé, minuteries de combat et de
+    /// deuil. Le chemin d'un pawn en pleine forme reste court : deux tests.
     pub(crate) fn tick_health(&mut self, i: usize) {
         if self.pawns[i].hunger == 0 && self.tick % STARVE_DAMAGE_INTERVAL == 0 {
-            self.pawns[i].hp = self.pawns[i].hp.saturating_sub(1);
-        } else if self.pawns[i].hp < HP_MAX && !self.pawns[i].is_starving() {
-            let in_bed = matches!(self.pawns[i].job, Job::Sleep { in_bed: true })
-                && !self.pawns[i].is_moving();
-            let interval = if in_bed {
-                HEAL_INTERVAL_BED
-            } else {
-                HEAL_INTERVAL
-            };
-            if self.tick % interval == 0 {
-                self.pawns[i].hp += 1;
-            }
+            // La famine n'entame plus les PV directement : elle affaiblit le torse.
+            self.pawns[i].starve_torso();
         }
+        if !self.pawns[i].injuries.is_empty() {
+            self.tick_injuries(i);
+        }
+        self.tick_blood(i);
+        self.update_downed(i);
         self.pawns[i].attack_cooldown = self.pawns[i].attack_cooldown.saturating_sub(1);
         self.pawns[i].grief_ticks = self.pawns[i].grief_ticks.saturating_sub(1);
         self.pawns[i].relief_ticks = self.pawns[i].relief_ticks.saturating_sub(1);
+    }
+
+    /// Referme les plaies au bout de `BLEED_TICKS`, fait cicatriser d'un point
+    /// par intervalle (deux fois plus vite si la blessure est pansée) et
+    /// oublie les blessures guéries.
+    fn tick_injuries(&mut self, i: usize) {
+        // `HEAL_INTERVAL` est un multiple de `HEAL_INTERVAL_BED` : hors de ces
+        // ticks-là, aucune cicatrisation n'est possible et on s'épargne le
+        // coup d'œil à la carte (le saignement, lui, s'écoule à chaque tick).
+        let heals = self.tick % HEAL_INTERVAL_BED == 0
+            && !self.pawns[i].is_starving()
+            && self.tick % self.heal_interval(i) == 0;
+        let p = &mut self.pawns[i];
+        for inj in &mut p.injuries {
+            if inj.bleeding > 0 {
+                inj.bleed_ticks = inj.bleed_ticks.saturating_sub(1);
+                if inj.bleed_ticks == 0 {
+                    inj.close();
+                }
+            }
+            if heals {
+                inj.severity = inj.severity.saturating_sub(if inj.tended { 2 } else { 1 });
+            }
+        }
+        if heals {
+            p.injuries.retain(|inj| inj.severity > 0);
+            p.recompute_hp();
+        }
+    }
+
+    /// Un blessé allongé — endormi ou à terre — cicatrise deux fois plus vite.
+    fn heal_interval(&self, i: usize) -> u64 {
+        let (x, y) = self.pawns[i].tile();
+        let in_bed = matches!(self.pawns[i].job, Job::Sleep { in_bed: true } | Job::Downed)
+            && !self.pawns[i].is_moving()
+            && self.map.feature(x, y) == Feature::Bed;
+        if in_bed {
+            HEAL_INTERVAL_BED
+        } else {
+            HEAL_INTERVAL
+        }
+    }
+
+    /// Le sang se perd par tranches de `BLEED_INTERVAL` ticks et se refait
+    /// lentement dès qu'aucune plaie ne coule.
+    fn tick_blood(&mut self, i: usize) {
+        let tick = self.tick;
+        let p = &mut self.pawns[i];
+        if p.injuries.is_empty() {
+            // Cas courant : rien ne coule, le corps se refait doucement.
+            if p.blood < BLOOD_MAX && tick % BLOOD_REGEN_INTERVAL == 0 {
+                p.blood += 1;
+            }
+            return;
+        }
+        let rate = p.bleed_rate();
+        if rate > 0 {
+            if tick % BLEED_INTERVAL == 0 {
+                p.blood = p.blood.saturating_sub(rate);
+                // Le sang à zéro tue : `recompute_hp` s'en charge.
+                p.recompute_hp();
+            }
+        } else if p.blood < BLOOD_MAX && tick % BLOOD_REGEN_INTERVAL == 0 {
+            p.blood += 1;
+        }
+    }
+
+    /// Fait tomber ou relever le pawn. L'hystérésis (30/40 %) évite qu'un
+    /// blessé clignote entre les deux états.
+    fn update_downed(&mut self, i: usize) {
+        let p = &self.pawns[i];
+        if p.is_downed() {
+            if p.consciousness_percent() >= UP_CONSCIOUSNESS && p.blood >= UP_BLOOD {
+                self.pawns[i].job = Job::Idle;
+                self.pawns[i].idle_ticks = 0;
+            }
+            return;
+        }
+        // Sortie rapide : sans blessure et avec du sang, personne ne s'écroule.
+        if p.injuries.is_empty() && p.blood >= UP_BLOOD {
+            return;
+        }
+        if p.consciousness_percent() >= DOWNED_CONSCIOUSNESS && p.blood >= DOWNED_BLOOD {
+            return;
+        }
+        // Il lâche tout : réservations, chargement, et le blessé qu'il portait.
+        self.abandon_job(i);
+        self.pawns[i].job = Job::Downed;
+        if self.pawns[i].faction == Faction::Colony {
+            let id = self.pawns[i].id;
+            self.push_event(EventKind::ColonistDowned, id);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -302,14 +398,17 @@ impl Sim {
     }
 
     /// Id de l'ennemi vivant le plus proche dans `radius`, parmi les
-    /// `MELEE_TARGETS` premiers pour lesquels un chemin existe.
+    /// `MELEE_TARGETS` premiers pour lesquels un chemin existe. Les pawns à
+    /// terre ne sont jamais visés d'eux-mêmes : les pillards passent devant un
+    /// colon écroulé sans s'y arrêter, ce qui laisse une chance au sauvetage.
+    /// Un ordre explicite du joueur (`Command::Attack`) reste possible.
     fn nearest_reachable_enemy(&self, i: usize, radius: u32) -> Option<u32> {
         let me = self.pawns[i].tile();
         let faction = self.pawns[i].faction;
         let mut enemies: Vec<(u32, u32, u32, u32)> = self
             .pawns
             .iter()
-            .filter(|p| p.is_alive() && p.faction != faction)
+            .filter(|p| p.is_alive() && p.faction != faction && !p.is_downed())
             .map(|p| {
                 let (x, y) = p.tile();
                 (chebyshev(me, (x, y)), x, y, p.id)
@@ -343,6 +442,13 @@ impl Sim {
             self.pawns[i].job = Job::Idle;
             return;
         };
+        // Un pillard ne s'acharne pas sur un corps à terre : il cherche une
+        // autre cible debout, ou repart.
+        if self.pawns[i].faction == Faction::Raider && self.pawns[k].is_downed() {
+            self.pawns[i].path.clear();
+            self.pawns[i].job = Job::Idle;
+            return;
+        }
         let me = self.pawns[i].tile();
         let them = self.pawns[k].tile();
         if chebyshev(me, them) <= 1 {
@@ -353,8 +459,11 @@ impl Sim {
                 } else {
                     RAIDER_DAMAGE
                 };
+                // Deux tirages dans un ordre fixe : les dégâts, puis la partie
+                // du corps touchée. Le coup laisse une plaie qui saigne.
                 let damage = self.rng.range_i32(lo, hi) as u32;
-                self.pawns[k].hp = self.pawns[k].hp.saturating_sub(damage);
+                let part = health::part_for_roll(self.rng.below(health::HIT_WEIGHT_TOTAL));
+                self.pawns[k].add_injury(part, damage, damage / health::BLEED_FRACTION);
                 self.pawns[i].attack_cooldown = ATTACK_COOLDOWN;
             }
             return;
@@ -424,6 +533,11 @@ impl Sim {
             }
             let p = self.pawns.remove(i);
             self.reservations.retain(|r| r.pawn != p.id);
+            for q in &mut self.pawns {
+                if q.carrying_pawn == Some(p.id) {
+                    q.carrying_pawn = None;
+                }
+            }
             for s in &mut self.items {
                 if s.reserved_by == Some(p.id) {
                     s.reserved_by = None;

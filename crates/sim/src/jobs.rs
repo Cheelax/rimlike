@@ -7,6 +7,7 @@
 
 use crate::build;
 use crate::farm::{self, Crop};
+use crate::health::{TEND_STEP, TEND_TICKS};
 use crate::items::{ItemKind, ItemStack, STACK_MAX};
 use crate::map::{Designation, Feature, Zone, chebyshev};
 use crate::path;
@@ -42,7 +43,17 @@ impl Sim {
         }
         self.pawns[i].outdoor_storm = self.weather == Weather::Storm;
         self.tick_health(i);
+        // Une hémorragie peut avoir tué le pawn à l'instant : il sera retiré
+        // en fin de tick, il n'agit plus.
+        if !self.pawns[i].is_alive() {
+            return;
+        }
         if self.pawns[i].faction == Faction::Raider {
+            // Un pillard à terre reste à terre : il ne combat plus et ne fuit
+            // plus, il attend de se relever (ou de mourir).
+            if self.pawns[i].is_downed() {
+                return;
+            }
             // Les pillards ne mangent ni ne dorment : ils viennent, ils frappent.
             match self.pawns[i].job.clone() {
                 Job::Attack { target } => self.do_attack(i, target),
@@ -52,6 +63,11 @@ impl Sim {
             return;
         }
         self.decay_needs(i);
+        // À terre : plus de défense, plus de crise, plus de recherche de job.
+        // Sa position, s'il est porté, est recopiée par le porteur.
+        if self.pawns[i].is_downed() {
+            return;
+        }
         self.defend_if_threatened(i);
         if self.pawns[i].is_starving()
             && !matches!(
@@ -104,6 +120,10 @@ impl Sim {
             Job::Attack { target } => self.do_attack(i, target),
             Job::Flee => self.do_flee(i),
             Job::Break { until } => self.do_break(i, until),
+            Job::Rescue { target, picked } => self.do_rescue(i, target, picked),
+            Job::Tend { target, progress } => self.do_tend(i, target, progress),
+            // Traité plus haut : un pawn à terre ne passe jamais par ici.
+            Job::Downed => {}
         }
     }
 
@@ -202,6 +222,8 @@ impl Sim {
             }
         }
         self.drop_carried(i);
+        // Un porteur qui lâche son job repose le blessé là où il en est.
+        self.pawns[i].carrying_pawn = None;
         self.pawns[i].path.clear();
         self.pawns[i].job = Job::Idle;
     }
@@ -238,6 +260,14 @@ impl Sim {
             return;
         }
         if self.pawns[i].is_hungry() && self.try_start_eat(i) {
+            return;
+        }
+        // Le secours passe avant tout travail, mais après ses propres besoins :
+        // un colon épuisé ou affamé ne porte personne.
+        if self.try_start_rescue(i) {
+            return;
+        }
+        if self.try_start_tend(i) {
             return;
         }
         // Priorité 1 d'abord, et à priorité égale l'ordre de `WorkType::ALL`.
@@ -294,7 +324,10 @@ impl Sim {
         }
         for y in 0..self.map.height() {
             for x in 0..self.map.width() {
-                if self.map.feature(x, y) == Feature::Bed && !self.bed_occupied_by_other(i, (x, y))
+                // Un lit réservé attend un blessé qu'on est en train de porter.
+                if self.map.feature(x, y) == Feature::Bed
+                    && !self.bed_occupied_by_other(i, (x, y))
+                    && !self.is_reserved(x, y)
                 {
                     beds.push((chebyshev(from, (x, y)), x, y));
                 }
@@ -316,9 +349,238 @@ impl Sim {
         self.pawns.iter().enumerate().any(|(k, p)| {
             k != i
                 && p.tile() == bed
-                && matches!(p.job, Job::Sleep { in_bed: true })
-                && !p.is_moving()
+                && (p.is_downed() || matches!(p.job, Job::Sleep { in_bed: true }) && !p.is_moving())
         })
+    }
+
+    // ------------------------------------------------------------------
+    // Secours : porter les blessés au lit, panser les plaies
+    // ------------------------------------------------------------------
+
+    /// Un colon déjà chargé de ce blessé (porteur ou soignant) ?
+    fn already_handled(&self, target: u32) -> bool {
+        self.pawns.iter().any(|p| match p.job {
+            Job::Rescue { target: t, .. } | Job::Tend { target: t, .. } => t == target,
+            _ => false,
+        })
+    }
+
+    /// Lit libre le plus proche de `near`, atteignable depuis là. Réservé pour
+    /// un blessé donné : le lit où il gît déjà ne compte pas comme occupé.
+    fn find_free_bed(&self, near: (u32, u32), patient: u32) -> Option<(u32, u32)> {
+        let mut beds: Vec<(u32, u32, u32)> = Vec::new();
+        for y in 0..self.map.height() {
+            for x in 0..self.map.width() {
+                if self.map.feature(x, y) != Feature::Bed || self.is_reserved(x, y) {
+                    continue;
+                }
+                let taken = self.pawns.iter().any(|p| {
+                    p.id != patient
+                        && p.tile() == (x, y)
+                        && (p.is_downed()
+                            || matches!(p.job, Job::Sleep { in_bed: true }) && !p.is_moving())
+                });
+                if !taken {
+                    beds.push((chebyshev(near, (x, y)), x, y));
+                }
+            }
+        }
+        beds.sort_unstable();
+        beds.iter()
+            .take(PATH_ATTEMPTS)
+            .find(|&&(_, x, y)| path::find_path(&self.map, near, (x, y)).is_some())
+            .map(|&(_, x, y)| (x, y))
+    }
+
+    /// Va chercher un colon à terre pour le porter dans un lit. Sans lit sur la
+    /// carte, on le laisse où il est : il sera soigné au sol.
+    fn try_start_rescue(&mut self, i: usize) -> bool {
+        // Deux tests qui court-circuitent le cas courant : pas de lit à viser,
+        // ou personne au sol. Un colon inactif repasse ici à chaque tick.
+        if self.map.bed_count() == 0 || !self.pawns.iter().any(|p| p.is_downed()) {
+            return false;
+        }
+        let me = self.pawns[i].id;
+        let from = self.pawns[i].tile();
+        let mut candidates: Vec<(u32, u32, u32, u32)> = Vec::new();
+        for p in &self.pawns {
+            if p.id == me || p.faction != Faction::Colony || !p.is_alive() || !p.is_downed() {
+                continue;
+            }
+            let (x, y) = p.tile();
+            // Déjà au lit : rien à faire de plus pour lui.
+            if self.map.feature(x, y) == Feature::Bed || self.already_handled(p.id) {
+                continue;
+            }
+            candidates.push((chebyshev(from, (x, y)), x, y, p.id));
+        }
+        candidates.sort_unstable();
+        for &(_, x, y, target) in candidates.iter().take(PATH_ATTEMPTS) {
+            let Some(bed) = self.find_free_bed((x, y), target) else {
+                continue;
+            };
+            let Some(p) = self.path_to_work(from, (x, y)) else {
+                continue;
+            };
+            // Le lit est réservé par `reservations` ; le blessé, lui, l'est par
+            // le job du porteur (`already_handled`) : sa case bouge pendant le
+            // transport, une réservation de case ne le suivrait pas.
+            self.reservations.push(Reservation {
+                x: bed.0,
+                y: bed.1,
+                pawn: me,
+            });
+            self.pawns[i].set_path(p);
+            self.pawns[i].job = Job::Rescue {
+                target,
+                picked: false,
+            };
+            return true;
+        }
+        false
+    }
+
+    /// Case réservée par ce colon (le lit visé par un sauvetage).
+    fn reserved_tile(&self, pawn: u32) -> Option<(u32, u32)> {
+        self.reservations
+            .iter()
+            .find(|r| r.pawn == pawn)
+            .map(|r| (r.x, r.y))
+    }
+
+    fn do_rescue(&mut self, i: usize, target: u32, picked: bool) {
+        let Some(k) = self
+            .pawns
+            .iter()
+            .position(|p| p.id == target && p.is_alive() && p.is_downed())
+        else {
+            // Mort, ou relevé tout seul : on le repose et on passe à autre chose.
+            self.abandon_job(i);
+            return;
+        };
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            if picked {
+                self.carry_along(i, k);
+            }
+            return;
+        }
+        if !picked {
+            let me = self.pawns[i].tile();
+            if chebyshev(me, self.pawns[k].tile()) > 1 {
+                self.abandon_job(i);
+                return;
+            }
+            let id = self.pawns[i].id;
+            let Some(bed) = self.reserved_tile(id) else {
+                self.abandon_job(i);
+                return;
+            };
+            let Some(p) = path::find_path(&self.map, me, bed) else {
+                self.abandon_job(i);
+                return;
+            };
+            self.pawns[i].carrying_pawn = Some(target);
+            self.pawns[i].set_path(p);
+            self.pawns[i].job = Job::Rescue {
+                target,
+                picked: true,
+            };
+            self.pawns[k].path.clear();
+            self.carry_along(i, k);
+            return;
+        }
+        // Arrivé au lit : on dépose.
+        self.carry_along(i, k);
+        self.pawns[i].carrying_pawn = None;
+        let id = self.pawns[i].id;
+        self.reservations.retain(|r| r.pawn != id);
+        self.pawns[i].job = Job::Idle;
+        self.push_event(EventKind::ColonistRescued, target);
+    }
+
+    /// Le blessé porté occupe la case de son porteur.
+    fn carry_along(&mut self, carrier: usize, carried: usize) {
+        let (x, y) = (self.pawns[carrier].x, self.pawns[carrier].y);
+        self.pawns[carried].x = x;
+        self.pawns[carried].y = y;
+    }
+
+    /// Va panser un colon blessé. D'abord ceux qui saignent, puis ceux qui sont
+    /// à terre, puis les plus proches. On ne se soigne pas soi-même.
+    fn try_start_tend(&mut self, i: usize) -> bool {
+        // Court-circuit : personne à panser, on ne compare rien.
+        if !self.pawns.iter().any(|p| p.needs_tending()) {
+            return false;
+        }
+        let me = self.pawns[i].id;
+        let from = self.pawns[i].tile();
+        let mut candidates: Vec<(u32, u32, u32, u32, u32, u32)> = Vec::new();
+        for p in &self.pawns {
+            if p.id == me
+                || p.faction != Faction::Colony
+                || !p.is_alive()
+                || !p.needs_tending()
+                || self.already_handled(p.id)
+            {
+                continue;
+            }
+            let (x, y) = p.tile();
+            candidates.push((
+                u32::from(!p.is_bleeding()),
+                u32::from(!p.is_downed()),
+                chebyshev(from, (x, y)),
+                x,
+                y,
+                p.id,
+            ));
+        }
+        candidates.sort_unstable();
+        for &(.., x, y, target) in candidates.iter().take(PATH_ATTEMPTS) {
+            if let Some(p) = self.path_to_work(from, (x, y)) {
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Tend {
+                    target,
+                    progress: 0,
+                };
+                return true;
+            }
+        }
+        false
+    }
+
+    fn do_tend(&mut self, i: usize, target: u32, progress: u32) {
+        let Some(k) = self
+            .pawns
+            .iter()
+            .position(|p| p.id == target && p.is_alive())
+        else {
+            self.abandon_job(i);
+            return;
+        };
+        if !self.pawns[k].needs_tending() {
+            self.abandon_job(i);
+            return;
+        }
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        if chebyshev(self.pawns[i].tile(), self.pawns[k].tile()) > 1 {
+            self.abandon_job(i);
+            return;
+        }
+        let progress = progress + TEND_STEP;
+        if progress < TEND_TICKS * 100 {
+            self.pawns[i].job = Job::Tend { target, progress };
+            return;
+        }
+        for inj in &mut self.pawns[k].injuries {
+            inj.tended = true;
+            inj.close();
+        }
+        self.pawns[i].job = Job::Idle;
+        self.push_event(EventKind::ColonistTended, target);
     }
 
     /// Va manger la meilleure nourriture accessible : repas, puis baies, puis cru.

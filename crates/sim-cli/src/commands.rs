@@ -6,9 +6,10 @@
 
 use std::time::Instant;
 
-use sim::{Faction, Sim};
+use sim::{Command, Faction, Rng, Sim};
 
 use crate::cli::{CliError, Options, wants_help};
+use crate::fuzzgen;
 use crate::scenario::{Scenario, spawn_extra_pawns};
 
 fn parse_scenario(opts: &Options) -> Result<Scenario, CliError> {
@@ -321,6 +322,367 @@ fn bench_inner(args: &[String]) -> Result<u8, CliError> {
             ticks_per_sec(ticks, elapsed),
             elapsed.as_millis()
         );
+    }
+    Ok(0)
+}
+
+const FUZZ_HELP: &str = "\
+rimlike-sim fuzz — bombarde deux sims de commandes aléatoires et compare
+
+USAGE :
+    rimlike-sim fuzz --seed N --size W --ticks T [--commands-per-tick K] [--runs R] [--snapshot-every S]
+
+OPTIONS :
+    --seed N               graine de base (le run r utilise la graine N + r)
+    --size W                carte carrée W x W
+    --ticks T               nombre de ticks par run
+    --commands-per-tick K   commandes aléatoires générées par tick (défaut 2)
+    --runs R                nombre de runs indépendants (défaut 1)
+    --snapshot-every S      aller-retour snapshot/restore tous les S ticks (défaut 1500)
+
+Pour chaque run, deux sims indépendantes de même graine et de même taille
+reçoivent exactement les mêmes commandes, tirées parmi toutes les variantes
+de `Command` avec des paramètres tantôt valides, tantôt aberrants :
+coordonnées hors carte (négatives, énormes), rectangles inversés, ids de
+pawns inventés, priorités hors bornes, colon qui s'attaque lui-même, raids
+fréquents, annulations de chantier sur toute la carte...
+
+Les hashes des deux sims sont comparés tous les 100 ticks et à la fin du run.
+Un aller-retour snapshot/restore est vérifié tous les --snapshot-every ticks
+(égalité structurelle et de hash avec la sim d'origine). Toute panique du sim
+est attrapée (le hook de panique est rendu silencieux le temps du fuzz, puis
+restauré).
+
+Sort en 0 si tous les runs sont OK, avec un résumé (commandes par variante,
+colons/pillards/objets/chantiers de fin de run). Sort en 1 à la première
+désync, panique ou snapshot invalide, avec un rapport détaillé : graine,
+tick, commande(s) en cause, message de panique le cas échéant, et les 10
+dernières commandes générées.
+";
+
+pub fn fuzz(args: &[String]) -> u8 {
+    if wants_help(args) {
+        print!("{FUZZ_HELP}");
+        return 0;
+    }
+    match fuzz_inner(args) {
+        Ok(code) => code,
+        Err(e) => fail(&e, FUZZ_HELP),
+    }
+}
+
+/// Fenêtre glissante des 10 dernières commandes générées (tick, commande),
+/// pour le rapport en cas de problème. Un `Vec` borné : pas besoin de plus.
+struct RecentCommands {
+    entries: Vec<(u64, Command)>,
+}
+
+impl RecentCommands {
+    fn new() -> RecentCommands {
+        RecentCommands {
+            entries: Vec::with_capacity(10),
+        }
+    }
+
+    fn push(&mut self, tick: u64, cmd: Command) {
+        self.entries.push((tick, cmd));
+        if self.entries.len() > 10 {
+            self.entries.remove(0);
+        }
+    }
+
+    fn format(&self) -> String {
+        let mut out = String::new();
+        for (tick, cmd) in &self.entries {
+            out.push_str(&format!("    tick {tick} : {cmd:?}\n"));
+        }
+        out
+    }
+}
+
+/// Message porté par une panique attrapée via `catch_unwind`.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "panique sans message exploitable".to_string()
+    }
+}
+
+/// Reconstruit l'état d'avant le tick `target_tick` en rejouant le run depuis
+/// zéro. La génération de commandes est entièrement déterministe (même
+/// graine, mêmes `sim.pawns()` observés à chaque tick), donc ce replay
+/// redonne exactement l'état qu'avait la sim juste avant ce tick — sans
+/// jamais cloner la sim dans la boucle chaude, ce qui dominerait le coût
+/// d'un run entier pour un diagnostic qui ne sert presque jamais.
+fn reconstruct_pre_state(
+    run_seed: u64,
+    size: u32,
+    commands_per_tick: u64,
+    target_tick: u64,
+) -> Sim {
+    let mut sim = Sim::new(run_seed, size, size);
+    let mut cmd_rng = Rng::new(run_seed);
+    for _ in 0..target_tick {
+        let mut cmds = Vec::with_capacity(commands_per_tick as usize);
+        for _ in 0..commands_per_tick {
+            let (cmd, _) = fuzzgen::random_command(&mut cmd_rng, &sim, size);
+            cmds.push(cmd);
+        }
+        sim.step(&cmds);
+    }
+    sim
+}
+
+/// Essaie d'isoler, parmi les commandes du tick fautif, celle qui panique à
+/// elle seule quand on la rejoue depuis une copie de l'état d'avant le tick.
+/// Ce n'est qu'un indice : une panique qui n'apparaît qu'en combinant
+/// plusieurs commandes du même tick ne sera pas isolée (`None`).
+fn find_culprit(pre_state: &Sim, cmds: &[Command]) -> Option<usize> {
+    for (i, cmd) in cmds.iter().enumerate() {
+        let mut probe = pre_state.clone();
+        let single = [cmd.clone()];
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe.step(&single)));
+        if result.is_err() {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn panic_report(
+    seed: u64,
+    tick: u64,
+    cmds: &[Command],
+    recent: &RecentCommands,
+    payload: &(dyn std::any::Any + Send),
+    pre_state: &Sim,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("PANIQUE : seed {seed}, tick {tick}\n"));
+    out.push_str(&format!("  message : {}\n", panic_message(payload)));
+    match find_culprit(pre_state, cmds) {
+        Some(i) => out.push_str(&format!(
+            "  commande fautive (isolée) : [{i}] {:?}\n",
+            cmds[i]
+        )),
+        None => out.push_str(
+            "  aucune commande seule ne reproduit la panique isolément (combinaison nécessaire)\n",
+        ),
+    }
+    out.push_str(&format!("  commandes du tick {tick} ({}) :\n", cmds.len()));
+    for (i, cmd) in cmds.iter().enumerate() {
+        out.push_str(&format!("    [{i}] {cmd:?}\n"));
+    }
+    out.push_str("  10 dernières commandes générées :\n");
+    out.push_str(&recent.format());
+    out
+}
+
+fn desync_report(seed: u64, tick: u64, recent: &RecentCommands) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("DÉSYNC : seed {seed}, tick {tick}\n"));
+    out.push_str("  10 dernières commandes générées :\n");
+    out.push_str(&recent.format());
+    out
+}
+
+fn snapshot_report(seed: u64, tick: u64, recent: &RecentCommands) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "SNAPSHOT INVALIDE : seed {seed}, tick {tick} (aller-retour snapshot/restore diverge)\n"
+    ));
+    out.push_str("  10 dernières commandes générées :\n");
+    out.push_str(&recent.format());
+    out
+}
+
+/// Issue d'un run de fuzz : soit tout va bien (hash final, nombre de
+/// commandes générées, et quelques stats de fin de run), soit un rapport de
+/// problème déjà formaté.
+enum FuzzOutcome {
+    Ok {
+        hash: u64,
+        commands: u64,
+        colons: usize,
+        pillards: usize,
+        objets: usize,
+        chantiers: usize,
+    },
+    Problem(String),
+}
+
+fn fuzz_one_run(
+    run_seed: u64,
+    size: u32,
+    ticks: u64,
+    commands_per_tick: u64,
+    snapshot_every: u64,
+    variant_counts: &mut [u64; fuzzgen::VARIANT_COUNT],
+) -> FuzzOutcome {
+    let mut a = Sim::new(run_seed, size, size);
+    let mut b = Sim::new(run_seed, size, size);
+    let mut cmd_rng = Rng::new(run_seed);
+    let mut recent = RecentCommands::new();
+    let mut total_commands = 0u64;
+
+    for t in 0..ticks {
+        let mut cmds = Vec::with_capacity(commands_per_tick as usize);
+        for _ in 0..commands_per_tick {
+            let (cmd, variant) = fuzzgen::random_command(&mut cmd_rng, &a, size);
+            variant_counts[variant] += 1;
+            total_commands += 1;
+            recent.push(t, cmd.clone());
+            cmds.push(cmd);
+        }
+
+        if let Err(payload) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.step(&cmds)))
+        {
+            let pre_state = reconstruct_pre_state(run_seed, size, commands_per_tick, t);
+            return FuzzOutcome::Problem(panic_report(
+                run_seed, t, &cmds, &recent, &*payload, &pre_state,
+            ));
+        }
+        if let Err(payload) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| b.step(&cmds)))
+        {
+            let pre_state = reconstruct_pre_state(run_seed, size, commands_per_tick, t);
+            return FuzzOutcome::Problem(panic_report(
+                run_seed, t, &cmds, &recent, &*payload, &pre_state,
+            ));
+        }
+
+        if a.tick() % 100 == 0 && a.state_hash() != b.state_hash() {
+            return FuzzOutcome::Problem(desync_report(run_seed, a.tick(), &recent));
+        }
+
+        if a.tick() % snapshot_every == 0 {
+            match Sim::restore(&a.snapshot()) {
+                Ok(restored) => {
+                    if restored != a || restored.state_hash() != a.state_hash() {
+                        return FuzzOutcome::Problem(snapshot_report(run_seed, a.tick(), &recent));
+                    }
+                }
+                Err(e) => {
+                    return FuzzOutcome::Problem(format!(
+                        "SNAPSHOT INVALIDE : seed {run_seed}, tick {} : {e}\n",
+                        a.tick()
+                    ));
+                }
+            }
+        }
+    }
+
+    if a.state_hash() != b.state_hash() {
+        return FuzzOutcome::Problem(desync_report(run_seed, a.tick(), &recent));
+    }
+
+    let hash = a.state_hash();
+    let (colons, pillards, objets, chantiers) = counts(&a);
+    FuzzOutcome::Ok {
+        hash,
+        commands: total_commands,
+        colons,
+        pillards,
+        objets,
+        chantiers,
+    }
+}
+
+fn fuzz_inner(args: &[String]) -> Result<u8, CliError> {
+    let opts = Options::parse(args)?;
+    opts.forbid_unknown(&[
+        "seed",
+        "size",
+        "ticks",
+        "commands-per-tick",
+        "runs",
+        "snapshot-every",
+    ])?;
+    let seed = opts.require_u64("seed")?;
+    let size = opts.require_u32("size")?;
+    check_size(size)?;
+    let ticks = opts.require_u64("ticks")?;
+    let commands_per_tick = opts.u64_or("commands-per-tick", 2)?;
+    let runs = opts.u64_or("runs", 1)?;
+    if runs == 0 {
+        return Err(CliError::new("--runs doit être un entier positif"));
+    }
+    let snapshot_every = opts.u64_or("snapshot-every", 1500)?;
+    if snapshot_every == 0 {
+        return Err(CliError::new(
+            "--snapshot-every doit être un entier positif",
+        ));
+    }
+
+    println!(
+        "fuzz : carte {size}x{size}, {ticks} ticks, {runs} runs, seed de base {seed}, {commands_per_tick} commandes/tick, snapshot tous les {snapshot_every} ticks"
+    );
+
+    // Rendu silencieux le temps du fuzz : les paniques attrapées sont
+    // rapportées à la main, un message par défaut sur stderr noierait le
+    // rapport structuré. Toujours restauré avant de sortir.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    let mut variant_counts = [0u64; fuzzgen::VARIANT_COUNT];
+    let mut total_ticks = 0u64;
+    let mut total_commands = 0u64;
+    let mut problem = None;
+    let start = Instant::now();
+
+    for r in 0..runs {
+        let run_seed = seed.wrapping_add(r);
+        match fuzz_one_run(
+            run_seed,
+            size,
+            ticks,
+            commands_per_tick,
+            snapshot_every,
+            &mut variant_counts,
+        ) {
+            FuzzOutcome::Ok {
+                hash,
+                commands,
+                colons,
+                pillards,
+                objets,
+                chantiers,
+            } => {
+                total_ticks += ticks;
+                total_commands += commands;
+                println!("run {r} : OK, {ticks} ticks, {commands} commandes, hash {hash:016x}");
+                println!(
+                    "  colons={colons} pillards={pillards} objets={objets} chantiers={chantiers}"
+                );
+            }
+            FuzzOutcome::Problem(report) => {
+                problem = Some(report);
+                break;
+            }
+        }
+    }
+    let elapsed = start.elapsed();
+
+    std::panic::set_hook(previous_hook);
+
+    if let Some(report) = problem {
+        print!("{report}");
+        return Ok(1);
+    }
+
+    println!();
+    println!("résumé :");
+    println!("  runs                : {runs}");
+    println!("  ticks au total      : {total_ticks}");
+    println!("  commandes au total  : {total_commands}");
+    println!("  durée               : {} ms", elapsed.as_millis());
+    println!("  commandes par variante :");
+    for (name, count) in fuzzgen::VARIANT_NAMES.iter().zip(variant_counts.iter()) {
+        println!("    {name:<12} {count}");
     }
     Ok(0)
 }

@@ -18,6 +18,7 @@ pub mod combat;
 pub mod farm;
 pub mod fixed;
 pub mod hash;
+pub mod health;
 pub mod items;
 pub mod jobs;
 pub mod map;
@@ -34,6 +35,7 @@ use serde::{Deserialize, Serialize};
 
 pub use build::{Blueprint, BuildKind, Material};
 pub use farm::Crop;
+pub use health::{BodyPart, Injury};
 pub use items::{ItemKind, ItemStack};
 pub use jobs::{Regrow, Reservation};
 pub use map::{Designation, Feature, Map, Rect, Terrain, Zone};
@@ -65,6 +67,13 @@ pub enum EventKind {
     /// Un colon a gagné un niveau dans une compétence. `arg` : son id ; le
     /// client choisira plus tard comment nommer la compétence concernée.
     LevelUp = 7,
+    /// Un colon s'est écroulé (`arg` : son id). Il ne fait plus rien et les
+    /// pillards l'ignorent : c'est le moment de venir le chercher.
+    ColonistDowned = 8,
+    /// Un colon à terre vient d'être déposé dans un lit. `arg` : l'id du blessé.
+    ColonistRescued = 9,
+    /// Les blessures d'un colon viennent d'être pansées. `arg` : l'id du soigné.
+    ColonistTended = 10,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -455,6 +464,15 @@ impl Sim {
 
     pub fn pawn_mut(&mut self, id: u32) -> Option<&mut Pawn> {
         self.pawns.iter_mut().find(|p| p.id == id)
+    }
+
+    /// Blesse un pawn à l'endroit voulu, comme le ferait un coup : le
+    /// saignement vaut `severity / health::BLEED_FRACTION`. Sert aux tests et
+    /// au futur mode debug ; le jeu blesse par le combat et la famine.
+    pub fn inflict_injury(&mut self, pawn: u32, part: BodyPart, severity: u32) {
+        if let Some(p) = self.pawns.iter_mut().find(|p| p.id == pawn) {
+            p.add_injury(part, severity, severity / health::BLEED_FRACTION);
+        }
     }
 
     pub fn items(&self) -> &[ItemStack] {

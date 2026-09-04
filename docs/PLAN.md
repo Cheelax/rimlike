@@ -284,8 +284,13 @@ types, niveau 0-20, XP par tick de travail, montée de niveau avec événement ;
 travail combine humeur et compétence, les transports ne rapportent pas d'XP). Côté sim et
 sim-wasm seulement pour l'instant : l'interface (noms au lieu de « Colon N », onglet
 compétences) suit dès que l'écran Monde est posé. Livré par un sous-agent Sonnet.
-À venir : santé/blessures par membre, recherche, traits et relations, storyteller adaptatif,
-factions PNJ et commerce, colonies hors ligne, mods de contenu, événements monde.
+Santé détaillée livrée le 2026-09-05 (Opus) : six parties du corps, blessures avec sévérité
+et saignement qui se referme seul, sang, `hp` dérivé, mobilité et manipulation qui ralentissent,
+conscience, colons à terre, sauvetage vers un lit et soins par les camarades, pillards qui
+ignorent les colons à terre, mort par hémorragie ou coup fatal. Fuzz : `rimlike-sim fuzz`
+(Sonnet), aucune panique ni désync sur des millions de commandes aberrantes.
+À venir : interface de ces données (noms, compétences, blessures), recherche, traits et
+relations, storyteller adaptatif, factions PNJ et commerce, mods de contenu, événements monde.
 
 ## 7. Risques identifiés
 
@@ -313,6 +318,10 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-05 : santé détaillée (sim). `hp` reste dans le tampon comme valeur dérivée pour ne
+  rien casser côté client. La famine crée des blessures « faiblesse » déjà pansées : sans ça
+  les colons affamés passaient leur temps à se soigner entre eux. Les pawns à terre sont
+  ignorés par toutes les recherches d'ennemi, ce qui rend le sauvetage possible.
 - 2026-09-05 : écran Monde livré. Connexion monde sur le thread principal, connexion de
   salle dans le Worker : deux sockets, ce que le protocole autorise, plutôt qu'un transfert
   impossible de socket vers le Worker. Le client ne regénère jamais le globe.

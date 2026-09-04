@@ -4,6 +4,7 @@
 
 mod cli;
 mod commands;
+mod fuzzgen;
 mod scenario;
 
 use std::process::ExitCode;
@@ -19,6 +20,7 @@ SOUS-COMMANDES :
     verify    compare deux sims indépendantes tick par tick
     snapshot  vérifie qu'un aller-retour snapshot/restore ne change rien
     bench     mesure les ticks/s de plusieurs scénarios
+    fuzz      bombarde des sims de commandes aléatoires, cherche désyncs et paniques
 
 Ajouter --help après une sous-commande pour son aide détaillée, par exemple :
     rimlike-sim run --help
@@ -43,6 +45,7 @@ fn main() -> ExitCode {
         "verify" => commands::verify(rest),
         "snapshot" => commands::snapshot(rest),
         "bench" => commands::bench(rest),
+        "fuzz" => commands::fuzz(rest),
         other => {
             eprintln!("erreur : sous-commande inconnue : « {other} »");
             eprintln!();

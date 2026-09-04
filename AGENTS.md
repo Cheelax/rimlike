@@ -48,10 +48,14 @@ pnpm dev:server       # relais + serveur monde sur :8787 (GET /health, GET /worl
 cargo fmt --all       # la CI vérifie le formatage
 cargo run -p sim-cli --release -- bench --size 128 --ticks 20000   # référence de perf du sim
 cargo run -p sim-cli --release -- verify --seed 1 --size 64 --ticks 10000 --scenario demo
+cargo run -p sim-cli --release -- fuzz --seed 1 --size 24 --ticks 40000 --runs 10 --commands-per-tick 6
 ```
 
 `crates/sim-cli` (binaire `rimlike-sim`) exécute le sim en natif : `run` (stats et hash),
-`verify` (deux sims comparées), `snapshot` (aller-retour), `bench`. Référence mesurée le
+`verify` (deux sims comparées), `snapshot` (aller-retour), `bench`, `fuzz` (commandes
+aléatoires et aberrantes, deux sims comparées, paniques attrapées ; bilan dans
+`crates/sim-cli/FUZZ-FINDINGS.md`). Après tout changement du sim, relancer une campagne
+de fuzz courte. Référence mesurée le
 2026-09-05 sur carte 128×128 en release : ~2,2 M ticks/s à vide, ~0,6 M en pleine
 activité, ~0,2 M avec 15 colons. Toute régression nette sur ces chiffres se justifie.
 
@@ -104,9 +108,10 @@ Les valeurs numériques des enums sont un contrat, à modifier des deux côtés 
 | `build::BuildKind`, `Material` | `terrain.ts` (`BUILD_KIND`, `MATERIAL`, `WALL_COLORS`, `DOOR_COLORS`) |
 | `pawn::Faction` (0 colonie, 1 pillard), `EventKind` | `Renderer.ts`, `App.tsx` (index 10 du tampon pawn), `terrain.ts` (`eventLabel`) |
 | `work::WorkType` (6 types), `weather::Weather` (0 clair, 1 pluie, 2 orage) | `terrain.ts` (`WORK_LABELS`, `WEATHER_LABELS`), `Renderer.ts` (`setWeather`) |
-| `work::Skill` (niveau 0-20, xp), `EventKind::LevelUp = 7`, `pawn_name(id)` | à exposer côté client (tampon `skills`, stride 13 : id puis niveau/xp par type dans l'ordre de `WorkType::ALL`) |
+| `work::Skill` (niveau 0-20, xp), `EventKind::LevelUp = 7`, `pawn_name(id)` | tampon `skills`, stride 13 : id puis niveau/xp par type dans l'ordre de `WorkType::ALL` |
+| `health::BodyPart` (0 tête … 5 jambe droite), `EventKind` 8 à terre / 9 secouru / 10 soigné, jobs 15 à terre / 16 secourt / 17 soigne, drapeau pawn `DOWNED = 32` | tampon `health`, stride 4 : id, sang 0-1000, conscience %, nombre de blessures ; `pawn_injuries(id)` : partie, sévérité, saignement, pansée |
 | `pawn::Job::code()` | `terrain.ts` (`JOB_LABELS`) |
-| `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, `PRIORITY_STRIDE` = 7, `SKILL_STRIDE` = 13, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |
+| `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, `PRIORITY_STRIDE` = 7, `SKILL_STRIDE` = 13, `HEALTH_STRIDE` = 4, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |
 
 Les vues mémoire (`tiles`, `features`, `zones`, `designations`) sont en zéro-copie sur la
 mémoire WASM : à recréer après chaque appel au sim, jamais conservées. `pawns()`,

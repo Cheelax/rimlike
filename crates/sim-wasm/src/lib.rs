@@ -20,12 +20,16 @@ pub const PRIORITY_STRIDE: usize = 1 + sim::WORK_TYPES;
 /// Entiers par colon dans le tampon des compétences : id, puis (niveau, xp)
 /// par type de travail (`sim::WORK_TYPES`).
 pub const SKILL_STRIDE: usize = 1 + 2 * sim::WORK_TYPES;
+/// Entiers par pawn dans le tampon de santé : id, sang, conscience %,
+/// nombre de blessures. Toutes factions confondues, comme `pawns()`.
+pub const HEALTH_STRIDE: usize = 4;
 
 const FLAG_MOVING: i32 = 1;
 const FLAG_SLEEPING: i32 = 2;
 const FLAG_WORKING: i32 = 4;
 const FLAG_STARVING: i32 = 8;
 const FLAG_CARRYING: i32 = 16;
+const FLAG_DOWNED: i32 = 32;
 
 /// Sérialise une commande en postcard. L'échec est impossible : `Command` est
 /// une somme de types de taille fixe et le tampon grandit à la demande.
@@ -75,6 +79,7 @@ pub struct WasmSim {
     event_buffer: Vec<i32>,
     priority_buffer: Vec<i32>,
     skill_buffer: Vec<i32>,
+    health_buffer: Vec<i32>,
 }
 
 #[wasm_bindgen]
@@ -412,6 +417,35 @@ impl WasmSim {
         self.skill_buffer.len()
     }
 
+    pub fn health_stride(&self) -> usize {
+        HEALTH_STRIDE
+    }
+
+    pub fn health_ptr(&self) -> *const i32 {
+        self.health_buffer.as_ptr()
+    }
+
+    pub fn health_len(&self) -> usize {
+        self.health_buffer.len()
+    }
+
+    /// Blessures d'un pawn, à plat : `[partie, sévérité, saignement, pansée]`
+    /// par blessure. Copie ponctuelle, pour le panneau du colon.
+    pub fn pawn_injuries(&self, id: u32) -> Vec<i32> {
+        let mut out = Vec::new();
+        if let Some(p) = self.inner.pawns().iter().find(|p| p.id == id) {
+            for inj in &p.injuries {
+                out.extend_from_slice(&[
+                    inj.part as i32,
+                    inj.severity as i32,
+                    inj.bleeding as i32,
+                    i32::from(inj.tended),
+                ]);
+            }
+        }
+        out
+    }
+
     /// Nom du colon ou du pillard, chaîne vide si l'id est inconnu.
     pub fn pawn_name(&self, id: u32) -> String {
         self.inner
@@ -434,6 +468,7 @@ impl WasmSim {
             event_buffer: Vec::new(),
             priority_buffer: Vec::new(),
             skill_buffer: Vec::new(),
+            health_buffer: Vec::new(),
         };
         s.refresh_buffers();
         s
@@ -457,6 +492,9 @@ impl WasmSim {
             }
             if p.carrying.is_some() {
                 flags |= FLAG_CARRYING;
+            }
+            if p.is_downed() {
+                flags |= FLAG_DOWNED;
             }
             let (ckind, ccount) = match p.carrying {
                 Some((k, n)) => (k as i32, n as i32),
@@ -530,6 +568,15 @@ impl WasmSim {
                 self.skill_buffer.push(i32::from(skill.level));
                 self.skill_buffer.push(skill.xp as i32);
             }
+        }
+        self.health_buffer.clear();
+        for p in self.inner.pawns() {
+            self.health_buffer.extend_from_slice(&[
+                p.id as i32,
+                p.blood as i32,
+                p.consciousness_percent() as i32,
+                p.injuries.len() as i32,
+            ]);
         }
         let _ = ItemKind::COUNT;
     }
@@ -658,6 +705,52 @@ mod tests {
         typed.step(4);
 
         assert_eq!(encoded.hash(), typed.hash());
+    }
+
+    /// Contrat de santé avec le client : tampon `[id, sang, conscience,
+    /// blessures]`, drapeau « à terre », code de job 15, et `hp` dérivé.
+    #[test]
+    fn le_tampon_de_sante_suit_les_blessures() {
+        let mut s = fresh();
+        let id = s.inner.pawns()[0].id;
+        assert!(s.pawn_injuries(id).is_empty(), "on démarre entier");
+        s.inner.inflict_injury(id, sim::BodyPart::LeftLeg, 200);
+        s.inner.pawn_mut(id).expect("le colon existe").blood = 250;
+        s.step(1);
+
+        // Le tick 0 est un tick de cicatrisation : la sévérité a déjà perdu 1.
+        let injuries = s.pawn_injuries(id);
+        assert_eq!(injuries.len(), 4, "quatre entiers par blessure");
+        assert_eq!(injuries[0], sim::BodyPart::LeftLeg as i32);
+        assert_eq!(injuries[1], 199, "sévérité");
+        assert_eq!(injuries[2], 50, "saignement = sévérité / 4");
+        assert_eq!(injuries[3], 0, "pas encore pansée");
+
+        let k = s
+            .inner
+            .pawns()
+            .iter()
+            .position(|p| p.id == id)
+            .expect("le colon est dans la liste");
+        assert_eq!(s.health_stride(), HEALTH_STRIDE);
+        assert_eq!(s.health_len(), s.inner.pawns().len() * HEALTH_STRIDE);
+        let h = k * HEALTH_STRIDE;
+        assert_eq!(s.health_buffer[h], id as i32);
+        assert!(s.health_buffer[h + 1] < 250, "le sang a coulé");
+        assert_eq!(s.health_buffer[h + 3], 1, "une blessure");
+
+        let p = k * PAWN_STRIDE;
+        assert_ne!(
+            s.pawn_buffer[p + 3] & FLAG_DOWNED,
+            0,
+            "drapeau « à terre » absent"
+        );
+        assert_eq!(s.pawn_buffer[p + 7], 15, "code du job à terre");
+        assert_eq!(
+            s.pawn_buffer[p + 11],
+            1000 - 199,
+            "PV dérivés de la sévérité"
+        );
     }
 
     #[test]
