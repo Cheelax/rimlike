@@ -9,6 +9,7 @@
  */
 
 import {
+  NO_PLAYER,
   PROTOCOL_VERSION,
   type Bundle,
   type ClientMessage,
@@ -16,8 +17,10 @@ import {
   type PlayerInfo,
   type RoomState,
   type ServerMessage,
+  type Settlement,
   type TickCommand,
   type TickCommands,
+  type WorldInfo,
 } from "./messages.js";
 
 const B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -172,6 +175,77 @@ function isPlayerId(value: unknown): value is PlayerId {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;
 }
 
+/** `forPlayer` d'un `request_snapshot` : un joueur, ou `NO_PLAYER` (0). */
+function isPlayerIdOrNone(value: unknown): value is PlayerId {
+  return isPlayerId(value) || value === NO_PLAYER;
+}
+
+/**
+ * Identifiant de case du globe. La borne haute n'est qu'un garde-fou contre
+ * les valeurs absurdes : c'est le serveur, seul à connaître la subdivision en
+ * cours, qui vérifie que la case existe (`bad_tile`).
+ */
+function isTileId(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 10_000_000;
+}
+
+/** Date en millisecondes epoch. */
+function isTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function asSettlements(value: unknown): Settlement[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const settlements: Settlement[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry) || !isTileId(entry.tile) || !isName(entry.owner) || !isName(entry.room)) {
+      return null;
+    }
+    if (!isSeed(entry.seed) || !isTimestamp(entry.createdAt)) {
+      return null;
+    }
+    settlements.push({
+      tile: entry.tile,
+      owner: entry.owner,
+      room: entry.room,
+      seed: entry.seed,
+      createdAt: entry.createdAt,
+    });
+  }
+  return settlements;
+}
+
+/** Noms de joueurs du monde : l'identité v1 est le nom, pas un identifiant. */
+function asNames(value: unknown): string[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const names: string[] = [];
+  for (const entry of value) {
+    if (!isName(entry)) {
+      return null;
+    }
+    names.push(entry);
+  }
+  return names;
+}
+
+function asWorldInfo(value: unknown): WorldInfo | null {
+  if (!isRecord(value) || !isSeed(value.seed)) {
+    return null;
+  }
+  const { subdivisions, tiles } = value;
+  if (typeof subdivisions !== "number" || !Number.isInteger(subdivisions) || subdivisions < 0) {
+    return null;
+  }
+  if (typeof tiles !== "number" || !Number.isInteger(tiles) || tiles < 1) {
+    return null;
+  }
+  return { seed: value.seed, subdivisions, tiles };
+}
+
 /** Accepte du base64 (le fil) comme des octets déjà décodés (même processus). */
 function asBytes(value: unknown): Uint8Array | null {
   if (value instanceof Uint8Array) {
@@ -286,6 +360,25 @@ export function validateClientMessage(value: unknown): ClientMessage | null {
       return { type: "ping" };
     case "pong":
       return { type: "pong" };
+    case "world_join": {
+      if (!isName(value.name)) {
+        return null;
+      }
+      if (value.protocol !== undefined && !isTick(value.protocol)) {
+        return null;
+      }
+      return value.protocol === undefined
+        ? { type: "world_join", name: value.name }
+        : { type: "world_join", name: value.name, protocol: value.protocol };
+    }
+    case "settle":
+      return isTileId(value.tile) ? { type: "settle", tile: value.tile } : null;
+    case "visit":
+      return isTileId(value.tile) ? { type: "visit", tile: value.tile } : null;
+    case "abandon":
+      return isTileId(value.tile) ? { type: "abandon", tile: value.tile } : null;
+    case "world_leave":
+      return { type: "world_leave" };
     default:
       return null;
   }
@@ -361,7 +454,9 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       return bundle === null ? null : { type: "bundle", ...bundle };
     }
     case "request_snapshot": {
-      if (!isPlayerId(value.forPlayer)) {
+      // `NO_PLAYER` est admis : c'est la demande de snapshot de conservation
+      // d'une salle « case » (docs/protocol.md §11).
+      if (!isPlayerIdOrNone(value.forPlayer)) {
         return null;
       }
       return { type: "request_snapshot", forPlayer: value.forPlayer };
@@ -398,6 +493,45 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       return { type: "ping" };
     case "pong":
       return { type: "pong" };
+    case "world_welcome": {
+      const settlements = asSettlements(value.settlements);
+      const players = asNames(value.players);
+      const world = asWorldInfo(value.world);
+      if (settlements === null || players === null || world === null) {
+        return null;
+      }
+      if (!isPlayerId(value.playerId) || !isName(value.name)) {
+        return null;
+      }
+      return {
+        type: "world_welcome",
+        playerId: value.playerId,
+        name: value.name,
+        settlements,
+        players,
+        world,
+      };
+    }
+    case "world_settlements": {
+      const settlements = asSettlements(value.settlements);
+      return settlements === null ? null : { type: "world_settlements", settlements };
+    }
+    case "world_players": {
+      const players = asNames(value.players);
+      return players === null ? null : { type: "world_players", players };
+    }
+    case "settled": {
+      if (!isTileId(value.tile) || !isName(value.room) || !isSeed(value.seed)) {
+        return null;
+      }
+      return { type: "settled", tile: value.tile, room: value.room, seed: value.seed };
+    }
+    case "world_error": {
+      if (!isName(value.code) || typeof value.message !== "string") {
+        return null;
+      }
+      return { type: "world_error", code: value.code, message: value.message };
+    }
     default:
       return null;
   }

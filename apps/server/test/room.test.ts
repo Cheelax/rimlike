@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { decodeServerMessage, type ServerMessage } from "@rimlike/protocol";
 
-import { Room, type ClockStarter } from "../src/room.js";
+import { Room, type ClockStarter, type RoomOptions } from "../src/room.js";
 
 /** Faux client : garde les messages décodés reçus. */
 class Recorder {
@@ -350,6 +350,107 @@ describe("désync", () => {
     room.handle(aliceId, { type: "hash", tick: 900, hash: "cccc" });
     room.handle(bobId, { type: "hash", tick: 900, hash: "dddd" });
     expect(alice.ofType("desync")).toHaveLength(1);
+  });
+});
+
+describe("salle de case", () => {
+  /** Une salle adossée à la case 4 du globe, graine imposée 777. */
+  function tileRoom(options: Partial<RoomOptions> = {}): {
+    room: Room;
+    snapshots: Array<{ tick: number; data: Uint8Array; width: number; height: number }>;
+  } {
+    const snapshots: Array<{ tick: number; data: Uint8Array; width: number; height: number }> = [];
+    const room = new Room({
+      name: "tile-4",
+      tile: { id: 4, seed: 777 },
+      snapshotEveryTicks: 6,
+      startClock: clock.starter,
+      now: () => now,
+      log: () => {},
+      onSnapshot: (snapshot) => snapshots.push(snapshot),
+      ...options,
+    });
+    return { room, snapshots };
+  }
+
+  it("impose la graine de la case, quoi qu'annonce l'hôte", () => {
+    const { room: tile } = tileRoom();
+    const alice = new Recorder();
+    const aliceId = tile.join("alice", alice.send)!;
+    tile.handle(aliceId, { type: "start", seed: 123, width: 64, height: 64 });
+
+    expect(tile.tileId).toBe(4);
+    expect(alice.ofType("start")[0]).toEqual({
+      type: "start",
+      seed: 777,
+      width: 64,
+      height: 64,
+      tick: 0,
+    });
+  });
+
+  it("réclame périodiquement un snapshot de conservation et le garde sans le relayer", () => {
+    const { room: tile, snapshots } = tileRoom();
+    const alice = new Recorder();
+    const bob = new Recorder();
+    const aliceId = tile.join("alice", alice.send)!;
+    tile.join("bob", bob.send);
+    tile.handle(aliceId, { type: "start", seed: 1, width: 96, height: 48 });
+
+    clock.tick(2); // ticks 0-5 : pas encore la période
+    expect(alice.ofType("request_snapshot")).toEqual([]);
+    clock.tick(); // 6-8 : la période de 6 ticks est franchie
+    expect(alice.ofType("request_snapshot")).toEqual([{ type: "request_snapshot", forPlayer: 0 }]);
+    // L'hôte seul est sollicité.
+    expect(bob.ofType("request_snapshot")).toEqual([]);
+
+    tile.handle(aliceId, { type: "snapshot", tick: 9, data: bytes(4, 5, 6) });
+    expect(snapshots).toEqual([{ tick: 9, data: bytes(4, 5, 6), width: 96, height: 48 }]);
+    // Conservation ne veut pas dire diffusion : personne ne reçoit ce snapshot.
+    expect(alice.ofType("snapshot")).toEqual([]);
+    expect(bob.ofType("snapshot")).toEqual([]);
+  });
+
+  it("rouvre en jeu depuis un snapshot conservé, sans solliciter personne", () => {
+    const { room: tile } = tileRoom({
+      restore: { tick: 1800, data: bytes(7, 7, 7), width: 128, height: 128 },
+    });
+    const alice = new Recorder();
+    tile.join("alice", alice.send);
+
+    expect(tile.state).toBe("running");
+    const welcome = alice.ofType("welcome")[0]!;
+    expect(welcome.state).toBe("running");
+    expect(welcome.tick).toBe(1800);
+    expect(welcome.seed).toBe(777);
+    expect(welcome.width).toBe(128);
+    expect(welcome.isHost).toBe(true);
+    // L'état vient du serveur : aucun hôte n'a été sollicité.
+    expect(alice.ofType("request_snapshot")).toEqual([]);
+    expect(alice.ofType("snapshot")).toEqual([{ type: "snapshot", tick: 1800, data: bytes(7, 7, 7) }]);
+    expect(alice.ofType("error")).toEqual([]);
+
+    // Les bundles repartent du tick du snapshot, sans rejeu.
+    clock.tick(2);
+    expect(alice.ofType("bundle").map((b) => b.from)).toEqual([1800, 1803]);
+
+    // Le second arrivant, lui, passe par l'hôte comme dans une salle ordinaire.
+    const bob = new Recorder();
+    tile.join("bob", bob.send);
+    expect(alice.ofType("request_snapshot")).toHaveLength(1);
+    expect(bob.ofType("snapshot")).toEqual([]);
+  });
+
+  it("refuse une réouverture hors salle de case", () => {
+    expect(
+      () =>
+        new Room({
+          name: "demo",
+          restore: { tick: 10, data: bytes(1), width: 32, height: 32 },
+          startClock: clock.starter,
+          log: () => {},
+        }),
+    ).toThrow(/salle de case/);
   });
 });
 

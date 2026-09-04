@@ -8,12 +8,24 @@ import {
   decodeServerMessage,
   encodeMessage,
   isCompatibleProtocol,
+  NO_PLAYER,
   PROTOCOL_VERSION,
   validateClientMessage,
   validateServerMessage,
+  WORLD_ERROR_CODES,
   type ClientMessage,
   type ServerMessage,
+  type Settlement,
 } from "../src/index.js";
+
+/** Une colonie de référence, réutilisée par plusieurs cas. */
+const settlement: Settlement = {
+  tile: 1234,
+  owner: "alice",
+  room: "tile-1234",
+  seed: 3_141_592_653,
+  createdAt: 1_757_000_000_000,
+};
 
 describe("base64", () => {
   it("fait l'aller-retour sur toutes les longueurs de reste", () => {
@@ -55,6 +67,12 @@ describe("encodeMessage / decodeMessage", () => {
     { type: "snapshot", tick: 1234, data: new Uint8Array([0]), forPlayer: 3 },
     { type: "ping" },
     { type: "pong" },
+    { type: "world_join", name: "alice" },
+    { type: "world_join", name: "bob", protocol: PROTOCOL_VERSION },
+    { type: "settle", tile: 1234 },
+    { type: "visit", tile: 0 },
+    { type: "abandon", tile: 10_241 },
+    { type: "world_leave" },
   ];
 
   const serverMessages: ServerMessage[] = [
@@ -101,11 +119,27 @@ describe("encodeMessage / decodeMessage", () => {
       ],
     },
     { type: "request_snapshot", forPlayer: 3 },
+    { type: "request_snapshot", forPlayer: NO_PLAYER },
     { type: "snapshot", tick: 42, data: new Uint8Array([1, 2, 3, 4, 5, 6, 7]) },
     { type: "desync", tick: 600, hashes: { 1: "aaaa", 2: "bbbb" } },
     { type: "error", code: "bad_message", message: "champ manquant" },
     { type: "ping" },
     { type: "pong" },
+    {
+      type: "world_welcome",
+      playerId: 2,
+      name: "bob",
+      settlements: [settlement],
+      players: ["alice", "bob"],
+      world: { seed: 1, subdivisions: 4, tiles: 2562 },
+    },
+    { type: "world_welcome", playerId: 1, name: "alice", settlements: [], players: ["alice"], world: { seed: 0, subdivisions: 0, tiles: 12 } },
+    { type: "world_settlements", settlements: [] },
+    { type: "world_settlements", settlements: [settlement, { ...settlement, tile: 7, room: "tile-7" }] },
+    { type: "world_players", players: [] },
+    { type: "world_players", players: ["alice"] },
+    { type: "settled", tile: 1234, room: "tile-1234", seed: 3_141_592_653 },
+    { type: "world_error", code: "occupied", message: "case déjà colonisée" },
   ];
 
   it("fait l'aller-retour sur chaque message client", () => {
@@ -164,6 +198,14 @@ describe("validation", () => {
       { type: "hash", tick: 10 },
       { type: "snapshot", tick: 10 },
       { type: "snapshot", tick: 10, data: "AQID", forPlayer: 0 },
+      { type: "world_join" },
+      { type: "world_join", name: "" },
+      { type: "world_join", name: "alice", protocol: "1" },
+      { type: "settle" },
+      { type: "settle", tile: -1 },
+      { type: "settle", tile: 1.5 },
+      { type: "visit", tile: "3" },
+      { type: "abandon", tile: null },
     ];
     for (const value of bad) {
       expect(validateClientMessage(value), JSON.stringify(value)).toBeNull();
@@ -187,6 +229,36 @@ describe("validation", () => {
       { type: "desync", tick: 1, hashes: [] },
       { type: "error", code: "", message: "vide" },
       { type: "error", code: "bad_message" },
+      { type: "request_snapshot", forPlayer: -1 },
+      { type: "world_welcome", playerId: 1, name: "alice", settlements: [], players: [] },
+      {
+        type: "world_welcome",
+        playerId: 1,
+        name: "alice",
+        settlements: [],
+        players: [],
+        world: { seed: 1, subdivisions: 4 },
+      },
+      {
+        type: "world_welcome",
+        playerId: 0,
+        name: "alice",
+        settlements: [],
+        players: [],
+        world: { seed: 1, subdivisions: 4, tiles: 2562 },
+      },
+      { type: "world_settlements", settlements: {} },
+      // Colonie sans `createdAt` : un `Settlement` est validé champ par champ.
+      { type: "world_settlements", settlements: [{ tile: 1, owner: "a", room: "tile-1", seed: 2 }] },
+      { type: "world_settlements", settlements: [{ ...settlement, owner: "" }] },
+      { type: "world_settlements", settlements: [{ ...settlement, tile: -3 }] },
+      { type: "world_players", players: [7] },
+      { type: "world_players", players: "alice" },
+      { type: "settled", tile: 1, room: "", seed: 1 },
+      { type: "settled", tile: 1, room: "tile-1", seed: -1 },
+      { type: "settled", room: "tile-1", seed: 1 },
+      { type: "world_error", code: "", message: "vide" },
+      { type: "world_error", code: "occupied" },
     ];
     for (const value of bad) {
       expect(validateServerMessage(value), JSON.stringify(value)).toBeNull();
@@ -202,5 +274,33 @@ describe("validation", () => {
     expect(isCompatibleProtocol(undefined)).toBe(true);
     expect(isCompatibleProtocol(PROTOCOL_VERSION)).toBe(true);
     expect(isCompatibleProtocol(PROTOCOL_VERSION + 1)).toBe(false);
+  });
+});
+
+describe("monde", () => {
+  it("accepte NO_PLAYER dans request_snapshot mais pas dans snapshot", () => {
+    // Le serveur peut demander un snapshot « pour personne » (conservation) ;
+    // la réponse, elle, doit omettre `forPlayer` — 0 n'y est pas une cible.
+    expect(validateServerMessage({ type: "request_snapshot", forPlayer: NO_PLAYER })).toEqual({
+      type: "request_snapshot",
+      forPlayer: 0,
+    });
+    expect(validateClientMessage({ type: "snapshot", tick: 5, data: "AQID", forPlayer: NO_PLAYER })).toBeNull();
+    expect(validateClientMessage({ type: "snapshot", tick: 5, data: "AQID" })).toEqual({
+      type: "snapshot",
+      tick: 5,
+      data: new Uint8Array([1, 2, 3]),
+    });
+  });
+
+  it("transporte une colonie sans perdre de champ", () => {
+    const wire = encodeMessage({ type: "world_settlements", settlements: [settlement] });
+    expect(decodeMessage(wire)).toEqual({ type: "world_settlements", settlements: [settlement] });
+    const back = decodeServerMessage(wire);
+    expect(back?.type === "world_settlements" ? back.settlements : null).toEqual([settlement]);
+  });
+
+  it("garde des codes d'erreur monde distincts", () => {
+    expect(new Set(WORLD_ERROR_CODES).size).toBe(WORLD_ERROR_CODES.length);
   });
 });

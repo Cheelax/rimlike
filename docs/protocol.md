@@ -1,9 +1,13 @@
-# Protocole réseau — phase 3 (multi sur une carte, lockstep)
+# Protocole réseau — phase 3 (une carte, lockstep) et phase 4 (le monde)
 
-Ce document décrit le protocole entre un client et le serveur relais
-(`apps/server`), tel qu'implémenté par `packages/protocol`. Il est la référence
-pour l'intégration côté client et pour les ajouts à faire dans `sim-wasm`
-(dernière section).
+Ce document décrit le protocole entre un client et le serveur (`apps/server`),
+tel qu'implémenté par `packages/protocol`. Il est la référence pour
+l'intégration côté client.
+
+Les sections 1 à 10 décrivent le **lockstep sur une carte** : c'est la couche
+de base, inchangée. La section 11 décrit la **couche monde** : le globe
+partagé, les colonies et les salles adossées à une case, qui se posent
+au-dessus sans rien modifier de ce qui précède.
 
 ## 1. Principes
 
@@ -25,6 +29,7 @@ Constantes partagées (`packages/protocol/src/messages.ts`) :
 | `BUNDLE_TICKS` | 3 | Ticks par bundle, donc 20 bundles/s |
 | `BUNDLE_INTERVAL_MS` | 50 | Période d'émission d'un bundle |
 | `HASH_EVERY_TICKS` | 300 | Période d'envoi du hash d'état (5 s) |
+| `SNAPSHOT_EVERY_TICKS` | 1800 | Période du snapshot de conservation d'une case (30 s) |
 | `MAX_HISTORY_BUNDLES` | 2000 | Historique conservé par salle (100 s) |
 | `HEARTBEAT_MS` | 5000 | Période du `ping` serveur |
 | `HEARTBEAT_TIMEOUT_MS` | 15000 | Silence toléré avant fermeture |
@@ -32,9 +37,10 @@ Constantes partagées (`packages/protocol/src/messages.ts`) :
 
 ## 2. Transport et format
 
-- WebSocket, une connexion = un joueur = une salle. `http.createServer` sert
-  aussi `GET /health` → `{"ok":true,"rooms":2}` sur le même port (`PORT`,
-  défaut 8787).
+- WebSocket, une connexion = un joueur = une salle, plus éventuellement le
+  monde (§11). `http.createServer` sert aussi `GET /health` →
+  `{"ok":true,"rooms":2,"world":{"seed":1,"subdivisions":4,"tiles":2562,"settlements":3}}`
+  et `GET /world` sur le même port (`PORT`, défaut 8787).
 - Messages de contrôle en **JSON**, un objet par trame, discriminé par `type`.
 - Les charges binaires (`command.payload`, `snapshot.data`, les `payload` des
   commandes d'un bundle) voyagent en **base64 standard** dans le JSON.
@@ -154,9 +160,13 @@ Les ticks sans commande sont **omis** de `ticks` : `"ticks": []` signifie
 ```
 
 **`request_snapshot`** — envoyé au host seul, pour un joueur qui rejoint.
+`forPlayer` vaut `NO_PLAYER` (0), qui n'est jamais un identifiant de joueur,
+pour un **snapshot de conservation** dans une salle « case » (§11) : la réponse
+doit alors omettre `forPlayer`.
 
 ```json
 { "type": "request_snapshot", "forPlayer": 3 }
+{ "type": "request_snapshot", "forPlayer": 0 }
 ```
 
 **`snapshot`** — relayé au joueur qui rejoint, avant le rejeu des bundles.
@@ -217,8 +227,9 @@ Détails de la vie d'une salle :
 - Le **host** est le premier joueur connecté. S'il part, le joueur restant le
   plus ancien le devient et un `players` le diffuse. Les demandes de snapshot
   en cours sont réémises vers le nouveau host.
-- La salle est **détruite dès qu'elle est vide** (v1 : rien n'est persisté ;
-  la persistance des cartes est un sujet de la phase 4).
+- La salle est **détruite dès qu'elle est vide**. Une salle ordinaire ne
+  laisse rien derrière elle ; une salle « case » laisse son dernier snapshot
+  de conservation au serveur, qui rouvre la colonie avec (§11).
 - `start` par un non-host → `not_host`. `start` sur une salle démarrée →
   `already_running`. `command`, `hash` ou `snapshot` avant `start` →
   `not_running`.
@@ -328,7 +339,9 @@ retour visuel non simulé (surbrillance, curseur, aperçu de rectangle).
   serveur ne simule pas et ne peut pas arbitrer).
 - Le snapshot d'une carte 128² fait plusieurs centaines de kilo-octets, gonflés
   d'un tiers par le base64. C'est le premier candidat au passage en binaire.
-- Il n'y a pas de reprise de salle : si tout le monde part, la salle disparaît.
+- Il n'y a pas de reprise de salle **hors monde** : si tout le monde part, la
+  salle disparaît. Une salle « case », elle, rouvre depuis son dernier
+  snapshot conservé (§11).
 
 ## 9. Migration binaire prévue
 
@@ -439,3 +452,271 @@ for (let tick = bundle.from; tick <= bundle.to; tick += 1) {
 Ce que le client doit encore construire par-dessus (hors périmètre de ce
 document) : le Worker qui porte le sim, la file de bundles, l'écran de lobby,
 et le basculement solo/multi dans `App.tsx`.
+
+## 11. Monde (phase 4, première tranche)
+
+Le serveur devient autorité sur un **globe partagé** : une case du globe est
+une colonie possible, et chaque case occupée a **sa** salle lockstep, avec les
+règles des sections 1 à 10. Tout ce qui suit s'ajoute au protocole existant
+sans le modifier : le mode « salle simple » (`join { room: "demo" }`) continue
+de fonctionner à l'identique.
+
+Le globe lui-même — géométrie, biomes, itinéraires — est `packages/world`, voir
+`docs/world.md`.
+
+### 11.1 Le globe : `GET /world`
+
+Le serveur génère le globe **une fois** au démarrage, à partir de deux
+variables d'environnement, et sert son `WorldWire` sérialisé :
+
+| variable | défaut | rôle |
+|---|---|---|
+| `WORLD_SEED` | 1 | graine du globe |
+| `WORLD_SUBDIVISIONS` | 4 | 4 = 2 562 cases (5 = 10 242, la cible de production) |
+
+```
+GET /world
+→ 200 { "seed": 1, "subdivisions": 4, "generatedAt": 1757000000000, "wire": { … } }
+   Content-Encoding: gzip          (si le client l'accepte)
+   ETag: "world-1-1-4"             (version du format, graine, subdivision)
+   Cache-Control: public, max-age=3600
+   Vary: Accept-Encoding
+```
+
+- Le client **ne régénère jamais** le globe : `Math.sin` et consorts ne sont pas
+  normalisés au bit près en JavaScript, deux moteurs ne verraient pas la même
+  carte (`docs/world.md` §6). Il télécharge, il désérialise avec
+  `deserializeWorld`, il affiche.
+- L'ETag ne dépend que de ce qui détermine le globe. Un `If-None-Match` qui
+  correspond donne un `304` : le globe ne change pas, un client n'a à le
+  télécharger qu'une fois. Le corps gzippé et le corps brut partagent le même
+  ETag, d'où le `Vary`.
+- Le corps est calculé à la première demande puis gardé en mémoire (2,8 Mo de
+  JSON, 650 Ko gzippés à la subdivision 5).
+- `GET /health` annonce le même globe :
+  `world: { seed, subdivisions, tiles, settlements }`. C'est le contrôle de
+  cohérence le moins cher entre un client et un serveur.
+
+### 11.2 Identité, cases et salles
+
+- **L'identité d'un joueur est son nom.** Il n'y a pas de compte : quiconque se
+  connecte sous le nom du propriétaire d'une colonie est reconnu comme tel.
+  C'est une limite assumée de cette tranche, à remplacer par de vrais comptes
+  avant toute mise en ligne publique.
+- **Une colonie par case**, au plus. Un joueur peut en fonder plusieurs.
+- Une colonie ne se pose que sur une case **terrestre**, au sens de
+  `movementCost(biome) !== null` : tout sauf l'océan, la banquise comprise.
+- La salle d'une case s'appelle **`tile-<id>`**, avec l'identifiant écrit sans
+  zéro devant (`tile-0`, `tile-2561`). Ce préfixe est **réservé** : un `join`
+  sur `tile-<id>` d'une case non colonisée est refusé par
+  `error not_settled`, on ne squatte pas le nom d'une future colonie.
+- La **graine de carte d'une case est imposée par le serveur** :
+  `mix(WORLD_SEED, tileId)` sur 32 bits, déterministe. Deux visites de la même
+  case donnent la même carte, et le serveur n'a rien à stocker pour la
+  retrouver. Dans une salle « case », le `seed` du `start` de l'hôte est
+  **ignoré** et c'est la graine de la case qui est diffusée ; `width` et
+  `height` restent au choix de l'hôte.
+
+### 11.3 Cycle de vie
+
+```
+   world_join ──▶ [ dans le monde ]  ── settle ──▶ settled { room, seed }
+                        │  ▲                │                  │
+                        │  │ world_settlements (diffusé)       │
+                   visit│  │                                   │
+                        ▼  │                                   ▼
+                  settled { room, seed } ────────────▶ join { room }   (§3)
+                                                              │
+   world_leave ◀── [ dans le monde ] ◀── (la salle vit sa vie lockstep)
+                                                              │
+        ┌── salle vide : détruite, snapshot conservé ◀─────────┘
+        │
+        └──▶ retour (visit ou propriétaire) : la salle rouvre en `running`,
+             au tick du snapshot conservé
+```
+
+Une connexion peut être dans le monde, dans une salle, ou les deux : le
+`world_join` ne remplace pas le `join`, il le précède. Les identifiants de
+joueur du monde (`world_welcome.playerId`) et de salle (`welcome.playerId`)
+sont **indépendants**.
+
+### 11.4 Messages, client → serveur
+
+**`world_join`** — entrer dans le monde, sans salle. `protocol` se comporte
+comme celui de `join`.
+
+```json
+{ "type": "world_join", "name": "alice", "protocol": 1 }
+```
+
+Un second `world_join` sur la même connexion répond `error already_joined`, et
+une version incompatible `error version_mismatch` suivi d'une fermeture —
+comme pour `join`. Toutes les autres actions de monde refusées répondent
+`world_error`.
+
+**`settle`** — fonder une colonie sur une case libre et terrestre.
+
+```json
+{ "type": "settle", "tile": 1732 }
+```
+
+**`visit`** — demander la salle et la graine d'une case déjà colonisée, en
+invité. Ne change rien à l'état du monde.
+
+```json
+{ "type": "visit", "tile": 1732 }
+```
+
+**`abandon`** — rendre une de ses cases. Son snapshot conservé est oublié ; une
+salle encore peuplée n'est pas fermée pour autant.
+
+```json
+{ "type": "abandon", "tile": 1732 }
+```
+
+**`world_leave`** — quitter le monde sans fermer la connexion (ni la salle).
+
+```json
+{ "type": "world_leave" }
+```
+
+### 11.5 Messages, serveur → client
+
+**`world_welcome`** — réponse à `world_join`. Le globe n'est **pas** dedans :
+il se télécharge par `GET /world`. `world` sert à vérifier qu'on parle du même.
+
+```json
+{
+  "type": "world_welcome",
+  "playerId": 2,
+  "name": "bob",
+  "settlements": [
+    {
+      "tile": 1732,
+      "owner": "alice",
+      "room": "tile-1732",
+      "seed": 2007225770,
+      "createdAt": 1757000000000
+    }
+  ],
+  "players": ["alice", "bob"],
+  "world": { "seed": 1, "subdivisions": 4, "tiles": 2562 }
+}
+```
+
+**`world_settlements`** — diffusé à tous les joueurs du monde à chaque
+fondation et à chaque abandon. Liste complète, triée par case : le client
+remplace la sienne, il n'y a pas de delta.
+
+```json
+{ "type": "world_settlements", "settlements": [ … ] }
+```
+
+**`world_players`** — diffusé à chaque arrivée et à chaque départ du monde.
+
+```json
+{ "type": "world_players", "players": ["alice", "bob"] }
+```
+
+**`settled`** — où aller pour jouer une case. Envoyé à l'auteur d'un `settle`
+réussi **et** d'un `visit` réussi. Le client enchaîne avec
+`join { room, name }` sur la même connexion.
+
+```json
+{ "type": "settled", "tile": 1732, "room": "tile-1732", "seed": 2007225770 }
+```
+
+**`world_error`** — refus d'une action de monde. Distinct de `error` pour que
+le client puisse router les deux séparément : `error` parle de la salle et du
+transport, `world_error` de la carte du globe.
+
+```json
+{ "type": "world_error", "code": "occupied", "message": "la case 1732 est déjà colonisée" }
+```
+
+Codes (`WORLD_ERROR_CODES`, liste ouverte comme `ERROR_CODES`) :
+
+| code | quand |
+|---|---|
+| `bad_tile` | case hors du globe |
+| `not_land` | case sous l'eau |
+| `occupied` | case déjà colonisée (`settle`) |
+| `not_settled` | case libre alors qu'il fallait une colonie (`visit`, `abandon`) |
+| `not_owner` | colonie fondée par quelqu'un d'autre (`abandon`) |
+| `not_in_world` | action de monde avant `world_join` |
+
+### 11.6 Snapshots de conservation
+
+Une colonie doit survivre au départ de ses joueurs. Le serveur ne simule pas :
+le seul état existant est celui des clients, donc il le leur demande.
+
+```
+   hôte                         serveur
+     │   (salle « case » en jeu)   │
+     │◀── request_snapshot ────────┤  tous les SNAPSHOT_EVERY_TICKS (1800) ticks
+     │      { forPlayer: 0 }       │
+     ├─── snapshot { tick, data } ▶│  sans forPlayer
+     │                             │  → WorldState.snapshots["tile-1732"]
+```
+
+- `forPlayer: 0` (`NO_PLAYER`) veut dire « personne » : ce snapshot n'est pas
+  un rattrapage. Les identifiants de joueur commencent à 1.
+- La réponse doit **omettre** `forPlayer`. Un snapshot de conservation n'est
+  diffusé à personne ; il sert quand même les rejoignants encore en attente,
+  exactement comme en salle simple (§8) — c'est le même état.
+- Un snapshot plus ancien que celui déjà conservé est ignoré, et un snapshot
+  pour une case **sans colonie** aussi : si le propriétaire abandonne pendant
+  qu'on y joue, la partie en cours se termine mais n'écrit plus rien, et le
+  prochain occupant de la case repart d'une carte neuve.
+- **Réouverture** : quand la salle se vide elle est détruite comme les autres,
+  mais le snapshot reste. Au retour du propriétaire ou d'un visiteur, la salle
+  est recréée directement en `running`, à partir du snapshot : le premier
+  arrivant reçoit son `welcome` (`state: "running"`, `tick`, `seed` de la case,
+  `width`/`height` du snapshot) puis `snapshot { tick, data }`, et les bundles
+  reprennent à ce tick. **Aucun hôte n'est sollicité et il n'y a rien à
+  rejouer** : l'historique repart de zéro à ce tick.
+- Sans snapshot connu (colonie toute neuve), la salle s'ouvre en `lobby` et
+  l'hôte fait `start` normalement — avec la graine de la case.
+- **Le temps ne s'est pas écoulé** pendant l'absence : la colonie reprend
+  exactement où elle s'était arrêtée. L'avance rapide abstraite des cartes
+  gelées (croissance, décomposition, faim) est une tranche future.
+
+### 11.7 Enchaînement complet, côté client
+
+```ts
+// 1. Le globe, une fois, mis en cache par le navigateur.
+const { wire } = await (await fetch(`${http}/world`)).json();
+const world = deserializeWorld(wire);
+
+// 2. Le monde, sur la WebSocket.
+socket.send(encodeMessage({ type: "world_join", name, protocol: PROTOCOL_VERSION }));
+// ← world_welcome { settlements, players, world }  puis world_settlements/world_players
+
+// 3. S'installer (ou visiter) : la case cliquée sur le globe.
+socket.send(encodeMessage({ type: "settle", tile: tileId }));
+// ← settled { tile, room, seed }   ou   world_error { code }
+
+// 4. Entrer dans la colonie : le protocole des sections 3 à 8, inchangé.
+socket.send(encodeMessage({ type: "join", room, name }));
+// ← welcome (lobby → start de l'hôte, ou running → snapshot puis bundles)
+```
+
+Ce que le client doit gérer en plus du mode salle :
+
+- `request_snapshot { forPlayer: 0 }` → répondre `snapshot { tick, data }`
+  **sans** `forPlayer` (un `forPlayer: 0` dans la réponse est refusé) ;
+- `world_settlements` → remplacer la liste et recolorer les cases possédées ;
+- `world_error` → un message à l'écran, pas une déconnexion.
+
+### 11.8 Ce qui n'est pas encore fait
+
+- **Caravanes** : `findRoute` existe dans `packages/world`, aucun message ne
+  les expose. Pas de déplacement entre cases.
+- **Avance rapide abstraite** des cartes gelées : le temps ne passe pas dans
+  une colonie vide.
+- **Persistance disque** : `WorldState` est entièrement sérialisable en JSON
+  (`toJSON` / `fromJSON`, snapshots en base64) mais rien n'est écrit. Un
+  redémarrage du serveur perd les colonies et les snapshots.
+- **Comptes** : l'identité est le nom, sans mot de passe ni jeton.
+- **Horloge globale** du monde : il n'y en a pas encore, seulement l'horloge
+  par salle.

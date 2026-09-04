@@ -253,10 +253,15 @@ pentagones, 10 242 cases à la subdivision 5 ; élévation, température et humi
 3D seedé, niveau de la mer fixé par quantile pour tenir 56 à 64 % d'océan quel que soit le
 seed ; dix biomes ; coûts de déplacement par biome, banquise franchissable ; A* avec
 heuristique orthodromique admissible vérifiée contre Dijkstra ; sérialisation compacte,
-2,8 Mo JSON et 650 Ko gzippés à la subdivision 5). 83 tests. Doc : `docs/world.md`. Reste à
-faire : serveur monde (cases, propriétaires, horloge globale, caravanes), rendu du globe et
-choix de la case de départ côté client, cartes gelées et avance rapide. Livré par un
-sous-agent Opus.
+2,8 Mo JSON et 650 Ko gzippés à la subdivision 5). 83 tests. Doc : `docs/world.md`. Serveur monde livré le
+2026-09-05 : globe généré au démarrage (`WORLD_SEED`, `WORLD_SUBDIVISIONS`) et servi en gzip
+avec ETag sur `GET /world` ; connexion monde (`world_join`), colonies par case (`settle`,
+`visit`, `abandon`, une salle `tile-N` par case avec seed dérivé du monde), diffusion des
+colonies et des joueurs ; snapshot de conservation demandé à l'hôte toutes les 30 s et
+réutilisé pour rouvrir la salle quand quelqu'un revient (le temps ne s'écoule pas
+entre-temps : avance rapide à faire). 30 tests serveur de plus. Reste : rendu du globe et
+choix de la case côté client, caravanes, avance rapide, persistance disque, comptes. Livré
+par deux sous-agents Opus.
 - Globe hexagonal, rendu du globe, biomes, choix de case de départ.
 - Serveur autoritaire persistant : cases, propriétaires, horloge globale.
 - Cartes gelées + avance rapide abstraite.
@@ -295,6 +300,9 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-05 : serveur monde livré. Identité joueur = le nom (pas de compte en v1).
+  Une colonie fermée survit par son dernier snapshot côté serveur, en mémoire seulement.
+  Le préfixe de salle `tile-` est réservé aux colonies du globe.
 - 2026-09-05 : Worker livré. Le thread principal garde une instance WASM sans sim, juste
   pour encoder les commandes ; le hash n'est calculé qu'un frame sur trente (sérialisation
   complète). Le crochet de debug devient asynchrone (`rpc`), la méthode de vérification est

@@ -21,8 +21,7 @@ import {
   type ClientMessage,
   type PlayerId,
   type PlayerInfo,
-  type ServerMessage,
-} from "@rimlike/protocol";
+  type ServerMessage, NO_PLAYER } from "@rimlike/protocol";
 
 import type { CreateSim, RestoreSim, SimLike } from "./SimLike";
 import type { Transport } from "./Transport";
@@ -359,6 +358,11 @@ export class LockstepClient {
     if (sim === null) {
       // Notre sim n'est pas encore prêt : on répondra dès qu'il l'est.
       this.snapshotRequests.push(forPlayer);
+      return;
+    }
+    if (forPlayer === NO_PLAYER) {
+      // Snapshot de conservation demandé par le serveur monde : pas de destinataire.
+      this.send({ type: "snapshot", tick: this.nextTick, data: sim.snapshot() });
       return;
     }
     this.send({ type: "snapshot", tick: this.nextTick, data: sim.snapshot(), forPlayer });

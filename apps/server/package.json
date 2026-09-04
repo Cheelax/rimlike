@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@rimlike/protocol": "workspace:*",
+    "@rimlike/world": "workspace:*",
     "ws": "^8.18.0"
   },
   "devDependencies": {

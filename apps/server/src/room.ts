@@ -6,6 +6,15 @@
  * Aucune dépendance au transport : une salle ne connaît que des fonctions
  * d'envoi (`Sender`) et un démarreur d'horloge (`ClockStarter`), tous deux
  * injectables, ce qui permet de tester la logique sans WebSocket ni timer réel.
+ *
+ * Deux sortes de salles, même code :
+ *
+ * - **salle simple** (`join { room: "demo" }`) : l'hôte choisit la graine et
+ *   la taille de carte, la salle disparaît sans laisser de trace ;
+ * - **salle « case »** (`tile`), adossée à une case du globe : la graine est
+ *   imposée par le serveur, l'hôte fournit périodiquement un snapshot de
+ *   conservation, et la salle peut être rouverte depuis ce snapshot
+ *   (`restore`) au lieu de repartir d'un lobby.
  */
 
 import {
@@ -14,7 +23,9 @@ import {
   HashLedger,
   MAX_HISTORY_BUNDLES,
   MAX_PLAYERS,
+  NO_PLAYER,
   PROTOCOL_VERSION,
+  SNAPSHOT_EVERY_TICKS,
   Scheduler,
   TICK_RATE,
   encodeMessage,
@@ -35,6 +46,33 @@ export type StopClock = () => void;
 /** Démarre une horloge qui appelle `onBundle` toutes les `intervalMs`. */
 export type ClockStarter = (onBundle: () => void, intervalMs: number) => StopClock;
 
+/** Case du globe portée par la salle : la graine y est imposée. */
+export interface TileRoom {
+  readonly id: number;
+  readonly seed: number;
+}
+
+/**
+ * Dernier état connu d'une colonie, pour rouvrir la salle sans repasser par un
+ * lobby. `tick` est le prochain tick à exécuter : les bundles reprennent là,
+ * sans rejeu. Le temps ne s'est **pas** écoulé pendant l'absence (l'avance
+ * rapide abstraite des cartes gelées est une tranche future).
+ */
+export interface RoomRestore {
+  readonly tick: number;
+  readonly data: Uint8Array;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** Snapshot de conservation remonté par l'hôte d'une salle « case ». */
+export interface RoomSnapshotReport {
+  readonly tick: number;
+  readonly data: Uint8Array;
+  readonly width: number;
+  readonly height: number;
+}
+
 export interface RoomOptions {
   readonly name: string;
   readonly tickRate?: number;
@@ -46,6 +84,14 @@ export interface RoomOptions {
   /** Défaut : `setInterval` non bloquant pour le processus. */
   readonly startClock?: ClockStarter;
   readonly log?: (line: string) => void;
+  /** Présent pour une salle adossée à une case du globe. */
+  readonly tile?: TileRoom;
+  /** Rouvre la salle depuis un snapshot au lieu d'un lobby. Exige `tile`. */
+  readonly restore?: RoomRestore;
+  /** Appelé quand l'hôte remonte un snapshot de conservation. */
+  readonly onSnapshot?: (snapshot: RoomSnapshotReport) => void;
+  /** Période des snapshots de conservation. Défaut : `SNAPSHOT_EVERY_TICKS`. */
+  readonly snapshotEveryTicks?: number;
 }
 
 interface RoomPlayer {
@@ -70,6 +116,9 @@ export class Room {
   private readonly now: () => number;
   private readonly startClock: ClockStarter;
   private readonly log: (line: string) => void;
+  private readonly tile: TileRoom | null;
+  private readonly onSnapshot: ((snapshot: RoomSnapshotReport) => void) | null;
+  private readonly snapshotEveryTicks: number;
 
   private readonly players: RoomPlayer[] = [];
   private readonly history: BundleHistory;
@@ -83,6 +132,10 @@ export class Room {
   private seed: number | null = null;
   private width: number | null = null;
   private height: number | null = null;
+  /** Snapshot d'ouverture, servi au premier joueur puis oublié. */
+  private restore: RoomRestore | null = null;
+  /** Prochain tick où réclamer un snapshot de conservation. */
+  private nextKeepTick = Number.POSITIVE_INFINITY;
 
   constructor(options: RoomOptions) {
     this.name = options.name;
@@ -92,12 +145,41 @@ export class Room {
     this.now = options.now ?? Date.now;
     this.startClock = options.startClock ?? defaultClock;
     this.log = options.log ?? ((line) => console.log(line));
+    this.tile = options.tile ?? null;
+    this.onSnapshot = options.onSnapshot ?? null;
+    this.snapshotEveryTicks = options.snapshotEveryTicks ?? SNAPSHOT_EVERY_TICKS;
+    if (!Number.isInteger(this.snapshotEveryTicks) || this.snapshotEveryTicks < 1) {
+      throw new RangeError("snapshotEveryTicks doit être un entier >= 1");
+    }
     this.history = new BundleHistory(options.maxHistoryBundles ?? MAX_HISTORY_BUNDLES);
     this.scheduler = new Scheduler({ bundleTicks: this.bundleTicks });
+
+    if (this.tile !== null) {
+      // La graine d'une case est imposée : le `start` de l'hôte ne la choisit pas.
+      this.seed = this.tile.seed;
+    }
+    if (options.restore !== undefined) {
+      if (this.tile === null) {
+        throw new Error("restore n'a de sens que pour une salle de case");
+      }
+      // Reprise : la salle est déjà en jeu, l'horloge repart du tick du
+      // snapshot et l'historique repart vide (pas de rejeu).
+      this.restore = options.restore;
+      this.roomState = "running";
+      this.width = options.restore.width;
+      this.height = options.restore.height;
+      this.scheduler = new Scheduler({ bundleTicks: this.bundleTicks, startTick: options.restore.tick });
+      this.nextKeepTick = options.restore.tick + this.snapshotEveryTicks;
+    }
   }
 
   get state(): RoomState {
     return this.roomState;
+  }
+
+  /** Case du globe portée par la salle, `null` pour une salle simple. */
+  get tileId(): number | null {
+    return this.tile?.id ?? null;
   }
 
   /** Prochain tick que le serveur planifiera. 0 tant que la salle est en lobby. */
@@ -161,7 +243,24 @@ export class Room {
     this.broadcastPlayers();
 
     if (!player.synced) {
-      this.requestSnapshotFor(player.id);
+      const opening = this.restore;
+      if (opening !== null && this.players.length === 1) {
+        // Réouverture d'une colonie : le serveur a l'état, l'hôte n'a rien à
+        // fournir. Aucun bundle à rejouer, l'historique repart de ce tick.
+        this.sendTo(player, { type: "snapshot", tick: opening.tick, data: opening.data });
+        player.synced = true;
+        this.restore = null;
+        this.log(
+          `[${this.name}] rouverte au tick ${opening.tick} depuis un snapshot conservé (${opening.data.length} octets)`,
+        );
+      } else {
+        this.requestSnapshotFor(player.id);
+      }
+    }
+    // Une salle rouverte n'a pas eu de `start` : son horloge démarre à la
+    // première arrivée.
+    if (this.isRunning() && this.stopClock === null) {
+      this.stopClock = this.startClock(() => this.emitBundle(), this.bundleIntervalMs);
     }
     return player.id;
   }
@@ -231,6 +330,15 @@ export class Room {
         return;
       case "pong":
         return;
+      case "world_join":
+      case "settle":
+      case "visit":
+      case "abandon":
+      case "world_leave":
+        // Les actions de monde sont traitées par le serveur avant d'atteindre
+        // une salle : en arriver ici est un bug de câblage.
+        this.fail(player, "bad_message", "action de monde adressée à une salle");
+        return;
     }
   }
 
@@ -258,17 +366,23 @@ export class Room {
       this.fail(player, "already_running", "la salle a déjà démarré");
       return;
     }
-    this.seed = seed;
+    // Dans une salle « case », la graine appartient à la case : le `seed`
+    // annoncé par l'hôte est ignoré et c'est celui du serveur qui est diffusé.
+    const effectiveSeed = this.tile === null ? seed : this.tile.seed;
+    this.seed = effectiveSeed;
     this.width = width;
     this.height = height;
     this.roomState = "running";
     this.scheduler = new Scheduler({ bundleTicks: this.bundleTicks });
     this.history.clear();
+    this.nextKeepTick = this.tile === null ? Number.POSITIVE_INFINITY : this.snapshotEveryTicks;
     for (const p of this.players) {
       p.synced = true;
     }
-    this.broadcast({ type: "start", seed, width, height, tick: 0 });
-    this.log(`[${this.name}] démarrage — seed ${seed}, carte ${width}x${height}, ${this.players.length} joueur(s)`);
+    this.broadcast({ type: "start", seed: effectiveSeed, width, height, tick: 0 });
+    this.log(
+      `[${this.name}] démarrage — seed ${effectiveSeed}${this.tile === null ? "" : " (imposé par la case)"}, carte ${width}x${height}, ${this.players.length} joueur(s)`,
+    );
     this.stopClock = this.startClock(() => this.emitBundle(), this.bundleIntervalMs);
   }
 
@@ -282,6 +396,24 @@ export class Room {
         player.send(text);
       }
     }
+    if (bundle.to >= this.nextKeepTick) {
+      while (this.nextKeepTick <= bundle.to) {
+        this.nextKeepTick += this.snapshotEveryTicks;
+      }
+      this.requestKeepSnapshot();
+    }
+  }
+
+  /**
+   * Réclame à l'hôte l'état de la colonie, pour conservation. `forPlayer` vaut
+   * `NO_PLAYER` : personne n'attend ce snapshot, il est destiné au serveur.
+   */
+  private requestKeepSnapshot(): void {
+    const host = this.players.find((p) => p.id === this.hostId);
+    if (host === undefined || this.onSnapshot === null) {
+      return;
+    }
+    this.sendTo(host, { type: "request_snapshot", forPlayer: NO_PLAYER });
   }
 
   private handleHash(id: PlayerId, tick: number, hash: string): void {
@@ -326,6 +458,20 @@ export class Room {
     if (player.id !== this.hostId) {
       this.fail(player, "not_host", "seul le host fournit les snapshots");
       return;
+    }
+    if (
+      this.tile !== null &&
+      forPlayer === undefined &&
+      this.onSnapshot !== null &&
+      this.width !== null &&
+      this.height !== null
+    ) {
+      // Snapshot de conservation : il n'est diffusé à personne, il devient le
+      // dernier état connu de la colonie. Il sert quand même les rejoignants
+      // encore en attente, juste en dessous : c'est exactement l'état qu'ils
+      // réclament.
+      this.onSnapshot({ tick, data, width: this.width, height: this.height });
+      this.log(`[${this.name}] snapshot conservé au tick ${tick} (${data.length} octets)`);
     }
     const targets =
       forPlayer === undefined
