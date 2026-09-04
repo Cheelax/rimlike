@@ -17,6 +17,9 @@ pub const EVENT_STRIDE: usize = 4;
 /// Entiers par colon dans le tampon des priorités : id, puis une priorité par
 /// type de travail (`sim::WORK_TYPES`).
 pub const PRIORITY_STRIDE: usize = 1 + sim::WORK_TYPES;
+/// Entiers par colon dans le tampon des compétences : id, puis (niveau, xp)
+/// par type de travail (`sim::WORK_TYPES`).
+pub const SKILL_STRIDE: usize = 1 + 2 * sim::WORK_TYPES;
 
 const FLAG_MOVING: i32 = 1;
 const FLAG_SLEEPING: i32 = 2;
@@ -71,6 +74,7 @@ pub struct WasmSim {
     blueprint_buffer: Vec<i32>,
     event_buffer: Vec<i32>,
     priority_buffer: Vec<i32>,
+    skill_buffer: Vec<i32>,
 }
 
 #[wasm_bindgen]
@@ -395,6 +399,28 @@ impl WasmSim {
     pub fn priorities_len(&self) -> usize {
         self.priority_buffer.len()
     }
+
+    pub fn skill_stride(&self) -> usize {
+        SKILL_STRIDE
+    }
+
+    pub fn skills_ptr(&self) -> *const i32 {
+        self.skill_buffer.as_ptr()
+    }
+
+    pub fn skills_len(&self) -> usize {
+        self.skill_buffer.len()
+    }
+
+    /// Nom du colon ou du pillard, chaîne vide si l'id est inconnu.
+    pub fn pawn_name(&self, id: u32) -> String {
+        self.inner
+            .pawns()
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.name.clone())
+            .unwrap_or_default()
+    }
 }
 
 impl WasmSim {
@@ -407,6 +433,7 @@ impl WasmSim {
             blueprint_buffer: Vec::new(),
             event_buffer: Vec::new(),
             priority_buffer: Vec::new(),
+            skill_buffer: Vec::new(),
         };
         s.refresh_buffers();
         s
@@ -492,6 +519,17 @@ impl WasmSim {
                 e.kind as i32,
                 e.arg as i32,
             ]);
+        }
+        self.skill_buffer.clear();
+        for p in self.inner.pawns() {
+            if p.faction != Faction::Colony {
+                continue;
+            }
+            self.skill_buffer.push(p.id as i32);
+            for skill in &p.skills {
+                self.skill_buffer.push(i32::from(skill.level));
+                self.skill_buffer.push(skill.xp as i32);
+            }
         }
         let _ = ItemKind::COUNT;
     }

@@ -5,7 +5,7 @@ use crate::fixed::{self, FX_HALF, Fx};
 use crate::items::ItemKind;
 use crate::map::{Designation, Map};
 use crate::path::Tile;
-use crate::work::WORK_TYPES;
+use crate::work::{self, Skill, WORK_TYPES, WorkType};
 
 /// Vitesse nominale : 1/256 de case par tick. 18 ≈ 4,2 cases/s à 60 ticks/s.
 pub const BASE_SPEED: Fx = 18;
@@ -145,6 +145,8 @@ impl Job {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pawn {
     pub id: u32,
+    /// Tiré au sort à la création (`names::pick`), dans une liste qui dépend du camp.
+    pub name: String,
     pub x: Fx,
     pub y: Fx,
     /// Chemin restant, inversé : `last()` est la prochaine case.
@@ -169,6 +171,10 @@ pub struct Pawn {
     /// Priorité de chaque type de travail, indexée par `WorkType` :
     /// 1 la plus haute, 4 la plus basse, 0 désactivé.
     pub priorities: [u8; WORK_TYPES],
+    /// Compétence de chaque type de travail, indexée par `WorkType`. Tirée au
+    /// sort à la création pour les colons (`Sim::spawn_pawn`) ; toujours à 0
+    /// pour les pillards.
+    pub skills: [Skill; WORK_TYPES],
     /// Ticks restants du bonus d'humeur qui suit une crise.
     pub relief_ticks: u32,
     /// Le colon est dehors sous l'orage (recopié du sim à chaque tick, parce
@@ -177,9 +183,13 @@ pub struct Pawn {
 }
 
 impl Pawn {
-    pub fn at_tile(id: u32, x: u32, y: u32) -> Pawn {
+    /// `name` vient de `names::pick` : `at_tile` ne connaît pas le RNG, donc
+    /// ne tire rien lui-même. Idem pour les niveaux de compétence, posés par
+    /// l'appelant (`Sim::spawn_pawn`) après construction.
+    pub fn at_tile(id: u32, x: u32, y: u32, name: String) -> Pawn {
         Pawn {
             id,
+            name,
             x: fixed::from_int(x as i32) + FX_HALF,
             y: fixed::from_int(y as i32) + FX_HALF,
             path: Vec::new(),
@@ -196,6 +206,7 @@ impl Pawn {
             grief_ticks: 0,
             gone: false,
             priorities: [3; WORK_TYPES],
+            skills: [Skill::default(); WORK_TYPES],
             relief_ticks: 0,
             outdoor_storm: false,
         }
@@ -268,16 +279,19 @@ impl Pawn {
         m.clamp(0, i64::from(NEED_MAX)) as u32
     }
 
-    /// Vitesse de travail en centièmes : l'humeur décide de l'ardeur.
-    pub fn work_step(&self) -> u32 {
+    /// Vitesse de travail en centièmes pour le type de travail donné :
+    /// l'humeur décide de l'ardeur, le niveau de compétence de l'efficacité.
+    pub fn work_step(&self, work: WorkType) -> u32 {
         let mood = self.mood();
-        if mood >= MOOD_HAPPY {
+        let mood_percent = if mood >= MOOD_HAPPY {
             120
         } else if mood < MOOD_SAD {
             80
         } else {
             100
-        }
+        };
+        let level = self.skills[work as usize].level;
+        mood_percent * work::skill_percent(level) / 100
     }
 
     /// Vitesse en pourcentage de la nominale. Les malus de blessure ne se

@@ -21,6 +21,7 @@ pub mod hash;
 pub mod items;
 pub mod jobs;
 pub mod map;
+pub mod names;
 pub mod noise;
 pub mod path;
 pub mod pawn;
@@ -61,6 +62,9 @@ pub enum EventKind {
     RaiderLeft = 4,
     WandererJoined = 5,
     ColonistBreak = 6,
+    /// Un colon a gagné un niveau dans une compétence. `arg` : son id ; le
+    /// client choisira plus tard comment nommer la compétence concernée.
+    LevelUp = 7,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -217,7 +221,7 @@ impl Sim {
                     let x = center.0 as i32 + dx;
                     let y = center.1 as i32 + dy;
                     if self.map.in_bounds(x, y) && self.map.passable(x as u32, y as u32) {
-                        self.spawn_pawn(x as u32, y as u32);
+                        self.spawn_pawn(x as u32, y as u32, Faction::Colony);
                         spawned += 1;
                     }
                 }
@@ -226,10 +230,21 @@ impl Sim {
         }
     }
 
-    pub fn spawn_pawn(&mut self, x: u32, y: u32) -> u32 {
+    /// Crée un pawn du camp donné, avec un nom tiré au sort. Les colons
+    /// (et voyageurs) reçoivent aussi des niveaux de compétence de départ ;
+    /// les pillards restent à 0 partout (valeur par défaut de `Pawn::at_tile`).
+    pub fn spawn_pawn(&mut self, x: u32, y: u32, faction: Faction) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        self.pawns.push(Pawn::at_tile(id, x, y));
+        let name = names::pick(&mut self.rng, faction);
+        let mut pawn = Pawn::at_tile(id, x, y, name);
+        pawn.faction = faction;
+        if faction == Faction::Colony {
+            for work in WorkType::ALL {
+                pawn.skills[work as usize].level = self.rng.below(9) as u8;
+            }
+        }
+        self.pawns.push(pawn);
         id
     }
 

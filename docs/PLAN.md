@@ -270,8 +270,13 @@ par deux sous-agents Opus.
 **Jalon** : deux joueurs s'installent sur des cases distinctes, l'un envoie une
 caravane chez l'autre.
 
-### Phase 5 — Profondeur (ouvert)
-Santé/blessures par membre, recherche, traits et relations, storyteller adaptatif,
+### Phase 5 — Profondeur (ouvert) — entamée le 2026-09-05
+Fait : noms de colons (tirés au sort par faction, déterministes) et compétences (six
+types, niveau 0-20, XP par tick de travail, montée de niveau avec événement ; la vitesse de
+travail combine humeur et compétence, les transports ne rapportent pas d'XP). Côté sim et
+sim-wasm seulement pour l'instant : l'interface (noms au lieu de « Colon N », onglet
+compétences) suit dès que l'écran Monde est posé. Livré par un sous-agent Sonnet.
+À venir : santé/blessures par membre, recherche, traits et relations, storyteller adaptatif,
 factions PNJ et commerce, colonies hors ligne, mods de contenu, événements monde.
 
 ## 7. Risques identifiés
@@ -300,6 +305,9 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-05 : compétences et noms (sim). `spawn_pawn` prend la faction pour tirer nom et
+  niveaux au bon moment ; les tirages supplémentaires changent les hashes mais pas le
+  déterminisme (test inchangé et vert). Bench inchangé.
 - 2026-09-05 : serveur monde livré. Identité joueur = le nom (pas de compte en v1).
   Une colonie fermée survit par son dernier snapshot côté serveur, en mémoire seulement.
   Le préfixe de salle `tile-` est réservé aux colonies du globe.

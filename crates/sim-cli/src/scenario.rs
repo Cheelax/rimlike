@@ -2,7 +2,7 @@
 //! `crates/sim/tests/determinism.rs`, pour rejouer la même charge de jeu hors
 //! des tests (mesure de perf, vérification manuelle, snapshots).
 
-use sim::{BuildKind, Command, Designation, Material, Sim, WorkType, Zone};
+use sim::{BuildKind, Command, Designation, Faction, Material, Sim, WorkType, Zone};
 
 /// Scénario appliqué tick par tick par `run`, `verify` et `bench`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,7 +172,7 @@ pub fn spawn_extra_pawns(sim: &mut Sim, count: u32) {
                 let x = center.0 as i32 + dx;
                 let y = center.1 as i32 + dy;
                 if sim.map().in_bounds(x, y) && sim.map().passable(x as u32, y as u32) {
-                    sim.spawn_pawn(x as u32, y as u32);
+                    sim.spawn_pawn(x as u32, y as u32, Faction::Colony);
                     spawned += 1;
                 }
             }

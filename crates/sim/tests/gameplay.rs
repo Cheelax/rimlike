@@ -796,6 +796,8 @@ fn mood_changes_work_speed() {
         s.spawn_item(ItemKind::Wood, 10, 7, 6);
         let ids: Vec<u32> = s.pawns().iter().map(|p| p.id).collect();
         let p = s.pawn_mut(ids[0]).unwrap();
+        // Même niveau des deux côtés : seule l'humeur doit expliquer l'écart.
+        p.skills[WorkType::Build as usize].level = 5;
         if happy {
             p.hunger = 950_000;
             p.last_meal_quality = 1;
@@ -917,4 +919,133 @@ fn wanderer_joins_after_a_few_days() {
     };
     // Un raid a pu coûter un colon avant : ce qui compte est le colon gagné.
     assert_eq!(after, before + 1, "le voyageur n'a pas rejoint la colonie");
+}
+
+// ----------------------------------------------------------------------
+// Noms et compétences
+// ----------------------------------------------------------------------
+
+#[test]
+fn starting_pawns_have_names_and_random_skill_levels() {
+    let a = Sim::new(5, 64, 64);
+    assert_eq!(a.pawns().len(), 3);
+    for p in a.pawns() {
+        assert!(!p.name.is_empty(), "colon sans nom : {p:?}");
+        for skill in &p.skills {
+            assert!(skill.level <= 8, "niveau hors bornes : {}", skill.level);
+        }
+    }
+
+    // Même seed : mêmes noms, mêmes niveaux.
+    let b = Sim::new(5, 64, 64);
+    let names_a: Vec<&str> = a.pawns().iter().map(|p| p.name.as_str()).collect();
+    let names_b: Vec<&str> = b.pawns().iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names_a, names_b, "même seed, noms différents");
+    let levels_a: Vec<[u8; sim::WORK_TYPES]> = a
+        .pawns()
+        .iter()
+        .map(|p| p.skills.map(|s| s.level))
+        .collect();
+    let levels_b: Vec<[u8; sim::WORK_TYPES]> = b
+        .pawns()
+        .iter()
+        .map(|p| p.skills.map(|s| s.level))
+        .collect();
+    assert_eq!(levels_a, levels_b, "même seed, niveaux différents");
+
+    // Seed différente : au moins une différence, nom ou niveau.
+    let c = Sim::new(6, 64, 64);
+    let names_c: Vec<&str> = c.pawns().iter().map(|p| p.name.as_str()).collect();
+    let levels_c: Vec<[u8; sim::WORK_TYPES]> = c
+        .pawns()
+        .iter()
+        .map(|p| p.skills.map(|s| s.level))
+        .collect();
+    assert!(
+        names_a != names_c || levels_a != levels_c,
+        "deux seeds différentes donnent exactement le même résultat"
+    );
+}
+
+#[test]
+fn higher_skill_level_speeds_up_chopping() {
+    fn chop_duration(level: u8) -> u64 {
+        let mut s = clearing();
+        let ids: Vec<u32> = s.pawns().iter().map(|p| p.id).collect();
+        let worker = ids[0];
+        s.pawn_mut(worker).unwrap().skills[WorkType::Designated as usize].level = level;
+        // Personne d'autre ne coupe : la différence de durée ne vient que du niveau.
+        let mut cmds = vec![Command::Designate {
+            kind: Designation::Chop,
+            x0: 0,
+            y0: 1,
+            x1: 0,
+            y1: 1,
+        }];
+        for &id in &ids[1..] {
+            cmds.push(Command::SetPriority {
+                pawn: id,
+                work: WorkType::Designated,
+                priority: 0,
+            });
+        }
+        s.step(&cmds);
+        assert!(
+            run_until(&mut s, DAY, |s| s.map().feature(0, 1) == Feature::None),
+            "arbre jamais coupé (niveau {level})"
+        );
+        s.tick()
+    }
+    let slow = chop_duration(0);
+    let fast = chop_duration(20);
+    assert!(
+        fast < slow,
+        "niveau 20 ({fast} ticks) pas plus rapide que niveau 0 ({slow} ticks)"
+    );
+}
+
+#[test]
+fn work_xp_levels_up_and_emits_event() {
+    let mut s = clearing();
+    let ids: Vec<u32> = s.pawns().iter().map(|p| p.id).collect();
+    let worker = ids[0];
+    let level = 3;
+    {
+        let p = s.pawn_mut(worker).unwrap();
+        p.skills[WorkType::Designated as usize].level = level;
+        p.skills[WorkType::Designated as usize].xp = sim::work::xp_to_next(level) - 3;
+    }
+    // Seul `worker` peut couper : c'est bien sa compétence qui doit progresser.
+    let mut cmds = vec![Command::Designate {
+        kind: Designation::Chop,
+        x0: 0,
+        y0: 1,
+        x1: 0,
+        y1: 1,
+    }];
+    for &id in &ids[1..] {
+        cmds.push(Command::SetPriority {
+            pawn: id,
+            work: WorkType::Designated,
+            priority: 0,
+        });
+    }
+    s.step(&cmds);
+    assert!(
+        run_until(&mut s, DAY, |s| s
+            .pawns()
+            .iter()
+            .find(|p| p.id == worker)
+            .is_some_and(
+                |p| p.skills[WorkType::Designated as usize].level == level + 1
+            )),
+        "le colon n'est pas monté de niveau"
+    );
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::LevelUp && e.arg == worker),
+        "aucun événement LevelUp pour ce colon : {:?}",
+        s.events()
+    );
 }

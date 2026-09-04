@@ -46,3 +46,28 @@ impl WorkType {
         }
     }
 }
+
+/// Compétence d'un colon dans un type de travail : niveau atteint et
+/// expérience accumulée vers le niveau suivant. `Deliver` et `Haul` n'ont pas
+/// de barre de progression (le transport est instantané une fois la case
+/// atteinte) : leurs compétences existent dans le tableau mais ne gagnent
+/// jamais d'XP.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Skill {
+    pub level: u8,
+    pub xp: u32,
+}
+
+/// Niveau maximal d'une compétence.
+pub const SKILL_MAX: u8 = 20;
+
+/// Expérience nécessaire pour passer du niveau `level` au suivant.
+pub fn xp_to_next(level: u8) -> u32 {
+    1000 * (u32::from(level) + 1)
+}
+
+/// Vitesse de travail apportée par le niveau, en pourcentage de la nominale :
+/// 60 % au niveau 0, 100 % au niveau 10, 140 % au niveau 20.
+pub fn skill_percent(level: u8) -> u32 {
+    60 + 4 * u32::from(level)
+}

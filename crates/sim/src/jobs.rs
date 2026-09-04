@@ -14,7 +14,7 @@ use crate::pawn::{
     BREAK_TICKS, Faction, HUNGER_DECAY, Job, MOOD_BREAK, NEED_MAX, RELIEF_TICKS, REST_DECAY,
     REST_RECOVERY, RESTED,
 };
-use crate::work::WorkType;
+use crate::work::{self, WorkType};
 use crate::{EventKind, Sim, TICKS_PER_DAY, Weather};
 
 /// Nombre maximal de candidats pour lesquels on tente un A* par recherche.
@@ -210,6 +210,21 @@ impl Sim {
         if let Some((kind, count)) = self.pawns[i].carrying.take() {
             let (x, y) = self.pawns[i].tile();
             self.spawn_item(kind, count, x, y);
+        }
+    }
+
+    /// Fait progresser d'un cran la compétence associée à un tick de travail
+    /// effectif. Appelée par `do_work`, `do_build`, `do_farm` et `do_cook` ;
+    /// jamais par `do_haul`/`do_deliver`, qui n'ont pas de barre de
+    /// progression et ne font donc jamais gagner d'XP au transport.
+    fn gain_xp(&mut self, i: usize, work: WorkType) {
+        let id = self.pawns[i].id;
+        let skill = &mut self.pawns[i].skills[work as usize];
+        skill.xp += 1;
+        if skill.xp >= work::xp_to_next(skill.level) && skill.level < work::SKILL_MAX {
+            skill.level += 1;
+            skill.xp = 0;
+            self.push_event(EventKind::LevelUp, id);
         }
     }
 
@@ -599,7 +614,8 @@ impl Sim {
             self.abandon_job(i);
             return;
         }
-        let progress = progress + self.pawns[i].work_step();
+        let progress = progress + self.pawns[i].work_step(WorkType::Designated);
+        self.gain_xp(i, WorkType::Designated);
         if progress < kind.work_ticks() * 100 {
             self.pawns[i].job = Job::Work {
                 kind,
@@ -810,7 +826,8 @@ impl Sim {
         if kind.adjacent_only() && self.pawns.iter().any(|p| p.tile() == target) {
             return;
         }
-        self.blueprints[k].progress += self.pawns[i].work_step();
+        self.blueprints[k].progress += self.pawns[i].work_step(WorkType::Build);
+        self.gain_xp(i, WorkType::Build);
         if self.blueprints[k].progress < kind.work_ticks() * 100 {
             return;
         }
@@ -977,7 +994,8 @@ impl Sim {
             self.abandon_job(i);
             return;
         }
-        let progress = progress + self.pawns[i].work_step();
+        let progress = progress + self.pawns[i].work_step(WorkType::Cook);
+        self.gain_xp(i, WorkType::Cook);
         if progress < farm::COOK_TICKS * 100 {
             self.pawns[i].job = Job::Cook {
                 campfire,
@@ -1063,7 +1081,8 @@ impl Sim {
             self.abandon_job(i);
             return;
         }
-        let progress = progress + self.pawns[i].work_step();
+        let progress = progress + self.pawns[i].work_step(WorkType::Farm);
+        self.gain_xp(i, WorkType::Farm);
         let needed = if sow {
             farm::SOW_TICKS * 100
         } else {

@@ -143,8 +143,9 @@ impl Sim {
                     {
                         continue;
                     }
-                    // `Pawn::at_tile` donne déjà la colonie et les priorités par défaut.
-                    let id = self.spawn_pawn(tile.0, tile.1);
+                    // `Pawn::at_tile` donne déjà la colonie et les priorités par défaut ;
+                    // `spawn_pawn` tire son nom et ses compétences de départ.
+                    let id = self.spawn_pawn(tile.0, tile.1, Faction::Colony);
                     let k = self.pawns.len() - 1;
                     self.pawns[k].hunger = 600_000;
                     self.pawns[k].rest = 700_000;
@@ -187,9 +188,8 @@ impl Sim {
                     {
                         continue;
                     }
-                    self.spawn_pawn(tile.0, tile.1);
+                    self.spawn_pawn(tile.0, tile.1, Faction::Raider);
                     let k = self.pawns.len() - 1;
-                    self.pawns[k].faction = Faction::Raider;
                     self.pawns[k].hunger = NEED_MAX;
                     self.pawns[k].rest = NEED_MAX;
                     spawned += 1;
