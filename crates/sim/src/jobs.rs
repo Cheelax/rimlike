@@ -3,15 +3,14 @@
 //! départagent par distance puis coordonnées : déterministe.
 //!
 //! Ordre de priorité d'un colon libre : dormir > manger > construire > livrer
-//! des matériaux > travail désigné > ranger > flâner.
+//! des matériaux > cuisiner > travail désigné > cultiver > ranger > flâner.
 
 use crate::build;
+use crate::farm::{self, Crop};
 use crate::items::{ItemKind, ItemStack, STACK_MAX};
 use crate::map::{Designation, Feature, Zone, chebyshev};
 use crate::path;
-use crate::pawn::{
-    BERRY_NUTRITION, HUNGER_DECAY, Job, MEAL_BERRIES, NEED_MAX, REST_DECAY, REST_RECOVERY, RESTED,
-};
+use crate::pawn::{HUNGER_DECAY, Job, NEED_MAX, REST_DECAY, REST_RECOVERY, RESTED};
 use crate::{Sim, TICKS_PER_DAY};
 
 /// Nombre maximal de candidats pour lesquels on tente un A* par recherche.
@@ -62,6 +61,18 @@ impl Sim {
                 picked,
             } => self.do_deliver(i, blueprint, item, picked),
             Job::Build { blueprint } => self.do_build(i, blueprint),
+            Job::Farm {
+                sow,
+                x,
+                y,
+                progress,
+            } => self.do_farm(i, sow, x, y, progress),
+            Job::Cook {
+                campfire,
+                item,
+                picked,
+                progress,
+            } => self.do_cook(i, campfire, item, picked, progress),
         }
     }
 
@@ -133,7 +144,9 @@ impl Sim {
         }
         if self.try_start_build(i)
             || self.try_start_deliver(i)
+            || self.try_start_cook(i)
             || self.try_start_work(i)
+            || self.try_start_farm(i)
             || self.try_start_haul(i)
         {
             return;
@@ -194,17 +207,18 @@ impl Sim {
         })
     }
 
+    /// Va manger la meilleure nourriture accessible : repas, puis baies, puis cru.
     fn try_start_eat(&mut self, i: usize) -> bool {
         let from = self.pawns[i].tile();
-        let mut candidates: Vec<(u32, u32, u32, usize)> = self
+        let mut candidates: Vec<(u32, u32, u32, u32, usize)> = self
             .items
             .iter()
             .enumerate()
             .filter(|(_, s)| s.kind.is_food() && s.reserved_by.is_none())
-            .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
+            .map(|(k, s)| (s.kind.food_rank(), chebyshev(from, (s.x, s.y)), s.x, s.y, k))
             .collect();
         candidates.sort_unstable();
-        for &(_, x, y, k) in candidates.iter().take(PATH_ATTEMPTS) {
+        for &(_, _, x, y, k) in candidates.iter().take(PATH_ATTEMPTS) {
             if let Some(p) = path::find_path(&self.map, from, (x, y)) {
                 let id = self.pawns[i].id;
                 self.items[k].reserved_by = Some(id);
@@ -585,10 +599,16 @@ impl Sim {
             self.abandon_job(i);
             return;
         }
+        let kind = self.items[k].kind;
+        let Some(per_unit) = kind.nutrition() else {
+            self.abandon_job(i);
+            return;
+        };
         let hunger = self.pawns[i].hunger;
-        let wanted = (NEED_MAX - hunger).div_ceil(BERRY_NUTRITION).max(1);
-        let n = wanted.min(MEAL_BERRIES).min(self.items[k].count);
-        self.pawns[i].hunger = (hunger + n * BERRY_NUTRITION).min(NEED_MAX);
+        let wanted = (NEED_MAX - hunger).div_ceil(per_unit).max(1);
+        let n = wanted.min(kind.max_per_meal()).min(self.items[k].count);
+        self.pawns[i].hunger = (hunger + n * per_unit).min(NEED_MAX);
+        self.pawns[i].last_meal_quality = kind.meal_quality();
         self.items[k].count -= n;
         self.items[k].reserved_by = None;
         if self.items[k].count == 0 {
@@ -742,6 +762,252 @@ impl Sim {
     }
 
     // ------------------------------------------------------------------
+    // Cuisine et culture
+    // ------------------------------------------------------------------
+
+    /// Cuisine s'il y a un feu libre, de la nourriture crue et pas assez de repas.
+    fn try_start_cook(&mut self, i: usize) -> bool {
+        let mut fires: Vec<(u32, u32)> = Vec::new();
+        for y in 0..self.map.height() {
+            for x in 0..self.map.width() {
+                if self.map.feature(x, y) == Feature::Campfire && !self.is_reserved(x, y) {
+                    fires.push((x, y));
+                }
+            }
+        }
+        if fires.is_empty() {
+            return false;
+        }
+        let meals: u32 = self
+            .items
+            .iter()
+            .filter(|s| s.kind == ItemKind::Meal)
+            .map(|s| s.count)
+            .sum();
+        if meals >= farm::MEALS_TARGET {
+            return false;
+        }
+        let from = self.pawns[i].tile();
+        let mut stacks: Vec<(u32, u32, u32, usize)> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                s.kind.is_raw_food() && s.reserved_by.is_none() && s.count >= farm::RAW_PER_MEAL
+            })
+            .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
+            .collect();
+        stacks.sort_unstable();
+        for &(_, sx, sy, k) in stacks.iter().take(PATH_ATTEMPTS) {
+            let Some(&(_, fx, fy)) = fires
+                .iter()
+                .map(|&(x, y)| (chebyshev((sx, sy), (x, y)), x, y))
+                .min()
+                .as_ref()
+            else {
+                return false;
+            };
+            if let Some(p) = path::find_path(&self.map, from, (sx, sy)) {
+                let pawn = self.pawns[i].id;
+                self.items[k].reserved_by = Some(pawn);
+                self.reservations.push(Reservation { x: fx, y: fy, pawn });
+                let item = self.items[k].id;
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Cook {
+                    campfire: (fx, fy),
+                    item,
+                    picked: false,
+                    progress: 0,
+                };
+                return true;
+            }
+        }
+        false
+    }
+
+    fn do_cook(&mut self, i: usize, campfire: (u32, u32), item: u32, picked: bool, progress: u32) {
+        if self.map.feature(campfire.0, campfire.1) != Feature::Campfire {
+            self.abandon_job(i);
+            return;
+        }
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        let here = self.pawns[i].tile();
+        if !picked {
+            let Some(j) = self.items.iter().position(|s| s.id == item) else {
+                self.abandon_job(i);
+                return;
+            };
+            if (self.items[j].x, self.items[j].y) != here
+                || self.items[j].count < farm::RAW_PER_MEAL
+            {
+                self.abandon_job(i);
+                return;
+            }
+            let kind = self.items[j].kind;
+            self.items[j].count -= farm::RAW_PER_MEAL;
+            self.items[j].reserved_by = None;
+            if self.items[j].count == 0 {
+                self.items.remove(j);
+            }
+            self.pawns[i].carrying = Some((kind, farm::RAW_PER_MEAL));
+            match self.path_adjacent(here, campfire) {
+                Some(p) => {
+                    self.pawns[i].set_path(p);
+                    self.pawns[i].job = Job::Cook {
+                        campfire,
+                        item,
+                        picked: true,
+                        progress: 0,
+                    };
+                }
+                None => self.abandon_job(i),
+            }
+            return;
+        }
+        if chebyshev(here, campfire) > 1 || self.pawns[i].carrying.is_none() {
+            self.abandon_job(i);
+            return;
+        }
+        let progress = progress + 1;
+        if progress < farm::COOK_TICKS {
+            self.pawns[i].job = Job::Cook {
+                campfire,
+                item,
+                picked: true,
+                progress,
+            };
+            return;
+        }
+        // Les ingrédients sont consommés, le repas est posé au pied du cuisinier.
+        self.pawns[i].carrying = None;
+        self.spawn_item(ItemKind::Meal, 1, here.0, here.1);
+        let id = self.pawns[i].id;
+        self.reservations.retain(|r| r.pawn != id);
+        self.pawns[i].job = Job::Idle;
+    }
+
+    fn can_sow(&self, x: u32, y: u32) -> bool {
+        self.map.is_soil(x, y)
+            && self.map.feature(x, y) == Feature::None
+            && !self.blueprints.iter().any(|b| (b.x, b.y) == (x, y))
+            && !self.items.iter().any(|s| (s.x, s.y) == (x, y))
+    }
+
+    /// Récolte les plants mûrs, sème les cases de culture libres.
+    fn try_start_farm(&mut self, i: usize) -> bool {
+        if self.map.growing_count() == 0 && self.crops.is_empty() {
+            return false;
+        }
+        let from = self.pawns[i].tile();
+        // (distance, x, y, semer) : à distance égale, la récolte passe avant le semis.
+        let mut candidates: Vec<(u32, u32, u32, bool)> = Vec::new();
+        for c in &self.crops {
+            if self.map.feature(c.x, c.y) == Feature::CropRipe && !self.is_reserved(c.x, c.y) {
+                candidates.push((chebyshev(from, (c.x, c.y)), c.x, c.y, false));
+            }
+        }
+        if self.map.growing_count() > 0 {
+            for y in 0..self.map.height() {
+                for x in 0..self.map.width() {
+                    if self.map.zone(x, y) == Zone::Growing
+                        && self.can_sow(x, y)
+                        && !self.is_reserved(x, y)
+                    {
+                        candidates.push((chebyshev(from, (x, y)), x, y, true));
+                    }
+                }
+            }
+        }
+        candidates.sort_unstable();
+        for &(_, x, y, sow) in candidates.iter().take(PATH_ATTEMPTS) {
+            if let Some(p) = self.path_to_work(from, (x, y)) {
+                let pawn = self.pawns[i].id;
+                self.reservations.push(Reservation { x, y, pawn });
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Farm {
+                    sow,
+                    x,
+                    y,
+                    progress: 0,
+                };
+                return true;
+            }
+        }
+        false
+    }
+
+    fn do_farm(&mut self, i: usize, sow: bool, x: u32, y: u32, progress: u32) {
+        let valid = if sow {
+            self.map.zone(x, y) == Zone::Growing && self.can_sow(x, y)
+        } else {
+            self.map.feature(x, y) == Feature::CropRipe
+        };
+        if !valid {
+            self.abandon_job(i);
+            return;
+        }
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        if chebyshev(self.pawns[i].tile(), (x, y)) > 1 {
+            self.abandon_job(i);
+            return;
+        }
+        let progress = progress + 1;
+        let needed = if sow {
+            farm::SOW_TICKS
+        } else {
+            farm::HARVEST_TICKS
+        };
+        if progress < needed {
+            self.pawns[i].job = Job::Farm {
+                sow,
+                x,
+                y,
+                progress,
+            };
+            return;
+        }
+        if sow {
+            self.map.set_feature(x, y, Feature::Crop);
+            self.crops.push(Crop { x, y, growth: 0 });
+        } else {
+            self.map.set_feature(x, y, Feature::None);
+            self.crops.retain(|c| (c.x, c.y) != (x, y));
+            self.spawn_item(ItemKind::Vegetables, farm::CROP_YIELD, x, y);
+        }
+        let id = self.pawns[i].id;
+        self.reservations.retain(|r| r.pawn != id);
+        self.pawns[i].job = Job::Idle;
+    }
+
+    pub(crate) fn tick_crops(&mut self) {
+        for k in 0..self.crops.len() {
+            if self.crops[k].growth >= farm::GROW_TICKS {
+                continue;
+            }
+            self.crops[k].growth += 1;
+            if self.crops[k].growth == farm::GROW_TICKS {
+                let (x, y) = (self.crops[k].x, self.crops[k].y);
+                if self.map.feature(x, y) == Feature::Crop {
+                    self.map.set_feature(x, y, Feature::CropRipe);
+                }
+            }
+        }
+    }
+
+    /// La nourriture périmée disparaît. Les jobs qui la visaient s'arrêtent
+    /// d'eux-mêmes en ne la retrouvant pas.
+    pub(crate) fn tick_spoilage(&mut self) {
+        let now = self.tick;
+        self.items.retain(|s| s.spoil_at > now);
+    }
+
+    // ------------------------------------------------------------------
     // Objets et repousse
     // ------------------------------------------------------------------
 
@@ -751,12 +1017,17 @@ impl Sim {
         if count == 0 {
             return;
         }
+        let spoil_at = kind
+            .shelf_life()
+            .map_or(u64::MAX, |life| self.tick + u64::from(life));
         if let Some(s) = self
             .items
             .iter_mut()
             .find(|s| (s.x, s.y) == (x, y) && s.kind == kind && s.count + count <= STACK_MAX)
         {
             s.count += count;
+            // La pile fusionnée se gâte à la date la plus proche.
+            s.spoil_at = s.spoil_at.min(spoil_at);
             return;
         }
         let id = self.next_id;
@@ -768,6 +1039,7 @@ impl Sim {
             x,
             y,
             reserved_by: None,
+            spoil_at,
         });
     }
 

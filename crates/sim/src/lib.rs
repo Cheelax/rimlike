@@ -14,6 +14,7 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod build;
+pub mod farm;
 pub mod fixed;
 pub mod hash;
 pub mod items;
@@ -28,6 +29,7 @@ pub mod testmap;
 use serde::{Deserialize, Serialize};
 
 pub use build::{Blueprint, BuildKind, Material};
+pub use farm::Crop;
 pub use items::{ItemKind, ItemStack};
 pub use jobs::{Regrow, Reservation};
 pub use map::{Designation, Feature, Map, Rect, Terrain, Zone};
@@ -103,6 +105,7 @@ pub struct Sim {
     reservations: Vec<Reservation>,
     regrow: Vec<Regrow>,
     blueprints: Vec<Blueprint>,
+    crops: Vec<Crop>,
     /// Compteur d'ids partagé par tout ce qui a un id.
     next_id: u32,
 }
@@ -131,6 +134,7 @@ impl Sim {
             reservations: Vec::new(),
             regrow: Vec::new(),
             blueprints: Vec::new(),
+            crops: Vec::new(),
             next_id: 1,
         };
         sim.spawn_starting_pawns(3);
@@ -240,12 +244,7 @@ impl Sim {
                 let Some(rect) = self.map.clamp_rect(x0, y0, x1, y1) else {
                     return;
                 };
-                // Un lit est toujours en bois.
-                let material = if kind == BuildKind::Bed {
-                    Material::Wood
-                } else {
-                    material
-                };
+                let material = kind.forced_material().unwrap_or(material);
                 for (x, y) in rect.tiles() {
                     if !build::can_place(&self.map, kind, x, y)
                         || self.blueprints.iter().any(|b| (b.x, b.y) == (x, y))
@@ -289,6 +288,8 @@ impl Sim {
 
     fn update(&mut self) {
         self.tick_regrowth();
+        self.tick_crops();
+        self.tick_spoilage();
         for i in 0..self.pawns.len() {
             self.tick_pawn(i);
         }
@@ -315,6 +316,10 @@ impl Sim {
 
     pub fn blueprints(&self) -> &[Blueprint] {
         &self.blueprints
+    }
+
+    pub fn crops(&self) -> &[Crop] {
+        &self.crops
     }
 
     pub fn pawns(&self) -> &[Pawn] {

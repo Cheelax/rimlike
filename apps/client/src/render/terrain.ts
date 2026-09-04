@@ -32,9 +32,12 @@ export const FEATURE = {
   DoorWood: 7,
   DoorStone: 8,
   Bed: 9,
+  Crop: 10,
+  CropRipe: 11,
+  Campfire: 12,
 } as const;
 
-export const BUILD_KIND = { Wall: 0, Door: 1, Floor: 2, Bed: 3 } as const;
+export const BUILD_KIND = { Wall: 0, Door: 1, Floor: 2, Bed: 3, Campfire: 4 } as const;
 export const MATERIAL = { Wood: 0, Stone: 1 } as const;
 export const MATERIAL_NAMES = ["bois", "pierre"] as const;
 /** Couleurs des matériaux construits : [bois, pierre]. */
@@ -42,11 +45,11 @@ export const WALL_COLORS: readonly number[] = [0x8a5a2b, 0x7d7d7d];
 export const DOOR_COLORS: readonly number[] = [0xa06a30, 0x8d8d8d];
 export const BLUEPRINT_STRIDE = 8;
 
-export const ZONE = { None: 0, Stockpile: 1 } as const;
+export const ZONE = { None: 0, Stockpile: 1, Growing: 2 } as const;
 export const DESIGNATION = { None: 0, Chop: 1, Mine: 2, Harvest: 3 } as const;
 
-export const ITEM_NAMES = ["bois", "pierre", "baies"] as const;
-export const ITEM_COLORS: readonly number[] = [0x9c6b3c, 0x8d8d8d, 0xc9304a];
+export const ITEM_NAMES = ["bois", "pierre", "baies", "légumes", "repas"] as const;
+export const ITEM_COLORS: readonly number[] = [0x9c6b3c, 0x8d8d8d, 0xc9304a, 0x5aa02c, 0xf0c070];
 
 export const JOB_LABELS = [
   "inactif",
@@ -59,4 +62,6 @@ export const JOB_LABELS = [
   "dort",
   "livre des matériaux",
   "construit",
+  "sème",
+  "cuisine",
 ] as const;

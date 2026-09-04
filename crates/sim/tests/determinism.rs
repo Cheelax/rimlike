@@ -64,6 +64,23 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             y1: h / 2 + 4,
         });
     }
+    if t == 60 {
+        cmds.push(Command::SetZone {
+            zone: Zone::Growing,
+            x0: w / 2 + 2,
+            y0: h / 2 + 2,
+            x1: w / 2 + 5,
+            y1: h / 2 + 4,
+        });
+        cmds.push(Command::Build {
+            kind: BuildKind::Campfire,
+            material: Material::Wood,
+            x0: w / 2 - 2,
+            y0: h / 2 + 6,
+            x1: w / 2 - 2,
+            y1: h / 2 + 6,
+        });
+    }
     if t == 4000 {
         cmds.push(Command::CancelBuild {
             x0: w / 2 - 6,

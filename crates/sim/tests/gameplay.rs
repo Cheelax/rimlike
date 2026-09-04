@@ -413,3 +413,108 @@ fn tired_pawn_walks_to_bed_and_sleeps_better() {
     g.pawn_mut(idg).unwrap().hunger = 500_000;
     assert!(s.pawns()[0].mood() > g.pawns()[0].mood());
 }
+
+#[test]
+fn growing_zone_is_sown_grows_and_is_harvested() {
+    let mut s = clearing();
+    s.step(&[Command::SetZone {
+        zone: Zone::Growing,
+        x0: 4,
+        y0: 5,
+        x1: 5,
+        y1: 6,
+    }]);
+    assert_eq!(s.map().growing_count(), 4);
+    assert!(
+        run_until(&mut s, DAY, |s| s.crops().len() == 4),
+        "semis : {:?}",
+        s.crops()
+    );
+    assert!(run_until(&mut s, 3 * DAY, |s| {
+        s.map().features().contains(&(Feature::CropRipe as u8))
+    }));
+    // Récolté, puis peut-être déjà mangé cru par des colons affamés.
+    assert!(run_until(&mut s, DAY, |s| {
+        s.items().iter().any(|i| i.kind == ItemKind::Vegetables)
+            || s.pawns().iter().any(|p| p.last_meal_quality == -1)
+    }));
+}
+
+#[test]
+fn campfire_cooks_meals_from_raw_food() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Wood, 20, 6, 6);
+    s.spawn_item(ItemKind::Berries, 30, 3, 6);
+    s.step(&[Command::Build {
+        kind: BuildKind::Campfire,
+        material: Material::Stone,
+        x0: 8,
+        y0: 3,
+        x1: 8,
+        y1: 3,
+    }]);
+    assert_eq!(
+        s.blueprints()[0].material,
+        Material::Wood,
+        "un feu est en bois"
+    );
+    assert!(run_until(&mut s, 2 * DAY, |s| s.map().feature(8, 3)
+        == Feature::Campfire));
+    assert!(!s.map().passable(8, 3));
+    assert!(
+        run_until(&mut s, DAY, |s| {
+            s.items().iter().any(|i| i.kind == ItemKind::Meal)
+                || s.pawns().iter().any(|p| p.last_meal_quality == 1)
+        }),
+        "aucun repas cuisiné"
+    );
+}
+
+#[test]
+fn hungry_pawn_prefers_meal_and_it_lifts_mood() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Vegetables, 20, 6, 6);
+    s.spawn_item(ItemKind::Meal, 2, 7, 6);
+    let id = s.pawns()[0].id;
+    s.pawn_mut(id).unwrap().hunger = HUNGRY - 1;
+    assert!(run_until(&mut s, 600, |s| s.pawns()[0].last_meal_quality == 1));
+    assert!(s.pawns()[0].hunger > 900_000);
+    let veg: u32 = s
+        .items()
+        .iter()
+        .filter(|i| i.kind == ItemKind::Vegetables)
+        .map(|i| i.count)
+        .sum();
+    assert_eq!(veg, 20, "les légumes crus restent tant qu'il y a des repas");
+
+    let mut g = clearing();
+    g.spawn_item(ItemKind::Vegetables, 20, 6, 6);
+    let id = g.pawns()[0].id;
+    g.pawn_mut(id).unwrap().hunger = HUNGRY - 1;
+    assert!(run_until(&mut g, 600, |s| s.pawns()[0].last_meal_quality == -1));
+    assert!(s.pawns()[0].mood() > g.pawns()[0].mood());
+}
+
+#[test]
+fn unreachable_food_spoils() {
+    // Une poche fermée par des rochers en haut à droite : (11, 0).
+    let map = map_from(&[
+        "..........#.",
+        "..........##",
+        "............",
+        "............",
+        "............",
+        "............",
+    ]);
+    let mut s = Sim::from_map(1, map);
+    s.spawn_item(ItemKind::Berries, 10, 11, 0);
+    let life = u64::from(ItemKind::Berries.shelf_life().unwrap());
+    for _ in 0..life - 1 {
+        s.step(&[]);
+    }
+    assert!(s.items().iter().any(|i| i.kind == ItemKind::Berries));
+    s.step(&[]);
+    s.step(&[]);
+    assert!(s.items().iter().all(|i| i.kind != ItemKind::Berries));
+    assert!(s.pawns().iter().all(|p| p.carrying.is_none()));
+}

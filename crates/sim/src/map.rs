@@ -65,6 +65,11 @@ pub enum Feature {
     DoorWood = 7,
     DoorStone = 8,
     Bed = 9,
+    /// Plant en croissance (voir `Sim::crops`).
+    Crop = 10,
+    /// Plant mûr, à récolter.
+    CropRipe = 11,
+    Campfire = 12,
 }
 
 impl Feature {
@@ -79,6 +84,9 @@ impl Feature {
             7 => Feature::DoorWood,
             8 => Feature::DoorStone,
             9 => Feature::Bed,
+            10 => Feature::Crop,
+            11 => Feature::CropRipe,
+            12 => Feature::Campfire,
             _ => Feature::None,
         }
     }
@@ -86,7 +94,11 @@ impl Feature {
     pub fn passable(self) -> bool {
         !matches!(
             self,
-            Feature::Tree | Feature::Rock | Feature::WallWood | Feature::WallStone
+            Feature::Tree
+                | Feature::Rock
+                | Feature::WallWood
+                | Feature::WallStone
+                | Feature::Campfire
         )
     }
 
@@ -104,6 +116,7 @@ impl Feature {
             Feature::Bush | Feature::BushUnripe => 150,
             Feature::DoorWood | Feature::DoorStone => 150,
             Feature::Bed => 200,
+            Feature::Crop | Feature::CropRipe => 120,
             _ => 100,
         }
     }
@@ -114,11 +127,16 @@ impl Feature {
 pub enum Zone {
     None = 0,
     Stockpile = 1,
+    Growing = 2,
 }
 
 impl Zone {
     pub fn from_u8(v: u8) -> Zone {
-        if v == 1 { Zone::Stockpile } else { Zone::None }
+        match v {
+            1 => Zone::Stockpile,
+            2 => Zone::Growing,
+            _ => Zone::None,
+        }
     }
 }
 
@@ -192,6 +210,7 @@ pub struct Map {
     overlay_version: u32,
     designation_count: u32,
     stockpile_count: u32,
+    growing_count: u32,
 }
 
 impl Map {
@@ -274,6 +293,7 @@ impl Map {
             overlay_version: 0,
             designation_count: 0,
             stockpile_count: 0,
+            growing_count: 0,
         }
     }
 
@@ -330,11 +350,15 @@ impl Map {
         let i = self.index(x, y);
         let old = Zone::from_u8(self.zones[i]);
         if old != z {
-            if old == Zone::Stockpile {
-                self.stockpile_count -= 1;
+            match old {
+                Zone::Stockpile => self.stockpile_count -= 1,
+                Zone::Growing => self.growing_count -= 1,
+                Zone::None => {}
             }
-            if z == Zone::Stockpile {
-                self.stockpile_count += 1;
+            match z {
+                Zone::Stockpile => self.stockpile_count += 1,
+                Zone::Growing => self.growing_count += 1,
+                Zone::None => {}
             }
             self.zones[i] = z as u8;
             self.overlay_version += 1;
@@ -399,6 +423,15 @@ impl Map {
 
     pub fn stockpile_count(&self) -> u32 {
         self.stockpile_count
+    }
+
+    pub fn growing_count(&self) -> u32 {
+        self.growing_count
+    }
+
+    /// Sol cultivable.
+    pub fn is_soil(&self, x: u32, y: u32) -> bool {
+        matches!(self.get(x, y), Terrain::Grass | Terrain::Dirt)
     }
 
     /// Rectangle normalisé et borné à la carte, `None` s'il est entièrement dehors.

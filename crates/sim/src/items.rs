@@ -1,26 +1,84 @@
 use serde::{Deserialize, Serialize};
 
+use crate::TICKS_PER_DAY;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum ItemKind {
     Wood = 0,
     Stone = 1,
     Berries = 2,
+    Vegetables = 3,
+    Meal = 4,
 }
 
 impl ItemKind {
-    pub const COUNT: usize = 3;
+    pub const COUNT: usize = 5;
 
     pub fn from_u8(v: u8) -> ItemKind {
         match v {
             0 => ItemKind::Wood,
             1 => ItemKind::Stone,
-            _ => ItemKind::Berries,
+            2 => ItemKind::Berries,
+            3 => ItemKind::Vegetables,
+            _ => ItemKind::Meal,
+        }
+    }
+
+    /// Nutrition d'une unité, en millionièmes de besoin. `None` : pas comestible.
+    pub fn nutrition(self) -> Option<u32> {
+        match self {
+            ItemKind::Berries => Some(200_000),
+            ItemKind::Vegetables => Some(150_000),
+            ItemKind::Meal => Some(900_000),
+            ItemKind::Wood | ItemKind::Stone => None,
         }
     }
 
     pub fn is_food(self) -> bool {
-        matches!(self, ItemKind::Berries)
+        self.nutrition().is_some()
+    }
+
+    /// Nourriture crue, transformable en repas au feu de camp.
+    pub fn is_raw_food(self) -> bool {
+        matches!(self, ItemKind::Berries | ItemKind::Vegetables)
+    }
+
+    /// Ordre de préférence quand un colon a faim : plus petit = meilleur.
+    pub fn food_rank(self) -> u32 {
+        match self {
+            ItemKind::Meal => 0,
+            ItemKind::Berries => 1,
+            ItemKind::Vegetables => 2,
+            ItemKind::Wood | ItemKind::Stone => u32::MAX,
+        }
+    }
+
+    /// Effet sur l'humeur du dernier repas : repas cuisiné bon, légumes crus mauvais.
+    pub fn meal_quality(self) -> i8 {
+        match self {
+            ItemKind::Meal => 1,
+            ItemKind::Vegetables => -1,
+            _ => 0,
+        }
+    }
+
+    /// Unités mangées au maximum en un repas.
+    pub fn max_per_meal(self) -> u32 {
+        match self {
+            ItemKind::Meal => 1,
+            _ => 5,
+        }
+    }
+
+    /// Durée de conservation en ticks. `None` : ne se gâte pas.
+    pub fn shelf_life(self) -> Option<u32> {
+        match self {
+            ItemKind::Berries => Some(TICKS_PER_DAY * 3),
+            ItemKind::Vegetables => Some(TICKS_PER_DAY * 4),
+            ItemKind::Meal => Some(TICKS_PER_DAY * 2),
+            ItemKind::Wood | ItemKind::Stone => None,
+        }
     }
 }
 
@@ -36,6 +94,8 @@ pub struct ItemStack {
     pub count: u32,
     pub x: u32,
     pub y: u32,
-    /// Colon qui a réservé cette pile (transport ou repas).
+    /// Colon qui a réservé cette pile (transport, repas, cuisine, livraison).
     pub reserved_by: Option<u32>,
+    /// Tick à partir duquel la pile est perdue. `u64::MAX` si elle ne se gâte pas.
+    pub spoil_at: u64,
 }

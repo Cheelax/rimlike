@@ -21,9 +21,6 @@ pub const HUNGRY: u32 = 300_000;
 pub const STARVING: u32 = 100_000;
 pub const TIRED: u32 = 250_000;
 pub const RESTED: u32 = 950_000;
-/// Nutrition d'une baie. Cinq baies font un repas.
-pub const BERRY_NUTRITION: u32 = 200_000;
-pub const MEAL_BERRIES: u32 = 5;
 
 /// Ce que fait un colon. Le chemin courant vit dans `Pawn::path`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +59,20 @@ pub enum Job {
     Build {
         blueprint: u32,
     },
+    /// Semer (`sow`) ou récolter un plant dans une zone de culture.
+    Farm {
+        sow: bool,
+        x: u32,
+        y: u32,
+        progress: u32,
+    },
+    /// Cuisiner au feu de camp : va chercher la nourriture crue, puis cuit.
+    Cook {
+        campfire: (u32, u32),
+        item: u32,
+        picked: bool,
+        progress: u32,
+    },
 }
 
 impl Job {
@@ -84,6 +95,9 @@ impl Job {
             Job::Sleep { .. } => 7,
             Job::Deliver { .. } => 8,
             Job::Build { .. } => 9,
+            Job::Farm { sow: true, .. } => 10,
+            Job::Farm { sow: false, .. } => 4,
+            Job::Cook { .. } => 11,
         }
     }
 }
@@ -102,6 +116,8 @@ pub struct Pawn {
     pub carrying: Option<(ItemKind, u32)>,
     /// Le dernier sommeil s'est fait dans un lit (bonus d'humeur) ou au sol (malus).
     pub last_sleep_in_bed: bool,
+    /// Qualité du dernier repas : 1 cuisiné, 0 neutre, -1 cru désagréable.
+    pub last_meal_quality: i8,
 }
 
 impl Pawn {
@@ -117,6 +133,7 @@ impl Pawn {
             job: Job::Idle,
             carrying: None,
             last_sleep_in_bed: true,
+            last_meal_quality: 0,
         }
     }
 
@@ -160,6 +177,11 @@ impl Pawn {
         } else {
             m -= 80_000;
         }
+        m += match self.last_meal_quality {
+            1 => 40_000,
+            -1 => -60_000,
+            _ => 0,
+        };
         m.clamp(0, i64::from(NEED_MAX)) as u32
     }
 

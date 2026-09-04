@@ -20,11 +20,13 @@ pnpm lint       # clippy (anti-float, anti-HashMap) + tsc
 En jeu : glisser droit ou flèches pour déplacer la vue, molette pour zoomer, Q/E pour
 tourner, espace pour la pause, 1/2/3 pour la vitesse. Clic gauche pour sélectionner un
 colon, clic droit pour l'envoyer quelque part. Outils (C couper, M miner, H récolter,
-Z zone de stockage, X annuler) et constructions (B mur, P porte, O sol, L lit, T pour
-alterner bois et pierre) : tracer un rectangle au glisser gauche, Échap ou clic droit
-pour revenir à la sélection. Les colons cherchent seuls le travail : ils construisent,
-livrent les matériaux aux chantiers, exécutent les désignations, puis rangent les objets
-dans les zones de stockage. Un colon fatigué va dormir dans un lit libre.
+Z zone de stockage, G zone de culture, X annuler) et constructions (B mur, P porte, O sol,
+L lit, F feu de camp, T pour alterner bois et pierre) : tracer un rectangle au glisser
+gauche, Échap ou clic droit pour revenir à la sélection. Les colons cherchent seuls le
+travail : ils construisent, livrent les matériaux aux chantiers, cuisinent au feu de camp,
+exécutent les désignations, sèment et récoltent les cultures, puis rangent les objets dans
+les zones de stockage. Un colon affamé mange le meilleur plat disponible, un colon fatigué
+va dormir dans un lit libre. La nourriture se gâte avec le temps.
 
 ## Structure
 

@@ -13,6 +13,7 @@ pub enum BuildKind {
     Door = 1,
     Floor = 2,
     Bed = 3,
+    Campfire = 4,
 }
 
 impl BuildKind {
@@ -21,7 +22,8 @@ impl BuildKind {
             0 => BuildKind::Wall,
             1 => BuildKind::Door,
             2 => BuildKind::Floor,
-            _ => BuildKind::Bed,
+            3 => BuildKind::Bed,
+            _ => BuildKind::Campfire,
         }
     }
 
@@ -31,6 +33,7 @@ impl BuildKind {
             BuildKind::Door => 400,
             BuildKind::Floor => 150,
             BuildKind::Bed => 500,
+            BuildKind::Campfire => 200,
         }
     }
 
@@ -41,12 +44,21 @@ impl BuildKind {
             BuildKind::Door => 10,
             BuildKind::Floor => 3,
             BuildKind::Bed => 12,
+            BuildKind::Campfire => 8,
         }
     }
 
     /// Le constructeur doit rester à côté : la case devient infranchissable.
     pub fn adjacent_only(self) -> bool {
-        matches!(self, BuildKind::Wall)
+        matches!(self, BuildKind::Wall | BuildKind::Campfire)
+    }
+
+    /// Certaines constructions imposent leur matériau.
+    pub fn forced_material(self) -> Option<Material> {
+        match self {
+            BuildKind::Bed | BuildKind::Campfire => Some(Material::Wood),
+            _ => None,
+        }
     }
 }
 
@@ -123,6 +135,7 @@ pub fn result_feature(kind: BuildKind, material: Material) -> Option<Feature> {
         (BuildKind::Door, Material::Wood) => Some(Feature::DoorWood),
         (BuildKind::Door, Material::Stone) => Some(Feature::DoorStone),
         (BuildKind::Bed, _) => Some(Feature::Bed),
+        (BuildKind::Campfire, _) => Some(Feature::Campfire),
         (BuildKind::Floor, _) => None,
     }
 }

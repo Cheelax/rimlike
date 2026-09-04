@@ -157,6 +157,9 @@ export class Renderer {
     let walls = 0;
     let doors = 0;
     let beds = 0;
+    let crops = 0;
+    let ripe = 0;
+    let fires = 0;
     for (let i = 0; i < features.length; i++) {
       const f = features[i];
       if (f === FEATURE.Rock) rocks++;
@@ -165,6 +168,9 @@ export class Renderer {
       else if (f === FEATURE.WallWood || f === FEATURE.WallStone) walls++;
       else if (f === FEATURE.DoorWood || f === FEATURE.DoorStone) doors++;
       else if (f === FEATURE.Bed) beds++;
+      else if (f === FEATURE.Crop) crops++;
+      else if (f === FEATURE.CropRipe) ripe++;
+      else if (f === FEATURE.Campfire) fires++;
     }
     const isWall = (x: number, y: number) => {
       if (x < 0 || y < 0 || x >= width || y >= height) return false;
@@ -216,7 +222,28 @@ export class Renderer {
       new THREE.MeshLambertMaterial({ color: 0xf6f6f6 }),
       Math.max(beds, 1),
     );
-    for (const m of [rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow]) {
+    const cropMesh = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(0.16, 0.36, 5),
+      new THREE.MeshLambertMaterial({ color: 0x3f9a3f }),
+      Math.max(crops, 1),
+    );
+    const ripeMesh = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.27, 8, 6),
+      new THREE.MeshLambertMaterial({ color: 0x9acd32 }),
+      Math.max(ripe, 1),
+    );
+    const fireRing = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.42, 0.46, 0.16, 8),
+      new THREE.MeshLambertMaterial({ color: 0x4a4a4a }),
+      Math.max(fires, 1),
+    );
+    const flame = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(0.17, 0.45, 6),
+      new THREE.MeshBasicMaterial({ color: 0xff8a2a }),
+      Math.max(fires, 1),
+    );
+    const lights: THREE.Object3D[] = [];
+    for (const m of [rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow, cropMesh, ripeMesh, fireRing]) {
       m.castShadow = m.receiveShadow = true;
     }
 
@@ -231,6 +258,9 @@ export class Renderer {
     let wi = 0;
     let di = 0;
     let li = 0;
+    let ci = 0;
+    let pi = 0;
+    let fi = 0;
     const yRot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
@@ -267,6 +297,18 @@ export class Renderer {
           bedFrame.setMatrixAt(li, mat.makeTranslation(x + 0.5, 0.11, y + 0.5));
           bedMattress.setMatrixAt(li, mat.makeTranslation(x + 0.5, 0.28, y + 0.55));
           bedPillow.setMatrixAt(li++, mat.makeTranslation(x + 0.5, 0.36, y + 0.2));
+        } else if (f === FEATURE.Crop) {
+          cropMesh.setMatrixAt(ci++, mat.makeTranslation(x + 0.5 + ox * 0.5, 0.18, y + 0.5 + oz * 0.5));
+        } else if (f === FEATURE.CropRipe) {
+          ripeMesh.setMatrixAt(pi++, mat.makeTranslation(x + 0.5 + ox * 0.5, 0.27, y + 0.5 + oz * 0.5));
+        } else if (f === FEATURE.Campfire) {
+          fireRing.setMatrixAt(fi, mat.makeTranslation(x + 0.5, 0.08, y + 0.5));
+          flame.setMatrixAt(fi++, mat.makeTranslation(x + 0.5, 0.38, y + 0.5));
+          if (lights.length < 8) {
+            const light = new THREE.PointLight(0xff9a40, 6, 9, 2);
+            light.position.set(x + 0.5, 1.1, y + 0.5);
+            lights.push(light);
+          }
         }
       }
     }
@@ -279,14 +321,17 @@ export class Renderer {
     bedFrame.count = beds;
     bedMattress.count = beds;
     bedPillow.count = beds;
+    cropMesh.count = crops;
+    ripeMesh.count = ripe;
+    fireRing.count = fires;
+    flame.count = fires;
     floor.instanceMatrix.needsUpdate = true;
     if (floor.instanceColor) floor.instanceColor.needsUpdate = true;
     for (const m of [bushMesh, wallMesh, doorMesh]) if (m.instanceColor) m.instanceColor.needsUpdate = true;
-    for (const m of [rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow]) {
-      m.instanceMatrix.needsUpdate = true;
-    }
+    const featureMeshes = [rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow, cropMesh, ripeMesh, fireRing, flame];
+    for (const m of featureMeshes) m.instanceMatrix.needsUpdate = true;
 
-    this.mapMeshes = [floor, rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow];
+    this.mapMeshes = [floor, ...featureMeshes, ...lights];
     this.scene.add(...this.mapMeshes);
     if (!this.framed) {
       this.frame();
@@ -319,6 +364,7 @@ export class Renderer {
       this.overlayMeshes.push(mesh);
     };
     build((i) => zones[i] === ZONE.Stockpile, 0x4a90d9, 0.3, 0.012);
+    build((i) => zones[i] === ZONE.Growing, 0x5cc25c, 0.3, 0.012);
     build((i) => designations[i] !== DESIGNATION.None, 0xff9a2e, 0.45, 0.014);
     if (this.overlayMeshes.length) this.scene.add(...this.overlayMeshes);
   }

@@ -16,10 +16,12 @@ type Tool =
   | "mine"
   | "harvest"
   | "stockpile"
+  | "growing"
   | "wall"
   | "door"
   | "floor"
   | "bed"
+  | "campfire"
   | "cancel";
 
 const TOOLS: { id: Tool; label: string; key: string; color: number; group: "orders" | "build" }[] = [
@@ -28,10 +30,12 @@ const TOOLS: { id: Tool; label: string; key: string; color: number; group: "orde
   { id: "mine", label: "Miner", key: "M", color: 0xff9a2e, group: "orders" },
   { id: "harvest", label: "Récolter", key: "H", color: 0xff9a2e, group: "orders" },
   { id: "stockpile", label: "Stockage", key: "Z", color: 0x4a90d9, group: "orders" },
+  { id: "growing", label: "Culture", key: "G", color: 0x5cc25c, group: "orders" },
   { id: "wall", label: "Mur", key: "B", color: 0x4ad9ff, group: "build" },
   { id: "door", label: "Porte", key: "P", color: 0x4ad9ff, group: "build" },
   { id: "floor", label: "Sol", key: "O", color: 0x4ad9ff, group: "build" },
   { id: "bed", label: "Lit", key: "L", color: 0x4ad9ff, group: "build" },
+  { id: "campfire", label: "Feu", key: "F", color: 0x4ad9ff, group: "build" },
   { id: "cancel", label: "Annuler", key: "X", color: 0xff4040, group: "orders" },
 ];
 
@@ -40,7 +44,9 @@ const BUILD_TOOL_KIND: Partial<Record<Tool, number>> = {
   door: BUILD_KIND.Door,
   floor: BUILD_KIND.Floor,
   bed: BUILD_KIND.Bed,
+  campfire: BUILD_KIND.Campfire,
 };
+const WOOD_ONLY: ReadonlySet<Tool> = new Set<Tool>(["bed", "campfire"]);
 
 interface PawnInfo {
   id: number;
@@ -75,7 +81,7 @@ const INITIAL: Stats = {
   fps: 0,
   speed: 1,
   paused: false,
-  stored: [0, 0, 0],
+  stored: [0, 0, 0, 0, 0],
   blueprints: 0,
   selected: null,
 };
@@ -279,10 +285,14 @@ export function App() {
           case "stockpile":
             sim.setZone(ZONE.Stockpile, rect.x0, rect.y0, rect.x1, rect.y1);
             break;
+          case "growing":
+            sim.setZone(ZONE.Growing, rect.x0, rect.y0, rect.x1, rect.y1);
+            break;
           case "wall":
           case "door":
           case "floor":
           case "bed":
+          case "campfire":
             sim.build(BUILD_TOOL_KIND[toolRef.current]!, materialRef.current, rect.x0, rect.y0, rect.x1, rect.y1);
             break;
           case "cancel":
@@ -531,11 +541,13 @@ export function App() {
         <div className="tool-hint">
           {tool === "stockpile"
             ? "Tracez un rectangle pour créer une zone de stockage"
-            : tool === "cancel"
-              ? "Tracez un rectangle pour annuler désignations, zones et chantiers"
-              : tool in BUILD_TOOL_KIND
-                ? `Tracez un rectangle pour poser des plans de ${TOOLS.find((t) => t.id === tool)?.label.toLowerCase()} en ${tool === "bed" ? "bois" : MATERIAL_NAMES[material]}`
-                : "Tracez un rectangle sur les éléments à traiter"}{" "}
+            : tool === "growing"
+              ? "Tracez un rectangle sur de l'herbe ou de la terre pour créer une zone de culture"
+              : tool === "cancel"
+                ? "Tracez un rectangle pour annuler désignations, zones et chantiers"
+                : tool in BUILD_TOOL_KIND
+                  ? `Tracez un rectangle pour poser des plans de ${TOOLS.find((t) => t.id === tool)?.label.toLowerCase()} en ${WOOD_ONLY.has(tool) ? "bois" : MATERIAL_NAMES[material]}`
+                  : "Tracez un rectangle sur les éléments à traiter"}{" "}
           · clic droit ou Échap pour revenir à la sélection
         </div>
       )}

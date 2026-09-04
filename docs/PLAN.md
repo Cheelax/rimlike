@@ -182,8 +182,15 @@ libre : dormir > manger > construire > livrer > travail désigné > ranger > fl�
 À faire plus tard : une livraison par chantier fait un aller-retour par mur, à grouper
 par chantiers voisins ; chunks de rendu si le rebuild complet devient visible.
 
-**2c. Nourriture.** Zones de culture, semis, croissance, récolte ; foyer et cuisine
-(repas simples) ; nourriture qui se gâte ; le régime pèse sur l'humeur.
+**2c. Nourriture — livrée le 2026-09-04.** Zones de culture où les colons sèment seuls,
+plants qui mûrissent en un jour et demi puis sont récoltés en légumes, resemés ensuite ;
+feu de camp (8 bois) et job de cuisine : cinq unités de cru donnent un repas, tant que la
+colonie a moins de dix repas ; préférence alimentaire repas > baies > légumes crus ;
+humeur : repas cuisiné +, légumes crus - ; péremption (baies 3 jours, légumes 4, repas 2),
+une pile fusionnée prend la date la plus proche ; le feu éclaire la nuit.
+Priorité d'un colon libre : dormir > manger > construire > livrer > cuisiner > travail
+désigné > cultiver > ranger > flâner. À faire plus tard : réfrigération, bill de cuisine
+réglable, croissance dépendant de la lumière et de la saison.
 
 **2d. Menaces.** Points de vie simples, premier raid, combat de mêlée, blessures, mort,
 enterrement. Premier vrai test de la colonie.
@@ -238,6 +245,11 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-04 : phase 2c livrée. Les plants sont un élément de case (`Crop`, `CropRipe`)
+  plus une liste `crops` pour l'avancement, même schéma que les buissons qui repoussent.
+  La nourriture porte une date de péremption par pile ; les jobs qui visaient une pile
+  disparue s'arrêtent seuls, pas de nettoyage spécial. Un seul niveau de repas pour
+  l'instant : la qualité viendra avec les compétences.
 - 2026-09-04 : phase 2b livrée. Constructions = éléments de la couche `Feature`
   (murs, portes, lit) ou sols de la couche `Terrain` (plancher, dallage) : rien de neuf
   côté rendu de carte, juste des valeurs en plus dans les contrats. Chantiers dans une
