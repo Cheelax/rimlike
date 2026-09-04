@@ -4,8 +4,23 @@
     {
       "name": "client",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "client", "dev", "--port", "5173", "--strictPort"],
+      "runtimeArgs": [
+        "--filter",
+        "client",
+        "dev",
+        "--port",
+        "5173",
+        "--strictPort"
+      ],
       "port": 5173
+    },
+    {
+      "name": "server",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "dev:server"
+      ],
+      "port": 8787
     }
   ]
 }

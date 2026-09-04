@@ -229,15 +229,32 @@ WebSocket : salles, hôte, horloge par bundles de 3 ticks, ordre des commandes g
 arrivée puis id de joueur, hashes toutes les 300 ticks et signal de désync, rejoint en cours
 par snapshot de l'hôte et rejeu d'un historique borné à 2000 bundles, heartbeat). 57 tests
 dont dix sur de vrais WebSockets. Doc : `docs/protocol.md`. Le serveur ne décode jamais les
-commandes : ce sont des octets postcard opaques. Reste à faire : encodeurs de commandes et
-`apply_encoded` dans `sim-wasm`, mode réseau du client (lobby, exécution par bundle, envoi
-des hashes, snapshot à la demande), sim dans un Worker. Livré par un sous-agent Opus.
+commandes : ce sont des octets postcard opaques. Intégration livrée le 2026-09-05 : encodeurs
+postcard et `apply_encoded` dans `sim-wasm` ; client lockstep pur (`LockstepClient`) testé
+contre le vrai serveur et le vrai WASM ; écran d'accueil, lobby, mode multi (exécution par
+bundle, hashes, snapshot de l'hôte pour les rejoignants, bandeau de désync), un seul chemin
+`issue(bytes)` pour le solo et le multi. Essai réel à deux onglets : même tick, même hash,
+commandes de l'un appliquées chez l'autre. Reste : sim dans un Worker (un onglet masqué ne
+reçoit plus de frames et prend du retard), reconnexion, resynchronisation après désync.
+Livré par deux sous-agents Opus.
 - Serveur relais : lobby, ordonnancement des commandes par tick, redistribution.
 - Lockstep 2-4 joueurs sur la même carte, hash de désync, resync par snapshot.
 - Rejoindre en cours de partie.
 **Jalon** : deux navigateurs gèrent la même colonie sans désync pendant 1 h.
+Partiellement atteint le 2026-09-05 : convergence vérifiée sur quelques minutes ; l'heure
+complète attend le Worker.
 
-### Phase 4 — Couche monde (1-2 mois)
+### Phase 4 — Couche monde (1-2 mois) — fondations livrées le 2026-09-05
+
+Fait : `packages/world` (sphère géodésique et son dual en cases hexagonales avec 12
+pentagones, 10 242 cases à la subdivision 5 ; élévation, température et humidité par bruit
+3D seedé, niveau de la mer fixé par quantile pour tenir 56 à 64 % d'océan quel que soit le
+seed ; dix biomes ; coûts de déplacement par biome, banquise franchissable ; A* avec
+heuristique orthodromique admissible vérifiée contre Dijkstra ; sérialisation compacte,
+2,8 Mo JSON et 650 Ko gzippés à la subdivision 5). 83 tests. Doc : `docs/world.md`. Reste à
+faire : serveur monde (cases, propriétaires, horloge globale, caravanes), rendu du globe et
+choix de la case de départ côté client, cartes gelées et avance rapide. Livré par un
+sous-agent Opus.
 - Globe hexagonal, rendu du globe, biomes, choix de case de départ.
 - Serveur autoritaire persistant : cases, propriétaires, horloge globale.
 - Cartes gelées + avance rapide abstraite.
@@ -276,6 +293,14 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-05 : intégration réseau livrée. Toute action joueur passe par des octets
+  postcard encodés par le sim, y compris en solo : un seul chemin, testé partout.
+  Décodage strict (octets en trop refusés). Le rejeu d'un rejoignant commence par un
+  bundle qui peut couvrir des ticks déjà dans le snapshot : le client les saute.
+- 2026-09-05 : fondations phase 4 livrées. Le globe se génère côté serveur et se
+  transmet sérialisé : les clients ne regénèrent pas (les fonctions trigonométriques
+  JS ne sont pas garanties identiques entre moteurs). Niveau de la mer par quantile
+  plutôt que par constante : un seuil fixe donnait de 21 à 73 % d'océan selon le seed.
 - 2026-09-05 : phase 2e livrée, phase 2 complète. Les avancements de travail passent en
   centièmes de tick pour que l'humeur module la vitesse sans flottant. La météo et le
   moral sont des états du sim (sérialisés, déterministes), leurs effets visuels restent

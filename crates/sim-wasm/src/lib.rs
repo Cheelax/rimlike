@@ -24,6 +24,44 @@ const FLAG_WORKING: i32 = 4;
 const FLAG_STARVING: i32 = 8;
 const FLAG_CARRYING: i32 = 16;
 
+/// Sérialise une commande en postcard. L'échec est impossible : `Command` est
+/// une somme de types de taille fixe et le tampon grandit à la demande.
+fn encode(command: &sim::Command) -> Vec<u8> {
+    postcard::to_allocvec(command).expect("encodage postcard d'une commande")
+}
+
+/// Pourquoi des octets venus du réseau n'ont pas donné de commande.
+#[derive(Debug)]
+enum CommandError {
+    /// postcard n'a pas su relire la commande.
+    Decode(postcard::Error),
+    /// Commande relue, mais suivie d'octets en trop : trame bricolée.
+    Trailing(usize),
+}
+
+impl core::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            CommandError::Decode(e) => write!(f, "décodage postcard : {e}"),
+            CommandError::Trailing(n) => write!(f, "{n} octet(s) en trop après la commande"),
+        }
+    }
+}
+
+/// Relit une commande produite par un `encode_*`. Les octets en trop sont
+/// refusés : `postcard::from_bytes` les ignore, on veut ici une trame exacte.
+///
+/// Séparé de `apply_encoded` pour être testable en natif : construire un
+/// `JsError` appelle une fonction JS, indisponible hors WASM.
+fn decode_command(bytes: &[u8]) -> Result<sim::Command, CommandError> {
+    let (command, rest) = postcard::take_from_bytes(bytes).map_err(CommandError::Decode)?;
+    if rest.is_empty() {
+        Ok(command)
+    } else {
+        Err(CommandError::Trailing(rest.len()))
+    }
+}
+
 #[wasm_bindgen]
 pub struct WasmSim {
     inner: sim::Sim,
@@ -119,6 +157,104 @@ impl WasmSim {
     /// Déclenche un raid tout de suite (outil de dev).
     pub fn trigger_raid(&mut self) {
         self.pending.push(sim::Command::TriggerRaid);
+    }
+
+    // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
+    //
+    // Fonctions **associées** : le client doit pouvoir encoder avant même
+    // d'avoir un sim, et l'encodage ne dépend d'aucun état. Côté JS :
+    // `WasmSim.encode_move_to(...)`. Les octets produits sont relayés tels
+    // quels par le serveur (qui ne les décode jamais) puis relus par
+    // `apply_encoded` chez tous les clients. Une commande nouvelle doit venir
+    // avec son `encode_*`, sinon elle est injouable en multi.
+
+    /// Commande vide, pour éprouver le lockstep sans gameplay.
+    pub fn encode_nop() -> Vec<u8> {
+        encode(&sim::Command::Nop)
+    }
+
+    pub fn encode_move_to(pawn: u32, x: u32, y: u32) -> Vec<u8> {
+        encode(&sim::Command::MoveTo { pawn, x, y })
+    }
+
+    /// `kind` : 0 annuler, 1 couper, 2 miner, 3 récolter.
+    pub fn encode_designate(kind: u8, x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<u8> {
+        encode(&sim::Command::Designate {
+            kind: Designation::from_u8(kind),
+            x0,
+            y0,
+            x1,
+            y1,
+        })
+    }
+
+    /// `zone` : 0 retirer, 1 stockage, 2 culture.
+    pub fn encode_set_zone(zone: u8, x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<u8> {
+        encode(&sim::Command::SetZone {
+            zone: Zone::from_u8(zone),
+            x0,
+            y0,
+            x1,
+            y1,
+        })
+    }
+
+    /// `kind` : 0 mur, 1 porte, 2 sol, 3 lit, 4 feu. `material` : 0 bois, 1 pierre.
+    pub fn encode_build(kind: u8, material: u8, x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<u8> {
+        encode(&sim::Command::Build {
+            kind: BuildKind::from_u8(kind),
+            material: Material::from_u8(material),
+            x0,
+            y0,
+            x1,
+            y1,
+        })
+    }
+
+    pub fn encode_cancel_build(x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<u8> {
+        encode(&sim::Command::CancelBuild { x0, y0, x1, y1 })
+    }
+
+    pub fn encode_attack(pawn: u32, target: u32) -> Vec<u8> {
+        encode(&sim::Command::Attack { pawn, target })
+    }
+
+    pub fn encode_trigger_raid() -> Vec<u8> {
+        encode(&sim::Command::TriggerRaid)
+    }
+
+    /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
+    pub fn encode_set_priority(pawn: u32, work: u8, priority: u8) -> Vec<u8> {
+        encode(&sim::Command::SetPriority {
+            pawn,
+            work: WorkType::from_u8(work),
+            priority,
+        })
+    }
+
+    /// Décode une commande venue du réseau et la met en attente : elle sera
+    /// appliquée au prochain `step`, comme celles des méthodes typées.
+    ///
+    /// C'est la seule frontière où des octets extérieurs entrent dans le sim,
+    /// donc la seule qui valide. Des octets identiques donnent la même
+    /// commande chez tous les clients (postcard est canonique à schéma égal),
+    /// à condition que tout le monde tourne le même binaire WASM.
+    pub fn apply_encoded(&mut self, bytes: &[u8]) -> Result<(), JsError> {
+        match decode_command(bytes) {
+            Ok(command) => {
+                self.pending.push(command);
+                Ok(())
+            }
+            Err(e) => Err(JsError::new(&format!(
+                "commande illisible ({} octet(s)) : {e}",
+                bytes.len()
+            ))),
+        }
+    }
+
+    /// Commandes en attente du prochain `step`.
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
     }
 
     // --- Lecture ---
@@ -358,5 +494,142 @@ impl WasmSim {
             ]);
         }
         let _ = ItemKind::COUNT;
+    }
+}
+
+/// Tests natifs de la frontière du lockstep : encodage, décodage, mise en
+/// attente. Ils tournent avec `cargo test --workspace`, sans navigateur.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sim::Command;
+    use sim::testmap::map_from;
+
+    /// Petite clairière plate : tout est praticable, donc les zones passent.
+    fn fresh() -> WasmSim {
+        WasmSim::wrap(sim::Sim::from_map(
+            1,
+            map_from(&[
+                "........", "........", "........", "........", "........", "........", "........",
+                "........",
+            ]),
+        ))
+    }
+
+    #[test]
+    fn les_encodeurs_font_l_aller_retour() {
+        let cases: Vec<(Vec<u8>, Command)> = vec![
+            (WasmSim::encode_nop(), Command::Nop),
+            (
+                WasmSim::encode_move_to(3, 12, 34),
+                Command::MoveTo {
+                    pawn: 3,
+                    x: 12,
+                    y: 34,
+                },
+            ),
+            (
+                WasmSim::encode_designate(1, -2, 0, 5, 7),
+                Command::Designate {
+                    kind: Designation::Chop,
+                    x0: -2,
+                    y0: 0,
+                    x1: 5,
+                    y1: 7,
+                },
+            ),
+            (
+                WasmSim::encode_set_zone(2, 1, 2, 3, 4),
+                Command::SetZone {
+                    zone: Zone::Growing,
+                    x0: 1,
+                    y0: 2,
+                    x1: 3,
+                    y1: 4,
+                },
+            ),
+            (
+                WasmSim::encode_build(1, 1, 0, 0, 2, 2),
+                Command::Build {
+                    kind: BuildKind::Door,
+                    material: Material::Stone,
+                    x0: 0,
+                    y0: 0,
+                    x1: 2,
+                    y1: 2,
+                },
+            ),
+            (
+                WasmSim::encode_cancel_build(4, 5, 6, 7),
+                Command::CancelBuild {
+                    x0: 4,
+                    y0: 5,
+                    x1: 6,
+                    y1: 7,
+                },
+            ),
+            (
+                WasmSim::encode_attack(2, 9),
+                Command::Attack { pawn: 2, target: 9 },
+            ),
+            (WasmSim::encode_trigger_raid(), Command::TriggerRaid),
+            (
+                WasmSim::encode_set_priority(1, 4, 3),
+                Command::SetPriority {
+                    pawn: 1,
+                    work: WorkType::Farm,
+                    priority: 3,
+                },
+            ),
+        ];
+        for (bytes, expected) in cases {
+            assert!(!bytes.is_empty(), "une commande encodée n'est jamais vide");
+            assert_eq!(decode_command(&bytes).expect("décodage"), expected);
+        }
+    }
+
+    #[test]
+    fn apply_encoded_met_en_attente_et_step_applique() {
+        let mut s = fresh();
+        assert_eq!(s.pending_len(), 0);
+        assert!(
+            s.apply_encoded(&WasmSim::encode_set_zone(1, 4, 4, 6, 6))
+                .is_ok()
+        );
+        assert_eq!(s.pending_len(), 1);
+        // Rien n'est appliqué avant le tick.
+        assert_eq!(s.inner.map().zone(5, 5), Zone::None);
+
+        s.step(1);
+        assert_eq!(s.pending_len(), 0, "`step` vide la file");
+        assert_eq!(s.inner.map().zone(5, 5), Zone::Stockpile);
+    }
+
+    #[test]
+    fn apply_encoded_suit_le_meme_chemin_que_les_methodes_typees() {
+        let mut encoded = fresh();
+        assert!(
+            encoded
+                .apply_encoded(&WasmSim::encode_designate(1, 0, 0, 3, 3))
+                .is_ok()
+        );
+        encoded.step(4);
+
+        let mut typed = fresh();
+        typed.designate(1, 0, 0, 3, 3);
+        typed.step(4);
+
+        assert_eq!(encoded.hash(), typed.hash());
+    }
+
+    #[test]
+    fn des_octets_invalides_sont_refuses() {
+        // Variante inexistante, varint tronqué, tampon vide, octets en trop.
+        for bytes in [vec![200], vec![0xff], Vec::new(), vec![0, 0]] {
+            assert!(
+                decode_command(&bytes).is_err(),
+                "octets acceptés à tort : {bytes:?}"
+            );
+        }
     }
 }

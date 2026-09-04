@@ -1,0 +1,19 @@
+{
+  "name": "@rimlike/world",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Géométrie du globe (géodésique icosaédrique et son dual), biomes et itinéraires monde. Pur, sans I/O ni rendu, zéro dépendance runtime.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^4.0.0"
+  }
+}

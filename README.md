@@ -33,6 +33,16 @@ meurt en deux jours. La touche J ouvre le tableau des priorités de travail par 
 colon au moral trop bas craque et erre un moment ; la pluie fait pousser les cultures, l'orage
 pèse sur le moral ; des voyageurs rejoignent la colonie de temps en temps.
 
+## Multijoueur (expérimental)
+
+```bash
+pnpm dev:server
+```
+
+puis, dans deux navigateurs, `http://localhost:5173/?server=ws://localhost:8787&room=demo&name=alice`
+et la même adresse avec `name=bob`. L'hôte démarre la partie ; chacun voit les actions de
+l'autre, la simulation tourne à l'identique chez tous (lockstep déterministe).
+
 ## Structure
 
 - `crates/sim` : la simulation. Aucun flottant, aucune horloge, aucune dépendance au rendu.
@@ -40,4 +50,5 @@ pèse sur le moral ; des voyageurs rejoignent la colonie de temps en temps.
 - `apps/client` : rendu et UI.
 - `packages/protocol` : messages et logique lockstep du multijoueur, sans I/O.
 - `apps/server` : serveur relais WebSocket (ne simule pas, ne décode pas les commandes).
+- `packages/world` : le globe, ses biomes et les itinéraires de caravanes.
 - `docs/` : plan, décisions, protocole réseau.

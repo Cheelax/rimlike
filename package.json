@@ -9,6 +9,8 @@
     "build": "pnpm build:wasm && pnpm --filter client build",
     "test": "cargo test --workspace",
     "test:protocol": "pnpm --filter @rimlike/protocol test",
+    "test:client": "pnpm --filter client test",
+    "test:world": "pnpm --filter @rimlike/world test",
     "test:server": "pnpm --filter server test",
     "lint": "cargo clippy --workspace --all-targets -- -D warnings && pnpm --filter client typecheck",
     "fmt": "cargo fmt --all"

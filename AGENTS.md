@@ -22,6 +22,9 @@ multijoueur sur un globe partagé. Trois couches indépendantes :
 - `apps/server` : relais WebSocket (salles, horloge par bundles, ordre des commandes,
   hashes, snapshots pour les rejoignants). Il ne simule pas et ne décode jamais les
   commandes. Voir `docs/protocol.md`.
+- `packages/world` : géométrie du globe (géodésique → cases hexagonales), biomes,
+  itinéraires de caravanes, sérialisation. Pur, sans I/O ; les flottants y sont permis
+  (autorité serveur, pas de lockstep). Voir `docs/world.md`.
 
 Le futur serveur monde (phase 4) s'appuiera sur ce relais pour gérer le globe.
 
@@ -36,6 +39,8 @@ pnpm build:wasm       # à relancer après TOUTE modification Rust avant de test
 pnpm build            # WASM + typecheck + build de production
 pnpm test:protocol    # tests du paquet protocole (vitest)
 pnpm test:server      # tests du serveur relais, vrais WebSockets sur port éphémère
+pnpm test:client      # tests du client lockstep contre le vrai serveur en mémoire (vitest)
+pnpm test:world       # tests du globe (géométrie, biomes, itinéraires)
 pnpm dev:server       # serveur relais sur :8787 (GET /health)
 cargo fmt --all       # la CI vérifie le formatage
 ```
@@ -100,12 +105,27 @@ chantiers les émet divisés par 100. Le client rebâtit ses meshes quand `map_v
 - `Renderer.ts` ne connaît que des tampons plats et ne décide rien.
 - `App.tsx` possède la boucle à pas fixe (60 ticks/s, rattrapage borné), les entrées et
   le HUD. L'état de jeu affiché est relu depuis les tampons, pas dupliqué en React.
-- Toute action du joueur passe par `SimHandle` → méthode `WasmSim` → `Command`.
+- Toute action du joueur devient des octets postcard via `apps/client/src/sim/commands.ts`
+  (`encode*`, qui appellent `WasmSim.encode_*`) puis passe par `issue(bytes)` : en solo
+  `sim.applyEncoded`, en multi `LockstepClient.issue`. Ne jamais appliquer une commande
+  localement en multi : elle revient dans un bundle.
+- `apps/client/src/net/` : `LockstepClient` (logique pure, sans timer ni DOM), `Transport`
+  (WebSocket navigateur) et `WsTransport` (paquet `ws`, tests uniquement, jamais importé
+  depuis `App.tsx`).
 - Souris : glisser gauche trace un rectangle quand un outil est actif, sinon déplace la
   caméra ; glisser droit et flèches déplacent toujours ; clic droit = ordre en sélection,
   retour à la sélection en mode outil.
 - L'init wasm-bindgen est mémoïsée dans `SimHandle.ts` : React StrictMode monte deux fois
   et deux inits concurrentes corrompent la mémoire. Ne pas contourner.
+
+## Essayer le multijoueur
+
+`pnpm dev:server` (relais sur :8787) et `pnpm --filter client dev`, puis deux onglets :
+`http://localhost:5173/?server=ws://localhost:8787&room=demo&name=alice` et le même avec
+`name=bob`. L'hôte clique « Démarrer ». Vérifier dans le HUD : même hash dans les deux
+onglets, retard proche de 0, et une action faite dans l'un visible dans l'autre. En console,
+`window.__rimlike.lockstep.state`, `.lag`, `.pump(n)`. Un onglet masqué ne reçoit plus de
+frames et accumule du retard : il rattrape quand il redevient visible (Worker à venir).
 
 ## Vérifier dans le navigateur
 

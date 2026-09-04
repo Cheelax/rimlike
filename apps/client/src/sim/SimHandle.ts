@@ -1,3 +1,4 @@
+import type { SimLike } from "../net/SimLike";
 import init, { WasmSim, type InitOutput } from "../wasm/sim.js";
 
 /**
@@ -16,8 +17,10 @@ function initOnce(): Promise<InitOutput> {
  * construire des vues zéro-copie sur l'état. Les vues (`tiles`, `features`,
  * `zones`, `designations`) ne doivent pas être conservées entre deux appels
  * au sim ; `pawns` et `items` renvoient des copies.
+ *
+ * Implémente `SimLike` : c'est par ce contrat que la couche réseau le pilote.
  */
-export class SimHandle {
+export class SimHandle implements SimLike {
   private constructor(
     private readonly wasm: InitOutput,
     private readonly inner: WasmSim,
@@ -43,6 +46,20 @@ export class SimHandle {
 
   step(n: number): void {
     this.inner.step(n);
+  }
+
+  /**
+   * Met en attente une commande encodée (voir `sim/commands.ts`). Seul chemin
+   * des actions du joueur, en solo comme en multi. Lève si les octets ne sont
+   * pas une commande valide.
+   */
+  applyEncoded(bytes: Uint8Array): void {
+    this.inner.apply_encoded(bytes);
+  }
+
+  /** Commandes en attente du prochain `step`. */
+  pendingLen(): number {
+    return this.inner.pending_len();
   }
 
   moveTo(pawn: number, x: number, y: number): void {

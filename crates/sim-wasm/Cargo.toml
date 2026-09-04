@@ -10,6 +10,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 sim = { path = "../sim" }
+# Encodage des commandes pour le lockstep : mêmes octets que le snapshot du sim.
+postcard = { workspace = true }
 wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true }
 

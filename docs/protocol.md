@@ -353,7 +353,14 @@ Le passage aux trames binaires est déjà cadré par le protocole :
    et toute la logique de `lockstep.ts` sont indépendants du cadrage — c'est
    pour cela qu'ils ne manipulent que des `Uint8Array`.
 
-## 10. Intégration côté sim-wasm à faire
+## 10. Intégration côté sim-wasm (livrée le 2026-09-05)
+
+> Réalisée : encodeurs `WasmSim.encode_*`, `apply_encoded`, `pending_len` dans
+> `crates/sim-wasm` ; côté client `apps/client/src/net/LockstepClient.ts` (logique pure,
+> testée contre le vrai serveur dans `apps/client/test/lockstep.test.ts`),
+> `apps/client/src/sim/commands.ts`, lobby et mode multi dans `App.tsx`. Le texte ci-dessous
+> est la spécification d'origine, conservée comme référence.
+
 
 Le client ne peut pas se brancher sur ce protocole avec l'API actuelle de
 `WasmSim` : les méthodes typées (`move_to`, `designate`, …) poussent directement
