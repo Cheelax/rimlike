@@ -134,30 +134,36 @@ chantiers les émet divisés par 100. Le client rebâtit ses meshes quand `map_v
 `pnpm dev:server` (relais sur :8787) et `pnpm --filter client dev`, puis deux onglets :
 `http://localhost:5173/?server=ws://localhost:8787&room=demo&name=alice` et le même avec
 `name=bob`. L'hôte clique « Démarrer ». Vérifier dans le HUD : même hash dans les deux
-onglets, retard proche de 0, et une action faite dans l'un visible dans l'autre. En console,
-`window.__rimlike.lockstep.state`, `.lag`, `.pump(n)`. Un onglet masqué ne reçoit plus de
-frames et accumule du retard : il rattrape quand il redevient visible (Worker à venir).
+onglets, retard proche de 0, et une action faite dans l'un visible dans l'autre, y compris
+onglet masqué (le Worker tient la cadence).
 
 ## Vérifier dans le navigateur
 
-`pnpm dev`, puis ouvrir http://localhost:5173. En mode dev, `window.__rimlike` expose :
-`sim` (SimHandle), `renderer`, `pawns()`, `paused`, `speed`, `selected`, `setTool(id)`,
-`actions.current.save()/load()`. Exemple de scénario reproductible depuis la console :
+`pnpm dev`, puis ouvrir http://localhost:5173 et cliquer « Partie solo ». Le sim et le
+client lockstep tournent dans un **Web Worker** (`apps/client/src/worker/`) : le thread
+principal ne fait que rendre et saisir. En mode dev, `window.__rimlike` expose :
+`rpc(method, ...args)` (asynchrone, exécute dans le Worker une méthode de `SimHandle`, ou du
+`LockstepClient` si préfixée `lockstep.`), `issue(bytes)`, `frame` (dernier état reçu :
+`tick`, `hash` un frame sur 30, `lag`, `tps`, tampons), `net`, `renderer`, `setTool`,
+`setMaterial`, `actions`, `paused`, `speed`, `selected`. Exemple reproductible :
 
 ```js
 const d = window.__rimlike; d.paused = true;
-const s = d.sim, p = s.pawns(), px = Math.floor(p[1] / 256), py = Math.floor(p[2] / 256);
-s.setZone(1, px + 2, py + 2, px + 4, py + 4);          // stockage 3x3
-s.designate(1, px - 10, py - 10, px + 10, py + 10);   // couper les arbres autour
-s.build(0, 0, px - 5, py - 5, px + 5, py - 5);        // plans de mur en bois (kind, matériau, rect)
-s.step(5000); Array.from(s.storedTotals());           // [bois, pierre, baies] rangés
-s.blueprints().length / 8;                            // chantiers restants
-s.triggerRaid(); s.step(3000); s.events();            // raid immédiat, puis journal (seq, tick, kind, arg)
-d.paused = false;
+const p = await d.rpc("pawns"), px = Math.floor(p[1] / 256), py = Math.floor(p[2] / 256);
+await d.rpc("setZone", 1, px + 2, py + 2, px + 4, py + 4);         // stockage 3x3
+await d.rpc("designate", 1, px - 10, py - 10, px + 10, py + 10);   // couper les arbres autour
+await d.rpc("build", 0, 0, px - 5, py - 5, px + 5, py - 5);        // plans de mur en bois
+await d.rpc("step", 5000);
+Array.from(await d.rpc("storedTotals"));      // [bois, pierre, baies, légumes, repas, cadavres]
+(await d.rpc("blueprints")).length / 8;       // chantiers restants
+await d.rpc("triggerRaid"); await d.rpc("step", 3000);
+await d.rpc("events");                        // journal (seq, tick, kind, arg)
+d.frame.tick; d.paused = false;
 ```
 
-Un onglet en arrière-plan ne reçoit presque plus de frames : les tps et fps affichés
-chutent sans que ce soit un bug (le sim passera dans un Worker en phase 3).
+En multi, `rpc("step", n)` est refusé : `await d.rpc("lockstep.pump", 8)`, `d.net.lag`,
+`await d.rpc("lockstep.state")`. Un onglet masqué ne rend plus (0 fps, normal) mais le
+Worker continue de ticker : `d.frame.tick` progresse, le retard multi reste proche de 0.
 
 ## Style
 

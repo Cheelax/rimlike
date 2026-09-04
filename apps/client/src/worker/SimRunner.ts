@@ -1,0 +1,270 @@
+/**
+ * La cadence du jeu, sans timer et sans `postMessage` : une classe pure que
+ * l'on pilote en l'appelant, et qui répond ce qui a changé.
+ *
+ * C'est l'ancienne boucle de `App.tsx` extraite du `requestAnimationFrame` :
+ * `sim.worker.ts` ne fait plus que la brancher sur un `setInterval`, sur le
+ * WASM, sur le transport et sur `postMessage`. Tout est ici pour que ce soit
+ * testable sous Node avec un sim factice (voir `test/simrunner.test.ts`).
+ *
+ * Deux cadences, un seul appelant :
+ * - **solo** : accumulateur en millisecondes, pas fixe de 60 ticks/s multiplié
+ *   par la vitesse, rattrapage borné, accumulateur gelé en pause ;
+ * - **multi** : aucune horloge locale, l'horloge est celle des bundles du
+ *   serveur. `advance` ne fait que `pump` avec un budget borné.
+ */
+
+import type { SimLike } from "../net/SimLike";
+import {
+  HASH_EVERY_FRAMES,
+  type FrameMessage,
+  type MapMessage,
+  type OverlaysMessage,
+} from "./protocol";
+
+/** 60 ticks de jeu par seconde à la vitesse x1. */
+export const TICKS_PER_SECOND = 60;
+export const BASE_TICK_MS = 1000 / TICKS_PER_SECOND;
+/** Rattrapage maximal par intervalle : au-delà on lâche du temps plutôt que de geler. */
+export const MAX_TICKS_PER_STEP = 8;
+/** En multi, au-delà de ce retard on rattrape plus fort (borné, jamais infini). */
+export const CATCHUP_LAG_TICKS = 60;
+export const MAX_TICKS_CATCHUP = 30;
+/** Fenêtre de mesure des ticks par seconde. */
+export const TPS_WINDOW_MS = 500;
+
+/**
+ * Ce que le runner attend d'un sim : le contrat réseau (`SimLike`) plus les
+ * tampons de rendu. `SimHandle` l'implémente ; les tests en fabriquent un faux.
+ */
+export interface RunnerSim extends SimLike {
+  readonly width: number;
+  readonly height: number;
+  mapVersion(): number;
+  overlayVersion(): number;
+  tiles(): Uint8Array;
+  features(): Uint8Array;
+  zones(): Uint8Array;
+  designations(): Uint8Array;
+  pawns(): Int32Array;
+  items(): Int32Array;
+  blueprints(): Int32Array;
+  events(): Int32Array;
+  priorities(): Int32Array;
+  storedTotals(): Uint32Array;
+  weather(): number;
+  timeOfDay(): number;
+  ticksPerDay(): number;
+  dispose(): void;
+}
+
+/** Ce que le runner attend du lockstep : de quoi avancer et mesurer le retard. */
+export interface LockstepLike {
+  pump(maxTicks: number): number;
+  readonly lag: number;
+}
+
+export interface SimRunnerOptions {
+  /** Présent = mode multi : l'horloge vient du serveur, pas de l'accumulateur. */
+  readonly lockstep?: LockstepLike | null;
+  readonly maxTicksPerStep?: number;
+  readonly catchupLagTicks?: number;
+  readonly maxTicksCatchup?: number;
+  readonly hashEveryFrames?: number;
+  readonly tpsWindowMs?: number;
+}
+
+/** Ce qu'un `advance` a produit. Les champs `null` n'ont pas à être émis. */
+export interface RunnerOutput {
+  /** Ticks exécutés pendant cet appel. */
+  readonly ticks: number;
+  readonly map: MapMessage | null;
+  readonly overlays: OverlaysMessage | null;
+  readonly frame: FrameMessage | null;
+}
+
+const NOTHING: RunnerOutput = { ticks: 0, map: null, overlays: null, frame: null };
+
+export class SimRunner {
+  private readonly lockstep: LockstepLike | null;
+  private readonly maxTicksPerStep: number;
+  private readonly catchupLagTicks: number;
+  private readonly maxTicksCatchup: number;
+  private readonly hashEveryFrames: number;
+  private readonly tpsWindowMs: number;
+
+  private current: RunnerSim | null = null;
+  private pausedFlag = false;
+  private speedValue = 1;
+  /** Millisecondes de jeu en attente d'être converties en ticks. */
+  private acc = 0;
+  /** Dernier instant vu par `advance`, `null` avant le premier appel. */
+  private last: number | null = null;
+  private knownMapVersion = -1;
+  private knownOverlayVersion = -1;
+  /** Force un `frame` juste après l'adoption d'un sim, même sans tick. */
+  private needFirstFrame = false;
+  private frameCount = 0;
+  private ticksInWindow = 0;
+  private windowStart = 0;
+  private tpsValue = 0;
+
+  constructor(options: SimRunnerOptions = {}) {
+    this.lockstep = options.lockstep ?? null;
+    this.maxTicksPerStep = options.maxTicksPerStep ?? MAX_TICKS_PER_STEP;
+    this.catchupLagTicks = options.catchupLagTicks ?? CATCHUP_LAG_TICKS;
+    this.maxTicksCatchup = options.maxTicksCatchup ?? MAX_TICKS_CATCHUP;
+    this.hashEveryFrames = options.hashEveryFrames ?? HASH_EVERY_FRAMES;
+    this.tpsWindowMs = options.tpsWindowMs ?? TPS_WINDOW_MS;
+  }
+
+  get sim(): RunnerSim | null {
+    return this.current;
+  }
+
+  get paused(): boolean {
+    return this.pausedFlag;
+  }
+
+  get speed(): number {
+    return this.speedValue;
+  }
+
+  get tps(): number {
+    return this.tpsValue;
+  }
+
+  /** Retard du lockstep, toujours 0 en solo. */
+  get lag(): number {
+    return this.lockstep?.lag ?? 0;
+  }
+
+  /**
+   * Adopte un sim neuf, chargé ou restauré, et libère le précédent. Les
+   * versions connues repartent à `-1` : la carte et les calques seront réémis,
+   * et un premier `frame` partira même en pause.
+   */
+  setSim(next: RunnerSim | null): void {
+    const previous = this.current;
+    if (previous !== null && previous !== next) previous.dispose();
+    this.current = next;
+    this.knownMapVersion = -1;
+    this.knownOverlayVersion = -1;
+    this.acc = 0;
+    this.needFirstFrame = next !== null;
+  }
+
+  /**
+   * Force un `frame` au prochain `advance`, même sans tick. Sert au crochet de
+   * debug : un scénario joué en pause depuis la console doit se voir à l'écran.
+   */
+  requestFrame(): void {
+    if (this.current !== null) this.needFirstFrame = true;
+  }
+
+  setPaused(paused: boolean): void {
+    // En multi la pause n'existe pas : l'horloge du serveur ne s'arrête jamais.
+    if (this.lockstep !== null) return;
+    this.pausedFlag = paused;
+  }
+
+  setSpeed(speed: number): void {
+    if (this.lockstep !== null) return;
+    this.speedValue = Number.isFinite(speed) && speed > 0 ? speed : 1;
+  }
+
+  /**
+   * Exécute le lot de ticks que le temps écoulé autorise, puis décrit ce qui a
+   * changé. `nowMs` est une horloge monotone (`performance.now()` du Worker).
+   *
+   * Aucun `frame` n'est produit sans tick exécuté, sauf le premier après
+   * l'adoption d'un sim : sinon un jeu en pause n'afficherait jamais rien.
+   */
+  advance(nowMs: number): RunnerOutput {
+    const first = this.last === null;
+    const dt = first ? 0 : Math.max(0, nowMs - (this.last ?? nowMs));
+    this.last = nowMs;
+    if (first) this.windowStart = nowMs;
+    const sim = this.current;
+    if (sim === null) return NOTHING;
+
+    const ticks = this.runTicks(sim, dt);
+    this.ticksInWindow += ticks;
+    const windowMs = nowMs - this.windowStart;
+    if (windowMs >= this.tpsWindowMs) {
+      this.tpsValue = Math.round((this.ticksInWindow * 1000) / windowMs);
+      this.ticksInWindow = 0;
+      this.windowStart = nowMs;
+    }
+    if (ticks === 0 && !this.needFirstFrame) return NOTHING;
+    this.needFirstFrame = false;
+
+    // Les versions ne bougent qu'en exécutant des ticks : inutile de les
+    // relire quand rien n'a tourné.
+    let map: MapMessage | null = null;
+    let overlays: OverlaysMessage | null = null;
+    const mapVersion = sim.mapVersion();
+    if (mapVersion !== this.knownMapVersion) {
+      this.knownMapVersion = mapVersion;
+      map = {
+        type: "map",
+        width: sim.width,
+        height: sim.height,
+        mapVersion,
+        // Copies : les vues sont zéro-copie sur la mémoire WASM.
+        tiles: sim.tiles().slice(),
+        features: sim.features().slice(),
+      };
+    }
+    const overlayVersion = sim.overlayVersion();
+    if (overlayVersion !== this.knownOverlayVersion) {
+      this.knownOverlayVersion = overlayVersion;
+      overlays = {
+        type: "overlays",
+        overlayVersion,
+        zones: sim.zones().slice(),
+        designations: sim.designations().slice(),
+      };
+    }
+
+    const withHash = this.frameCount % this.hashEveryFrames === 0;
+    this.frameCount += 1;
+    const frame: FrameMessage = {
+      type: "frame",
+      tick: sim.tick(),
+      timeOfDay: sim.timeOfDay(),
+      ticksPerDay: sim.ticksPerDay(),
+      weather: sim.weather(),
+      hash: withHash ? sim.hash() : null,
+      pawns: sim.pawns(),
+      items: sim.items(),
+      blueprints: sim.blueprints(),
+      events: sim.events(),
+      priorities: sim.priorities(),
+      stored: sim.storedTotals(),
+      lag: this.lag,
+      tps: this.tpsValue,
+    };
+    return { ticks, map, overlays, frame };
+  }
+
+  /** Le pas de temps proprement dit. Renvoie le nombre de ticks exécutés. */
+  private runTicks(sim: RunnerSim, dt: number): number {
+    if (this.lockstep !== null) {
+      // L'horloge est celle des bundles : on n'avance que sur ce qui est reçu.
+      const budget = this.lockstep.lag > this.catchupLagTicks ? this.maxTicksCatchup : this.maxTicksPerStep;
+      return this.lockstep.pump(budget);
+    }
+    if (this.pausedFlag) return 0; // accumulateur gelé
+    this.acc += dt;
+    const tickMs = BASE_TICK_MS / this.speedValue;
+    // Une division plutôt qu'une soustraction en boucle : `floor(dt / tickMs)`
+    // exactement, sans le grain de sable de soixantièmes accumulés.
+    const ticks = Math.min(Math.floor(this.acc / tickMs), this.maxTicksPerStep);
+    this.acc -= ticks * tickMs;
+    // Trop de retard : on lâche le temps en trop au lieu de le rattraper sans fin.
+    if (this.acc > tickMs * this.maxTicksPerStep) this.acc = 0;
+    if (ticks > 0) sim.step(ticks);
+    return ticks;
+  }
+}

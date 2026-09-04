@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BUNDLE_INTERVAL_MS } from "@rimlike/protocol";
-import { LockstepClient, type LockstepState } from "./net/LockstepClient";
-import { WebSocketTransport } from "./net/Transport";
+import type { LockstepError, LockstepState } from "./net/LockstepClient";
 import { PAWN_STRIDE, Renderer, type TilePos, type TileRect } from "./render/Renderer";
 import {
   BLUEPRINT_STRIDE,
@@ -27,16 +25,13 @@ import {
   encodeSetZone,
   encodeTriggerRaid,
 } from "./sim/commands";
-import { SimHandle } from "./sim/SimHandle";
+import { initSim } from "./sim/SimHandle";
+import { SimBridge } from "./worker/SimBridge";
+import type { FrameMessage } from "./worker/protocol";
 
-const TICKS_PER_SECOND = 60;
-const BASE_TICK_MS = 1000 / TICKS_PER_SECOND;
-/** Rattrapage maximal par frame : au-delà on lâche du temps plutôt que de geler. */
-const MAX_TICKS_PER_FRAME = 8;
-/** En multi, au-delà de ce retard on rattrape plus fort (borné, jamais infini). */
-const CATCHUP_LAG_TICKS = 60;
-const MAX_TICKS_CATCHUP = 30;
 const CLICK_TOLERANCE_PX = 5;
+/** Écart de rendu borné : au retour d'un onglet masqué, la pluie ne bondit pas. */
+const MAX_RENDER_DT_MS = 100;
 const SAVE_KEY = "rimlike.save.v1";
 /** Contrat avec `pawn::Faction` et `pawn::HP_MAX`. */
 const FACTION_RAIDER = 1;
@@ -216,7 +211,7 @@ export function App() {
   const materialRef = useRef<number>(0);
   const rendererRef = useRef<Renderer | null>(null);
   const actionsRef = useRef<Actions | null>(null);
-  const lockstepRef = useRef<LockstepClient | null>(null);
+  const bridgeRef = useRef<SimBridge | null>(null);
   const [tool, setToolState] = useState<Tool>("select");
   const [material, setMaterialState] = useState<number>(0);
   const [stats, setStats] = useState<Stats>(INITIAL);
@@ -246,502 +241,512 @@ export function App() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !session) return;
+    const isMulti = session.mode === "multi";
     let disposed = false;
     let raf = 0;
     let interval = 0;
-    let renderer: Renderer | undefined;
-    let sim: SimHandle | undefined;
-    let lockstep: LockstepClient | null = null;
     const cleanups: Array<() => void> = [];
     const toastTimers: number[] = [];
     /** Identifiants de toast réseau, hors de la plage des `seq` du sim. */
     let netToastId = -1;
 
-    (async () => {
-      renderer = new Renderer(canvas);
-      rendererRef.current = renderer;
-      renderer.setLeftDragPans(toolRef.current === "select");
+    const renderer = new Renderer(canvas);
+    rendererRef.current = renderer;
+    renderer.setLeftDragPans(toolRef.current === "select");
 
-      // --- État de la boucle ---
-      let speed = 1;
-      let paused = false;
-      let selected: number | null = null;
-      let mapVersion = -1;
-      let overlayVersion = -1;
-      let prevPawns: Int32Array | null = null;
-      let curPawns: Int32Array = new Int32Array(0);
-      let last = performance.now();
-      let acc = 0;
-      let ticksInWindow = 0;
-      let framesInWindow = 0;
-      let windowStart = last;
-      let lastEventSeq = -1;
-      /** Instant du dernier tick appliqué en multi, pour l'interpolation. */
-      let lastAppliedAt: number | null = null;
+    // --- État vu du thread principal. Le sim, lui, vit dans le Worker ---
+    let speed = 1;
+    let paused = false;
+    let selected: number | null = null;
+    /** Dernier `frame` reçu : seule source de l'état affiché. */
+    let lastFrame: FrameMessage | null = null;
+    let prevPawns: Int32Array | null = null;
+    let curPawns: Int32Array = new Int32Array(0);
+    /** Instant de réception du dernier `frame`, pour l'interpolation. */
+    let lastFrameAt: number | null = null;
+    /** Écart réel entre deux `frame`, lissé : dénominateur de l'interpolation. */
+    let frameIntervalMs = 0;
+    /** Dernier hash reçu : un `frame` sur trente le porte. */
+    let lastHash = "";
+    let netState: LockstepState | null = null;
+    let netReady = false;
+    let netError: LockstepError | null = null;
+    let lastEventSeq = -1;
+    /**
+     * Vrai jusqu'au premier `frame` d'un sim neuf, chargé ou restauré : rien à
+     * interpoler depuis l'état d'avant, et ses événements sont du passé.
+     */
+    let freshSim = true;
+    /** Priorités cliquées, en attente de confirmation par un `frame`. */
+    const pendingPriority = new Map<string, number>();
+    let lastRenderAt = performance.now();
+    let framesInWindow = 0;
+    let windowStart = lastRenderAt;
 
-      const pushToast = (text: string) => {
-        const id = netToastId--;
-        setToasts((prev) => [...prev, { id, text }]);
-        toastTimers.push(window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_MS));
-      };
+    const pushToast = (text: string) => {
+      const id = netToastId--;
+      setToasts((prev) => [...prev, { id, text }]);
+      toastTimers.push(window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_MS));
+    };
+    const flash = (msg: string) => {
+      setNotice(msg);
+      window.setTimeout(() => setNotice(null), 1800);
+    };
+    const showError = (e: unknown) => {
+      if (!disposed) setError(e instanceof Error ? (e.stack ?? e.message) : String(e));
+    };
 
-      /** Branche un sim (neuf, chargé ou restauré) sur le rendu. */
-      const adopt = (next: SimHandle) => {
-        sim?.dispose();
-        sim = next;
-        mapVersion = -1;
-        overlayVersion = -1;
-        prevPawns = null;
-        curPawns = next.pawns();
-        lastAppliedAt = null;
-        selected = null;
-        renderer?.setSelected(null);
-        // Les événements déjà dans l'état sont du passé : on ne les notifie pas.
-        const evs = next.events();
-        lastEventSeq = evs.length >= EVENT_STRIDE ? evs[evs.length - EVENT_STRIDE] : -1;
-      };
-
-      if (session.mode === "solo") {
-        const created = await SimHandle.create({ seed: 42n, width: MAP_SIZE, height: MAP_SIZE });
-        if (disposed) {
-          created.dispose();
-          return;
+    /** Oublie une priorité cliquée dès que le sim la renvoie. */
+    const confirmPriorities = (buf: Int32Array) => {
+      if (pendingPriority.size === 0) return;
+      for (let o = 0; o + PRIORITY_STRIDE <= buf.length; o += PRIORITY_STRIDE) {
+        for (let w = 0; w + 1 < PRIORITY_STRIDE; w++) {
+          const key = `${buf[o]}:${w}`;
+          if (pendingPriority.get(key) === buf[o + 1 + w]) pendingPriority.delete(key);
         }
-        adopt(created);
-      } else {
-        // Multi : le sim n'existe qu'au démarrage de la salle (ou au snapshot
-        // reçu si l'on rejoint en cours). Le lobby s'affiche d'ici là.
-        lockstep = new LockstepClient({
-          transport: new WebSocketTransport(session.server),
-          createSim: (s, width, height) => SimHandle.create({ seed: BigInt(s), width, height }),
-          restoreSim: (bytes) => SimHandle.restore(bytes),
-          onState: (state) => setNet(state),
-          // La fabrique ne produit que des `SimHandle` : le rendu a besoin de
-          // ses tampons, que `SimLike` n'expose pas.
-          onSim: (next) => {
-            if (disposed) {
-              (next as SimHandle).dispose();
-              return;
-            }
-            adopt(next as SimHandle);
-          },
-          onError: (e) => pushToast(`Serveur : ${e.message}`),
-        });
-        lockstepRef.current = lockstep;
-        lockstep.join(session.room, session.name);
       }
+    };
 
-      const syncStatic = () => {
-        const mv = sim!.mapVersion();
-        if (mv !== mapVersion) {
-          mapVersion = mv;
-          renderer!.setMap(sim!.width, sim!.height, sim!.tiles(), sim!.features());
-        }
-        const ov = sim!.overlayVersion();
-        if (ov !== overlayVersion) {
-          overlayVersion = ov;
-          renderer!.setOverlays(sim!.zones(), sim!.designations());
-        }
-      };
-
-      const tickAndRender = (now: number) => {
-        const dt = now - last;
-        last = now;
-        framesInWindow++;
-        if (!sim) return; // multi : en lobby, il n'y a rien à montrer
-        const tickMs = BASE_TICK_MS / speed;
-        let n = 0;
-        if (lockstep) {
-          // Pas d'accumulateur : l'horloge est celle des bundles du serveur.
-          // On n'avance que sur ce qui est reçu, et le rattrapage est borné.
-          const budget = lockstep.lag > CATCHUP_LAG_TICKS ? MAX_TICKS_CATCHUP : MAX_TICKS_PER_FRAME;
-          n = lockstep.pump(budget);
-          if (n > 0) {
-            prevPawns = curPawns;
-            curPawns = sim.pawns();
-            lastAppliedAt = now;
-          }
-        } else {
-          if (!paused) acc += dt;
-          while (acc >= tickMs && n < MAX_TICKS_PER_FRAME) {
-            acc -= tickMs;
-            n++;
-          }
-          if (acc > tickMs * MAX_TICKS_PER_FRAME) acc = 0;
-          for (let i = 0; i < n; i++) {
-            prevPawns = curPawns;
-            sim.step(1);
-            curPawns = sim.pawns();
-          }
-        }
-        ticksInWindow += n;
-        syncStatic();
-        renderer!.syncItems(sim.items());
-        renderer!.syncBlueprints(sim.blueprints());
-        const alpha = lockstep
-          ? // Fraction du temps écoulé depuis le dernier bundle appliqué.
-            lastAppliedAt === null
-            ? 1
-            : Math.min((now - lastAppliedAt) / BUNDLE_INTERVAL_MS, 1)
-          : paused
-            ? 1
-            : Math.min(acc / tickMs, 1);
-        renderer!.syncPawns(curPawns, prevPawns, alpha);
-        renderer!.setWeather(sim.weather());
-        renderer!.setTimeOfDay(sim.timeOfDay() / sim.ticksPerDay());
-        renderer!.render(dt / 1000);
-      };
-
-      const loop = (now: number) => {
-        try {
-          tickAndRender(now);
-        } catch (e) {
-          setError(e instanceof Error ? (e.stack ?? e.message) : String(e));
-          return;
-        }
-        raf = requestAnimationFrame(loop);
-      };
-      // Le chargement du WASM ne compte pas comme du temps de jeu.
-      last = performance.now();
-      windowStart = last;
-      raf = requestAnimationFrame(loop);
-
-      /**
-       * Seul chemin des actions du joueur. En solo la commande entre dans le
-       * sim local, en multi elle part au serveur et revient dans un bundle :
-       * jamais appliquée au clic (docs/protocol.md §5).
-       */
-      const issue = (payload: Uint8Array) => {
-        if (lockstep) lockstep.issue(payload);
-        else sim?.applyEncoded(payload);
-      };
-
-      // --- Sauvegarde (solo seulement : l'horloge du multi ne s'arrête pas) ---
-      const flash = (msg: string) => {
-        setNotice(msg);
-        window.setTimeout(() => setNotice(null), 1800);
-      };
-      actionsRef.current = {
-        save() {
-          if (lockstep) return;
-          try {
-            localStorage.setItem(SAVE_KEY, bytesToBase64(sim!.snapshot()));
-            flash("Partie sauvegardée");
-          } catch (e) {
-            flash(`Sauvegarde impossible : ${String(e)}`);
-          }
-        },
-        load() {
-          if (lockstep) return;
-          let b64: string | null = null;
-          try {
-            b64 = localStorage.getItem(SAVE_KEY);
-          } catch {
-            /* stockage indisponible */
-          }
-          if (!b64) {
-            flash("Aucune sauvegarde");
-            return;
-          }
-          SimHandle.restore(base64ToBytes(b64))
-            .then((next) => {
-              if (disposed) {
-                next.dispose();
-                return;
-              }
-              adopt(next);
-              flash("Partie chargée");
-            })
-            .catch((e: unknown) => flash(`Chargement impossible : ${String(e)}`));
-        },
-        triggerRaid() {
-          issue(encodeTriggerRaid());
-        },
-        setPriority(pawn, work, priority) {
-          issue(encodeSetPriority(pawn, work, priority));
-        },
-        currentPriority(pawn, work) {
-          // Valeur vivante du sim, pas celle affichée (rafraîchie toutes les 500 ms) :
-          // deux clics rapprochés doivent s'enchaîner correctement.
-          if (!sim) return null;
-          const pr = sim.priorities();
-          for (let o = 0; o + PRIORITY_STRIDE <= pr.length; o += PRIORITY_STRIDE) {
-            if (pr[o] === pawn) return pr[o + 1 + work];
-          }
-          return null;
-        },
-      };
-
-      // --- Entrées ---
-      let down: { x: number; y: number; button: number; tile: TilePos | null } | null = null;
-      const on = <K extends keyof HTMLElementEventMap>(
-        target: HTMLElement | Window,
-        type: K | keyof WindowEventMap,
-        fn: (e: never) => void,
-      ) => {
-        target.addEventListener(type as string, fn as EventListener);
-        cleanups.push(() => target.removeEventListener(type as string, fn as EventListener));
-      };
-      const toolColor = () => TOOLS.find((t) => t.id === toolRef.current)?.color ?? 0xffffff;
-      /** Camp d'un pawn, lu dans le dernier tampon du sim. `-1` s'il a disparu. */
-      const factionOf = (id: number) => {
-        for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
-          if (curPawns[o] === id) return curPawns[o + 10];
-        }
-        return -1;
-      };
-      const applyTool = (rect: TileRect) => {
-        if (!sim) return;
-        switch (toolRef.current) {
-          case "chop":
-            issue(encodeDesignate(DESIGNATION.Chop, rect.x0, rect.y0, rect.x1, rect.y1));
-            break;
-          case "mine":
-            issue(encodeDesignate(DESIGNATION.Mine, rect.x0, rect.y0, rect.x1, rect.y1));
-            break;
-          case "harvest":
-            issue(encodeDesignate(DESIGNATION.Harvest, rect.x0, rect.y0, rect.x1, rect.y1));
-            break;
-          case "stockpile":
-            issue(encodeSetZone(ZONE.Stockpile, rect.x0, rect.y0, rect.x1, rect.y1));
-            break;
-          case "growing":
-            issue(encodeSetZone(ZONE.Growing, rect.x0, rect.y0, rect.x1, rect.y1));
-            break;
-          case "wall":
-          case "door":
-          case "floor":
-          case "bed":
-          case "campfire":
-            issue(
-              encodeBuild(
-                BUILD_TOOL_KIND[toolRef.current]!,
-                materialRef.current,
-                rect.x0,
-                rect.y0,
-                rect.x1,
-                rect.y1,
-              ),
-            );
-            break;
-          case "cancel":
-            issue(encodeDesignate(DESIGNATION.None, rect.x0, rect.y0, rect.x1, rect.y1));
-            issue(encodeSetZone(ZONE.None, rect.x0, rect.y0, rect.x1, rect.y1));
-            issue(encodeCancelBuild(rect.x0, rect.y0, rect.x1, rect.y1));
-            break;
-          case "select":
-            break;
-        }
-      };
-      on(canvas, "pointerdown", (e: PointerEvent) => {
-        down = { x: e.clientX, y: e.clientY, button: e.button, tile: renderer?.pickTile(e.clientX, e.clientY) ?? null };
-        if (toolRef.current !== "select" && e.button === 0 && down.tile) {
-          renderer?.setDragRect({ x0: down.tile.x, y0: down.tile.y, x1: down.tile.x, y1: down.tile.y }, toolColor());
-        }
-      });
-      on(canvas, "pointermove", (e: PointerEvent) => {
-        const tile = renderer?.pickTile(e.clientX, e.clientY) ?? null;
-        renderer?.setHover(tile);
-        if (down && down.button === 0 && toolRef.current !== "select" && down.tile && tile) {
-          renderer?.setDragRect({ x0: down.tile.x, y0: down.tile.y, x1: tile.x, y1: tile.y }, toolColor());
-        }
-      });
-      on(canvas, "pointerup", (e: PointerEvent) => {
-        if (!down) return;
-        const start = down;
-        down = null;
-        renderer?.setDragRect(null);
-        if (!renderer || !sim) return;
-        const moved = Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_TOLERANCE_PX;
-        if (toolRef.current !== "select") {
-          if (start.button === 0 && start.tile) {
-            const end = renderer.pickTile(e.clientX, e.clientY) ?? start.tile;
-            applyTool({
-              x0: Math.min(start.tile.x, end.x),
-              y0: Math.min(start.tile.y, end.y),
-              x1: Math.max(start.tile.x, end.x),
-              y1: Math.max(start.tile.y, end.y),
-            });
-          } else if (start.button === 2 && !moved) {
-            setTool("select");
-          }
-          return;
-        }
-        if (moved) return;
-        if (start.button === 0) {
-          selected = renderer.pickPawn(e.clientX, e.clientY);
-          renderer.setSelected(selected);
-        } else if (start.button === 2 && selected !== null) {
-          // Clic droit sur un ennemi : ordre d'attaque. Sinon : déplacement.
-          const target = renderer.pickPawn(e.clientX, e.clientY);
-          if (target !== null && factionOf(target) === FACTION_RAIDER) {
-            issue(encodeAttack(selected, target));
-          } else {
-            const tile = renderer.pickTile(e.clientX, e.clientY);
-            if (tile) issue(encodeMoveTo(selected, tile.x, tile.y));
-          }
-        }
-      });
-      on(canvas, "pointerleave", () => renderer?.setHover(null));
-      on(canvas, "contextmenu", (e: MouseEvent) => e.preventDefault());
-      on(window, "keydown", (e: KeyboardEvent) => {
-        if (e.target instanceof HTMLInputElement) return;
-        if (e.code === "Space") {
-          // Pas de pause en multi : l'horloge du serveur ne s'arrête jamais.
-          if (!lockstep) paused = !paused;
-          e.preventDefault();
-          return;
-        }
-        const k = e.key.toUpperCase();
-        if (e.metaKey || e.ctrlKey) return;
-        const toolHit = TOOLS.find((t) => t.key === k);
-        if (toolHit) {
-          setTool(toolHit.id);
-          return;
-        }
-        if (k === "T") {
-          setMaterial(materialRef.current === 0 ? 1 : 0);
-          return;
-        }
-        if (k === "J") {
-          setShowWork((v) => !v);
-          return;
-        }
-        switch (k) {
-          case "Q":
-            renderer?.rotate(-1);
-            break;
-          case "E":
-            renderer?.rotate(1);
-            break;
-          case "1":
-          case "2":
-          case "3":
-            if (!lockstep) speed = Number(k);
-            break;
-          case "ESCAPE":
-            if (toolRef.current !== "select") setTool("select");
-            else {
-              selected = null;
-              renderer?.setSelected(null);
-            }
-            break;
-        }
-      });
-
-      // --- Crochet de debug (dev uniquement) : window.__rimlike ---
-      if (import.meta.env.DEV) {
-        const debug = {
-          get sim() {
-            return sim;
-          },
-          get lockstep() {
-            return lockstep;
-          },
-          renderer,
-          pawns: () => curPawns,
-          setTool,
-          setMaterial,
-          actions: actionsRef,
-          get paused() {
-            return paused;
-          },
-          set paused(v: boolean) {
-            paused = v;
-          },
-          get speed() {
-            return speed;
-          },
-          set speed(v: number) {
-            speed = v;
-          },
-          get selected() {
-            return selected;
-          },
-          set selected(v: number | null) {
-            selected = v;
-            renderer?.setSelected(v);
-          },
-        };
-        (window as unknown as { __rimlike?: unknown }).__rimlike = debug;
+    /** Un toast par événement du sim jamais vu. */
+    const notifyEvents = (events: Int32Array, fresh: boolean) => {
+      if (fresh) {
+        // Ce qu'un sim neuf porte déjà est du passé : on ne le notifie pas.
+        lastEventSeq = events.length >= EVENT_STRIDE ? events[events.length - EVENT_STRIDE] : -1;
+        return;
       }
+      for (let o = 0; o + EVENT_STRIDE <= events.length; o += EVENT_STRIDE) {
+        const seq = events[o];
+        if (seq <= lastEventSeq) continue;
+        lastEventSeq = seq;
+        const text = eventLabel(events[o + 2], events[o + 3]);
+        if (!text) continue;
+        setToasts((prev) => [...prev, { id: seq, text }]);
+        toastTimers.push(
+          window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== seq)), TOAST_MS),
+        );
+      }
+    };
 
-      // --- HUD ---
-      interval = window.setInterval(() => {
+    // --- Le Worker de simulation ---
+    const bridge = new SimBridge({
+      onMap: (m) => renderer.setMap(m.width, m.height, m.tiles, m.features),
+      onOverlays: (m) => renderer.setOverlays(m.zones, m.designations),
+      onFrame: (f) => {
         const now = performance.now();
-        const dt = (now - windowStart) / 1000;
-        if (!sim) {
-          setStats((prev) => ({ ...prev, tps: 0, fps: Math.round(framesInWindow / dt), lag: lockstep?.lag ?? 0 }));
-          framesInWindow = 0;
-          windowStart = now;
+        if (freshSim) {
+          // Les pawns d'avant ne sont pas ceux d'après : aucune interpolation,
+          // et les priorités cliquées sur l'ancienne colonie n'ont plus cours.
+          prevPawns = null;
+          frameIntervalMs = 0;
+          pendingPriority.clear();
+        } else {
+          if (lastFrameAt !== null) {
+            // Lissé : l'écart varie d'un battement du Worker à l'autre.
+            const gap = now - lastFrameAt;
+            frameIntervalMs = frameIntervalMs === 0 ? gap : frameIntervalMs * 0.8 + gap * 0.2;
+          }
+          prevPawns = curPawns;
+        }
+        lastFrameAt = now;
+        curPawns = f.pawns;
+        lastFrame = f;
+        if (f.hash !== null) lastHash = f.hash;
+        renderer.syncItems(f.items);
+        renderer.syncBlueprints(f.blueprints);
+        renderer.setWeather(f.weather);
+        renderer.setTimeOfDay(f.timeOfDay / f.ticksPerDay);
+        confirmPriorities(f.priorities);
+        notifyEvents(f.events, freshSim);
+        freshSim = false;
+      },
+      onNet: (state) => {
+        netState = state;
+        setNet(state);
+        // Un sim restauré depuis le snapshot du host repart de zéro côté rendu.
+        if (state.ready && !netReady) freshSim = true;
+        netReady = state.ready;
+        if (state.lastError !== null && state.lastError !== netError) {
+          netError = state.lastError;
+          pushToast(`Serveur : ${state.lastError.message}`);
+        }
+      },
+      onSaved: (bytes) => {
+        try {
+          localStorage.setItem(SAVE_KEY, bytesToBase64(bytes));
+          flash("Partie sauvegardée");
+        } catch (e) {
+          flash(`Sauvegarde impossible : ${String(e)}`);
+        }
+      },
+      onLoaded: (failure) => {
+        if (failure !== undefined) {
+          flash(`Chargement impossible : ${failure}`);
           return;
         }
-        const tpd = sim.ticksPerDay();
-        const tod = sim.timeOfDay() / tpd;
-        const minutes = Math.floor(tod * 24 * 60);
-        const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
-        const mm = String(minutes % 60).padStart(2, "0");
-        let info: PawnInfo | null = null;
-        let colonists = 0;
-        let hostiles = 0;
-        for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
-          const hostile = curPawns[o + 10] === FACTION_RAIDER;
-          if (hostile) hostiles++;
-          else colonists++;
-          if (curPawns[o] !== selected) continue;
-          const ck = curPawns[o + 8];
-          const mood = curPawns[o + 6] / 10;
-          info = {
-            id: curPawns[o],
-            tile: { x: Math.floor(curPawns[o + 1] / 256), y: Math.floor(curPawns[o + 2] / 256) },
-            hunger: curPawns[o + 4] / 10,
-            rest: curPawns[o + 5] / 10,
-            mood,
-            moodLabel: moodLabel(mood),
-            breaking: curPawns[o + 7] === JOB_BREAK,
-            hp: (curPawns[o + 11] * 100) / HP_MAX,
-            hostile,
-            job: JOB_LABELS[curPawns[o + 7]] ?? "?",
-            carrying: ck >= 0 ? `${curPawns[o + 9]} ${ITEM_NAMES[ck]}` : null,
-          };
+        freshSim = true;
+        selected = null;
+        renderer.setSelected(null);
+        flash("Partie chargée");
+      },
+      onError: showError,
+    });
+    bridgeRef.current = bridge;
+    bridge.start(
+      session.mode === "solo"
+        ? { mode: "solo", seed: DEFAULT_SEED, width: MAP_SIZE, height: MAP_SIZE }
+        : { mode: "multi", server: session.server, room: session.room, name: session.name },
+    );
+    // Les `encode*` sont des fonctions du WASM : le thread principal en garde
+    // une instance rien que pour encoder. Le sim, lui, n'existe que côté Worker.
+    void initSim().catch(showError);
+
+    // --- Boucle de rendu : plus un seul tick ici, uniquement du rendu ---
+    const draw = (now: number) => {
+      framesInWindow++;
+      const dt = Math.min(now - lastRenderAt, MAX_RENDER_DT_MS);
+      lastRenderAt = now;
+      if (lastFrame === null) return; // accueil ou lobby : rien à montrer
+      const alpha =
+        paused || lastFrameAt === null
+          ? 1
+          : Math.min((now - lastFrameAt) / Math.max(frameIntervalMs, 1), 1);
+      renderer.syncPawns(curPawns, prevPawns, alpha);
+      renderer.render(dt / 1000);
+    };
+    const loop = (now: number) => {
+      try {
+        draw(now);
+      } catch (e) {
+        showError(e);
+        return;
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+
+    /**
+     * Seul chemin des actions du joueur : les octets partent au Worker, qui
+     * les applique au sim en solo et les envoie au serveur en multi — où elles
+     * reviennent dans un bundle, jamais appliquées au clic (docs/protocol.md §5).
+     */
+    const issue = (payload: Uint8Array) => bridge.issue(payload);
+    /** Vrai dès que le sim tourne : avant, il n'y a rien à commander. */
+    const live = () => lastFrame !== null;
+
+    // --- Sauvegarde (solo seulement : l'horloge du multi ne s'arrête pas) ---
+    const actions: Actions = {
+      save() {
+        // `localStorage` n'existe pas dans un Worker : il rend les octets, on écrit.
+        if (isMulti) return;
+        bridge.save();
+      },
+      load() {
+        if (isMulti) return;
+        let b64: string | null = null;
+        try {
+          b64 = localStorage.getItem(SAVE_KEY);
+        } catch {
+          /* stockage indisponible */
         }
-        // Notifications : un toast par événement du sim jamais vu.
-        const events = sim.events();
-        for (let o = 0; o + EVENT_STRIDE <= events.length; o += EVENT_STRIDE) {
-          const seq = events[o];
-          if (seq <= lastEventSeq) continue;
-          lastEventSeq = seq;
-          const text = eventLabel(events[o + 2], events[o + 3]);
-          if (!text) continue;
-          setToasts((prev) => [...prev, { id: seq, text }]);
-          toastTimers.push(
-            window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== seq)), TOAST_MS),
+        if (!b64) {
+          flash("Aucune sauvegarde");
+          return;
+        }
+        bridge.load(base64ToBytes(b64));
+      },
+      triggerRaid() {
+        if (!live()) return;
+        issue(encodeTriggerRaid());
+      },
+      setPriority(pawn, work, priority) {
+        if (!live()) return;
+        pendingPriority.set(`${pawn}:${work}`, priority);
+        issue(encodeSetPriority(pawn, work, priority));
+      },
+      currentPriority(pawn, work) {
+        // Valeur du dernier `frame` (moins de 20 ms), corrigée des clics pas
+        // encore revenus : deux clics rapprochés s'enchaînent correctement.
+        const waiting = pendingPriority.get(`${pawn}:${work}`);
+        if (waiting !== undefined) return waiting;
+        const pr = lastFrame?.priorities;
+        if (!pr) return null;
+        for (let o = 0; o + PRIORITY_STRIDE <= pr.length; o += PRIORITY_STRIDE) {
+          if (pr[o] === pawn) return pr[o + 1 + work];
+        }
+        return null;
+      },
+    };
+    actionsRef.current = actions;
+
+    // --- Entrées ---
+    let down: { x: number; y: number; button: number; tile: TilePos | null } | null = null;
+    const on = <K extends keyof HTMLElementEventMap>(
+      target: HTMLElement | Window,
+      type: K | keyof WindowEventMap,
+      fn: (e: never) => void,
+    ) => {
+      target.addEventListener(type as string, fn as EventListener);
+      cleanups.push(() => target.removeEventListener(type as string, fn as EventListener));
+    };
+    const toolColor = () => TOOLS.find((t) => t.id === toolRef.current)?.color ?? 0xffffff;
+    /** Camp d'un pawn, lu dans le dernier tampon reçu. `-1` s'il a disparu. */
+    const factionOf = (id: number) => {
+      for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
+        if (curPawns[o] === id) return curPawns[o + 10];
+      }
+      return -1;
+    };
+    const applyTool = (rect: TileRect) => {
+      if (!live()) return;
+      switch (toolRef.current) {
+        case "chop":
+          issue(encodeDesignate(DESIGNATION.Chop, rect.x0, rect.y0, rect.x1, rect.y1));
+          break;
+        case "mine":
+          issue(encodeDesignate(DESIGNATION.Mine, rect.x0, rect.y0, rect.x1, rect.y1));
+          break;
+        case "harvest":
+          issue(encodeDesignate(DESIGNATION.Harvest, rect.x0, rect.y0, rect.x1, rect.y1));
+          break;
+        case "stockpile":
+          issue(encodeSetZone(ZONE.Stockpile, rect.x0, rect.y0, rect.x1, rect.y1));
+          break;
+        case "growing":
+          issue(encodeSetZone(ZONE.Growing, rect.x0, rect.y0, rect.x1, rect.y1));
+          break;
+        case "wall":
+        case "door":
+        case "floor":
+        case "bed":
+        case "campfire":
+          issue(
+            encodeBuild(
+              BUILD_TOOL_KIND[toolRef.current]!,
+              materialRef.current,
+              rect.x0,
+              rect.y0,
+              rect.x1,
+              rect.y1,
+            ),
           );
+          break;
+        case "cancel":
+          issue(encodeDesignate(DESIGNATION.None, rect.x0, rect.y0, rect.x1, rect.y1));
+          issue(encodeSetZone(ZONE.None, rect.x0, rect.y0, rect.x1, rect.y1));
+          issue(encodeCancelBuild(rect.x0, rect.y0, rect.x1, rect.y1));
+          break;
+        case "select":
+          break;
+      }
+    };
+    on(canvas, "pointerdown", (e: PointerEvent) => {
+      down = { x: e.clientX, y: e.clientY, button: e.button, tile: renderer.pickTile(e.clientX, e.clientY) };
+      if (toolRef.current !== "select" && e.button === 0 && down.tile) {
+        renderer.setDragRect({ x0: down.tile.x, y0: down.tile.y, x1: down.tile.x, y1: down.tile.y }, toolColor());
+      }
+    });
+    on(canvas, "pointermove", (e: PointerEvent) => {
+      const tile = renderer.pickTile(e.clientX, e.clientY);
+      renderer.setHover(tile);
+      if (down && down.button === 0 && toolRef.current !== "select" && down.tile && tile) {
+        renderer.setDragRect({ x0: down.tile.x, y0: down.tile.y, x1: tile.x, y1: tile.y }, toolColor());
+      }
+    });
+    on(canvas, "pointerup", (e: PointerEvent) => {
+      if (!down) return;
+      const start = down;
+      down = null;
+      renderer.setDragRect(null);
+      if (!live()) return;
+      const moved = Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_TOLERANCE_PX;
+      if (toolRef.current !== "select") {
+        if (start.button === 0 && start.tile) {
+          const end = renderer.pickTile(e.clientX, e.clientY) ?? start.tile;
+          applyTool({
+            x0: Math.min(start.tile.x, end.x),
+            y0: Math.min(start.tile.y, end.y),
+            x1: Math.max(start.tile.x, end.x),
+            y1: Math.max(start.tile.y, end.y),
+          });
+        } else if (start.button === 2 && !moved) {
+          setTool("select");
         }
-        setStats({
-          tick: sim.tick(),
-          day: Math.floor(sim.tick() / tpd) + 1,
-          hour: `${hh}:${mm}`,
-          hash: sim.hash(),
-          tps: Math.round(ticksInWindow / dt),
-          fps: Math.round(framesInWindow / dt),
-          speed,
-          paused,
-          weather: sim.weather(),
-          stored: Array.from(sim.storedTotals()),
-          blueprints: sim.blueprints().length / BLUEPRINT_STRIDE,
-          colonists,
-          hostiles,
-          selected: info,
-          // Relu dans le tampon du sim : jamais une copie qui dériverait.
-          priorities: Array.from(sim.priorities()),
-          lag: lockstep?.lag ?? 0,
-        });
-        ticksInWindow = 0;
-        framesInWindow = 0;
-        windowStart = now;
-      }, 500);
-    })().catch((e: unknown) => setError(e instanceof Error ? (e.stack ?? e.message) : String(e)));
+        return;
+      }
+      if (moved) return;
+      if (start.button === 0) {
+        selected = renderer.pickPawn(e.clientX, e.clientY);
+        renderer.setSelected(selected);
+      } else if (start.button === 2 && selected !== null) {
+        // Clic droit sur un ennemi : ordre d'attaque. Sinon : déplacement.
+        const target = renderer.pickPawn(e.clientX, e.clientY);
+        if (target !== null && factionOf(target) === FACTION_RAIDER) {
+          issue(encodeAttack(selected, target));
+        } else {
+          const tile = renderer.pickTile(e.clientX, e.clientY);
+          if (tile) issue(encodeMoveTo(selected, tile.x, tile.y));
+        }
+      }
+    });
+    on(canvas, "pointerleave", () => renderer.setHover(null));
+    on(canvas, "contextmenu", (e: MouseEvent) => e.preventDefault());
+    on(window, "keydown", (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement) return;
+      if (e.code === "Space") {
+        // Pas de pause en multi : l'horloge du serveur ne s'arrête jamais.
+        if (!isMulti) {
+          paused = !paused;
+          bridge.setPaused(paused);
+        }
+        e.preventDefault();
+        return;
+      }
+      const k = e.key.toUpperCase();
+      if (e.metaKey || e.ctrlKey) return;
+      const toolHit = TOOLS.find((t) => t.key === k);
+      if (toolHit) {
+        setTool(toolHit.id);
+        return;
+      }
+      if (k === "T") {
+        setMaterial(materialRef.current === 0 ? 1 : 0);
+        return;
+      }
+      if (k === "J") {
+        setShowWork((v) => !v);
+        return;
+      }
+      switch (k) {
+        case "Q":
+          renderer.rotate(-1);
+          break;
+        case "E":
+          renderer.rotate(1);
+          break;
+        case "1":
+        case "2":
+        case "3":
+          if (!isMulti) {
+            speed = Number(k);
+            bridge.setSpeed(speed);
+          }
+          break;
+        case "ESCAPE":
+          if (toolRef.current !== "select") setTool("select");
+          else {
+            selected = null;
+            renderer.setSelected(null);
+          }
+          break;
+      }
+    });
+
+    // --- Crochet de debug (dev uniquement) : window.__rimlike ---
+    if (import.meta.env.DEV) {
+      const debug = {
+        /**
+         * Exécute une méthode de `SimHandle` dans le Worker, ou du
+         * `LockstepClient` si elle est préfixée `lockstep.`. Asynchrone :
+         * le sim n'est plus sur ce thread.
+         */
+        rpc: (method: string, ...args: unknown[]) => bridge.rpc(method, ...args),
+        /** Même chemin que l'UI. Le tampon est copié : l'appelant garde le sien. */
+        issue: (bytes: Uint8Array) => bridge.issue(bytes.slice()),
+        get frame() {
+          return lastFrame;
+        },
+        get net() {
+          return netState;
+        },
+        renderer,
+        setTool,
+        setMaterial,
+        actions,
+        get paused() {
+          return paused;
+        },
+        set paused(v: boolean) {
+          paused = v;
+          bridge.setPaused(v);
+        },
+        get speed() {
+          return speed;
+        },
+        set speed(v: number) {
+          speed = v;
+          bridge.setSpeed(v);
+        },
+        get selected() {
+          return selected;
+        },
+        set selected(v: number | null) {
+          selected = v;
+          renderer.setSelected(v);
+        },
+      };
+      (window as unknown as { __rimlike?: unknown }).__rimlike = debug;
+    }
+
+    // --- HUD ---
+    interval = window.setInterval(() => {
+      const now = performance.now();
+      const dt = (now - windowStart) / 1000;
+      const fps = Math.round(framesInWindow / dt);
+      framesInWindow = 0;
+      windowStart = now;
+      const f = lastFrame;
+      if (f === null) {
+        setStats((prev) => ({ ...prev, tps: 0, fps, lag: netState?.lag ?? 0 }));
+        return;
+      }
+      const tod = f.timeOfDay / f.ticksPerDay;
+      const minutes = Math.floor(tod * 24 * 60);
+      const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
+      const mm = String(minutes % 60).padStart(2, "0");
+      let info: PawnInfo | null = null;
+      let colonists = 0;
+      let hostiles = 0;
+      for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
+        const hostile = curPawns[o + 10] === FACTION_RAIDER;
+        if (hostile) hostiles++;
+        else colonists++;
+        if (curPawns[o] !== selected) continue;
+        const ck = curPawns[o + 8];
+        const mood = curPawns[o + 6] / 10;
+        info = {
+          id: curPawns[o],
+          tile: { x: Math.floor(curPawns[o + 1] / 256), y: Math.floor(curPawns[o + 2] / 256) },
+          hunger: curPawns[o + 4] / 10,
+          rest: curPawns[o + 5] / 10,
+          mood,
+          moodLabel: moodLabel(mood),
+          breaking: curPawns[o + 7] === JOB_BREAK,
+          hp: (curPawns[o + 11] * 100) / HP_MAX,
+          hostile,
+          job: JOB_LABELS[curPawns[o + 7]] ?? "?",
+          carrying: ck >= 0 ? `${curPawns[o + 9]} ${ITEM_NAMES[ck]}` : null,
+        };
+      }
+      setStats({
+        tick: f.tick,
+        day: Math.floor(f.tick / f.ticksPerDay) + 1,
+        hour: `${hh}:${mm}`,
+        hash: lastHash,
+        // Ticks par seconde mesurés dans le Worker, images par seconde ici.
+        tps: f.tps,
+        fps,
+        speed,
+        paused,
+        weather: f.weather,
+        stored: Array.from(f.stored),
+        blueprints: f.blueprints.length / BLUEPRINT_STRIDE,
+        colonists,
+        hostiles,
+        selected: info,
+        priorities: Array.from(f.priorities),
+        lag: f.lag,
+      });
+    }, 500);
 
     return () => {
       disposed = true;
@@ -749,12 +754,11 @@ export function App() {
       clearInterval(interval);
       for (const t of toastTimers) clearTimeout(t);
       for (const c of cleanups) c();
-      lockstep?.close();
-      renderer?.dispose();
-      sim?.dispose();
+      bridge.dispose();
+      renderer.dispose();
       actionsRef.current = null;
       rendererRef.current = null;
-      lockstepRef.current = null;
+      bridgeRef.current = null;
     };
   }, [session]);
 
@@ -789,7 +793,7 @@ export function App() {
             seed={seed}
             onSeed={setSeed}
             // Le serveur n'accepte qu'un entier positif comme graine.
-            onStart={() => lockstepRef.current?.startGame(Math.max(0, Math.floor(seed)), MAP_SIZE, MAP_SIZE)}
+            onStart={() => bridgeRef.current?.startGame(Math.max(0, Math.floor(seed)), MAP_SIZE, MAP_SIZE)}
           />
         )
       )}

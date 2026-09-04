@@ -13,6 +13,18 @@ function initOnce(): Promise<InitOutput> {
 }
 
 /**
+ * Initialise le WASM du thread courant, sans créer de sim.
+ *
+ * Le Worker le fait implicitement en créant son sim. Le thread principal, lui,
+ * n'a plus de sim mais garde besoin du module : les `encode*` de
+ * `sim/commands.ts` sont des fonctions du WASM. Une instance qui ne sert qu'à
+ * encoder ne coûte que les quelques pages initiales de mémoire.
+ */
+export function initSim(): Promise<InitOutput> {
+  return initOnce();
+}
+
+/**
  * Enveloppe fine autour du sim WASM. Garde une référence à la mémoire pour
  * construire des vues zéro-copie sur l'état. Les vues (`tiles`, `features`,
  * `zones`, `designations`) ne doivent pas être conservées entre deux appels

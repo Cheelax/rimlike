@@ -234,9 +234,11 @@ postcard et `apply_encoded` dans `sim-wasm` ; client lockstep pur (`LockstepClie
 contre le vrai serveur et le vrai WASM ; écran d'accueil, lobby, mode multi (exécution par
 bundle, hashes, snapshot de l'hôte pour les rejoignants, bandeau de désync), un seul chemin
 `issue(bytes)` pour le solo et le multi. Essai réel à deux onglets : même tick, même hash,
-commandes de l'un appliquées chez l'autre. Reste : sim dans un Worker (un onglet masqué ne
-reçoit plus de frames et prend du retard), reconnexion, resynchronisation après désync.
-Livré par deux sous-agents Opus.
+commandes de l'un appliquées chez l'autre. Worker livré le 2026-09-05 : sim et client
+lockstep dans un Web Worker (`SimRunner` pur testé, `SimBridge` côté principal, protocole
+typé, tampons transférés, carte et overlays envoyés seulement quand leur version change) ;
+onglet masqué : 60 ticks/s maintenus. Reste : reconnexion, resynchronisation après désync,
+essai d'une heure. Livré par trois sous-agents Opus.
 - Serveur relais : lobby, ordonnancement des commandes par tick, redistribution.
 - Lockstep 2-4 joueurs sur la même carte, hash de désync, resync par snapshot.
 - Rejoindre en cours de partie.
@@ -276,7 +278,7 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
 | Pipeline d'assets 3D coûteux | Style voxel, packs CC0 au départ, contenu générique (couleurs par matériau) |
 | Le multi monde est un gouffre | Phases 1-2 donnent un jeu solo complet et autonome. Le multi se greffe dessus, pas l'inverse |
 | Recherche de travail : chaque colon inactif balaie toute la carte à chaque tick | Compteurs dans `Map` (désignations, zones, lits, feux) qui court-circuitent les balayages ; l'oubli des lits et des feux coûtait un facteur 30 à vide, mesuré par `sim-cli bench` le 2026-09-05. À indexer (listes de cases) si la carte grossit |
-| Onglet en arrière-plan : le navigateur bride `requestAnimationFrame` à ~2/s, le client décroche du lockstep | Dès la phase 3, le sim tourne dans un Web Worker cadencé par timer, le thread principal ne fait que rendre. Constaté en phase 0 |
+| Onglet en arrière-plan : le navigateur bride `requestAnimationFrame` à ~2/s, le client décroche du lockstep | Réglé le 2026-09-05 : sim et lockstep dans un Web Worker cadencé par timer, le thread principal ne fait que rendre. Mesuré : 60 ticks/s onglet masqué |
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
@@ -293,6 +295,10 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-05 : Worker livré. Le thread principal garde une instance WASM sans sim, juste
+  pour encoder les commandes ; le hash n'est calculé qu'un frame sur trente (sérialisation
+  complète). Le crochet de debug devient asynchrone (`rpc`), la méthode de vérification est
+  dans `AGENTS.md`.
 - 2026-09-05 : `crates/sim-cli` (Sonnet) : exécution native du sim pour mesurer, vérifier le
   déterminisme et les snapshots hors navigateur. Son premier bench a révélé deux balayages
   de carte sans court-circuit (lits, feux) : corrigés, ×30 à vide.
