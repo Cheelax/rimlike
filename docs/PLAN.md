@@ -171,10 +171,16 @@ outils et raccourcis, panneau du colon avec jauges, compteur de stock ; sauvegar
 chargement (localStorage). Ordre de travail fixe : dormir > manger > travail désigné >
 transport > flâner.
 
-**2b. Construction.** Plans de murs, sols et portes en bois ou pierre ; matériaux livrés
-sur le chantier par les transporteurs ; lits (sommeil de qualité, plus de sommeil au
-sol) ; replanification des chemins quand un mur se pose ; chunks de rendu si le rebuild
-complet devient visible.
+**2b. Construction — livrée le 2026-09-04.** Plans de murs, portes, sols et lits en bois
+ou pierre (lit en bois), posés par rectangle ; jobs de livraison (depuis les piles au sol
+ou le stockage) et de construction, avec réservation du chantier ; murs infranchissables
+et replanification des chemins qui les traversaient, piles poussées hors du mur ; un mur
+ne se ferme jamais sur un colon ; portes et lits franchissables mais lents ; sommeil au lit
+plus rapide avec bonus d'humeur, malus au sol ; annulation qui rend les matériaux livrés ;
+fantômes de chantier bleus puis jaunes quand les matériaux sont là. Priorité d'un colon
+libre : dormir > manger > construire > livrer > travail désigné > ranger > flâner.
+À faire plus tard : une livraison par chantier fait un aller-retour par mur, à grouper
+par chantiers voisins ; chunks de rendu si le rebuild complet devient visible.
 
 **2c. Nourriture.** Zones de culture, semis, croissance, récolte ; foyer et cuisine
 (repas simples) ; nourriture qui se gâte ; le régime pèse sur l'humeur.
@@ -232,6 +238,11 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-04 : phase 2b livrée. Constructions = éléments de la couche `Feature`
+  (murs, portes, lit) ou sols de la couche `Terrain` (plancher, dallage) : rien de neuf
+  côté rendu de carte, juste des valeurs en plus dans les contrats. Chantiers dans une
+  liste à part avec leur propre tampon, pas une couche par case. Un colon ne porte
+  jamais plus que ce que le chantier réclame.
 - 2026-09-04 : phase 2a livrée. Carte en quatre couches `u8` par case (sol, élément,
   zone, désignation) avec deux compteurs de version pour que le client ne rebâtisse ses
   meshes que quand ça change. Objets : une pile par genre et par case en stockage,

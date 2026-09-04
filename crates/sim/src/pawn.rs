@@ -49,7 +49,19 @@ pub enum Job {
     Eat {
         item: u32,
     },
-    Sleep,
+    /// Dort. `in_bed` : se dirige vers un lit puis y dort ; sinon au sol.
+    Sleep {
+        in_bed: bool,
+    },
+    /// Apporte des matériaux à un chantier. `picked` : la pile est en main.
+    Deliver {
+        blueprint: u32,
+        item: u32,
+        picked: bool,
+    },
+    Build {
+        blueprint: u32,
+    },
 }
 
 impl Job {
@@ -69,7 +81,9 @@ impl Job {
             Job::Work { .. } => 4,
             Job::Haul { .. } => 5,
             Job::Eat { .. } => 6,
-            Job::Sleep => 7,
+            Job::Sleep { .. } => 7,
+            Job::Deliver { .. } => 8,
+            Job::Build { .. } => 9,
         }
     }
 }
@@ -86,6 +100,8 @@ pub struct Pawn {
     pub rest: u32,
     pub job: Job,
     pub carrying: Option<(ItemKind, u32)>,
+    /// Le dernier sommeil s'est fait dans un lit (bonus d'humeur) ou au sol (malus).
+    pub last_sleep_in_bed: bool,
 }
 
 impl Pawn {
@@ -100,6 +116,7 @@ impl Pawn {
             rest: NEED_MAX * 9 / 10,
             job: Job::Idle,
             carrying: None,
+            last_sleep_in_bed: true,
         }
     }
 
@@ -137,6 +154,11 @@ impl Pawn {
             m -= 300_000;
         } else if self.is_tired() {
             m -= 150_000;
+        }
+        if self.last_sleep_in_bed {
+            m += 50_000;
+        } else {
+            m -= 80_000;
         }
         m.clamp(0, i64::from(NEED_MAX)) as u32
     }

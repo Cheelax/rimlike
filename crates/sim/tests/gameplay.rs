@@ -1,8 +1,9 @@
 //! Boucle de ressources et besoins, sur des cartes dessinées à la main.
 
+use sim::pawn::RESTED;
 use sim::pawn::{HUNGRY, NEED_MAX, TIRED};
 use sim::testmap::map_from;
-use sim::{Command, Designation, Feature, ItemKind, Job, Sim, Zone};
+use sim::{BuildKind, Command, Designation, Feature, ItemKind, Job, Material, Sim, Terrain, Zone};
 
 const DAY: u64 = sim::TICKS_PER_DAY as u64;
 
@@ -146,9 +147,13 @@ fn tired_pawn_sleeps_then_wakes_rested() {
     s.pawn_mut(id).unwrap().rest = TIRED - 1;
     s.step(&[]);
     s.step(&[]);
-    assert_eq!(s.pawns()[0].job, Job::Sleep);
-    assert!(run_until(&mut s, DAY, |s| s.pawns()[0].job != Job::Sleep));
+    assert!(matches!(s.pawns()[0].job, Job::Sleep { in_bed: false }));
+    assert!(run_until(&mut s, DAY, |s| !matches!(
+        s.pawns()[0].job,
+        Job::Sleep { .. }
+    )));
     assert!(s.pawns()[0].rest >= NEED_MAX * 9 / 10);
+    assert!(!s.pawns()[0].last_sleep_in_bed);
 }
 
 #[test]
@@ -202,4 +207,209 @@ fn manual_move_interrupts_work_and_cancel_clears_designations() {
         s.step(&[]);
     }
     assert!(s.pawns().iter().all(|p| !matches!(p.job, Job::Work { .. })));
+}
+
+fn wall(x0: i32, y0: i32, x1: i32, y1: i32) -> Command {
+    Command::Build {
+        kind: BuildKind::Wall,
+        material: Material::Wood,
+        x0,
+        y0,
+        x1,
+        y1,
+    }
+}
+
+#[test]
+fn wall_gets_delivered_then_built() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Wood, 20, 6, 6);
+    s.step(&[wall(4, 5, 6, 5)]);
+    assert_eq!(s.blueprints().len(), 3);
+    assert!(s.blueprints().iter().all(|b| b.needed == 5));
+    assert!(
+        run_until(&mut s, 2 * DAY, |s| s.blueprints().is_empty()),
+        "chantiers restants : {:?}",
+        s.blueprints()
+    );
+    for x in 4..=6 {
+        assert_eq!(s.map().feature(x, 5), Feature::WallWood);
+        assert!(!s.map().passable(x, 5));
+    }
+    let wood: u32 = s
+        .items()
+        .iter()
+        .filter(|i| i.kind == ItemKind::Wood)
+        .map(|i| i.count)
+        .sum();
+    assert_eq!(wood, 5, "15 bois consommés sur 20");
+    assert!(s.pawns().iter().all(|p| p.carrying.is_none()));
+}
+
+#[test]
+fn full_wall_blocks_paths_and_pawns_replan_safely() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Wood, 40, 3, 3);
+    // Mur complet sur la colonne 9 : coupe la carte en deux.
+    s.step(&[wall(9, 0, 9, 7)]);
+    assert_eq!(s.blueprints().len(), 8);
+    // Un colon est envoyé de l'autre côté pendant les travaux.
+    let id = s.pawns()[0].id;
+    s.step(&[Command::MoveTo {
+        pawn: id,
+        x: 11,
+        y: 4,
+    }]);
+    assert!(run_until(&mut s, 3 * DAY, |s| s.blueprints().is_empty()));
+    assert_eq!(sim::path::find_path(s.map(), (2, 4), (11, 4)), None);
+    // Personne ne garde un chemin qui traverse le mur, personne n'est bloqué dedans.
+    for p in s.pawns() {
+        assert!(
+            p.path
+                .iter()
+                .all(|&(x, y)| s.map().passable(u32::from(x), u32::from(y)))
+        );
+        let (x, y) = p.tile();
+        assert!(s.map().passable(x, y), "colon {} coincé dans un mur", p.id);
+    }
+}
+
+#[test]
+fn floor_door_and_bed_blueprints_apply() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Wood, 40, 6, 6);
+    s.step(&[
+        Command::Build {
+            kind: BuildKind::Floor,
+            material: Material::Wood,
+            x0: 8,
+            y0: 6,
+            x1: 8,
+            y1: 6,
+        },
+        Command::Build {
+            kind: BuildKind::Door,
+            material: Material::Wood,
+            x0: 8,
+            y0: 7,
+            x1: 8,
+            y1: 7,
+        },
+        Command::Build {
+            kind: BuildKind::Bed,
+            material: Material::Stone,
+            x0: 9,
+            y0: 7,
+            x1: 9,
+            y1: 7,
+        },
+    ]);
+    assert_eq!(s.blueprints().len(), 3);
+    assert!(
+        s.blueprints().iter().all(|b| b.material == Material::Wood),
+        "un lit est en bois"
+    );
+    assert!(
+        run_until(&mut s, 2 * DAY, |s| s.blueprints().is_empty()),
+        "{:?}",
+        s.blueprints()
+    );
+    assert_eq!(s.map().get(8, 6), Terrain::WoodFloor);
+    assert_eq!(s.map().feature(8, 7), Feature::DoorWood);
+    assert!(s.map().passable(8, 7));
+    assert_eq!(s.map().feature(9, 7), Feature::Bed);
+    let wood: u32 = s
+        .items()
+        .iter()
+        .filter(|i| i.kind == ItemKind::Wood)
+        .map(|i| i.count)
+        .sum();
+    assert_eq!(wood, 40 - 3 - 10 - 12);
+}
+
+#[test]
+fn cancel_build_refunds_delivered_materials() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Wood, 20, 6, 6);
+    s.step(&[wall(4, 5, 6, 5)]);
+    assert!(run_until(&mut s, DAY, |s| s
+        .blueprints()
+        .iter()
+        .any(|b| b.delivered > 0)));
+    s.step(&[Command::CancelBuild {
+        x0: 0,
+        y0: 0,
+        x1: 11,
+        y1: 7,
+    }]);
+    assert!(s.blueprints().is_empty());
+    // Les livreurs en route lâchent leur chargement au tick suivant.
+    for _ in 0..3 {
+        s.step(&[]);
+    }
+    let wood: u32 = s
+        .items()
+        .iter()
+        .filter(|i| i.kind == ItemKind::Wood)
+        .map(|i| i.count)
+        .sum();
+    let carried: u32 = s
+        .pawns()
+        .iter()
+        .filter_map(|p| p.carrying)
+        .map(|(_, n)| n)
+        .sum();
+    assert_eq!(wood + carried, 20);
+    assert!(
+        s.map()
+            .features()
+            .iter()
+            .all(|&f| f != Feature::WallWood as u8)
+    );
+}
+
+#[test]
+fn tired_pawn_walks_to_bed_and_sleeps_better() {
+    let mut s = clearing();
+    s.map_mut().set_feature(9, 6, Feature::Bed);
+    let id = s.pawns()[0].id;
+    s.pawn_mut(id).unwrap().rest = TIRED - 1;
+    assert!(run_until(&mut s, 600, |s| {
+        let p = &s.pawns()[0];
+        matches!(p.job, Job::Sleep { in_bed: true }) && !p.is_moving() && p.tile() == (9, 6)
+    }));
+    let asleep_at = s.tick();
+    assert!(run_until(&mut s, DAY, |s| !matches!(
+        s.pawns()[0].job,
+        Job::Sleep { .. }
+    )));
+    let bed_duration = s.tick() - asleep_at;
+    assert!(s.pawns()[0].last_sleep_in_bed);
+    assert!(s.pawns()[0].rest >= RESTED);
+
+    // Sans lit : sommeil au sol, plus long, humeur moins bonne.
+    let mut g = clearing();
+    let id = g.pawns()[0].id;
+    g.pawn_mut(id).unwrap().rest = TIRED - 1;
+    assert!(run_until(&mut g, 600, |s| matches!(
+        s.pawns()[0].job,
+        Job::Sleep { .. }
+    )));
+    let asleep_at = g.tick();
+    assert!(run_until(&mut g, DAY, |s| !matches!(
+        s.pawns()[0].job,
+        Job::Sleep { .. }
+    )));
+    let ground_duration = g.tick() - asleep_at;
+    assert!(!g.pawns()[0].last_sleep_in_bed);
+    assert!(
+        bed_duration < ground_duration,
+        "lit {bed_duration} vs sol {ground_duration}"
+    );
+
+    let idb = s.pawns()[0].id;
+    let idg = g.pawns()[0].id;
+    s.pawn_mut(idb).unwrap().hunger = 500_000;
+    g.pawn_mut(idg).unwrap().hunger = 500_000;
+    assert!(s.pawns()[0].mood() > g.pawns()[0].mood());
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { PAWN_STRIDE, Renderer, type TilePos, type TileRect } from "./render/Renderer";
-import { DESIGNATION, ITEM_NAMES, JOB_LABELS, ZONE } from "./render/terrain";
+import { BLUEPRINT_STRIDE, BUILD_KIND, DESIGNATION, ITEM_NAMES, JOB_LABELS, MATERIAL_NAMES, ZONE } from "./render/terrain";
 import { SimHandle } from "./sim/SimHandle";
 
 const TICKS_PER_SECOND = 60;
@@ -10,16 +10,37 @@ const MAX_TICKS_PER_FRAME = 8;
 const CLICK_TOLERANCE_PX = 5;
 const SAVE_KEY = "rimlike.save.v1";
 
-type Tool = "select" | "chop" | "mine" | "harvest" | "stockpile" | "cancel";
+type Tool =
+  | "select"
+  | "chop"
+  | "mine"
+  | "harvest"
+  | "stockpile"
+  | "wall"
+  | "door"
+  | "floor"
+  | "bed"
+  | "cancel";
 
-const TOOLS: { id: Tool; label: string; key: string; color: number }[] = [
-  { id: "select", label: "Sélection", key: "S", color: 0xffffff },
-  { id: "chop", label: "Couper", key: "C", color: 0xff9a2e },
-  { id: "mine", label: "Miner", key: "M", color: 0xff9a2e },
-  { id: "harvest", label: "Récolter", key: "H", color: 0xff9a2e },
-  { id: "stockpile", label: "Stockage", key: "Z", color: 0x4a90d9 },
-  { id: "cancel", label: "Annuler", key: "X", color: 0xff4040 },
+const TOOLS: { id: Tool; label: string; key: string; color: number; group: "orders" | "build" }[] = [
+  { id: "select", label: "Sélection", key: "S", color: 0xffffff, group: "orders" },
+  { id: "chop", label: "Couper", key: "C", color: 0xff9a2e, group: "orders" },
+  { id: "mine", label: "Miner", key: "M", color: 0xff9a2e, group: "orders" },
+  { id: "harvest", label: "Récolter", key: "H", color: 0xff9a2e, group: "orders" },
+  { id: "stockpile", label: "Stockage", key: "Z", color: 0x4a90d9, group: "orders" },
+  { id: "wall", label: "Mur", key: "B", color: 0x4ad9ff, group: "build" },
+  { id: "door", label: "Porte", key: "P", color: 0x4ad9ff, group: "build" },
+  { id: "floor", label: "Sol", key: "O", color: 0x4ad9ff, group: "build" },
+  { id: "bed", label: "Lit", key: "L", color: 0x4ad9ff, group: "build" },
+  { id: "cancel", label: "Annuler", key: "X", color: 0xff4040, group: "orders" },
 ];
+
+const BUILD_TOOL_KIND: Partial<Record<Tool, number>> = {
+  wall: BUILD_KIND.Wall,
+  door: BUILD_KIND.Door,
+  floor: BUILD_KIND.Floor,
+  bed: BUILD_KIND.Bed,
+};
 
 interface PawnInfo {
   id: number;
@@ -41,6 +62,7 @@ interface Stats {
   speed: number;
   paused: boolean;
   stored: number[];
+  blueprints: number;
   selected: PawnInfo | null;
 }
 
@@ -54,6 +76,7 @@ const INITIAL: Stats = {
   speed: 1,
   paused: false,
   stored: [0, 0, 0],
+  blueprints: 0,
   selected: null,
 };
 
@@ -80,9 +103,11 @@ function base64ToBytes(b64: string): Uint8Array {
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const toolRef = useRef<Tool>("select");
+  const materialRef = useRef<number>(0);
   const rendererRef = useRef<Renderer | null>(null);
   const actionsRef = useRef<Actions | null>(null);
   const [tool, setToolState] = useState<Tool>("select");
+  const [material, setMaterialState] = useState<number>(0);
   const [stats, setStats] = useState<Stats>(INITIAL);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +116,10 @@ export function App() {
     toolRef.current = t;
     setToolState(t);
     rendererRef.current?.setLeftDragPans(t === "select");
+  };
+  const setMaterial = (m: number) => {
+    materialRef.current = m;
+    setMaterialState(m);
   };
 
   useEffect(() => {
@@ -161,6 +190,7 @@ export function App() {
         framesInWindow++;
         syncStatic();
         renderer!.syncItems(sim!.items());
+        renderer!.syncBlueprints(sim!.blueprints());
         const alpha = paused ? 1 : Math.min(acc / tickMs, 1);
         renderer!.syncPawns(curPawns, prevPawns, alpha);
         renderer!.setTimeOfDay(sim!.timeOfDay() / sim!.ticksPerDay());
@@ -249,9 +279,16 @@ export function App() {
           case "stockpile":
             sim.setZone(ZONE.Stockpile, rect.x0, rect.y0, rect.x1, rect.y1);
             break;
+          case "wall":
+          case "door":
+          case "floor":
+          case "bed":
+            sim.build(BUILD_TOOL_KIND[toolRef.current]!, materialRef.current, rect.x0, rect.y0, rect.x1, rect.y1);
+            break;
           case "cancel":
             sim.designate(DESIGNATION.None, rect.x0, rect.y0, rect.x1, rect.y1);
             sim.setZone(ZONE.None, rect.x0, rect.y0, rect.x1, rect.y1);
+            sim.cancelBuild(rect.x0, rect.y0, rect.x1, rect.y1);
             break;
           case "select":
             break;
@@ -310,9 +347,14 @@ export function App() {
           return;
         }
         const k = e.key.toUpperCase();
+        if (e.metaKey || e.ctrlKey) return;
         const toolHit = TOOLS.find((t) => t.key === k);
-        if (toolHit && !e.metaKey && !e.ctrlKey) {
+        if (toolHit) {
           setTool(toolHit.id);
+          return;
+        }
+        if (k === "T") {
+          setMaterial(materialRef.current === 0 ? 1 : 0);
           return;
         }
         switch (k) {
@@ -346,6 +388,7 @@ export function App() {
           renderer,
           pawns: () => curPawns,
           setTool,
+          setMaterial,
           actions: actionsRef,
           get paused() {
             return paused;
@@ -406,6 +449,7 @@ export function App() {
           speed,
           paused,
           stored: Array.from(sim.storedTotals()),
+          blueprints: sim.blueprints().length / BLUEPRINT_STRIDE,
           selected: info,
         });
         ticksInWindow = 0;
@@ -439,6 +483,7 @@ export function App() {
         </div>
         <div>
           stock : {ITEM_NAMES.map((n, i) => `${stats.stored[i] ?? 0} ${n}`).join(" · ")}
+          {stats.blueprints > 0 ? ` · ${stats.blueprints} chantier${stats.blueprints > 1 ? "s" : ""}` : ""}
         </div>
         <div className="help">
           {stats.tps} tps · {stats.fps} fps · hash {stats.hash}
@@ -460,11 +505,24 @@ export function App() {
       )}
 
       <div className="toolbar">
-        {TOOLS.map((t) => (
+        {TOOLS.filter((t) => t.group === "orders").map((t) => (
           <button key={t.id} className={t.id === tool ? "active" : ""} onClick={() => setTool(t.id)} title={`Touche ${t.key}`}>
             {t.label} <span className="key">{t.key}</span>
           </button>
         ))}
+        <span className="sep" />
+        {TOOLS.filter((t) => t.group === "build").map((t) => (
+          <button key={t.id} className={t.id === tool ? "active" : ""} onClick={() => setTool(t.id)} title={`Touche ${t.key}`}>
+            {t.label} <span className="key">{t.key}</span>
+          </button>
+        ))}
+        <button
+          className={`material ${tool in BUILD_TOOL_KIND ? "lit" : ""}`}
+          onClick={() => setMaterial(material === 0 ? 1 : 0)}
+          title="Touche T : matériau des constructions"
+        >
+          {MATERIAL_NAMES[material]} <span className="key">T</span>
+        </button>
         <span className="sep" />
         <button onClick={() => actionsRef.current?.save()}>Sauver</button>
         <button onClick={() => actionsRef.current?.load()}>Charger</button>
@@ -474,8 +532,10 @@ export function App() {
           {tool === "stockpile"
             ? "Tracez un rectangle pour créer une zone de stockage"
             : tool === "cancel"
-              ? "Tracez un rectangle pour annuler désignations et zones"
-              : "Tracez un rectangle sur les éléments à traiter"}{" "}
+              ? "Tracez un rectangle pour annuler désignations, zones et chantiers"
+              : tool in BUILD_TOOL_KIND
+                ? `Tracez un rectangle pour poser des plans de ${TOOLS.find((t) => t.id === tool)?.label.toLowerCase()} en ${tool === "bed" ? "bois" : MATERIAL_NAMES[material]}`
+                : "Tracez un rectangle sur les éléments à traiter"}{" "}
           · clic droit ou Échap pour revenir à la sélection
         </div>
       )}

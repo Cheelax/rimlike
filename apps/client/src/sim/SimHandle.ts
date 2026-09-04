@@ -57,6 +57,14 @@ export class SimHandle {
     this.inner.set_zone(zone, x0, y0, x1, y1);
   }
 
+  build(kind: number, material: number, x0: number, y0: number, x1: number, y1: number): void {
+    this.inner.build(kind, material, x0, y0, x1, y1);
+  }
+
+  cancelBuild(x0: number, y0: number, x1: number, y1: number): void {
+    this.inner.cancel_build(x0, y0, x1, y1);
+  }
+
   tick(): number {
     return this.inner.tick();
   }
@@ -115,6 +123,12 @@ export class SimHandle {
 
   items(): Int32Array {
     return new Int32Array(new Int32Array(this.wasm.memory.buffer, this.inner.items_ptr(), this.inner.items_len()));
+  }
+
+  blueprints(): Int32Array {
+    return new Int32Array(
+      new Int32Array(this.wasm.memory.buffer, this.inner.blueprints_ptr(), this.inner.blueprints_len()),
+    );
   }
 
   dispose(): void {

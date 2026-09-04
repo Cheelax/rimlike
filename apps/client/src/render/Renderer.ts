@@ -1,12 +1,24 @@
 import * as THREE from "three";
 import { MapControls } from "three/addons/controls/MapControls.js";
-import { DESIGNATION, FEATURE, ITEM_COLORS, TERRAIN, TERRAIN_COLORS, ZONE } from "./terrain";
+import {
+  BLUEPRINT_STRIDE,
+  BUILD_KIND,
+  DESIGNATION,
+  DOOR_COLORS,
+  FEATURE,
+  ITEM_COLORS,
+  TERRAIN,
+  TERRAIN_COLORS,
+  WALL_COLORS,
+  ZONE,
+} from "./terrain";
 
 const FX_ONE = 256;
 export const PAWN_STRIDE = 10;
 export const ITEM_STRIDE = 5;
 export const PAWN_FLAGS = { MOVING: 1, SLEEPING: 2, WORKING: 4, STARVING: 8, CARRYING: 16 } as const;
 const MAX_ITEMS = 2048;
+const MAX_BLUEPRINTS = 2048;
 
 const PAWN_COLORS = [0xd94f4f, 0x4f8fd9, 0xe0b040, 0x8f4fd9, 0x3fb08f, 0xd97f2f];
 const SKIN = 0xf1c9a5;
@@ -49,6 +61,7 @@ export class Renderer {
   private readonly pawnRoot = new THREE.Group();
   private readonly pawns = new Map<number, PawnView>();
   private readonly items: THREE.InstancedMesh;
+  private readonly blueprints: THREE.InstancedMesh;
   private mapMeshes: THREE.Object3D[] = [];
   private overlayMeshes: THREE.Object3D[] = [];
   private mapW = 0;
@@ -112,6 +125,14 @@ export class Renderer {
     this.items.castShadow = true;
     this.scene.add(this.items);
 
+    this.blueprints = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.42, depthWrite: false }),
+      MAX_BLUEPRINTS,
+    );
+    this.blueprints.count = 0;
+    this.scene.add(this.blueprints);
+
     window.addEventListener("resize", this.onResize);
     this.resize();
   }
@@ -133,12 +154,23 @@ export class Renderer {
     let rocks = 0;
     let trees = 0;
     let bushes = 0;
+    let walls = 0;
+    let doors = 0;
+    let beds = 0;
     for (let i = 0; i < features.length; i++) {
       const f = features[i];
       if (f === FEATURE.Rock) rocks++;
       else if (f === FEATURE.Tree) trees++;
       else if (f === FEATURE.Bush || f === FEATURE.BushUnripe) bushes++;
+      else if (f === FEATURE.WallWood || f === FEATURE.WallStone) walls++;
+      else if (f === FEATURE.DoorWood || f === FEATURE.DoorStone) doors++;
+      else if (f === FEATURE.Bed) beds++;
     }
+    const isWall = (x: number, y: number) => {
+      if (x < 0 || y < 0 || x >= width || y >= height) return false;
+      const f = features[y * width + x];
+      return f === FEATURE.WallWood || f === FEATURE.WallStone;
+    };
     const rockMesh = new THREE.InstancedMesh(
       new THREE.BoxGeometry(1, 0.7, 1),
       new THREE.MeshLambertMaterial({ color: 0x7a7a7a }),
@@ -159,7 +191,34 @@ export class Renderer {
       new THREE.MeshLambertMaterial(),
       Math.max(bushes, 1),
     );
-    for (const m of [rockMesh, trunkMesh, canopyMesh, bushMesh]) m.castShadow = m.receiveShadow = true;
+    const wallMesh = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshLambertMaterial(),
+      Math.max(walls, 1),
+    );
+    const doorMesh = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 0.95, 0.3),
+      new THREE.MeshLambertMaterial(),
+      Math.max(doors, 1),
+    );
+    const bedFrame = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.9, 0.22, 0.9),
+      new THREE.MeshLambertMaterial({ color: 0x6b4a2b }),
+      Math.max(beds, 1),
+    );
+    const bedMattress = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.78, 0.12, 0.7),
+      new THREE.MeshLambertMaterial({ color: 0xe6dcc8 }),
+      Math.max(beds, 1),
+    );
+    const bedPillow = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.5, 0.1, 0.18),
+      new THREE.MeshLambertMaterial({ color: 0xf6f6f6 }),
+      Math.max(beds, 1),
+    );
+    for (const m of [rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow]) {
+      m.castShadow = m.receiveShadow = true;
+    }
 
     const mat = new THREE.Matrix4();
     const pos = new THREE.Vector3();
@@ -169,6 +228,10 @@ export class Renderer {
     let ri = 0;
     let ti = 0;
     let bi = 0;
+    let wi = 0;
+    let di = 0;
+    let li = 0;
+    const yRot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const i = y * width + x;
@@ -191,6 +254,19 @@ export class Renderer {
           mat.compose(pos.set(x + 0.5 + ox, 0.2 * s, y + 0.5 + oz), q, scl.set(s, 0.7 * s, s));
           bushMesh.setMatrixAt(bi, mat);
           bushMesh.setColorAt(bi++, color.setHex(f === FEATURE.Bush ? 0x3a7d2a : 0x7c8a55));
+        } else if (f === FEATURE.WallWood || f === FEATURE.WallStone) {
+          wallMesh.setMatrixAt(wi, mat.makeTranslation(x + 0.5, 0.5, y + 0.5));
+          wallMesh.setColorAt(wi++, color.setHex(WALL_COLORS[f === FEATURE.WallWood ? 0 : 1]));
+        } else if (f === FEATURE.DoorWood || f === FEATURE.DoorStone) {
+          // La porte s'aligne sur les murs voisins : fine dans l'axe du passage.
+          const alongX = isWall(x - 1, y) || isWall(x + 1, y);
+          mat.compose(pos.set(x + 0.5, 0.475, y + 0.5), alongX ? q : yRot, scl.set(1, 1, 1));
+          doorMesh.setMatrixAt(di, mat);
+          doorMesh.setColorAt(di++, color.setHex(DOOR_COLORS[f === FEATURE.DoorWood ? 0 : 1]));
+        } else if (f === FEATURE.Bed) {
+          bedFrame.setMatrixAt(li, mat.makeTranslation(x + 0.5, 0.11, y + 0.5));
+          bedMattress.setMatrixAt(li, mat.makeTranslation(x + 0.5, 0.28, y + 0.55));
+          bedPillow.setMatrixAt(li++, mat.makeTranslation(x + 0.5, 0.36, y + 0.2));
         }
       }
     }
@@ -198,12 +274,19 @@ export class Renderer {
     trunkMesh.count = trees;
     canopyMesh.count = trees;
     bushMesh.count = bushes;
+    wallMesh.count = walls;
+    doorMesh.count = doors;
+    bedFrame.count = beds;
+    bedMattress.count = beds;
+    bedPillow.count = beds;
     floor.instanceMatrix.needsUpdate = true;
     if (floor.instanceColor) floor.instanceColor.needsUpdate = true;
-    if (bushMesh.instanceColor) bushMesh.instanceColor.needsUpdate = true;
-    for (const m of [rockMesh, trunkMesh, canopyMesh, bushMesh]) m.instanceMatrix.needsUpdate = true;
+    for (const m of [bushMesh, wallMesh, doorMesh]) if (m.instanceColor) m.instanceColor.needsUpdate = true;
+    for (const m of [rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow]) {
+      m.instanceMatrix.needsUpdate = true;
+    }
 
-    this.mapMeshes = [floor, rockMesh, trunkMesh, canopyMesh, bushMesh];
+    this.mapMeshes = [floor, rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow];
     this.scene.add(...this.mapMeshes);
     if (!this.framed) {
       this.frame();
@@ -260,6 +343,41 @@ export class Renderer {
     this.items.count = n;
     this.items.instanceMatrix.needsUpdate = true;
     if (this.items.instanceColor) this.items.instanceColor.needsUpdate = true;
+  }
+
+  /** Chantiers en fantômes translucides : bleu en attente de matériaux, jaune prêt à bâtir. */
+  syncBlueprints(buf: Int32Array): void {
+    const n = Math.min(Math.floor(buf.length / BLUEPRINT_STRIDE), MAX_BLUEPRINTS);
+    const mat = new THREE.Matrix4();
+    const pos = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    const scl = new THREE.Vector3();
+    const color = new THREE.Color();
+    for (let i = 0; i < n; i++) {
+      const o = i * BLUEPRINT_STRIDE;
+      const kind = buf[o + 1];
+      const x = buf[o + 3] + 0.5;
+      const z = buf[o + 4] + 0.5;
+      const ready = buf[o + 5] >= buf[o + 6];
+      switch (kind) {
+        case BUILD_KIND.Wall:
+          mat.compose(pos.set(x, 0.5, z), q, scl.set(0.96, 1, 0.96));
+          break;
+        case BUILD_KIND.Door:
+          mat.compose(pos.set(x, 0.475, z), q, scl.set(0.96, 0.95, 0.3));
+          break;
+        case BUILD_KIND.Bed:
+          mat.compose(pos.set(x, 0.15, z), q, scl.set(0.9, 0.3, 0.9));
+          break;
+        default:
+          mat.compose(pos.set(x, 0.03, z), q, scl.set(0.96, 0.06, 0.96));
+      }
+      this.blueprints.setMatrixAt(i, mat);
+      this.blueprints.setColorAt(i, color.setHex(ready ? 0xffe066 : 0x4ad9ff));
+    }
+    this.blueprints.count = n;
+    this.blueprints.instanceMatrix.needsUpdate = true;
+    if (this.blueprints.instanceColor) this.blueprints.instanceColor.needsUpdate = true;
   }
 
   /** Place la caméra sur la carte et dimensionne la caméra d'ombre. */

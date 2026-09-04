@@ -1,7 +1,7 @@
 //! API minimale exposée au navigateur. Tout ce qui est ici doit rester
 //! trivial : la logique vit dans `sim`, testée en natif.
 
-use sim::{Designation, ItemKind, Job, Zone};
+use sim::{BuildKind, Designation, ItemKind, Job, Material, Zone};
 use wasm_bindgen::prelude::*;
 
 /// Entiers par pawn dans le tampon de rendu :
@@ -9,6 +9,8 @@ use wasm_bindgen::prelude::*;
 pub const PAWN_STRIDE: usize = 10;
 /// Entiers par pile : id, genre, quantité, x, y.
 pub const ITEM_STRIDE: usize = 5;
+/// Entiers par chantier : id, type, matériau, x, y, livré, requis, avancement.
+pub const BLUEPRINT_STRIDE: usize = 8;
 
 const FLAG_MOVING: i32 = 1;
 const FLAG_SLEEPING: i32 = 2;
@@ -22,6 +24,7 @@ pub struct WasmSim {
     pending: Vec<sim::Command>,
     pawn_buffer: Vec<i32>,
     item_buffer: Vec<i32>,
+    blueprint_buffer: Vec<i32>,
 }
 
 #[wasm_bindgen]
@@ -71,6 +74,23 @@ impl WasmSim {
             x1,
             y1,
         });
+    }
+
+    /// `kind` : 0 mur, 1 porte, 2 sol, 3 lit. `material` : 0 bois, 1 pierre.
+    pub fn build(&mut self, kind: u8, material: u8, x0: i32, y0: i32, x1: i32, y1: i32) {
+        self.pending.push(sim::Command::Build {
+            kind: BuildKind::from_u8(kind),
+            material: Material::from_u8(material),
+            x0,
+            y0,
+            x1,
+            y1,
+        });
+    }
+
+    pub fn cancel_build(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) {
+        self.pending
+            .push(sim::Command::CancelBuild { x0, y0, x1, y1 });
     }
 
     // --- Lecture ---
@@ -170,6 +190,18 @@ impl WasmSim {
     pub fn items_len(&self) -> usize {
         self.item_buffer.len()
     }
+
+    pub fn blueprint_stride(&self) -> usize {
+        BLUEPRINT_STRIDE
+    }
+
+    pub fn blueprints_ptr(&self) -> *const i32 {
+        self.blueprint_buffer.as_ptr()
+    }
+
+    pub fn blueprints_len(&self) -> usize {
+        self.blueprint_buffer.len()
+    }
 }
 
 impl WasmSim {
@@ -179,6 +211,7 @@ impl WasmSim {
             pending: Vec::new(),
             pawn_buffer: Vec::new(),
             item_buffer: Vec::new(),
+            blueprint_buffer: Vec::new(),
         };
         s.refresh_buffers();
         s
@@ -191,10 +224,10 @@ impl WasmSim {
             if p.is_moving() {
                 flags |= FLAG_MOVING;
             }
-            if matches!(p.job, Job::Sleep) {
+            if matches!(p.job, Job::Sleep { .. }) && !p.is_moving() {
                 flags |= FLAG_SLEEPING;
             }
-            if matches!(p.job, Job::Work { .. }) && !p.is_moving() {
+            if matches!(p.job, Job::Work { .. } | Job::Build { .. }) && !p.is_moving() {
                 flags |= FLAG_WORKING;
             }
             if p.is_starving() {
@@ -228,6 +261,19 @@ impl WasmSim {
                 s.count as i32,
                 s.x as i32,
                 s.y as i32,
+            ]);
+        }
+        self.blueprint_buffer.clear();
+        for b in self.inner.blueprints() {
+            self.blueprint_buffer.extend_from_slice(&[
+                b.id as i32,
+                b.kind as i32,
+                b.material as i32,
+                b.x as i32,
+                b.y as i32,
+                b.delivered as i32,
+                b.needed as i32,
+                b.progress as i32,
             ]);
         }
         let _ = ItemKind::COUNT;

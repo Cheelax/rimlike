@@ -13,6 +13,8 @@ pub enum Terrain {
     Grass = 3,
     Dirt = 4,
     Gravel = 5,
+    WoodFloor = 6,
+    StoneFloor = 7,
 }
 
 impl Terrain {
@@ -23,6 +25,8 @@ impl Terrain {
             2 => Terrain::Sand,
             3 => Terrain::Grass,
             4 => Terrain::Dirt,
+            6 => Terrain::WoodFloor,
+            7 => Terrain::StoneFloor,
             _ => Terrain::Gravel,
         }
     }
@@ -36,6 +40,7 @@ impl Terrain {
             Terrain::Grass => Some(100),
             Terrain::Dirt => Some(105),
             Terrain::Gravel => Some(115),
+            Terrain::WoodFloor | Terrain::StoneFloor => Some(90),
         }
     }
 
@@ -55,6 +60,11 @@ pub enum Feature {
     Bush = 3,
     /// Buisson récolté, repousse au bout d'un jour.
     BushUnripe = 4,
+    WallWood = 5,
+    WallStone = 6,
+    DoorWood = 7,
+    DoorStone = 8,
+    Bed = 9,
 }
 
 impl Feature {
@@ -64,18 +74,36 @@ impl Feature {
             2 => Feature::Rock,
             3 => Feature::Bush,
             4 => Feature::BushUnripe,
+            5 => Feature::WallWood,
+            6 => Feature::WallStone,
+            7 => Feature::DoorWood,
+            8 => Feature::DoorStone,
+            9 => Feature::Bed,
             _ => Feature::None,
         }
     }
 
     pub fn passable(self) -> bool {
-        !matches!(self, Feature::Tree | Feature::Rock)
+        !matches!(
+            self,
+            Feature::Tree | Feature::Rock | Feature::WallWood | Feature::WallStone
+        )
+    }
+
+    pub fn is_wall(self) -> bool {
+        matches!(self, Feature::WallWood | Feature::WallStone)
+    }
+
+    pub fn is_door(self) -> bool {
+        matches!(self, Feature::DoorWood | Feature::DoorStone)
     }
 
     /// Multiplicateur de coût en centièmes.
     pub fn cost_mult(self) -> u32 {
         match self {
             Feature::Bush | Feature::BushUnripe => 150,
+            Feature::DoorWood | Feature::DoorStone => 150,
+            Feature::Bed => 200,
             _ => 100,
         }
     }
@@ -280,6 +308,14 @@ impl Map {
 
     pub fn designation(&self, x: u32, y: u32) -> Designation {
         Designation::from_u8(self.designations[self.index(x, y)])
+    }
+
+    pub fn set_terrain(&mut self, x: u32, y: u32, t: Terrain) {
+        let i = self.index(x, y);
+        if self.tiles[i] != t as u8 {
+            self.tiles[i] = t as u8;
+            self.version += 1;
+        }
     }
 
     pub fn set_feature(&mut self, x: u32, y: u32, f: Feature) {

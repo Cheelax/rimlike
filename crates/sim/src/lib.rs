@@ -13,6 +13,7 @@
 #![deny(clippy::disallowed_types)]
 #![deny(clippy::disallowed_methods)]
 
+pub mod build;
 pub mod fixed;
 pub mod hash;
 pub mod items;
@@ -26,6 +27,7 @@ pub mod testmap;
 
 use serde::{Deserialize, Serialize};
 
+pub use build::{Blueprint, BuildKind, Material};
 pub use items::{ItemKind, ItemStack};
 pub use jobs::{Regrow, Reservation};
 pub use map::{Designation, Feature, Map, Rect, Terrain, Zone};
@@ -62,6 +64,17 @@ pub enum Command {
         x1: i32,
         y1: i32,
     },
+    /// Pose des plans de construction sur chaque case valide du rectangle.
+    Build {
+        kind: BuildKind,
+        material: Material,
+        x0: i32,
+        y0: i32,
+        x1: i32,
+        y1: i32,
+    },
+    /// Annule les plans du rectangle et rend les matériaux déjà livrés.
+    CancelBuild { x0: i32, y0: i32, x1: i32, y1: i32 },
 }
 
 #[derive(Debug)]
@@ -89,6 +102,7 @@ pub struct Sim {
     items: Vec<ItemStack>,
     reservations: Vec<Reservation>,
     regrow: Vec<Regrow>,
+    blueprints: Vec<Blueprint>,
     /// Compteur d'ids partagé par tout ce qui a un id.
     next_id: u32,
 }
@@ -116,6 +130,7 @@ impl Sim {
             items: Vec::new(),
             reservations: Vec::new(),
             regrow: Vec::new(),
+            blueprints: Vec::new(),
             next_id: 1,
         };
         sim.spawn_starting_pawns(3);
@@ -214,6 +229,61 @@ impl Sim {
                     }
                 }
             }
+            Command::Build {
+                kind,
+                material,
+                x0,
+                y0,
+                x1,
+                y1,
+            } => {
+                let Some(rect) = self.map.clamp_rect(x0, y0, x1, y1) else {
+                    return;
+                };
+                // Un lit est toujours en bois.
+                let material = if kind == BuildKind::Bed {
+                    Material::Wood
+                } else {
+                    material
+                };
+                for (x, y) in rect.tiles() {
+                    if !build::can_place(&self.map, kind, x, y)
+                        || self.blueprints.iter().any(|b| (b.x, b.y) == (x, y))
+                        || (kind != BuildKind::Floor
+                            && self.items.iter().any(|s| (s.x, s.y) == (x, y)))
+                    {
+                        continue;
+                    }
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    self.blueprints.push(Blueprint {
+                        id,
+                        x,
+                        y,
+                        kind,
+                        material,
+                        delivered: 0,
+                        needed: kind.cost(),
+                        progress: 0,
+                        reserved_by: None,
+                    });
+                }
+            }
+            Command::CancelBuild { x0, y0, x1, y1 } => {
+                let Some(rect) = self.map.clamp_rect(x0, y0, x1, y1) else {
+                    return;
+                };
+                let mut k = 0;
+                while k < self.blueprints.len() {
+                    let b = &self.blueprints[k];
+                    if b.x >= rect.x0 && b.x <= rect.x1 && b.y >= rect.y0 && b.y <= rect.y1 {
+                        let b = self.blueprints.remove(k);
+                        self.spawn_item(b.material.item_kind(), b.delivered, b.x, b.y);
+                    } else {
+                        k += 1;
+                    }
+                }
+            }
         }
     }
 
@@ -235,6 +305,16 @@ impl Sim {
 
     pub fn map(&self) -> &Map {
         &self.map
+    }
+
+    /// Accès direct à la carte, pour les tests et scénarios. Le jeu passe par
+    /// des `Command`.
+    pub fn map_mut(&mut self) -> &mut Map {
+        &mut self.map
+    }
+
+    pub fn blueprints(&self) -> &[Blueprint] {
+        &self.blueprints
     }
 
     pub fn pawns(&self) -> &[Pawn] {

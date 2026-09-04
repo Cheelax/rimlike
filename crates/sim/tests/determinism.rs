@@ -1,7 +1,7 @@
 //! Le test qui protège tout le projet : deux simulations nourries des mêmes
 //! entrées doivent produire exactement le même état.
 
-use sim::{Command, Designation, Sim, TICKS_PER_DAY, Zone};
+use sim::{BuildKind, Command, Designation, Material, Sim, TICKS_PER_DAY, Zone};
 
 const TICKS: u64 = 10_000;
 
@@ -37,6 +37,39 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             y0: 0,
             x1: w - 1,
             y1: h - 1,
+        });
+    }
+    if t == 40 {
+        cmds.push(Command::Build {
+            kind: BuildKind::Wall,
+            material: Material::Wood,
+            x0: w / 2 - 6,
+            y0: h / 2 - 6,
+            x1: w / 2 + 6,
+            y1: h / 2 - 6,
+        });
+    }
+    if t % 1500 == 700 {
+        let k = (t / 1500) as i32;
+        cmds.push(Command::Build {
+            kind: if k % 2 == 0 {
+                BuildKind::Floor
+            } else {
+                BuildKind::Bed
+            },
+            material: Material::Wood,
+            x0: w / 2 + k,
+            y0: h / 2 + 4,
+            x1: w / 2 + k + 1,
+            y1: h / 2 + 4,
+        });
+    }
+    if t == 4000 {
+        cmds.push(Command::CancelBuild {
+            x0: w / 2 - 6,
+            y0: h / 2 - 6,
+            x1: w / 2 - 3,
+            y1: h / 2 - 6,
         });
     }
     if t % 900 == 0 {
