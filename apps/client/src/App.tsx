@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import type { SettledMessage } from "@rimlike/protocol";
+import type { World } from "@rimlike/world";
 import type { LockstepError, LockstepState } from "./net/LockstepClient";
+import { WebSocketTransport } from "./net/Transport";
+import { WorldClient, type WorldClientState } from "./net/WorldClient";
+import { fetchWorld, type WorldProgress } from "./net/worldFetch";
+import { WorldScreen } from "./WorldScreen";
 import { PAWN_STRIDE, Renderer, type TilePos, type TileRect } from "./render/Renderer";
 import {
   BLUEPRINT_STRIDE,
@@ -168,6 +174,16 @@ interface Toast {
 /** Mode de jeu choisi à l'accueil. Rien ne démarre avant ce choix. */
 type Session = { mode: "solo" } | { mode: "multi"; server: string; room: string; name: string };
 
+/**
+ * Session « monde partagé » : elle survit à l'entrée dans une colonie. Tant
+ * qu'elle existe, le globe reste chargé et la connexion monde ouverte, ce qui
+ * rend le retour à l'écran Monde immédiat.
+ */
+interface WorldSession {
+  server: string;
+  name: string;
+}
+
 interface JoinForm {
   server: string;
   room: string;
@@ -189,6 +205,23 @@ function joinFromUrl(): JoinForm | null {
     name: params.get("name") ?? "joueur",
   };
 }
+
+/**
+ * Entrée directe dans le monde partagé (`?server=…&name=…&world=1`). Prioritaire
+ * sur `room` : on choisit sa case sur le globe plutôt que de nommer une salle.
+ */
+function worldFromUrl(): WorldSession | null {
+  const params = new URLSearchParams(window.location.search);
+  const world = params.get("world");
+  if (world === null || world === "" || world === "0") return null;
+  return { server: params.get("server") ?? DEFAULT_SERVER, name: params.get("name") ?? "joueur" };
+}
+
+/** Où en est le chargement du globe, avant que l'écran Monde n'existe. */
+type GlobeLoad =
+  | { kind: "loading"; progress: WorldProgress | null }
+  | { kind: "ready" }
+  | { kind: "failed"; message: string };
 
 function bytesToBase64(bytes: Uint8Array): string {
   let s = "";
@@ -220,12 +253,23 @@ export function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<JoinForm>(() => joinFromUrl() ?? { server: DEFAULT_SERVER, room: "demo", name: "joueur" });
+  const [worldSession, setWorldSession] = useState<WorldSession | null>(() => worldFromUrl());
   const [session, setSession] = useState<Session | null>(() => {
+    if (worldFromUrl() !== null) return null;
     const url = joinFromUrl();
     return url === null ? null : { mode: "multi", ...url };
   });
   const [net, setNet] = useState<LockstepState | null>(null);
   const [seed, setSeed] = useState<number>(DEFAULT_SEED);
+  // --- Monde partagé : le globe et la connexion vivent en dehors de la partie ---
+  const worldRef = useRef<WorldClient | null>(null);
+  const [globe, setGlobe] = useState<World | null>(null);
+  const [globeLoad, setGlobeLoad] = useState<GlobeLoad>({ kind: "loading", progress: null });
+  const [worldNet, setWorldNet] = useState<WorldClientState | null>(null);
+  /** Graine imposée par la case, reçue avec `settled`. `null` hors monde. */
+  const [imposedSeed, setImposedSeed] = useState<number | null>(null);
+  /** Identifiants des toasts du monde, hors de portée de ceux du sim et du réseau. */
+  const worldToastId = useRef(-1_000_000);
 
   const multi = session?.mode === "multi";
   const setTool = (t: Tool) => {
@@ -237,6 +281,76 @@ export function App() {
     materialRef.current = m;
     setMaterialState(m);
   };
+
+  /**
+   * Le monde partagé : télécharge le globe une fois (`GET /world`), puis ouvre
+   * la connexion monde **sur le thread principal**. Le Worker, lui, n'ouvrira
+   * la sienne qu'au moment d'entrer dans une salle.
+   *
+   * Cette connexion reste ouverte pendant la partie : c'est ce que le
+   * protocole prévoit (§11.3, monde et salle cohabitent), elle continue de
+   * recevoir `world_settlements` pendant qu'on joue, et le retour au globe est
+   * immédiat. La fermer imposerait un `world_join` et un nouvel écran d'attente
+   * à chaque aller-retour.
+   */
+  useEffect(() => {
+    if (worldSession === null) return;
+    let cancelled = false;
+    let client: WorldClient | null = null;
+    const timers: number[] = [];
+    setGlobeLoad({ kind: "loading", progress: null });
+
+    const toast = (text: string) => {
+      const id = worldToastId.current--;
+      setToasts((prev) => [...prev, { id, text }]);
+      timers.push(window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_MS));
+    };
+
+    void (async () => {
+      try {
+        const { world } = await fetchWorld(worldSession.server, (progress) => {
+          if (!cancelled) setGlobeLoad({ kind: "loading", progress });
+        });
+        if (cancelled) return;
+        setGlobe(world);
+        setGlobeLoad({ kind: "ready" });
+        client = new WorldClient({
+          transport: new WebSocketTransport(worldSession.server),
+          name: worldSession.name,
+          // Vérification de cohérence : le `world_welcome` doit annoncer le
+          // globe qu'on vient de télécharger, sinon les cases ne désignent rien.
+          expected: { seed: world.seed, subdivisions: world.subdivisions, tiles: world.tiles.length },
+          onState: (state) => {
+            if (!cancelled) setWorldNet(state);
+          },
+          onSettled: (settled: SettledMessage) => {
+            if (cancelled) return;
+            // Réponse à `settle` comme à `visit` : on quitte le globe et on
+            // entre dans la salle de la case, en mode multi ordinaire.
+            setImposedSeed(settled.seed);
+            setSession({ mode: "multi", server: worldSession.server, room: settled.room, name: worldSession.name });
+          },
+          onError: (error) => {
+            if (!cancelled) toast(`Monde : ${error.message}`);
+          },
+        });
+        worldRef.current = client;
+        client.join();
+      } catch (e) {
+        if (!cancelled) setGlobeLoad({ kind: "failed", message: e instanceof Error ? e.message : String(e) });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      for (const t of timers) clearTimeout(t);
+      worldRef.current = null;
+      client?.close();
+      setGlobe(null);
+      setWorldNet(null);
+      setImposedSeed(null);
+    };
+  }, [worldSession]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -684,7 +798,13 @@ export function App() {
           renderer.setSelected(v);
         },
       };
-      (window as unknown as { __rimlike?: unknown }).__rimlike = debug;
+      // `WorldScreen` publie `__rimlike.world` de son côté : le crochet de la
+      // partie ne doit pas l'emporter en le remplaçant.
+      const hook = window as unknown as { __rimlike?: Record<string, unknown> };
+      const world = hook.__rimlike?.world;
+      const entries = debug as unknown as Record<string, unknown>;
+      if (world !== undefined) entries.world = world;
+      hook.__rimlike = entries;
     }
 
     // --- HUD ---
@@ -773,18 +893,60 @@ export function App() {
     const current = actionsRef.current?.currentPriority(pawn, work) ?? shown;
     actionsRef.current?.setPriority(pawn, work, nextPriority(current, dir));
   };
-  const running = !multi || (net !== null && net.phase === "running" && net.ready);
+  // Le HUD de colonie n'existe que dans une partie : sans session, l'écran est
+  // celui de l'accueil ou du monde, qui ont leur propre interface.
+  const running = session !== null && (!multi || (net !== null && net.phase === "running" && net.ready));
+  const inWorld = worldSession !== null;
+  /**
+   * Quitte la salle et revient au globe, sans retélécharger quoi que ce soit :
+   * le Worker (et donc sa connexion) est fermé par le nettoyage de l'effet,
+   * mais la connexion monde et le globe restent en place.
+   */
+  const backToWorld = () => {
+    setImposedSeed(null);
+    setNet(null);
+    setStats(INITIAL);
+    setSession(null);
+  };
+  const quitWorld = () => {
+    worldRef.current?.leave();
+    setWorldSession(null);
+    setNet(null);
+    setStats(INITIAL);
+    setSession(null);
+  };
+  // Graine effective d'un `start` : celle de la case l'emporte (le serveur
+  // l'impose de toute façon, docs/protocol.md §11.2).
+  const startSeed = Math.max(0, Math.floor(imposedSeed ?? seed));
   return (
     <>
       <canvas ref={canvasRef} className="scene" />
-      {session === null ? (
+      {inWorld && globe !== null && worldSession !== null && (
+        <WorldScreen
+          world={globe}
+          net={worldNet}
+          name={worldSession.name}
+          visible={session === null}
+          onSettle={(tile) => worldRef.current?.settle(tile)}
+          onVisit={(tile) => worldRef.current?.visit(tile)}
+          onAbandon={(tile) => worldRef.current?.abandon(tile)}
+          onBack={backToWorld}
+          onQuit={quitWorld}
+        />
+      )}
+      {session === null && inWorld && globe === null && (
+        <GlobeLoading load={globeLoad} server={worldSession?.server ?? ""} onCancel={quitWorld} />
+      )}
+      {session === null && !inWorld ? (
         <HomeScreen
           form={form}
           onChange={setForm}
           onSolo={() => setSession({ mode: "solo" })}
           onJoin={() => setSession({ mode: "multi", ...form })}
+          onWorld={() => setWorldSession({ server: form.server, name: form.name })}
         />
       ) : (
+        session !== null &&
         multi &&
         !running && (
           <Lobby
@@ -792,8 +954,10 @@ export function App() {
             net={net}
             seed={seed}
             onSeed={setSeed}
+            imposedSeed={imposedSeed}
+            onBackToWorld={inWorld ? backToWorld : null}
             // Le serveur n'accepte qu'un entier positif comme graine.
-            onStart={() => bridgeRef.current?.startGame(Math.max(0, Math.floor(seed)), MAP_SIZE, MAP_SIZE)}
+            onStart={() => bridgeRef.current?.startGame(startSeed, MAP_SIZE, MAP_SIZE)}
           />
         )
       )}
@@ -890,6 +1054,11 @@ export function App() {
             <button onClick={() => actionsRef.current?.load()} disabled={multi} title={multi ? MULTI_DISABLED : undefined}>
               Charger
             </button>
+            {inWorld && (
+              <button onClick={backToWorld} title="Quitter la salle et revenir au globe">
+                Retour au monde
+              </button>
+            )}
             {import.meta.env.DEV && (
               <button onClick={() => actionsRef.current?.triggerRaid()} title="Déclencher un raid (dev)">
                 Raid
@@ -966,19 +1135,25 @@ export function App() {
   );
 }
 
-/** Écran d'accueil : solo tout de suite, ou connexion à un serveur relais. */
+/**
+ * Écran d'accueil : solo tout de suite, une salle nommée sur un serveur relais,
+ * ou le monde partagé — où c'est le globe qui décide de la salle.
+ */
 function HomeScreen({
   form,
   onChange,
   onSolo,
   onJoin,
+  onWorld,
 }: {
   form: JoinForm;
   onChange: (f: JoinForm) => void;
   onSolo: () => void;
   onJoin: () => void;
+  onWorld: () => void;
 }) {
-  const ready = form.server.trim() !== "" && form.room.trim() !== "" && form.name.trim() !== "";
+  const connectable = form.server.trim() !== "" && form.name.trim() !== "";
+  const ready = connectable && form.room.trim() !== "";
   return (
     <div className="overlay">
       <div className="card">
@@ -993,12 +1168,23 @@ function HomeScreen({
           <input value={form.server} onChange={(e) => onChange({ ...form, server: e.target.value })} />
         </label>
         <label>
-          Salle
-          <input value={form.room} onChange={(e) => onChange({ ...form, room: e.target.value })} />
-        </label>
-        <label>
           Nom
           <input value={form.name} onChange={(e) => onChange({ ...form, name: e.target.value })} />
+        </label>
+        <button
+          className="wide"
+          disabled={!connectable}
+          onClick={() => {
+            if (connectable) onWorld();
+          }}
+        >
+          Monde partagé
+        </button>
+        <div className="help">Choisissez votre case sur le globe : le serveur donne la salle et la graine.</div>
+        <div className="card-sep">ou</div>
+        <label>
+          Salle
+          <input value={form.room} onChange={(e) => onChange({ ...form, room: e.target.value })} />
         </label>
         <button
           className="wide"
@@ -1009,7 +1195,52 @@ function HomeScreen({
         >
           Rejoindre
         </button>
-        <div className="help">Paramètres d'URL acceptés : ?server=…&amp;room=…&amp;name=…</div>
+        <div className="help">
+          Paramètres d'URL acceptés : ?server=…&amp;room=…&amp;name=… ou ?server=…&amp;name=…&amp;world=1
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Chargement du globe : sobre, mais on dit ce qui se passe et où. */
+function GlobeLoading({
+  load,
+  server,
+  onCancel,
+}: {
+  load: GlobeLoad;
+  server: string;
+  onCancel: () => void;
+}) {
+  if (load.kind === "failed") {
+    return (
+      <div className="overlay">
+        <div className="card">
+          <div className="card-title">Globe indisponible</div>
+          <div className="help">{load.message}</div>
+          <div className="help">Vérifiez que le serveur monde tourne bien sur {server}.</div>
+          <button className="wide" onClick={onCancel}>
+            Retour à l'accueil
+          </button>
+        </div>
+      </div>
+    );
+  }
+  const progress = load.kind === "loading" ? load.progress : null;
+  const kilobytes = progress === null ? 0 : Math.round(progress.received / 1024);
+  return (
+    <div className="overlay">
+      <div className="card">
+        <div className="card-title">Chargement du globe…</div>
+        <div className="help">
+          {progress === null
+            ? `Contact de ${server}`
+            : progress.phase === "download"
+              ? `Téléchargement : ${kilobytes} Ko`
+              : "Désérialisation des cases…"}
+        </div>
+        <div className="help">Le globe ne se télécharge qu'une fois : il ne change pas.</div>
       </div>
     </div>
   );
@@ -1021,12 +1252,18 @@ function Lobby({
   net,
   seed,
   onSeed,
+  imposedSeed,
+  onBackToWorld,
   onStart,
 }: {
   room: string;
   net: LockstepState | null;
   seed: number;
   onSeed: (v: number) => void;
+  /** Graine dictée par la case du globe, `null` en salle simple. */
+  imposedSeed: number | null;
+  /** Présent en mode monde : de quoi ressortir sans recharger la page. */
+  onBackToWorld: (() => void) | null;
   onStart: () => void;
 }) {
   if (net === null || net.phase === "connecting") {
@@ -1044,9 +1281,14 @@ function Lobby({
         <div className="card">
           <div className="card-title">Connexion perdue</div>
           <div className="help">
-            {net.lastError ? net.lastError.message : "Le serveur a fermé la connexion."} Rechargez la page pour
-            réessayer.
+            {net.lastError ? net.lastError.message : "Le serveur a fermé la connexion."}{" "}
+            {onBackToWorld ? "Revenez au monde pour choisir une autre case." : "Rechargez la page pour réessayer."}
           </div>
+          {onBackToWorld && (
+            <button className="wide" onClick={onBackToWorld}>
+              Retour au monde
+            </button>
+          )}
         </div>
       </div>
     );
@@ -1072,10 +1314,14 @@ function Lobby({
               Graine
               <input
                 type="number"
-                value={seed}
+                value={imposedSeed ?? seed}
+                disabled={imposedSeed !== null}
                 onChange={(e) => onSeed(Number.isFinite(e.target.valueAsNumber) ? e.target.valueAsNumber : 0)}
               />
             </label>
+            {imposedSeed !== null && (
+              <div className="help">Graine imposée par la case : {imposedSeed}</div>
+            )}
             <button className="wide primary" onClick={onStart}>
               Démarrer
             </button>
@@ -1085,6 +1331,11 @@ function Lobby({
           <div className="help">En attente du démarrage par l'hôte…</div>
         )}
         {net.lastError && <div className="help">Erreur : {net.lastError.message}</div>}
+        {onBackToWorld && (
+          <button className="wide" onClick={onBackToWorld}>
+            Retour au monde
+          </button>
+        )}
       </div>
     </div>
   );

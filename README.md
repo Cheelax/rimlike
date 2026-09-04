@@ -43,6 +43,13 @@ puis, dans deux navigateurs, `http://localhost:5173/?server=ws://localhost:8787&
 et la même adresse avec `name=bob`. L'hôte démarre la partie ; chacun voit les actions de
 l'autre, la simulation tourne à l'identique chez tous (lockstep déterministe).
 
+## Monde partagé (expérimental)
+
+Avec le serveur lancé, `http://localhost:5173/?server=ws://localhost:8787&name=alice&world=1`
+affiche le globe : survolez et cliquez une case terrestre pour vous y installer, ou visitez la
+colonie d'un autre joueur. Chaque case a sa propre carte et sa propre graine ; une colonie
+fermée reprend là où elle en était quand quelqu'un y revient.
+
 ## Structure
 
 - `crates/sim` : la simulation. Aucun flottant, aucune horloge, aucune dépendance au rendu.

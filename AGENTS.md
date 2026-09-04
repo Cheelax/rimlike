@@ -141,6 +141,20 @@ chantiers les émet divisés par 100. Le client rebâtit ses meshes quand `map_v
 onglets, retard proche de 0, et une action faite dans l'un visible dans l'autre, y compris
 onglet masqué (le Worker tient la cadence).
 
+## Essayer le monde partagé
+
+Même serveur que le multi. URL : `http://localhost:5173/?server=ws://localhost:8787&name=alice&world=1`
+(ou l'accueil, bouton « Monde partagé »). Le globe se charge depuis `GET /world`, jamais
+regénéré côté client. Séquence console sans souris :
+
+```js
+const w = window.__rimlike.world;      // state, select(tile), tile(id), freeLand(n), settle(), visit(), abandon(), back()
+const [tile] = w.freeLand(1); w.select(tile); w.settle();          // → salle tile-<id>, graine imposée
+await window.__rimlike.rpc("lockstep.startGame", 0, 128, 128);    // l'hôte démarre
+window.__rimlike.frame.tick;                                       // progresse
+window.__rimlike.world.back(); window.__rimlike.world.state.settlements;
+```
+
 ## Vérifier dans le navigateur
 
 `pnpm dev`, puis ouvrir http://localhost:5173 et cliquer « Partie solo ». Le sim et le

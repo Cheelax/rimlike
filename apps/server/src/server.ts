@@ -216,6 +216,8 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const serveWorld = (request: IncomingMessage, response: ServerResponse): void => {
     const headers: Record<string, string> = {
       "content-type": "application/json; charset=utf-8",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Expose-Headers": "ETag, Content-Encoding",
       etag: worldEtag,
       "cache-control": `public, max-age=${WORLD_MAX_AGE_SECONDS}`,
       // Le corps change avec l'encodage, pas l'ETag : un cache partagé doit

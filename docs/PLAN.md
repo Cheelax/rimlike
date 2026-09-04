@@ -261,15 +261,22 @@ colonies et des joueurs ; snapshot de conservation demandé à l'hôte toutes le
 réutilisé pour rouvrir la salle quand quelqu'un revient (le temps ne s'écoule pas
 entre-temps : avance rapide à faire). 30 tests serveur de plus. Persistance disque livrée le
 2026-09-05 (Sonnet) : état du monde et snapshots dans un JSON écrit atomiquement et
-débouncé, rechargé au démarrage, mis en quarantaine si le globe a changé. Reste : rendu du
-globe et choix de la case côté client (en cours), caravanes, avance rapide, comptes.
+débouncé, rechargé au démarrage, mis en quarantaine si le globe a changé. Écran Monde côté client livré le
+2026-09-05 (Opus) : globe Three.js construit depuis les polygones du `WorldWire` (triangulation
+en éventail, couleur par biome, léger relief), survol et sélection par raycast, panneau
+joueurs / colonies / case, connexion monde pure (`WorldClient`) gardée ouverte pendant la
+partie, installation ou visite puis entrée dans la salle `tile-N` à graine imposée, retour au
+globe sans rechargement, reprise d'une colonie depuis le snapshot vérifiée contre le serveur.
+57 tests client. `GET /world` sert désormais les en-têtes CORS. Reste : caravanes, avance
+rapide des cartes gelées, comptes, un seul contexte WebGL par onglet.
 - Globe hexagonal, rendu du globe, biomes, choix de case de départ.
 - Serveur autoritaire persistant : cases, propriétaires, horloge globale.
 - Cartes gelées + avance rapide abstraite.
 - Caravanes : formation, chemin sur le globe, arrivée sur une case, retour.
 - Visite d'une case occupée par un autre joueur.
 **Jalon** : deux joueurs s'installent sur des cases distinctes, l'un envoie une
-caravane chez l'autre.
+caravane chez l'autre. **À moitié atteint le 2026-09-05** : deux joueurs peuvent s'installer
+et se visiter ; les caravanes restent à faire.
 
 ### Phase 5 — Profondeur (ouvert) — entamée le 2026-09-05
 Fait : noms de colons (tirés au sort par faction, déterministes) et compétences (six
@@ -306,6 +313,9 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-05 : écran Monde livré. Connexion monde sur le thread principal, connexion de
+  salle dans le Worker : deux sockets, ce que le protocole autorise, plutôt qu'un transfert
+  impossible de socket vers le Worker. Le client ne regénère jamais le globe.
 - 2026-09-05 : compétences et noms (sim). `spawn_pawn` prend la faction pour tirer nom et
   niveaux au bon moment ; les tirages supplémentaires changent les hashes mais pas le
   déterminisme (test inchangé et vert). Bench inchangé.
