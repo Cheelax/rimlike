@@ -1,21 +1,33 @@
 import * as THREE from "three";
 import { MapControls } from "three/addons/controls/MapControls.js";
-import { TERRAIN, TERRAIN_COLORS } from "./terrain";
+import { DESIGNATION, FEATURE, ITEM_COLORS, TERRAIN, TERRAIN_COLORS, ZONE } from "./terrain";
 
 const FX_ONE = 256;
-const PAWN_STRIDE = 4;
+export const PAWN_STRIDE = 10;
+export const ITEM_STRIDE = 5;
+export const PAWN_FLAGS = { MOVING: 1, SLEEPING: 2, WORKING: 4, STARVING: 8, CARRYING: 16 } as const;
+const MAX_ITEMS = 2048;
 
 const PAWN_COLORS = [0xd94f4f, 0x4f8fd9, 0xe0b040, 0x8f4fd9, 0x3fb08f, 0xd97f2f];
 const SKIN = 0xf1c9a5;
 
 interface PawnView {
   group: THREE.Group;
-  body: THREE.Mesh;
+  carry: THREE.Mesh;
+  carryMat: THREE.MeshLambertMaterial;
+  zz: THREE.Mesh;
 }
 
 export interface TilePos {
   x: number;
   y: number;
+}
+
+export interface TileRect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
 }
 
 /**
@@ -33,14 +45,19 @@ export class Renderer {
   private readonly groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private readonly hover: THREE.Mesh;
   private readonly selection: THREE.Mesh;
+  private readonly dragRect: THREE.Mesh;
   private readonly pawnRoot = new THREE.Group();
   private readonly pawns = new Map<number, PawnView>();
+  private readonly items: THREE.InstancedMesh;
   private mapMeshes: THREE.Object3D[] = [];
+  private overlayMeshes: THREE.Object3D[] = [];
   private mapW = 0;
   private mapH = 0;
+  private framed = false;
   private selectedId: number | null = null;
   private azimuth = 0;
   private targetAzimuth = 0;
+  private clock = 0;
   private readonly onResize = () => this.resize();
 
   constructor(private readonly canvas: HTMLCanvasElement) {
@@ -57,7 +74,9 @@ export class Renderer {
     this.controls.minZoom = 0.4;
     this.controls.maxZoom = 8;
     this.controls.zoomToCursor = true;
-    this.controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: null as unknown as THREE.MOUSE };
+    this.controls.listenToKeyEvents(window); // flèches : déplacement
+    this.controls.keyPanSpeed = 24;
+    this.setLeftDragPans(true);
 
     this.sky = new THREE.HemisphereLight(0xbfd4ff, 0x6b5a3a, 0.6);
     this.sun = new THREE.DirectionalLight(0xfff2dd, 2.2);
@@ -66,8 +85,9 @@ export class Renderer {
     this.sun.shadow.bias = -0.0005;
     this.scene.add(this.sky, this.sun, this.sun.target, this.pawnRoot);
 
+    const flat = () => new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
     this.hover = new THREE.Mesh(
-      new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+      flat(),
       new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.22, depthWrite: false }),
     );
     this.hover.visible = false;
@@ -76,14 +96,28 @@ export class Renderer {
       new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.9, depthWrite: false }),
     );
     this.selection.visible = false;
-    this.scene.add(this.hover, this.selection);
+    this.dragRect = new THREE.Mesh(
+      flat(),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthWrite: false }),
+    );
+    this.dragRect.visible = false;
+    this.scene.add(this.hover, this.selection, this.dragRect);
+
+    this.items = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshLambertMaterial(),
+      MAX_ITEMS,
+    );
+    this.items.count = 0;
+    this.items.castShadow = true;
+    this.scene.add(this.items);
 
     window.addEventListener("resize", this.onResize);
     this.resize();
   }
 
-  /** (Re)construit la carte. Instancié : une draw call par type d'objet. */
-  setMap(width: number, height: number, tiles: Uint8Array): void {
+  /** (Re)construit sol et éléments. Instancié : une draw call par type d'objet. */
+  setMap(width: number, height: number, tiles: Uint8Array, features: Uint8Array): void {
     for (const m of this.mapMeshes) this.scene.remove(m);
     this.mapMeshes = [];
     this.mapW = width;
@@ -98,9 +132,12 @@ export class Renderer {
 
     let rocks = 0;
     let trees = 0;
-    for (let i = 0; i < tiles.length; i++) {
-      if (tiles[i] === TERRAIN.Rock) rocks++;
-      else if (tiles[i] === TERRAIN.Tree) trees++;
+    let bushes = 0;
+    for (let i = 0; i < features.length; i++) {
+      const f = features[i];
+      if (f === FEATURE.Rock) rocks++;
+      else if (f === FEATURE.Tree) trees++;
+      else if (f === FEATURE.Bush || f === FEATURE.BushUnripe) bushes++;
     }
     const rockMesh = new THREE.InstancedMesh(
       new THREE.BoxGeometry(1, 0.7, 1),
@@ -117,48 +154,112 @@ export class Renderer {
       new THREE.MeshLambertMaterial({ color: 0x2f7a2f }),
       Math.max(trees, 1),
     );
-    for (const m of [rockMesh, trunkMesh, canopyMesh]) m.castShadow = m.receiveShadow = true;
+    const bushMesh = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.32, 8, 6),
+      new THREE.MeshLambertMaterial(),
+      Math.max(bushes, 1),
+    );
+    for (const m of [rockMesh, trunkMesh, canopyMesh, bushMesh]) m.castShadow = m.receiveShadow = true;
 
     const mat = new THREE.Matrix4();
+    const pos = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    const scl = new THREE.Vector3();
     const color = new THREE.Color();
     let ri = 0;
     let ti = 0;
+    let bi = 0;
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const i = y * width + x;
         const t = tiles[i];
-        // Léger décrochement des eaux pour marquer la berge.
+        const f = features[i];
         const floorY = t === TERRAIN.DeepWater ? -0.12 : t === TERRAIN.ShallowWater ? -0.06 : 0;
         floor.setMatrixAt(i, mat.makeTranslation(x + 0.5, floorY, y + 0.5));
         floor.setColorAt(i, color.setHex(TERRAIN_COLORS[t] ?? 0xff00ff));
-        if (t === TERRAIN.Rock) {
+        const j = ((x * 73856093) ^ (y * 19349663)) >>> 0;
+        const ox = ((j % 100) / 100 - 0.5) * 0.3;
+        const oz = (((j >>> 8) % 100) / 100 - 0.5) * 0.3;
+        const s = 0.85 + ((j >>> 16) % 100) / 300;
+        if (f === FEATURE.Rock) {
           rockMesh.setMatrixAt(ri++, mat.makeTranslation(x + 0.5, 0.35, y + 0.5));
-        } else if (t === TERRAIN.Tree) {
-          // Petite variation déterministe de position et de taille par case.
-          const j = ((x * 73856093) ^ (y * 19349663)) >>> 0;
-          const ox = ((j % 100) / 100 - 0.5) * 0.3;
-          const oz = (((j >>> 8) % 100) / 100 - 0.5) * 0.3;
-          const s = 0.85 + ((j >>> 16) % 100) / 300;
+        } else if (f === FEATURE.Tree) {
           trunkMesh.setMatrixAt(ti, mat.makeTranslation(x + 0.5 + ox, 0.25 * s, y + 0.5 + oz));
-          mat.compose(
-            new THREE.Vector3(x + 0.5 + ox, 0.5 * s + 0.5 * s, y + 0.5 + oz),
-            new THREE.Quaternion(),
-            new THREE.Vector3(s, s, s),
-          );
+          mat.compose(pos.set(x + 0.5 + ox, s, y + 0.5 + oz), q, scl.set(s, s, s));
           canopyMesh.setMatrixAt(ti++, mat);
+        } else if (f === FEATURE.Bush || f === FEATURE.BushUnripe) {
+          mat.compose(pos.set(x + 0.5 + ox, 0.2 * s, y + 0.5 + oz), q, scl.set(s, 0.7 * s, s));
+          bushMesh.setMatrixAt(bi, mat);
+          bushMesh.setColorAt(bi++, color.setHex(f === FEATURE.Bush ? 0x3a7d2a : 0x7c8a55));
         }
       }
     }
     rockMesh.count = rocks;
     trunkMesh.count = trees;
     canopyMesh.count = trees;
+    bushMesh.count = bushes;
     floor.instanceMatrix.needsUpdate = true;
     if (floor.instanceColor) floor.instanceColor.needsUpdate = true;
-    for (const m of [rockMesh, trunkMesh, canopyMesh]) m.instanceMatrix.needsUpdate = true;
+    if (bushMesh.instanceColor) bushMesh.instanceColor.needsUpdate = true;
+    for (const m of [rockMesh, trunkMesh, canopyMesh, bushMesh]) m.instanceMatrix.needsUpdate = true;
 
-    this.mapMeshes = [floor, rockMesh, trunkMesh, canopyMesh];
+    this.mapMeshes = [floor, rockMesh, trunkMesh, canopyMesh, bushMesh];
     this.scene.add(...this.mapMeshes);
-    this.frame();
+    if (!this.framed) {
+      this.frame();
+      this.framed = true;
+    }
+  }
+
+  /** Zones de stockage et désignations, en quads translucides. */
+  setOverlays(zones: Uint8Array, designations: Uint8Array): void {
+    for (const m of this.overlayMeshes) this.scene.remove(m);
+    this.overlayMeshes = [];
+    const build = (pick: (i: number) => boolean, color: number, opacity: number, y: number) => {
+      let n = 0;
+      for (let i = 0; i < zones.length; i++) if (pick(i)) n++;
+      if (n === 0) return;
+      const mesh = new THREE.InstancedMesh(
+        new THREE.PlaneGeometry(0.96, 0.96).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false }),
+        n,
+      );
+      const mat = new THREE.Matrix4();
+      let k = 0;
+      for (let i = 0; i < zones.length; i++) {
+        if (!pick(i)) continue;
+        const x = i % this.mapW;
+        const yy = Math.floor(i / this.mapW);
+        mesh.setMatrixAt(k++, mat.makeTranslation(x + 0.5, y, yy + 0.5));
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      this.overlayMeshes.push(mesh);
+    };
+    build((i) => zones[i] === ZONE.Stockpile, 0x4a90d9, 0.3, 0.012);
+    build((i) => designations[i] !== DESIGNATION.None, 0xff9a2e, 0.45, 0.014);
+    if (this.overlayMeshes.length) this.scene.add(...this.overlayMeshes);
+  }
+
+  /** Piles d'objets au sol : cubes colorés par genre, taille selon la quantité. */
+  syncItems(buf: Int32Array): void {
+    const n = Math.min(Math.floor(buf.length / ITEM_STRIDE), MAX_ITEMS);
+    const mat = new THREE.Matrix4();
+    const pos = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    const scl = new THREE.Vector3();
+    const color = new THREE.Color();
+    for (let i = 0; i < n; i++) {
+      const o = i * ITEM_STRIDE;
+      const kind = buf[o + 1];
+      const count = buf[o + 2];
+      const s = 0.22 + 0.3 * Math.min(count, 75) / 75;
+      mat.compose(pos.set(buf[o + 3] + 0.5, s * 0.35 + 0.01, buf[o + 4] + 0.5), q, scl.set(s, s * 0.7, s));
+      this.items.setMatrixAt(i, mat);
+      this.items.setColorAt(i, color.setHex(ITEM_COLORS[kind] ?? 0xff00ff));
+    }
+    this.items.count = n;
+    this.items.instanceMatrix.needsUpdate = true;
+    if (this.items.instanceColor) this.items.instanceColor.needsUpdate = true;
   }
 
   /** Place la caméra sur la carte et dimensionne la caméra d'ombre. */
@@ -192,6 +293,18 @@ export class Renderer {
     this.controls.update();
   }
 
+  /**
+   * Glisser gauche : déplacement de la caméra en mode sélection, tracé de
+   * rectangle quand un outil est actif. Le glisser droit déplace toujours.
+   */
+  setLeftDragPans(pans: boolean): void {
+    this.controls.mouseButtons = {
+      LEFT: pans ? THREE.MOUSE.PAN : (null as unknown as THREE.MOUSE),
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.PAN,
+    };
+  }
+
   /** Tourne la vue d'un quart de tour, animé sur quelques frames. */
   rotate(direction: 1 | -1): void {
     this.targetAzimuth += (direction * Math.PI) / 2;
@@ -210,6 +323,7 @@ export class Renderer {
       seen.add(id);
       let x = cur[o + 1] / FX_ONE;
       let z = cur[o + 2] / FX_ONE;
+      const flags = cur[o + 3];
       const p = this.prevOf(prev, id);
       if (p) {
         x = p.x + (x - p.x) * alpha;
@@ -225,6 +339,14 @@ export class Renderer {
       const dz = z - g.position.z;
       if (dx * dx + dz * dz > 1e-6) g.rotation.y = Math.atan2(dx, dz);
       g.position.set(x, 0, z);
+      const sleeping = (flags & PAWN_FLAGS.SLEEPING) !== 0;
+      view.zz.visible = sleeping;
+      view.zz.position.y = 1.05 + Math.sin(this.clock * 3) * 0.06;
+      g.rotation.z = sleeping ? Math.PI / 2 : 0;
+      g.position.y = sleeping ? 0.25 : 0;
+      const carrying = (flags & PAWN_FLAGS.CARRYING) !== 0;
+      view.carry.visible = carrying;
+      if (carrying) view.carryMat.color.setHex(ITEM_COLORS[cur[o + 8]] ?? 0xffffff);
       if (id === this.selectedId) {
         this.selection.visible = true;
         this.selection.position.set(x, 0.03, z);
@@ -253,22 +375,29 @@ export class Renderer {
   private createPawn(id: number): PawnView {
     const group = new THREE.Group();
     const color = PAWN_COLORS[id % PAWN_COLORS.length];
-    const body = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.2, 0.32, 4, 10),
-      new THREE.MeshLambertMaterial({ color }),
-    );
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.32, 4, 10), new THREE.MeshLambertMaterial({ color }));
     body.position.y = 0.4;
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), new THREE.MeshLambertMaterial({ color: SKIN }));
     head.position.y = 0.78;
     const nose = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.08), new THREE.MeshLambertMaterial({ color: SKIN }));
     nose.position.set(0, 0.76, 0.16);
-    for (const m of [body, head, nose]) {
+    const carryMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+    const carry = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.2, 0.22), carryMat);
+    carry.position.set(0, 0.42, 0.3);
+    carry.visible = false;
+    const zz = new THREE.Mesh(
+      new THREE.SphereGeometry(0.07, 8, 6),
+      new THREE.MeshBasicMaterial({ color: 0x9ad0ff }),
+    );
+    zz.position.set(0.15, 1.05, 0);
+    zz.visible = false;
+    for (const m of [body, head, nose, carry]) {
       m.castShadow = true;
       m.userData.pawnId = id;
     }
-    group.add(body, head, nose);
+    group.add(body, head, nose, carry, zz);
     this.pawnRoot.add(group);
-    return { group, body };
+    return { group, carry, carryMat, zz };
   }
 
   setSelected(id: number | null): void {
@@ -283,6 +412,22 @@ export class Renderer {
     }
     this.hover.visible = true;
     this.hover.position.set(tile.x + 0.5, 0.02, tile.y + 0.5);
+  }
+
+  /** Rectangle de sélection en cours de tracé, ou `null`. */
+  setDragRect(rect: TileRect | null, color = 0xffffff): void {
+    if (!rect) {
+      this.dragRect.visible = false;
+      return;
+    }
+    const x0 = Math.min(rect.x0, rect.x1);
+    const x1 = Math.max(rect.x0, rect.x1);
+    const y0 = Math.min(rect.y0, rect.y1);
+    const y1 = Math.max(rect.y0, rect.y1);
+    this.dragRect.visible = true;
+    (this.dragRect.material as THREE.MeshBasicMaterial).color.setHex(color);
+    this.dragRect.scale.set(x1 - x0 + 1, 1, y1 - y0 + 1);
+    this.dragRect.position.set((x0 + x1 + 1) / 2, 0.025, (y0 + y1 + 1) / 2);
   }
 
   /** Case du sol sous le curseur, ou `null` hors carte. */
@@ -320,18 +465,22 @@ export class Renderer {
     const cx = this.mapW / 2;
     const cz = this.mapH / 2;
     const R = Math.max(this.mapW, this.mapH) * 1.5;
-    this.sun.position.set(cx - Math.cos(phi) * R, Math.max(el, 0.03) * R, cz + 0.45 * R);
-
     const day = THREE.MathUtils.smoothstep(el, -0.08, 0.3);
     const high = THREE.MathUtils.smoothstep(el, 0.0, 0.6);
-    this.sun.intensity = 2.6 * day;
-    this.sun.color.setHex(0xffa860).lerp(new THREE.Color(0xfff4e6), high);
-    this.sun.castShadow = day > 0.02;
+    // La nuit, la lumière directionnelle devient une lune haute et bleutée :
+    // la scène reste lisible et garde ses ombres.
+    const lightEl = THREE.MathUtils.lerp(0.6, Math.max(el, 0.03), day);
+    this.sun.position.set(cx - Math.cos(phi) * R, lightEl * R, cz + 0.45 * R);
+    this.sun.intensity = 0.55 + 2.05 * day;
+    this.sun.color
+      .setHex(0x7f93c9)
+      .lerp(new THREE.Color(0xffa860), day)
+      .lerp(new THREE.Color(0xfff4e6), high);
 
-    this.sky.intensity = 0.12 + 0.6 * day;
-    this.sky.color.setHex(0x223a70).lerp(new THREE.Color(0xbfd4ff), day);
-    this.sky.groundColor.setHex(0x101820).lerp(new THREE.Color(0x6b5a3a), day);
-    (this.scene.background as THREE.Color).setHex(0x04060a).lerp(new THREE.Color(0x0b0f14), day);
+    this.sky.intensity = 0.42 + 0.35 * day;
+    this.sky.color.setHex(0x55679a).lerp(new THREE.Color(0xbfd4ff), day);
+    this.sky.groundColor.setHex(0x2b3140).lerp(new THREE.Color(0x6b5a3a), day);
+    (this.scene.background as THREE.Color).setHex(0x06080e).lerp(new THREE.Color(0x0b0f14), day);
   }
 
   resize(): void {
@@ -347,7 +496,8 @@ export class Renderer {
     this.camera.updateProjectionMatrix();
   }
 
-  render(): void {
+  render(dtSeconds: number): void {
+    this.clock += dtSeconds;
     if (Math.abs(this.targetAzimuth - this.azimuth) > 1e-4) {
       this.azimuth += (this.targetAzimuth - this.azimuth) * 0.18;
       if (Math.abs(this.targetAzimuth - this.azimuth) < 1e-3) this.azimuth = this.targetAzimuth;

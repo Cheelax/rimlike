@@ -1,0 +1,499 @@
+//! Comportement des colons : besoins, recherche de travail, exécution des jobs.
+//! Toutes les recherches parcourent des `Vec` dans l'ordre des indices et
+//! départagent par distance puis coordonnées : déterministe.
+
+use crate::items::{ItemKind, ItemStack, STACK_MAX};
+use crate::map::{Designation, Feature, Zone, chebyshev};
+use crate::path;
+use crate::pawn::{
+    BERRY_NUTRITION, HUNGER_DECAY, Job, MEAL_BERRIES, NEED_MAX, REST_DECAY, REST_RECOVERY, RESTED,
+};
+use crate::{Sim, TICKS_PER_DAY};
+
+/// Nombre maximal de candidats pour lesquels on tente un A* par recherche.
+const PATH_ATTEMPTS: usize = 6;
+
+/// Production d'un travail terminé.
+fn yield_of(kind: Designation) -> Option<(ItemKind, u32)> {
+    match kind {
+        Designation::Chop => Some((ItemKind::Wood, 20)),
+        Designation::Mine => Some((ItemKind::Stone, 15)),
+        Designation::Harvest => Some((ItemKind::Berries, 8)),
+        Designation::None => None,
+    }
+}
+
+impl Sim {
+    pub(crate) fn tick_pawn(&mut self, i: usize) {
+        self.decay_needs(i);
+        if self.pawns[i].is_starving()
+            && !matches!(
+                self.pawns[i].job,
+                Job::Eat { .. } | Job::Sleep | Job::Move { manual: true }
+            )
+            && self.food_available()
+        {
+            self.abandon_job(i);
+        }
+        match self.pawns[i].job.clone() {
+            Job::Idle => self.find_job(i),
+            Job::Move { .. } => {
+                self.pawns[i].advance(&self.map);
+                if !self.pawns[i].is_moving() {
+                    self.pawns[i].job = Job::Idle;
+                }
+            }
+            Job::Work {
+                kind,
+                x,
+                y,
+                progress,
+            } => self.do_work(i, kind, x, y, progress),
+            Job::Haul { item, dest, picked } => self.do_haul(i, item, dest, picked),
+            Job::Eat { item } => self.do_eat(i, item),
+            Job::Sleep => {
+                if self.pawns[i].rest >= RESTED {
+                    self.pawns[i].job = Job::Idle;
+                }
+            }
+        }
+    }
+
+    fn decay_needs(&mut self, i: usize) {
+        let sleeping = matches!(self.pawns[i].job, Job::Sleep);
+        let p = &mut self.pawns[i];
+        p.hunger = p.hunger.saturating_sub(if sleeping {
+            HUNGER_DECAY / 2
+        } else {
+            HUNGER_DECAY
+        });
+        if sleeping {
+            p.rest = (p.rest + REST_RECOVERY).min(NEED_MAX);
+        } else {
+            p.rest = p.rest.saturating_sub(REST_DECAY);
+        }
+    }
+
+    fn food_available(&self) -> bool {
+        self.items
+            .iter()
+            .any(|s| s.kind.is_food() && s.reserved_by.is_none())
+    }
+
+    /// Libère réservations et objets portés, remet le colon à l'arrêt.
+    pub(crate) fn abandon_job(&mut self, i: usize) {
+        let id = self.pawns[i].id;
+        self.reservations.retain(|r| r.pawn != id);
+        for s in &mut self.items {
+            if s.reserved_by == Some(id) {
+                s.reserved_by = None;
+            }
+        }
+        self.drop_carried(i);
+        self.pawns[i].path.clear();
+        self.pawns[i].job = Job::Idle;
+    }
+
+    fn drop_carried(&mut self, i: usize) {
+        if let Some((kind, count)) = self.pawns[i].carrying.take() {
+            let (x, y) = self.pawns[i].tile();
+            self.spawn_item(kind, count, x, y);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Recherche de travail
+    // ------------------------------------------------------------------
+
+    fn find_job(&mut self, i: usize) {
+        if self.pawns[i].is_tired() {
+            self.pawns[i].job = Job::Sleep;
+            self.pawns[i].path.clear();
+            return;
+        }
+        if self.pawns[i].is_hungry() && self.try_start_eat(i) {
+            return;
+        }
+        if self.try_start_work(i) || self.try_start_haul(i) {
+            return;
+        }
+        self.idle_wander(i);
+    }
+
+    /// Flâner autour de soi de temps en temps.
+    fn idle_wander(&mut self, i: usize) {
+        self.pawns[i].idle_ticks += 1;
+        if self.pawns[i].idle_ticks < 90 || !self.rng.chance(1, 45) {
+            return;
+        }
+        let (px, py) = self.pawns[i].tile();
+        let tx = px as i32 + self.rng.range_i32(-7, 8);
+        let ty = py as i32 + self.rng.range_i32(-7, 8);
+        if !self.map.in_bounds(tx, ty) || !self.map.passable(tx as u32, ty as u32) {
+            return;
+        }
+        if let Some(path) = path::find_path(&self.map, (px, py), (tx as u32, ty as u32))
+            && !path.is_empty()
+        {
+            self.pawns[i].set_path(path);
+            self.pawns[i].job = Job::Move { manual: false };
+        }
+    }
+
+    fn try_start_eat(&mut self, i: usize) -> bool {
+        let from = self.pawns[i].tile();
+        let mut candidates: Vec<(u32, u32, u32, usize)> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.kind.is_food() && s.reserved_by.is_none())
+            .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
+            .collect();
+        candidates.sort_unstable();
+        for &(_, x, y, k) in candidates.iter().take(PATH_ATTEMPTS) {
+            if let Some(p) = path::find_path(&self.map, from, (x, y)) {
+                let id = self.pawns[i].id;
+                self.items[k].reserved_by = Some(id);
+                let item = self.items[k].id;
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Eat { item };
+                return true;
+            }
+        }
+        false
+    }
+
+    fn try_start_work(&mut self, i: usize) -> bool {
+        if self.map.designation_count() == 0 {
+            return false;
+        }
+        let from = self.pawns[i].tile();
+        let mut candidates: Vec<(u32, u32, u32)> = Vec::new();
+        for y in 0..self.map.height() {
+            for x in 0..self.map.width() {
+                let d = self.map.designation(x, y);
+                if d != Designation::None
+                    && d.applies_to(self.map.feature(x, y))
+                    && !self.is_reserved(x, y)
+                {
+                    candidates.push((chebyshev(from, (x, y)), x, y));
+                }
+            }
+        }
+        candidates.sort_unstable();
+        for &(_, x, y) in candidates.iter().take(PATH_ATTEMPTS) {
+            if let Some(p) = self.path_to_work(from, (x, y)) {
+                let kind = self.map.designation(x, y);
+                let pawn = self.pawns[i].id;
+                self.reservations.push(Reservation { x, y, pawn });
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Work {
+                    kind,
+                    x,
+                    y,
+                    progress: 0,
+                };
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Chemin vers la cible si elle est franchissable, sinon vers la case
+    /// voisine franchissable la plus proche du colon.
+    fn path_to_work(&self, from: (u32, u32), target: (u32, u32)) -> Option<Vec<path::Tile>> {
+        if self.map.passable(target.0, target.1) {
+            return path::find_path(&self.map, from, target);
+        }
+        let mut neighbours: Vec<(u32, u32, u32)> = Vec::new();
+        for dy in -1i32..=1 {
+            for dx in -1i32..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let nx = target.0 as i32 + dx;
+                let ny = target.1 as i32 + dy;
+                if self.map.in_bounds(nx, ny) && self.map.passable(nx as u32, ny as u32) {
+                    let n = (nx as u32, ny as u32);
+                    neighbours.push((chebyshev(from, n), n.0, n.1));
+                }
+            }
+        }
+        neighbours.sort_unstable();
+        neighbours
+            .iter()
+            .find_map(|&(_, x, y)| path::find_path(&self.map, from, (x, y)))
+    }
+
+    fn try_start_haul(&mut self, i: usize) -> bool {
+        if self.map.stockpile_count() == 0 {
+            return false;
+        }
+        let from = self.pawns[i].tile();
+        let mut candidates: Vec<(u32, u32, u32, usize)> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.reserved_by.is_none() && !self.is_stored(s))
+            .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
+            .collect();
+        candidates.sort_unstable();
+        let mut attempts = 0;
+        for &(_, x, y, k) in &candidates {
+            if attempts >= PATH_ATTEMPTS {
+                break;
+            }
+            let kind = self.items[k].kind;
+            let Some(dest) = self.find_stockpile_dest(kind, (x, y)) else {
+                continue;
+            };
+            attempts += 1;
+            if let Some(p) = path::find_path(&self.map, from, (x, y)) {
+                let id = self.pawns[i].id;
+                self.items[k].reserved_by = Some(id);
+                let item = self.items[k].id;
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Haul {
+                    item,
+                    dest: Some(dest),
+                    picked: false,
+                };
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Une pile est rangée si elle est seule de son genre sur une case de stockage.
+    fn is_stored(&self, s: &ItemStack) -> bool {
+        self.map.zone(s.x, s.y) == Zone::Stockpile
+            && self
+                .items
+                .iter()
+                .all(|o| o.id == s.id || (o.x, o.y) != (s.x, s.y) || o.kind == s.kind)
+    }
+
+    /// Case de stockage la plus proche de `near` pouvant accueillir `kind`.
+    fn find_stockpile_dest(&self, kind: ItemKind, near: (u32, u32)) -> Option<(u32, u32)> {
+        let mut best: Option<(u32, u32, u32)> = None;
+        for y in 0..self.map.height() {
+            for x in 0..self.map.width() {
+                if self.map.zone(x, y) != Zone::Stockpile || !self.dest_accepts((x, y), kind) {
+                    continue;
+                }
+                let key = (chebyshev(near, (x, y)), x, y);
+                if best.is_none_or(|b| key < b) {
+                    best = Some(key);
+                }
+            }
+        }
+        best.map(|(_, x, y)| (x, y))
+    }
+
+    fn dest_accepts(&self, d: (u32, u32), kind: ItemKind) -> bool {
+        if self.map.zone(d.0, d.1) != Zone::Stockpile || !self.map.passable(d.0, d.1) {
+            return false;
+        }
+        let mut here = self.items.iter().filter(|s| (s.x, s.y) == d);
+        match (here.next(), here.next()) {
+            (None, _) => true,
+            (Some(s), None) => s.kind == kind && s.count < STACK_MAX,
+            _ => false,
+        }
+    }
+
+    fn is_reserved(&self, x: u32, y: u32) -> bool {
+        self.reservations.iter().any(|r| r.x == x && r.y == y)
+    }
+
+    // ------------------------------------------------------------------
+    // Exécution
+    // ------------------------------------------------------------------
+
+    fn do_work(&mut self, i: usize, kind: Designation, x: u32, y: u32, progress: u32) {
+        if self.map.designation(x, y) != kind || !kind.applies_to(self.map.feature(x, y)) {
+            self.abandon_job(i);
+            return;
+        }
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        if chebyshev(self.pawns[i].tile(), (x, y)) > 1 {
+            self.abandon_job(i);
+            return;
+        }
+        let progress = progress + 1;
+        if progress < kind.work_ticks() {
+            self.pawns[i].job = Job::Work {
+                kind,
+                x,
+                y,
+                progress,
+            };
+            return;
+        }
+        match kind {
+            Designation::Chop | Designation::Mine => self.map.set_feature(x, y, Feature::None),
+            Designation::Harvest => {
+                self.map.set_feature(x, y, Feature::BushUnripe);
+                self.regrow.push(Regrow {
+                    x,
+                    y,
+                    ready_at: self.tick + u64::from(TICKS_PER_DAY),
+                });
+            }
+            Designation::None => {}
+        }
+        if let Some((item, count)) = yield_of(kind) {
+            self.spawn_item(item, count, x, y);
+        }
+        self.map.set_designation(x, y, Designation::None);
+        let id = self.pawns[i].id;
+        self.reservations.retain(|r| r.pawn != id);
+        self.pawns[i].job = Job::Idle;
+    }
+
+    fn do_haul(&mut self, i: usize, item: u32, dest: Option<(u32, u32)>, picked: bool) {
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        let here = self.pawns[i].tile();
+        if !picked {
+            let Some(k) = self.items.iter().position(|s| s.id == item) else {
+                self.abandon_job(i);
+                return;
+            };
+            if (self.items[k].x, self.items[k].y) != here {
+                self.abandon_job(i);
+                return;
+            }
+            let stack = self.items.remove(k);
+            self.pawns[i].carrying = Some((stack.kind, stack.count.min(STACK_MAX)));
+            let kind = stack.kind;
+            let dest = dest
+                .filter(|&d| self.dest_accepts(d, kind))
+                .or_else(|| self.find_stockpile_dest(kind, here));
+            match dest.and_then(|d| path::find_path(&self.map, here, d).map(|p| (d, p))) {
+                Some((d, p)) => {
+                    self.pawns[i].set_path(p);
+                    self.pawns[i].job = Job::Haul {
+                        item,
+                        dest: Some(d),
+                        picked: true,
+                    };
+                }
+                None => {
+                    self.drop_carried(i);
+                    self.pawns[i].job = Job::Idle;
+                }
+            }
+            return;
+        }
+        let Some((kind, _)) = self.pawns[i].carrying else {
+            self.pawns[i].job = Job::Idle;
+            return;
+        };
+        if dest != Some(here) || !self.dest_accepts(here, kind) {
+            // La destination a changé sous nos pieds : en chercher une autre.
+            if let Some(d) = self.find_stockpile_dest(kind, here)
+                && let Some(p) = path::find_path(&self.map, here, d)
+            {
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Haul {
+                    item,
+                    dest: Some(d),
+                    picked: true,
+                };
+                return;
+            }
+        }
+        self.drop_carried(i);
+        self.pawns[i].job = Job::Idle;
+    }
+
+    fn do_eat(&mut self, i: usize, item: u32) {
+        let Some(k) = self.items.iter().position(|s| s.id == item) else {
+            self.abandon_job(i);
+            return;
+        };
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        if self.pawns[i].tile() != (self.items[k].x, self.items[k].y) {
+            self.abandon_job(i);
+            return;
+        }
+        let hunger = self.pawns[i].hunger;
+        let wanted = (NEED_MAX - hunger).div_ceil(BERRY_NUTRITION).max(1);
+        let n = wanted.min(MEAL_BERRIES).min(self.items[k].count);
+        self.pawns[i].hunger = (hunger + n * BERRY_NUTRITION).min(NEED_MAX);
+        self.items[k].count -= n;
+        self.items[k].reserved_by = None;
+        if self.items[k].count == 0 {
+            self.items.remove(k);
+        }
+        self.pawns[i].job = Job::Idle;
+    }
+
+    // ------------------------------------------------------------------
+    // Objets et repousse
+    // ------------------------------------------------------------------
+
+    /// Pose `count` objets en `(x, y)`, fusionnés avec une pile existante du
+    /// même genre si elle a la place.
+    pub fn spawn_item(&mut self, kind: ItemKind, count: u32, x: u32, y: u32) {
+        if count == 0 {
+            return;
+        }
+        if let Some(s) = self
+            .items
+            .iter_mut()
+            .find(|s| (s.x, s.y) == (x, y) && s.kind == kind && s.count + count <= STACK_MAX)
+        {
+            s.count += count;
+            return;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.items.push(ItemStack {
+            id,
+            kind,
+            count,
+            x,
+            y,
+            reserved_by: None,
+        });
+    }
+
+    pub(crate) fn tick_regrowth(&mut self) {
+        let now = self.tick;
+        let mut k = 0;
+        while k < self.regrow.len() {
+            if self.regrow[k].ready_at <= now {
+                let r = self.regrow.remove(k);
+                if self.map.feature(r.x, r.y) == Feature::BushUnripe {
+                    self.map.set_feature(r.x, r.y, Feature::Bush);
+                }
+            } else {
+                k += 1;
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Reservation {
+    pub x: u32,
+    pub y: u32,
+    pub pawn: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Regrow {
+    pub x: u32,
+    pub y: u32,
+    pub ready_at: u64,
+}

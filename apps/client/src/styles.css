@@ -2,5 +2,25 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #0b0f
 canvas.scene { display: block; width: 100%; height: 100%; }
 .hud { position: fixed; top: 12px; left: 12px; padding: 8px 12px; background: rgba(0,0,0,.55); border-radius: 6px; font: 12px/1.5 ui-monospace, Menlo, monospace; pointer-events: none; }
 .hud b { color: #9ad; }
+.help { opacity: .6; margin-top: 2px; font-size: 11px; }
 .error { position: fixed; inset: 0; display: grid; place-items: center; color: #f77; white-space: pre-wrap; padding: 24px; }
-.hud .help { opacity: .6; margin-top: 4px; }
+
+.panel { position: fixed; top: 12px; right: 12px; width: 240px; padding: 10px 12px; background: rgba(0,0,0,.6); border-radius: 6px; font: 12px/1.5 system-ui, sans-serif; pointer-events: none; }
+.panel-title { font-weight: 600; color: #ffe066; }
+.panel-job { opacity: .85; margin-bottom: 6px; text-transform: capitalize; }
+.bar { display: grid; grid-template-columns: 56px 1fr 38px; gap: 6px; align-items: center; margin: 3px 0; }
+.bar-track { height: 8px; background: rgba(255,255,255,.12); border-radius: 4px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; background: #6ab04c; transition: width .3s; }
+.bar-fill.low { background: #e0b040; }
+.bar-fill.crit { background: #d94f4f; }
+.bar-value { text-align: right; opacity: .8; font-variant-numeric: tabular-nums; }
+
+.toolbar { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; padding: 6px; background: rgba(0,0,0,.6); border-radius: 8px; }
+.toolbar button { background: rgba(255,255,255,.08); color: #e6e6e6; border: 1px solid rgba(255,255,255,.12); border-radius: 5px; padding: 6px 10px; font: 12px system-ui, sans-serif; cursor: pointer; }
+.toolbar button:hover { background: rgba(255,255,255,.16); }
+.toolbar button.active { background: #ffe066; color: #111; border-color: #ffe066; }
+.toolbar .key { opacity: .55; font-size: 10px; margin-left: 4px; }
+.toolbar button.active .key { opacity: .7; }
+.toolbar .sep { width: 1px; background: rgba(255,255,255,.15); margin: 0 4px; }
+.tool-hint { position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%); padding: 4px 10px; background: rgba(0,0,0,.5); border-radius: 5px; font: 12px system-ui, sans-serif; pointer-events: none; }
+.notice { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 10px 18px; background: rgba(0,0,0,.75); border: 1px solid rgba(255,255,255,.2); border-radius: 8px; font: 14px system-ui, sans-serif; pointer-events: none; }

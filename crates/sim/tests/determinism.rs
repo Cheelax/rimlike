@@ -1,25 +1,50 @@
 //! Le test qui protège tout le projet : deux simulations nourries des mêmes
 //! entrées doivent produire exactement le même état.
 
-use sim::{Command, Sim, TICKS_PER_DAY};
+use sim::{Command, Designation, Sim, TICKS_PER_DAY, Zone};
 
 const TICKS: u64 = 10_000;
 
-/// Scénario de commandes reproductible : des ordres de déplacement réguliers
-/// vers des cases dérivées du numéro de tick.
+/// Scénario de commandes reproductible : déplacements, désignations et zones
+/// dérivés du numéro de tick.
 fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
     let mut cmds = Vec::new();
+    let w = sim.map().width() as i32;
+    let h = sim.map().height() as i32;
     if t % 97 == 0 {
         cmds.push(Command::Nop);
     }
-    if t % 300 == 0 {
-        let w = sim.map().width() as u64;
-        let h = sim.map().height() as u64;
+    if t == 10 {
+        cmds.push(Command::SetZone {
+            zone: Zone::Stockpile,
+            x0: w / 2 - 3,
+            y0: h / 2 - 3,
+            x1: w / 2 + 3,
+            y1: h / 2 + 3,
+        });
+    }
+    if t % 500 == 20 {
+        let k = (t / 500) as i32;
+        cmds.push(Command::Designate {
+            kind: if k % 3 == 0 {
+                Designation::Chop
+            } else if k % 3 == 1 {
+                Designation::Harvest
+            } else {
+                Designation::Mine
+            },
+            x0: 0,
+            y0: 0,
+            x1: w - 1,
+            y1: h - 1,
+        });
+    }
+    if t % 900 == 0 {
         for (k, p) in sim.pawns().iter().enumerate() {
             cmds.push(Command::MoveTo {
                 pawn: p.id,
-                x: ((t * 7 + k as u64 * 13) % w) as u32,
-                y: ((t * 11 + k as u64 * 17) % h) as u32,
+                x: ((t * 7 + k as u64 * 13) % w as u64) as u32,
+                y: ((t * 11 + k as u64 * 17) % h as u64) as u32,
             });
         }
     }
@@ -41,6 +66,11 @@ fn same_seed_same_commands_same_hash() {
     assert_eq!(a.tick(), TICKS);
     assert_eq!(a.state_hash(), b.state_hash());
     assert_eq!(a, b);
+    // Le scénario a bien produit du gameplay, pas seulement de la marche.
+    assert!(
+        !a.items().is_empty(),
+        "aucun objet produit en {TICKS} ticks"
+    );
 }
 
 #[test]
@@ -82,30 +112,30 @@ fn corrupt_snapshot_is_rejected() {
 }
 
 #[test]
-fn map_has_main_terrains() {
+fn map_has_main_terrains_and_features() {
     let s = Sim::new(7, 128, 128);
     let tiles = s.map().tiles();
     for t in [
         sim::Terrain::DeepWater,
         sim::Terrain::Sand,
         sim::Terrain::Grass,
-        sim::Terrain::Rock,
-        sim::Terrain::Tree,
+        sim::Terrain::Gravel,
     ] {
-        assert!(
-            tiles.contains(&(t as u8)),
-            "terrain {t:?} absent de la carte de test"
-        );
+        assert!(tiles.contains(&(t as u8)), "terrain {t:?} absent");
+    }
+    let features = s.map().features();
+    for f in [sim::Feature::Tree, sim::Feature::Rock, sim::Feature::Bush] {
+        assert!(features.contains(&(f as u8)), "élément {f:?} absent");
     }
 }
 
 #[test]
-fn starting_pawns_exist_on_walkable_tiles() {
+fn starting_pawns_exist_on_passable_tiles() {
     let s = Sim::new(5, 64, 64);
     assert_eq!(s.pawns().len(), 3);
     for p in s.pawns() {
         let (x, y) = p.tile();
-        assert!(s.map().get(x, y).walkable());
+        assert!(s.map().passable(x, y));
     }
 }
 
@@ -116,7 +146,7 @@ fn pawn_reaches_ordered_destination() {
     let from = s.pawns()[0].tile();
     let target = s
         .map()
-        .nearest_walkable(from.0.saturating_sub(10), from.1.saturating_sub(10))
+        .nearest_passable(from.0.saturating_sub(10), from.1.saturating_sub(10))
         .unwrap();
     s.step(&[Command::MoveTo {
         pawn: id,
@@ -124,7 +154,6 @@ fn pawn_reaches_ordered_destination() {
         y: target.1,
     }]);
     if !s.pawns()[0].is_moving() {
-        // Cible inaccessible pour ce seed : rien de plus à vérifier.
         return;
     }
     for _ in 0..TICKS {

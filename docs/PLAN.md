@@ -159,15 +159,32 @@ soleil et ombres qui tournent, rotation caméra Q/E, pause et vitesses x1-x3 (so
 `Vec<Pawn>` suffit tant qu'il n'y a qu'un composant), chunks de rendu (inutile tant
 que le terrain ne change pas), replanification si le terrain change sous un chemin.
 
-### Phase 2 — Cœur du gameplay solo (1-2 mois)
-- Besoins : faim, repos, humeur. Effets sur le comportement.
-- Système de jobs : priorités par pawn, réservation de cibles, interruption.
-- Construction : plans, matériaux, murs/portes/sols/meubles, zones.
-- Ressources : récolte bois/pierre, stockage, transport (hauling).
-- Agriculture, cuisine, repas ; lits, sommeil.
-- Premier événement : raid simple + combat basique, ou tempête.
-- Sauvegarde/chargement.
-- Vitesses x1/x2/x3, pause, UI de gestion.
+### Phase 2 — Cœur du gameplay solo (1-2 mois) — en cours
+
+Découpée en tranches livrables, chacune jouable :
+
+**2a. Boucle de ressources — livrée le 2026-09-04.** Besoins (faim, repos, humeur
+dérivée) ; carte en deux couches, sol + élément (arbre, rocher, buisson) ; désignations
+couper / miner / récolter par rectangle ; objets au sol en piles fusionnées ; zones de
+stockage ; transport ; repas de baies ; sommeil sur place ; repousse des buissons ;
+outils et raccourcis, panneau du colon avec jauges, compteur de stock ; sauvegarde et
+chargement (localStorage). Ordre de travail fixe : dormir > manger > travail désigné >
+transport > flâner.
+
+**2b. Construction.** Plans de murs, sols et portes en bois ou pierre ; matériaux livrés
+sur le chantier par les transporteurs ; lits (sommeil de qualité, plus de sommeil au
+sol) ; replanification des chemins quand un mur se pose ; chunks de rendu si le rebuild
+complet devient visible.
+
+**2c. Nourriture.** Zones de culture, semis, croissance, récolte ; foyer et cuisine
+(repas simples) ; nourriture qui se gâte ; le régime pèse sur l'humeur.
+
+**2d. Menaces.** Points de vie simples, premier raid, combat de mêlée, blessures, mort,
+enterrement. Premier vrai test de la colonie.
+
+**2e. Confort et pilotage.** Tableau de priorités de travail par colon, effets concrets
+de l'humeur (pauses, crises), météo, premiers événements aléatoires du storyteller.
+
 **Jalon** : une colonie de 3 pawns survit quelques jours, on a envie d'y rejouer.
 
 ### Phase 3 — Multi sur une carte (2-3 semaines)
@@ -197,6 +214,7 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
 | Perf JS pour des centaines de pawns | ECS en arrays typés, pathfinding avec cache de régions (flow fields / HPA*) en phase 2 si besoin, sim dans un Worker |
 | Pipeline d'assets 3D coûteux | Style voxel, packs CC0 au départ, contenu générique (couleurs par matériau) |
 | Le multi monde est un gouffre | Phases 1-2 donnent un jeu solo complet et autonome. Le multi se greffe dessus, pas l'inverse |
+| Recherche de travail : chaque colon inactif balaie toute la carte à chaque tick | Négligeable à 128² (compteur de désignations court-circuite quand il n'y a rien). À indexer (liste des cases désignées) si la carte grossit ou si les colons se multiplient |
 | Onglet en arrière-plan : le navigateur bride `requestAnimationFrame` à ~2/s, le client décroche du lockstep | Dès la phase 3, le sim tourne dans un Web Worker cadencé par timer, le thread principal ne fait que rendre. Constaté en phase 0 |
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
@@ -214,6 +232,12 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-04 : phase 2a livrée. Carte en quatre couches `u8` par case (sol, élément,
+  zone, désignation) avec deux compteurs de version pour que le client ne rebâtisse ses
+  meshes que quand ça change. Objets : une pile par genre et par case en stockage,
+  fusion automatique, 75 max. Nuit rendue par une « lune » bleutée haute plutôt que par
+  le noir : lisibilité avant réalisme. La souris suit RimWorld : glisser gauche = tracer
+  quand un outil est actif, glisser droit et flèches = caméra.
 - 2026-09-04 : phase 1 livrée. Tampon de rendu des pawns : `Vec<i32>` plat
   (id, x, y, flags) régénéré par `sim-wasm` après chaque tick, lu en zéro-copie. Les
   commandes JS → sim passent par des méthodes typées sur `WasmSim` en attendant

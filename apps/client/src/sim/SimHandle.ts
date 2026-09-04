@@ -13,7 +13,9 @@ function initOnce(): Promise<InitOutput> {
 
 /**
  * Enveloppe fine autour du sim WASM. Garde une référence à la mémoire pour
- * construire des vues zéro-copie sur l'état.
+ * construire des vues zéro-copie sur l'état. Les vues (`tiles`, `features`,
+ * `zones`, `designations`) ne doivent pas être conservées entre deux appels
+ * au sim ; `pawns` et `items` renvoient des copies.
  */
 export class SimHandle {
   private constructor(
@@ -24,6 +26,11 @@ export class SimHandle {
   static async create(opts: { seed: bigint; width: number; height: number }): Promise<SimHandle> {
     const wasm = await initOnce();
     return new SimHandle(wasm, new WasmSim(opts.seed, opts.width, opts.height));
+  }
+
+  static async restore(bytes: Uint8Array): Promise<SimHandle> {
+    const wasm = await initOnce();
+    return new SimHandle(wasm, WasmSim.restore(bytes));
   }
 
   get width(): number {
@@ -42,6 +49,14 @@ export class SimHandle {
     this.inner.move_to(pawn, x, y);
   }
 
+  designate(kind: number, x0: number, y0: number, x1: number, y1: number): void {
+    this.inner.designate(kind, x0, y0, x1, y1);
+  }
+
+  setZone(zone: number, x0: number, y0: number, x1: number, y1: number): void {
+    this.inner.set_zone(zone, x0, y0, x1, y1);
+  }
+
   tick(): number {
     return this.inner.tick();
   }
@@ -58,14 +73,48 @@ export class SimHandle {
     return this.inner.hash();
   }
 
-  /** Vue directe sur le terrain. À ne pas conserver entre deux appels au sim. */
-  tiles(): Uint8Array {
-    return new Uint8Array(this.wasm.memory.buffer, this.inner.tiles_ptr(), this.inner.tiles_len());
+  mapVersion(): number {
+    return this.inner.map_version();
   }
 
-  /** Copie du tampon des pawns (id, x, y, flags en virgule fixe 24.8). */
+  overlayVersion(): number {
+    return this.inner.overlay_version();
+  }
+
+  storedTotals(): Uint32Array {
+    return this.inner.stored_totals();
+  }
+
+  snapshot(): Uint8Array {
+    return this.inner.snapshot();
+  }
+
+  private view8(ptr: number): Uint8Array {
+    return new Uint8Array(this.wasm.memory.buffer, ptr, this.inner.tiles_len());
+  }
+
+  tiles(): Uint8Array {
+    return this.view8(this.inner.tiles_ptr());
+  }
+
+  features(): Uint8Array {
+    return this.view8(this.inner.features_ptr());
+  }
+
+  zones(): Uint8Array {
+    return this.view8(this.inner.zones_ptr());
+  }
+
+  designations(): Uint8Array {
+    return this.view8(this.inner.designations_ptr());
+  }
+
   pawns(): Int32Array {
     return new Int32Array(new Int32Array(this.wasm.memory.buffer, this.inner.pawns_ptr(), this.inner.pawns_len()));
+  }
+
+  items(): Int32Array {
+    return new Int32Array(new Int32Array(this.wasm.memory.buffer, this.inner.items_ptr(), this.inner.items_len()));
   }
 
   dispose(): void {

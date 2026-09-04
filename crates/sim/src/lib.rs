@@ -15,16 +15,21 @@
 
 pub mod fixed;
 pub mod hash;
+pub mod items;
+pub mod jobs;
 pub mod map;
 pub mod noise;
 pub mod path;
 pub mod pawn;
 pub mod rng;
+pub mod testmap;
 
 use serde::{Deserialize, Serialize};
 
-pub use map::{Map, Terrain};
-pub use pawn::Pawn;
+pub use items::{ItemKind, ItemStack};
+pub use jobs::{Regrow, Reservation};
+pub use map::{Designation, Feature, Map, Rect, Terrain, Zone};
+pub use pawn::{Job, Pawn};
 pub use rng::Rng;
 
 /// Ticks de simulation par seconde de jeu.
@@ -41,6 +46,22 @@ pub enum Command {
     Nop,
     /// Envoie un pawn vers une case. Ignoré si la case est inaccessible.
     MoveTo { pawn: u32, x: u32, y: u32 },
+    /// Pose (ou retire avec `Designation::None`) une désignation sur un rectangle.
+    Designate {
+        kind: Designation,
+        x0: i32,
+        y0: i32,
+        x1: i32,
+        y1: i32,
+    },
+    /// Pose (ou retire avec `Zone::None`) une zone sur un rectangle.
+    SetZone {
+        zone: Zone,
+        x0: i32,
+        y0: i32,
+        x1: i32,
+        y1: i32,
+    },
 }
 
 #[derive(Debug)]
@@ -65,6 +86,10 @@ pub struct Sim {
     map: Map,
     /// Triés par id croissant (ordre d'insertion, jamais réordonnés).
     pawns: Vec<Pawn>,
+    items: Vec<ItemStack>,
+    reservations: Vec<Reservation>,
+    regrow: Vec<Regrow>,
+    /// Compteur d'ids partagé par tout ce qui a un id.
     next_id: u32,
 }
 
@@ -74,12 +99,23 @@ impl Sim {
         // Le seed de la carte est dérivé : changer la gen de terrain ne doit pas
         // décaler le flux RNG du gameplay, et inversement.
         let map_seed = rng.next_u64();
-        let map = Map::generate(map_seed, width, height);
+        Sim::with_map(rng, Map::generate(map_seed, width, height))
+    }
+
+    /// Sim sur une carte fournie (tests, scénarios).
+    pub fn from_map(seed: u64, map: Map) -> Sim {
+        Sim::with_map(Rng::new(seed), map)
+    }
+
+    fn with_map(rng: Rng, map: Map) -> Sim {
         let mut sim = Sim {
             tick: 0,
             rng,
             map,
             pawns: Vec::new(),
+            items: Vec::new(),
+            reservations: Vec::new(),
+            regrow: Vec::new(),
             next_id: 1,
         };
         sim.spawn_starting_pawns(3);
@@ -88,7 +124,7 @@ impl Sim {
 
     fn spawn_starting_pawns(&mut self, count: u32) {
         let (cx, cy) = (self.map.width() / 2, self.map.height() / 2);
-        let Some(center) = self.map.nearest_walkable(cx, cy) else {
+        let Some(center) = self.map.nearest_passable(cx, cy) else {
             return;
         };
         let mut spawned = 0;
@@ -101,7 +137,7 @@ impl Sim {
                     }
                     let x = center.0 as i32 + dx;
                     let y = center.1 as i32 + dy;
-                    if self.map.in_bounds(x, y) && self.map.get(x as u32, y as u32).walkable() {
+                    if self.map.in_bounds(x, y) && self.map.passable(x as u32, y as u32) {
                         self.spawn_pawn(x as u32, y as u32);
                         spawned += 1;
                     }
@@ -130,49 +166,61 @@ impl Sim {
     }
 
     fn apply(&mut self, command: &Command) {
-        match command {
+        match *command {
             Command::Nop => {}
             Command::MoveTo { pawn, x, y } => {
-                if !self.map.in_bounds(*x as i32, *y as i32) {
+                if !self.map.in_bounds(x as i32, y as i32) {
                     return;
                 }
-                let Some(p) = self.pawns.iter_mut().find(|p| p.id == *pawn) else {
+                let Some(i) = self.pawns.iter().position(|p| p.id == pawn) else {
                     return;
                 };
-                if let Some(path) = path::find_path(&self.map, p.tile(), (*x, *y)) {
-                    p.set_path(path);
+                let from = self.pawns[i].tile();
+                if let Some(path) = path::find_path(&self.map, from, (x, y)) {
+                    self.abandon_job(i);
+                    self.pawns[i].set_path(path);
+                    self.pawns[i].job = Job::Move { manual: true };
+                }
+            }
+            Command::Designate {
+                kind,
+                x0,
+                y0,
+                x1,
+                y1,
+            } => {
+                let Some(rect) = self.map.clamp_rect(x0, y0, x1, y1) else {
+                    return;
+                };
+                for (x, y) in rect.tiles() {
+                    if kind == Designation::None || kind.applies_to(self.map.feature(x, y)) {
+                        self.map.set_designation(x, y, kind);
+                    }
+                }
+            }
+            Command::SetZone {
+                zone,
+                x0,
+                y0,
+                x1,
+                y1,
+            } => {
+                let Some(rect) = self.map.clamp_rect(x0, y0, x1, y1) else {
+                    return;
+                };
+                for (x, y) in rect.tiles() {
+                    if zone == Zone::None || self.map.passable(x, y) {
+                        self.map.set_zone(x, y, zone);
+                    }
                 }
             }
         }
     }
 
     fn update(&mut self) {
+        self.tick_regrowth();
         for i in 0..self.pawns.len() {
-            if self.pawns[i].is_moving() {
-                self.pawns[i].advance(&self.map);
-            } else {
-                self.idle(i);
-            }
-        }
-    }
-
-    /// Comportement d'attente : flâner autour de soi de temps en temps.
-    /// Sera remplacé par le système de jobs en phase 2.
-    fn idle(&mut self, i: usize) {
-        self.pawns[i].idle_ticks += 1;
-        if self.pawns[i].idle_ticks < 90 || !self.rng.chance(1, 45) {
-            return;
-        }
-        let (px, py) = self.pawns[i].tile();
-        let tx = px as i32 + self.rng.range_i32(-7, 8);
-        let ty = py as i32 + self.rng.range_i32(-7, 8);
-        if !self.map.in_bounds(tx, ty) || !self.map.get(tx as u32, ty as u32).walkable() {
-            return;
-        }
-        if let Some(path) = path::find_path(&self.map, (px, py), (tx as u32, ty as u32))
-            && !path.is_empty()
-        {
-            self.pawns[i].set_path(path);
+            self.tick_pawn(i);
         }
     }
 
@@ -191,6 +239,25 @@ impl Sim {
 
     pub fn pawns(&self) -> &[Pawn] {
         &self.pawns
+    }
+
+    pub fn pawn_mut(&mut self, id: u32) -> Option<&mut Pawn> {
+        self.pawns.iter_mut().find(|p| p.id == id)
+    }
+
+    pub fn items(&self) -> &[ItemStack] {
+        &self.items
+    }
+
+    /// Total d'objets rangés en zone de stockage, par genre.
+    pub fn stored_totals(&self) -> [u32; ItemKind::COUNT] {
+        let mut out = [0; ItemKind::COUNT];
+        for s in &self.items {
+            if self.map.zone(s.x, s.y) == Zone::Stockpile {
+                out[s.kind as usize] += s.count;
+            }
+        }
+        out
     }
 
     /// Sérialisation binaire compacte de l'état complet.

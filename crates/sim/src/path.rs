@@ -29,7 +29,7 @@ fn heuristic(a: (u32, u32), b: (u32, u32)) -> u32 {
 /// Chemin de `from` (exclu) à `to` (inclus). `None` si `to` est inaccessible.
 /// `Some(vec![])` si `from == to`.
 pub fn find_path(map: &Map, from: (u32, u32), to: (u32, u32)) -> Option<Vec<Tile>> {
-    if !map.get(to.0, to.1).walkable() {
+    if !map.passable(to.0, to.1) {
         return None;
     }
     if from == to {
@@ -71,13 +71,12 @@ pub fn find_path(map: &Map, from: (u32, u32), to: (u32, u32)) -> Option<Vec<Tile
             if closed[ni] {
                 continue;
             }
-            let Some(cost) = map.get(nx as u32, ny as u32).move_cost() else {
+            let Some(cost) = map.move_cost(nx as u32, ny as u32) else {
                 continue;
             };
             let diagonal = dx != 0 && dy != 0;
             if diagonal
-                && (!map.get(cx as u32, ny as u32).walkable()
-                    || !map.get(nx as u32, cy as u32).walkable())
+                && (!map.passable(cx as u32, ny as u32) || !map.passable(nx as u32, cy as u32))
             {
                 continue;
             }
@@ -117,23 +116,7 @@ fn reconstruct(came_from: &[u32], start: usize, goal: usize, w: usize) -> Vec<Ti
 mod tests {
     use super::*;
     use crate::map::Terrain;
-
-    /// Carte depuis un dessin : `.` herbe, `#` roche, `~` eau peu profonde.
-    fn map_from(rows: &[&str]) -> Map {
-        let h = rows.len() as u32;
-        let w = rows[0].len() as u32;
-        let tiles = rows
-            .iter()
-            .flat_map(|r| {
-                r.chars().map(|c| match c {
-                    '#' => Terrain::Rock as u8,
-                    '~' => Terrain::ShallowWater as u8,
-                    _ => Terrain::Grass as u8,
-                })
-            })
-            .collect();
-        Map::from_tiles(w, h, tiles)
-    }
+    use crate::testmap::map_from;
 
     #[test]
     fn straight_line() {
@@ -153,7 +136,7 @@ mod tests {
         let m = map_from(&[".....", ".###.", "....."]);
         let p = find_path(&m, (0, 1), (4, 1)).unwrap();
         assert_eq!(p.last(), Some(&(4, 1)));
-        assert!(p.iter().all(|&(x, y)| m.get(x as u32, y as u32).walkable()));
+        assert!(p.iter().all(|&(x, y)| m.passable(x as u32, y as u32)));
         assert!(p.len() >= 4);
     }
 
@@ -185,8 +168,8 @@ mod tests {
     #[test]
     fn deterministic() {
         let m = Map::generate(99, 96, 96);
-        let from = m.nearest_walkable(2, 2).unwrap();
-        let to = m.nearest_walkable(90, 90).unwrap();
+        let from = m.nearest_passable(2, 2).unwrap();
+        let to = m.nearest_passable(90, 90).unwrap();
         assert_eq!(find_path(&m, from, to), find_path(&m, from, to));
     }
 }

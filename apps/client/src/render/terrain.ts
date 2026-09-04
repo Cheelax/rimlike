@@ -1,4 +1,4 @@
-/** Contrat avec `crates/sim/src/map.rs` : index = valeur `Terrain`. */
+/** Contrats avec `crates/sim/src/map.rs` et `items.rs` : index = valeur de l'enum. */
 export const TERRAIN = {
   DeepWater: 0,
   ShallowWater: 1,
@@ -6,8 +6,6 @@ export const TERRAIN = {
   Grass: 3,
   Dirt: 4,
   Gravel: 5,
-  Rock: 6,
-  Tree: 7,
 } as const;
 
 export const TERRAIN_COLORS: readonly number[] = [
@@ -17,6 +15,29 @@ export const TERRAIN_COLORS: readonly number[] = [
   0x6aa84f, // herbe
   0x9a7b4f, // terre
   0x9b9b93, // gravier
-  0x6e6e6e, // roche
-  0x4e8a3a, // sol sous les arbres
 ];
+
+export const FEATURE = {
+  None: 0,
+  Tree: 1,
+  Rock: 2,
+  Bush: 3,
+  BushUnripe: 4,
+} as const;
+
+export const ZONE = { None: 0, Stockpile: 1 } as const;
+export const DESIGNATION = { None: 0, Chop: 1, Mine: 2, Harvest: 3 } as const;
+
+export const ITEM_NAMES = ["bois", "pierre", "baies"] as const;
+export const ITEM_COLORS: readonly number[] = [0x9c6b3c, 0x8d8d8d, 0xc9304a];
+
+export const JOB_LABELS = [
+  "inactif",
+  "se déplace",
+  "coupe du bois",
+  "mine",
+  "récolte",
+  "transporte",
+  "mange",
+  "dort",
+] as const;

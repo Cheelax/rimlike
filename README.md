@@ -17,9 +17,12 @@ pnpm test       # tests natifs du sim, dont le test de déterminisme
 pnpm lint       # clippy (anti-float, anti-HashMap) + tsc
 ```
 
-En jeu : glisser pour déplacer la vue, molette pour zoomer, Q/E pour tourner,
-clic gauche pour sélectionner un colon, clic droit pour l'envoyer quelque part,
-espace pour la pause, 1/2/3 pour la vitesse.
+En jeu : glisser droit ou flèches pour déplacer la vue, molette pour zoomer, Q/E pour
+tourner, espace pour la pause, 1/2/3 pour la vitesse. Clic gauche pour sélectionner un
+colon, clic droit pour l'envoyer quelque part. Outils (C couper, M miner, H récolter,
+Z zone de stockage, X annuler) : tracer un rectangle au glisser gauche, Échap ou clic
+droit pour revenir à la sélection. Les colons cherchent seuls le travail désigné, puis
+rangent les objets dans les zones de stockage.
 
 ## Structure
 
