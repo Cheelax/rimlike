@@ -145,13 +145,19 @@ test de déterminisme natif, wrapper `sim-wasm`, client Vite qui charge le WASM 
 affiche une scène three vide avec le compteur de ticks. Lints anti-float et
 anti-HashMap. CI GitHub Actions (cargo test + build client).
 
-### Phase 1 — Fondations déterministes + rendu (2-3 semaines)
+### Phase 1 — Fondations déterministes + rendu (2-3 semaines) — livrée le 2026-09-04
 - Boucle ticks fixes, RNG, fixed-point, ECS.
 - Grille 128x128, génération de terrain (bruit déterministe), eau/roche/sol/arbres.
 - Rendu chunks instanciés, caméra ortho inclinée, pan/zoom/rotation, jour-nuit.
 - Un pawn, pathfinding A* sur grille (avec coût terrain), ordre « aller ici ».
 - Sérialisation snapshot + test de déterminisme (10 000 ticks, hash identique).
 **Jalon** : on regarde un bonhomme marcher dans un joli décor, et le test passe.
+Fait : A* 8 directions sans coupe de coin, coûts par terrain, 3 colons qui flânent,
+ordre « aller ici » (clic gauche sélection, clic droit destination), jour de 4 min avec
+soleil et ombres qui tournent, rotation caméra Q/E, pause et vitesses x1-x3 (solo),
+8 terrains, interpolation des positions entre ticks. Reporté en phase 2 : ECS (un
+`Vec<Pawn>` suffit tant qu'il n'y a qu'un composant), chunks de rendu (inutile tant
+que le terrain ne change pas), replanification si le terrain change sous un chemin.
 
 ### Phase 2 — Cœur du gameplay solo (1-2 mois)
 - Besoins : faim, repos, humeur. Effets sur le comportement.
@@ -208,5 +214,10 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-04 : phase 1 livrée. Tampon de rendu des pawns : `Vec<i32>` plat
+  (id, x, y, flags) régénéré par `sim-wasm` après chaque tick, lu en zéro-copie. Les
+  commandes JS → sim passent par des méthodes typées sur `WasmSim` en attendant
+  `packages/protocol` (phase 3). En dev, `window.__rimlike` expose sim et renderer
+  pour les tests pilotés depuis la console.
 - 2026-09-04 : phase 0 livrée. Leçon : l'init wasm-bindgen doit être mémoïsée côté JS,
   sinon deux appels concurrents (React StrictMode) instancient deux mémoires.
