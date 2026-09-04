@@ -18,6 +18,8 @@ export const PAWN_STRIDE = 12;
 export const ITEM_STRIDE = 5;
 export const PAWN_FLAGS = { MOVING: 1, SLEEPING: 2, WORKING: 4, STARVING: 8, CARRYING: 16 } as const;
 const MAX_ITEMS = 2048;
+/** `ItemKind::Corpse` côté sim. */
+const ITEM_CORPSE = 5;
 const MAX_BLUEPRINTS = 2048;
 
 const PAWN_COLORS = [0xd94f4f, 0x4f8fd9, 0xe0b040, 0x8f4fd9, 0x3fb08f, 0xd97f2f];
@@ -392,8 +394,13 @@ export class Renderer {
       const o = i * ITEM_STRIDE;
       const kind = buf[o + 1];
       const count = buf[o + 2];
-      const s = 0.22 + 0.3 * Math.min(count, 75) / 75;
-      mat.compose(pos.set(buf[o + 3] + 0.5, s * 0.35 + 0.01, buf[o + 4] + 0.5), q, scl.set(s, s * 0.7, s));
+      if (kind === ITEM_CORPSE) {
+        // Un corps allongé, pas une caisse.
+        mat.compose(pos.set(buf[o + 3] + 0.5, 0.09, buf[o + 4] + 0.5), q, scl.set(0.85, 0.18, 0.42));
+      } else {
+        const s = 0.22 + 0.3 * Math.min(count, 75) / 75;
+        mat.compose(pos.set(buf[o + 3] + 0.5, s * 0.35 + 0.01, buf[o + 4] + 0.5), q, scl.set(s, s * 0.7, s));
+      }
       this.items.setMatrixAt(i, mat);
       this.items.setColorAt(i, color.setHex(ITEM_COLORS[kind] ?? 0xff00ff));
     }
