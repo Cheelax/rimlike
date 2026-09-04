@@ -275,7 +275,7 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
 | Perf JS pour des centaines de pawns | ECS en arrays typés, pathfinding avec cache de régions (flow fields / HPA*) en phase 2 si besoin, sim dans un Worker |
 | Pipeline d'assets 3D coûteux | Style voxel, packs CC0 au départ, contenu générique (couleurs par matériau) |
 | Le multi monde est un gouffre | Phases 1-2 donnent un jeu solo complet et autonome. Le multi se greffe dessus, pas l'inverse |
-| Recherche de travail : chaque colon inactif balaie toute la carte à chaque tick | Négligeable à 128² (compteur de désignations court-circuite quand il n'y a rien). À indexer (liste des cases désignées) si la carte grossit ou si les colons se multiplient |
+| Recherche de travail : chaque colon inactif balaie toute la carte à chaque tick | Compteurs dans `Map` (désignations, zones, lits, feux) qui court-circuitent les balayages ; l'oubli des lits et des feux coûtait un facteur 30 à vide, mesuré par `sim-cli bench` le 2026-09-05. À indexer (listes de cases) si la carte grossit |
 | Onglet en arrière-plan : le navigateur bride `requestAnimationFrame` à ~2/s, le client décroche du lockstep | Dès la phase 3, le sim tourne dans un Web Worker cadencé par timer, le thread principal ne fait que rendre. Constaté en phase 0 |
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
@@ -293,6 +293,9 @@ factions PNJ et commerce, colonies hors ligne, mods de contenu, événements mon
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-05 : `crates/sim-cli` (Sonnet) : exécution native du sim pour mesurer, vérifier le
+  déterminisme et les snapshots hors navigateur. Son premier bench a révélé deux balayages
+  de carte sans court-circuit (lits, feux) : corrigés, ×30 à vide.
 - 2026-09-05 : intégration réseau livrée. Toute action joueur passe par des octets
   postcard encodés par le sim, y compris en solo : un seul chemin, testé partout.
   Décodage strict (octets en trop refusés). Le rejeu d'un rejoignant commence par un

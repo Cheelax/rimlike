@@ -211,6 +211,10 @@ pub struct Map {
     designation_count: u32,
     stockpile_count: u32,
     growing_count: u32,
+    /// Compteurs d'éléments recherchés par les colons, pour court-circuiter les
+    /// balayages de carte quand il n'y a rien à trouver.
+    bed_count: u32,
+    campfire_count: u32,
 }
 
 impl Map {
@@ -282,6 +286,14 @@ impl Map {
         let n = (width * height) as usize;
         assert_eq!(tiles.len(), n);
         assert_eq!(features.len(), n);
+        let bed_count = features
+            .iter()
+            .filter(|&&f| f == Feature::Bed as u8)
+            .count() as u32;
+        let campfire_count = features
+            .iter()
+            .filter(|&&f| f == Feature::Campfire as u8)
+            .count() as u32;
         Map {
             width,
             height,
@@ -294,6 +306,8 @@ impl Map {
             designation_count: 0,
             stockpile_count: 0,
             growing_count: 0,
+            bed_count,
+            campfire_count,
         }
     }
 
@@ -340,7 +354,18 @@ impl Map {
 
     pub fn set_feature(&mut self, x: u32, y: u32, f: Feature) {
         let i = self.index(x, y);
-        if self.features[i] != f as u8 {
+        let old = Feature::from_u8(self.features[i]);
+        if old != f {
+            match old {
+                Feature::Bed => self.bed_count -= 1,
+                Feature::Campfire => self.campfire_count -= 1,
+                _ => {}
+            }
+            match f {
+                Feature::Bed => self.bed_count += 1,
+                Feature::Campfire => self.campfire_count += 1,
+                _ => {}
+            }
             self.features[i] = f as u8;
             self.version += 1;
         }
@@ -427,6 +452,14 @@ impl Map {
 
     pub fn growing_count(&self) -> u32 {
         self.growing_count
+    }
+
+    pub fn bed_count(&self) -> u32 {
+        self.bed_count
+    }
+
+    pub fn campfire_count(&self) -> u32 {
+        self.campfire_count
     }
 
     /// Sol cultivable.

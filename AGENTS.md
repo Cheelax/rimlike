@@ -43,7 +43,14 @@ pnpm test:client      # tests du client lockstep contre le vrai serveur en mémo
 pnpm test:world       # tests du globe (géométrie, biomes, itinéraires)
 pnpm dev:server       # serveur relais sur :8787 (GET /health)
 cargo fmt --all       # la CI vérifie le formatage
+cargo run -p sim-cli --release -- bench --size 128 --ticks 20000   # référence de perf du sim
+cargo run -p sim-cli --release -- verify --seed 1 --size 64 --ticks 10000 --scenario demo
 ```
+
+`crates/sim-cli` (binaire `rimlike-sim`) exécute le sim en natif : `run` (stats et hash),
+`verify` (deux sims comparées), `snapshot` (aller-retour), `bench`. Référence mesurée le
+2026-09-05 sur carte 128×128 en release : ~2,2 M ticks/s à vide, ~0,6 M en pleine
+activité, ~0,2 M avec 15 colons. Toute régression nette sur ces chiffres se justifie.
 
 ## Ordre de travail attendu
 
@@ -72,6 +79,10 @@ Ils sont imposés par les lints là où c'est possible, et par le test de déter
 - **Aucune entropie hors `Rng`** : tout aléa passe par `self.rng`, dans un ordre fixe.
 - **Recherches déterministes** : trier les candidats par `(distance, x, y)` puis tester les
   chemins dans cet ordre. Jamais « le premier trouvé » d'un ordre non maîtrisé.
+- **Pas de balayage de carte sans court-circuit** : toute recherche qui parcourt les 16 384
+  cases doit d'abord tester un compteur maintenu par `Map` (`designation_count`,
+  `stockpile_count`, `growing_count`, `bed_count`, `campfire_count`). Un colon inactif
+  relance sa recherche à chaque tick.
 - **Tout l'état est dans `Sim`** et sérialisé par serde/postcard. Pas de cache non
   sérialisé qui influence le futur. Un nouveau champ = pensé pour le snapshot.
 - **Les ordres du joueur sont des `Command`** appliquées au début d'un tick. Aucune

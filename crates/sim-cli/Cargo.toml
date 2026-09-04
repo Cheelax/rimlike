@@ -1,0 +1,13 @@
+[package]
+name = "sim-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Outil en ligne de commande natif pour mesurer, vérifier et déboguer le sim hors navigateur."
+
+[[bin]]
+name = "rimlike-sim"
+path = "src/main.rs"
+
+[dependencies]
+sim = { path = "../sim" }

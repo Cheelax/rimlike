@@ -272,6 +272,11 @@ impl Sim {
     fn start_sleep(&mut self, i: usize) {
         let from = self.pawns[i].tile();
         let mut beds: Vec<(u32, u32, u32)> = Vec::new();
+        if self.map.bed_count() == 0 {
+            self.pawns[i].path.clear();
+            self.pawns[i].job = Job::Sleep { in_bed: false };
+            return;
+        }
         for y in 0..self.map.height() {
             for x in 0..self.map.width() {
                 if self.map.feature(x, y) == Feature::Bed && !self.bed_occupied_by_other(i, (x, y))
@@ -865,6 +870,9 @@ impl Sim {
 
     /// Cuisine s'il y a un feu libre, de la nourriture crue et pas assez de repas.
     fn try_start_cook(&mut self, i: usize) -> bool {
+        if self.map.campfire_count() == 0 {
+            return false;
+        }
         let mut fires: Vec<(u32, u32)> = Vec::new();
         for y in 0..self.map.height() {
             for x in 0..self.map.width() {
