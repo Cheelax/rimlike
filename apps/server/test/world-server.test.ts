@@ -370,7 +370,17 @@ describe("salle d'une case", () => {
     for (const client of [alice, bob]) {
       const start = await client.nth("start");
       expect(start.seed).toBe(settled.seed);
-      expect(start).toEqual({ type: "start", seed: settled.seed, width: 64, height: 64, tick: 0, climate });
+      // Le monde vient de naître pour ce test (horloge réelle, non pilotée) :
+      // pas une heure de jeu ne s'est encore écoulée, donc le jour 0.
+      expect(start).toEqual({
+        type: "start",
+        seed: settled.seed,
+        width: 64,
+        height: 64,
+        tick: 0,
+        climate,
+        dayOfYear: 0,
+      });
     }
   });
 
@@ -395,6 +405,33 @@ describe("salle d'une case", () => {
     expect(start.climate).toEqual(expected);
   });
 
+  it("porte le jour de l'année du monde dans le start, cohérent avec son horloge", async () => {
+    // Horloge du monde pilotée par le test, comme pour le temps gelé
+    // (§11.6) : trente heures de jeu se sont écoulées depuis sa création,
+    // soit un jour et demi de monde (`worldDayOfYear(30) === 1`).
+    let worldNow = 1_757_000_000_000;
+    const fast = await startServer({
+      port: 0,
+      log: () => {},
+      worldSubdivisions: SUBDIVISIONS,
+      worldHourMs: HOUR_MS,
+      worldNow: () => worldNow,
+    });
+    try {
+      worldNow += 30 * HOUR_MS;
+      const alice = await joinWorld("alice", fast);
+      alice.send({ type: "settle", tile: landTile });
+      const settled = await alice.next("settled");
+      alice.send({ type: "join", room: settled.room, name: "alice" });
+      await alice.nth("welcome");
+      alice.send({ type: "start", seed: 1, width: 32, height: 32 });
+      const start = await alice.nth("start");
+      expect(start.dayOfYear).toBe(1);
+    } finally {
+      await fast.close();
+    }
+  });
+
   it("refuse de visiter une case libre et de créer la salle d'une case libre", async () => {
     const alice = await joinWorld("alice");
     alice.send({ type: "visit", tile: landTile });
@@ -413,6 +450,9 @@ describe("salle d'une case", () => {
     const start = await alice.nth("start");
     // Hors monde, la graine reste celle du host.
     expect(start.seed).toBe(12_345);
+    // Ni climat ni jour de l'année : une salle simple n'a pas de case.
+    expect(start).not.toHaveProperty("climate");
+    expect(start).not.toHaveProperty("dayOfYear");
   });
 });
 

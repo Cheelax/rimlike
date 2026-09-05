@@ -16,6 +16,7 @@ import {
   MAX_FROZEN_TICKS,
   NO_PLAYER,
   PROTOCOL_VERSION,
+  YEAR_DAYS,
   type Bundle,
   type Caravan,
   type CaravanStatus,
@@ -175,6 +176,17 @@ function isFrozenTicks(value: unknown): value is number {
 
 function isInRange(value: unknown, min: number, max: number): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+}
+
+/**
+ * `start.dayOfYear` : le jour du calendrier à imposer (`Command::SetCalendar`),
+ * dans `0..YEAR_DAYS`. Même principe que `isFrozenTicks` : une valeur hors
+ * bornes est refusée plutôt que rognée, elle mentirait sur ce que le sim
+ * appliquera (`day_of_year % YEAR_DAYS` côté sim, mais silencieusement — la
+ * frontière réseau, elle, ne laisse rien passer qu'elle ne peut garantir).
+ */
+function isDayOfYear(value: unknown): value is number {
+  return isInRange(value, 0, YEAR_DAYS - 1);
 }
 
 /**
@@ -639,6 +651,9 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
         }
         climate = parsed;
       }
+      if (value.dayOfYear !== undefined && !isDayOfYear(value.dayOfYear)) {
+        return null;
+      }
       return {
         type: "start",
         seed: value.seed,
@@ -646,6 +661,7 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
         height: value.height,
         tick: value.tick,
         ...(climate === undefined ? {} : { climate }),
+        ...(value.dayOfYear === undefined ? {} : { dayOfYear: value.dayOfYear }),
       };
     }
     case "bundle": {

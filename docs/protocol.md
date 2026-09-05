@@ -262,13 +262,17 @@ salle a démarré.
 **`start`** — diffusé quand le host démarre. `tick` vaut 0 : tous les clients
 créent leur sim avec `seed`/`width`/`height` et partent du tick 0.
 
-`climate` est facultatif et n'apparaît que dans une salle « case » du monde
-(§11) : la colonie hérite du climat de sa case du globe (`baseTemperature` et
-`amplitude`, en dixièmes de degré Celsius — la forme de `Command::SetClimate`,
-`crates/sim/src/climate.rs`). Absent en salle simple, où le sim garde son
-climat par défaut tant que personne n'émet `SetClimate`. Le champ n'est
-qu'une information : c'est à l'hôte, et lui seul, d'émettre la commande
-correspondante après ce `start` (§11.6).
+`climate` et `dayOfYear` sont facultatifs et n'apparaissent que dans une salle
+« case » du monde (§11) : la colonie hérite du climat **et** du jour de
+l'année de sa case du globe. `climate` porte `baseTemperature` et `amplitude`,
+en dixièmes de degré Celsius (la forme de `Command::SetClimate`,
+`crates/sim/src/climate.rs`) ; `dayOfYear` est un entier de `0` à `YEAR_DAYS -
+1` (60, la forme de `Command::SetCalendar`), déduit de l'horloge du monde
+(`worldDayOfYear`, §12.1). Absents en salle simple, où le sim garde son climat
+et son calendrier par défaut (tempéré, printemps) tant que personne n'émet
+`SetClimate`/`SetCalendar`. Ces champs ne sont qu'une information : c'est à
+l'hôte, et lui seul, d'émettre les commandes correspondantes après ce `start`
+(§11.6).
 
 ```json
 { "type": "start", "seed": 12345, "width": 128, "height": 128, "tick": 0 }
@@ -278,7 +282,8 @@ correspondante après ce `start` (§11.6).
   "width": 64,
   "height": 64,
   "tick": 0,
-  "climate": { "baseTemperature": -340, "amplitude": 200 }
+  "climate": { "baseTemperature": -340, "amplitude": 200 },
+  "dayOfYear": 1
 }
 ```
 
@@ -1084,45 +1089,79 @@ température et la latitude de la case, et le `start` diffusé porte ce climat
 (`climate`). Ce n'est qu'une **information** : imposer le climat au sim passe
 par une commande, exactement comme l'avance rapide.
 
+**Le calendrier, hérité une fois.** La même colonie neuve hérite aussi du jour
+de l'année du **monde** : `worldDayOfYear(worldState.clock.hours())`
+(`@rimlike/protocol`, §12.1) le déduit de l'horloge de jeu au moment de la
+fondation, et le même `start` diffusé porte ce jour (`dayOfYear`). Sans lui,
+toutes les colonies d'un globe partiraient au printemps, jour 0 — deux
+colonies fondées à des mois d'écart sur le globe se retrouveraient
+calendairement identiques, alors que le monde, lui, a tourné. Comme `climate`,
+ce n'est qu'une **information** : imposer le jour au sim passe par
+`Command::SetCalendar` (`crates/sim/src/climate.rs`), une commande comme une
+autre.
+
 ```
-   hôte                                  serveur
-     │◀── start { seed, …, climate } ─────┤  colonie neuve, salle « case »
-     │    (construit son sim, climat      │
-     │     par défaut du sim)             │
-     ├─── encode_set_climate(climate) ───▶│  1ʳᵉ commande, une seule fois
-     │        (repart dans un bundle,     │
-     │         appliqué par tous à ce tick)│
+   hôte                                              serveur
+     │◀── start { seed, …, climate, dayOfYear } ──────┤  colonie neuve, salle « case »
+     │    (construit son sim, climat et calendrier    │
+     │     par défaut du sim)                         │
+     ├─── encode_set_climate(climate) ────────────────▶│  1ʳᵉ commande, une seule fois
+     ├─── encode_set_calendar(dayOfYear) ─────────────▶│  2ᵉ commande, une seule fois
+     │        (repartent dans des bundles,             │
+     │         appliquées par tous aux mêmes ticks)     │
 ```
 
-- **L'hôte, et lui seul**, encode et émet `Command::SetClimate` (`encode_set_climate`,
-  `docs/PLAN.md`/`AGENTS.md`, table des contrats) en **première commande**
-  après ce `start`, une seule fois. Deux clients qui l'émettraient chacun
-  feraient dériver le climat de la colonie vers celui qui gagne la course,
-  silencieusement — c'est une commande à faire une fois, jamais une opération
-  locale, la même règle que `FastForward` ci-dessus.
-- **Ordre si les deux s'appliquent** : `SetClimate` **puis** `FastForward`, le
-  climat d'abord, l'avance rapide ensuite — l'avance rapide fait tourner des
-  formules de rattrapage (croissance, péremption…) qui dépendent du climat, pas
-  l'inverse. Avec l'implémentation actuelle, ce cas ne se produit pas : `start`
-  (colonie neuve) et `restore` (réouverture, `frozenTicks`) sont mutuellement
-  exclusifs, une salle ne prenant jamais les deux chemins à la fois. L'ordre
-  est documenté ici pour ne rien laisser d'implicite si ça change un jour.
-- **Sur une réouverture, `start` n'est pas envoyé** (voir plus haut) : donc
-  aucun `SetClimate` n'est émis, seulement `FastForward` s'il y a du temps
-  gelé. Le climat n'a pas besoin d'être réémis — et **`snapshot` ne gagne pas
-  de champ `climate` symétrique à `start`** : `Command::SetClimate` modifie un
-  champ persistant de `Sim` (`climate::Climate`, sérialisé par serde comme le
-  reste de l'état, `crates/sim/src/climate.rs`), donc le sim restauré depuis
-  le snapshot le porte déjà. Contrairement à `frozenTicks`, qui déclenche une
+- **L'hôte, et lui seul**, encode et émet `Command::SetClimate`
+  (`encode_set_climate`) puis `Command::SetCalendar` (`encode_set_calendar`,
+  `docs/PLAN.md`/`AGENTS.md`, table des contrats) en **première et deuxième
+  commandes** après ce `start`, chacune une seule fois. Deux clients qui les
+  émettraient chacun feraient dériver le climat ou le calendrier de la colonie
+  vers celui qui gagne la course, silencieusement — ce sont des commandes à
+  faire une fois, jamais des opérations locales, la même règle que
+  `FastForward` ci-dessous.
+- **Ordre si les trois s'appliquent** : `SetClimate` **puis** `SetCalendar`
+  **puis** `FastForward` — le climat et le calendrier d'abord, l'avance rapide
+  ensuite, parce qu'elle fait tourner des formules de rattrapage (croissance,
+  péremption…) qui dépendent de la température et donc de la saison, pas
+  l'inverse ; entre les deux premières, l'ordre ne change rien au résultat
+  (deux champs indépendants de `Sim`) mais en fixe un pour ne rien laisser
+  d'implicite. Avec l'implémentation actuelle, ce cas ne se produit pas :
+  `start` (colonie neuve) et `restore` (réouverture, `frozenTicks`) sont
+  mutuellement exclusifs, une salle ne prenant jamais les deux chemins à la
+  fois. L'ordre est documenté ici pour ne rien laisser d'implicite si ça
+  change un jour.
+- **Sur une réouverture, `start` n'est pas envoyé** (voir plus haut) : donc ni
+  `SetClimate` ni `SetCalendar` ne sont émis, seulement `FastForward` s'il y a
+  du temps gelé. Ni le climat ni le calendrier n'ont besoin d'être réémis — et
+  **`snapshot` ne gagne aucun champ symétrique à `start`** : `Command::SetClimate`
+  et `Command::SetCalendar` modifient des champs persistants de `Sim`
+  (`climate::Climate` et `calendar_offset_days`, sérialisés par serde comme le
+  reste de l'état, `crates/sim/src/climate.rs`), donc le sim restauré depuis le
+  snapshot les porte déjà. Contrairement à `frozenTicks`, qui déclenche une
   commande précisément parce que le serveur ne simule pas le temps écoulé
   pendant l'absence, il n'y a ici **aucune action requise** côté client à la
-  réouverture : un champ purement informatif dupliquerait un état déjà présent
-  dans `data`, avec le risque qu'il en diverge un jour (par exemple si un
-  climat devenait un jour modifiable en cours de partie par un autre biais que
-  la fondation).
-- Une salle **hors monde** (`join { room: "demo" }`) n'a pas de case, donc pas
-  de `climate` : le sim y garde son climat par défaut (`Climate::default()`,
-  12 °C ± 15 °C) tant que personne n'émet `SetClimate` explicitement.
+  réouverture — d'ailleurs `frozenTicks` fait à lui seul tout le travail de
+  rattrapage du calendrier : `Command::FastForward` avance le tick du sim
+  exactement du temps gelé (`frozenTicks = round(heures écoulées × 600)`, et
+  `TICKS_PER_DAY = 14 400 = 24 × 600` : une heure de jeu gelée avance le
+  calendrier de la colonie d'exactement une heure de calendrier, pas plus, pas
+  moins), et `day_of_year()`/`season()` en étant des fonctions du tick, le
+  calendrier de la colonie rattrape très exactement les jours passés sans
+  personne, sans le moindre `SetCalendar` supplémentaire — aucun autre
+  décalage ne s'introduit pendant que la carte est gelée. (Le calendrier d'une
+  carte **activement jouée**, lui, avance à son propre rythme — quatre minutes
+  réelles par jour, indépendant de celui du monde — exactement comme il l'a
+  toujours fait pour l'heure du jour et la météo ; seuls la fondation et le
+  gel/dégel le recalent sur l'horloge du monde, jamais le jeu en continu.) Un
+  champ purement informatif dupliquerait un état déjà présent dans `data`,
+  avec le risque qu'il en diverge un jour (par exemple si le climat ou le
+  calendrier devenaient un jour modifiables en cours de partie par un autre
+  biais que la fondation).
+- Une salle **hors monde** (`join { room: "demo" }`) n'a pas de case, donc ni
+  `climate` ni `dayOfYear` : le sim y garde son climat par défaut
+  (`Climate::default()`, 12 °C ± 15 °C) et son calendrier par défaut
+  (printemps, jour 0) tant que personne n'émet `SetClimate`/`SetCalendar`
+  explicitement.
 
 ### 11.7 Enchaînement complet, côté client
 
@@ -1335,6 +1374,29 @@ pas arrivée « pendant la nuit » : elle reprend sa route avec le même
 `arrivesAt`. `clock.worldStartedAt` est la date réelle de création du monde,
 gardée pour dater le monde à l'usage d'un humain, pas pour faire tourner
 l'horloge.
+
+**Le jour de l'année du monde.** Le globe a, lui aussi, un calendrier : un jour
+de monde dure 24 heures de jeu (comme un jour de carte dure `TICKS_PER_DAY`
+ticks), et une année en compte `YEAR_DAYS` (60, le même contrat que
+`sim::climate::YEAR_DAYS` — quatre saisons de 15 jours). `worldDayOfYear`
+(`@rimlike/protocol`) le déduit de `worldHours()` :
+
+```ts
+export function worldDayOfYear(worldHours: number): number {
+  return Math.floor(worldHours / 24) % YEAR_DAYS;
+}
+```
+
+C'est ce qui impose le jour de l'année d'une colonie neuve : le serveur
+l'appelle à la création de la salle d'une case (`worldDayOfYear(worldState.clock.hours())`,
+`apps/server/src/server.ts`) pour fabriquer le `dayOfYear` du `start` diffusé
+(§3.2 et §11.6) — le même geste que `climateForTile` pour `climate`, à la
+même étape. Sans lui, deux colonies fondées à des mois d'écart sur le même
+globe repartiraient toutes les deux au printemps, jour 0 : un pillard qui
+débarque en pleine tempête de neige sur l'une et un colon qui sème sous le
+soleil sur l'autre, au même instant du monde, sonnerait faux. `worldDayOfYear`
+ne fait que lire l'horloge : comme `worldHours()`, il n'a rien à persister à
+côté de `clock`.
 
 ### 12.2 Cycle de vie
 

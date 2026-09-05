@@ -564,6 +564,30 @@ describe("salle de case", () => {
     expect(bob.ofType("start")[0]!).not.toHaveProperty("climate");
   });
 
+  it("porte le jour de l'année de la case dans le start quand il est fourni, l'omet sinon", () => {
+    const { room: tile } = tileRoom({ tile: { id: 4, seed: 777, dayOfYear: 45 } });
+    const alice = new Recorder();
+    const aliceId = tile.join("alice", alice.send)!;
+    tile.handle(aliceId, { type: "start", seed: 1, width: 32, height: 32 });
+
+    expect(alice.ofType("start")[0]).toEqual({
+      type: "start",
+      seed: 777,
+      width: 32,
+      height: 32,
+      tick: 0,
+      dayOfYear: 45,
+    });
+
+    // Sans jour fourni (le cas par défaut de `tileRoom()`) : le champ est
+    // absent, pas `undefined` explicite — même règle que `climate`.
+    const { room: bare } = tileRoom();
+    const bob = new Recorder();
+    const bobId = bare.join("bob", bob.send)!;
+    bare.handle(bobId, { type: "start", seed: 1, width: 32, height: 32 });
+    expect(bob.ofType("start")[0]!).not.toHaveProperty("dayOfYear");
+  });
+
   it("réclame périodiquement un snapshot de conservation et le garde sans le relayer", () => {
     const { room: tile, snapshots } = tileRoom();
     const alice = new Recorder();

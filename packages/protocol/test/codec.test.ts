@@ -18,7 +18,9 @@ import {
   TICKS_PER_HOUR,
   validateClientMessage,
   validateServerMessage,
+  worldDayOfYear,
   WORLD_ERROR_CODES,
+  YEAR_DAYS,
   type Caravan,
   type ClientMessage,
   type ServerMessage,
@@ -157,8 +159,9 @@ describe("encodeMessage / decodeMessage", () => {
     { type: "players", players: [{ id: 1, name: "alice" }], hostId: 1 },
     { type: "players", players: [], hostId: null },
     { type: "start", seed: 7, width: 128, height: 128, tick: 0 },
-    // Salle « case » : la colonie hérite du climat de sa case (§11.6).
-    { type: "start", seed: 7, width: 128, height: 128, tick: 0, climate },
+    // Salle « case » : la colonie hérite du climat et du jour de l'année de
+    // sa case (§11.6, §12.1).
+    { type: "start", seed: 7, width: 128, height: 128, tick: 0, climate, dayOfYear: 1 },
     { type: "bundle", from: 0, to: 2, ticks: [] },
     {
       type: "bundle",
@@ -341,6 +344,10 @@ describe("validation", () => {
         climate: { baseTemperature: 0, amplitude: CLIMATE_AMPLITUDE_MAX + 1 },
       },
       { type: "start", seed: 7, width: 128, height: 128, tick: 0, climate: { baseTemperature: 1.5, amplitude: 0 } },
+      { type: "start", seed: 7, width: 128, height: 128, tick: 0, dayOfYear: -1 },
+      { type: "start", seed: 7, width: 128, height: 128, tick: 0, dayOfYear: YEAR_DAYS },
+      { type: "start", seed: 7, width: 128, height: 128, tick: 0, dayOfYear: 1.5 },
+      { type: "start", seed: 7, width: 128, height: 128, tick: 0, dayOfYear: "1" },
       { type: "bundle", from: 5, to: 2, ticks: [] },
       { type: "bundle", from: 0, to: 2 },
       { type: "bundle", from: 0, to: 2, ticks: [{ tick: 9, commands: [] }] },
@@ -588,5 +595,44 @@ describe("climat des colonies", () => {
     expect(validateServerMessage({ ...base, climate: { baseTemperature: 0 } })).toBeNull();
     expect(validateServerMessage({ ...base, climate: { amplitude: 0 } })).toBeNull();
     expect(validateServerMessage({ ...base, climate: "chaud" })).toBeNull();
+  });
+});
+
+describe("calendrier des colonies", () => {
+  it("déduit le jour de l'année de l'horloge du monde, en heures de jeu", () => {
+    // Contrat avec `sim::climate::YEAR_DAYS` (`crates/sim/src/climate.rs`).
+    expect(YEAR_DAYS).toBe(60);
+    // Une horloge à 30 h de jeu, c'est un jour et demi de monde : jour 1.
+    expect(worldDayOfYear(30)).toBe(1);
+    expect(worldDayOfYear(0)).toBe(0);
+    expect(worldDayOfYear(23)).toBe(0);
+    expect(worldDayOfYear(24)).toBe(1);
+    // Un an de monde tout juste bouclé retombe au jour 0.
+    expect(worldDayOfYear(YEAR_DAYS * 24)).toBe(0);
+    expect(worldDayOfYear(YEAR_DAYS * 24 + 24)).toBe(1);
+    // Rien à imposer : horloge à l'arrêt, ou qui aurait reculé.
+    expect(worldDayOfYear(0)).toBe(0);
+    expect(worldDayOfYear(-5)).toBe(0);
+    expect(worldDayOfYear(Number.NaN)).toBe(0);
+  });
+
+  it("laisse passer un start sans dayOfYear et garde le champ sinon", () => {
+    const plain = validateServerMessage({ type: "start", seed: 7, width: 128, height: 128, tick: 0 });
+    expect(plain).toEqual({ type: "start", seed: 7, width: 128, height: 128, tick: 0 });
+    expect(plain !== null && "dayOfYear" in plain).toBe(false);
+
+    const wire = encodeMessage({ type: "start", seed: 7, width: 128, height: 128, tick: 0, dayOfYear: 45 });
+    const back = decodeServerMessage(wire);
+    expect(back?.type === "start" ? back.dayOfYear : null).toBe(45);
+  });
+
+  it("refuse un dayOfYear hors de 0..YEAR_DAYS ou non entier", () => {
+    const base = { type: "start" as const, seed: 7, width: 128, height: 128, tick: 0 };
+    expect(validateServerMessage({ ...base, dayOfYear: -1 })).toBeNull();
+    expect(validateServerMessage({ ...base, dayOfYear: YEAR_DAYS })).toBeNull();
+    expect(validateServerMessage({ ...base, dayOfYear: 1.5 })).toBeNull();
+    expect(validateServerMessage({ ...base, dayOfYear: "1" })).toBeNull();
+    expect(validateServerMessage({ ...base, dayOfYear: 0 })).toEqual({ ...base, dayOfYear: 0 });
+    expect(validateServerMessage({ ...base, dayOfYear: YEAR_DAYS - 1 })).toEqual({ ...base, dayOfYear: YEAR_DAYS - 1 });
   });
 });

@@ -24,6 +24,7 @@ import {
   decodeClientMessage,
   encodeMessage,
   isCompatibleProtocol,
+  worldDayOfYear,
   type Caravan,
   type ClientMessage,
   type ErrorCode,
@@ -1172,11 +1173,17 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     // docs/protocol.md §3.2) : dérivé à la volée depuis le globe partagé,
     // rien à persister — `climateForTile` est une fonction pure de la case.
     const climate = climateForTile(globe.tiles[tileId]!);
+    // Elle hérite aussi du jour de l'année du monde (docs/protocol.md §3.2,
+    // §11.6, §12.1) : dérivé de l'horloge de jeu au moment de la fondation,
+    // lui non plus rien à persister — seul `Command::FastForward` a besoin
+    // de compter un écart, le jour lui-même se relit depuis l'horloge à
+    // chaque nouvelle salle.
+    const dayOfYear = worldDayOfYear(worldState.clock.hours());
     return new Room({
       name,
       log,
       ...options.roomOptions,
-      tile: { id: tileId, seed: settlement.seed, climate },
+      tile: { id: tileId, seed: settlement.seed, climate, dayOfYear },
       ...(snapshot !== undefined
         ? {
             restore: {

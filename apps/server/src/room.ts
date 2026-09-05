@@ -12,9 +12,10 @@
  * - **salle simple** (`join { room: "demo" }`) : l'hôte choisit la graine et
  *   la taille de carte, la salle disparaît sans laisser de trace ;
  * - **salle « case »** (`tile`), adossée à une case du globe : la graine est
- *   imposée par le serveur, le climat de la case part dans le `start` diffusé
- *   au démarrage (`TileRoom.climate`, `docs/protocol.md` §3.2), l'hôte
- *   fournit périodiquement un snapshot de conservation, et la salle peut être
+ *   imposée par le serveur, le climat et le jour de l'année de la case
+ *   partent dans le `start` diffusé au démarrage (`TileRoom.climate`,
+ *   `TileRoom.dayOfYear`, `docs/protocol.md` §3.2), l'hôte fournit
+ *   périodiquement un snapshot de conservation, et la salle peut être
  *   rouverte depuis ce snapshot (`restore`) au lieu de repartir d'un lobby.
  */
 
@@ -61,6 +62,15 @@ export interface TileRoom {
    * monde) de le fournir.
    */
   readonly climate?: StartClimate;
+  /**
+   * Jour de l'année du monde au moment de la fondation, calculé par
+   * `worldDayOfYear` (`@rimlike/protocol`). Porté par le même `start`, comme
+   * `climate` (`docs/protocol.md` §3.2, §11.6, §12.1) : la colonie hérite
+   * aussi du jour de l'année du monde, pas seulement de son climat. Absent
+   * d'une réouverture (`restore`) : `Room` ne diffuse alors aucun `start`, ce
+   * champ ne sert qu'au chemin lobby → running d'une colonie neuve.
+   */
+  readonly dayOfYear?: number;
 }
 
 /**
@@ -509,6 +519,7 @@ export class Room {
       height,
       tick: 0,
       ...(this.tile?.climate !== undefined ? { climate: this.tile.climate } : {}),
+      ...(this.tile?.dayOfYear !== undefined ? { dayOfYear: this.tile.dayOfYear } : {}),
     });
     this.log(
       `[${this.name}] démarrage — seed ${effectiveSeed}${this.tile === null ? "" : " (imposé par la case)"}, carte ${width}x${height}, ${this.players.length} joueur(s)`,

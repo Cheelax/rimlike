@@ -51,6 +51,30 @@ export const TICKS_PER_HOUR = TICKS_PER_DAY / 24;
 export const MAX_FROZEN_TICKS = TICKS_PER_DAY * 60;
 
 /**
+ * Jours d'une année de jeu sur une carte (`sim::climate::YEAR_DAYS`) : quatre
+ * saisons de 15 jours. Contrat avec le sim, à changer des deux côtés — c'est
+ * aussi le modulo de `worldDayOfYear` et la borne de `start.dayOfYear`.
+ */
+export const YEAR_DAYS = 60;
+
+/**
+ * Jour de l'année du **monde**, déduit de son horloge (en heures de jeu,
+ * `WorldClock.hours()` côté serveur) : un jour de monde dure 24 heures de jeu,
+ * comme une journée de carte dure `TICKS_PER_DAY` ticks. C'est ce qui impose
+ * le jour de l'année d'une colonie neuve (`start.dayOfYear`,
+ * `docs/protocol.md` §11.6 et §12.1) — la même case du globe, visitée deux
+ * fois à des instants différents, ne recommence pas systématiquement au
+ * printemps. Toujours dans `0..YEAR_DAYS` ; une entrée non finie ou négative
+ * donne 0 (le monde vient de naître).
+ */
+export function worldDayOfYear(worldHours: number): number {
+  if (!Number.isFinite(worldHours) || worldHours <= 0) {
+    return 0;
+  }
+  return Math.floor(worldHours / 24) % YEAR_DAYS;
+}
+
+/**
  * Convertit un temps gelé, en **heures de jeu du monde**, en ticks d'avance
  * rapide : arrondi au tick, jamais négatif (une horloge qui recule ne fait pas
  * remonter le temps d'une colonie), et borné à `MAX_FROZEN_TICKS`. Une entrée
@@ -500,15 +524,17 @@ export interface StartClimate {
 /**
  * Diffusé quand le host démarre. `tick` vaut 0 : le sim part de zéro.
  *
- * `climate` n'apparaît que dans une salle « case » (`docs/protocol.md` §11) :
- * la colonie hérite du climat de sa case du globe. Absent en salle simple —
- * le sim y garde son climat par défaut tant que personne n'émet
- * `SetClimate`. Présent, il n'est **imposé à personne** : c'est à l'hôte, et
- * seulement lui, d'émettre `encode_set_climate(baseTemperature, amplitude)`
- * en première commande après ce `start` (`docs/protocol.md` §11.6) — le
- * champ ne fait qu'informer tous les clients de la valeur à attendre, pour
- * qu'un HUD puisse l'afficher avant que la commande n'ait fait un aller-retour
- * en lockstep.
+ * `climate` et `dayOfYear` n'apparaissent que dans une salle « case »
+ * (`docs/protocol.md` §11) : la colonie hérite du climat **et** du jour de
+ * l'année de sa case du globe (`worldDayOfYear`, §12.1). Absents en salle
+ * simple — le sim y garde son climat et son calendrier par défaut (printemps,
+ * jour 0) tant que personne n'émet `SetClimate`/`SetCalendar`. Présents, ils
+ * ne sont **imposés à personne** : c'est à l'hôte, et seulement lui, d'émettre
+ * `encode_set_climate(baseTemperature, amplitude)` puis
+ * `encode_set_calendar(dayOfYear)` en première et deuxième commandes après ce
+ * `start` (`docs/protocol.md` §11.6) — ces champs ne font qu'informer tous les
+ * clients de la valeur à attendre, pour qu'un HUD puisse l'afficher avant que
+ * les commandes n'aient fait un aller-retour en lockstep.
  */
 export interface ServerStartMessage {
   readonly type: "start";
@@ -517,6 +543,8 @@ export interface ServerStartMessage {
   readonly height: number;
   readonly tick: number;
   readonly climate?: StartClimate;
+  /** Jour de l'année à imposer (`Command::SetCalendar`), dans `0..YEAR_DAYS`. */
+  readonly dayOfYear?: number;
 }
 
 /** Le message central : tous les clients reçoivent la même suite de bundles. */
