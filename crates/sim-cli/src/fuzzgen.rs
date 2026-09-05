@@ -10,7 +10,7 @@ use sim::{
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 19;
+pub const VARIANT_COUNT: usize = 20;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -34,6 +34,7 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "SetDifficulty",
     "SetCalendar",
     "Trade",
+    "TriggerTraderVisit",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -270,8 +271,9 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
         4 => {
             let (x0, y0, x1, y1) = random_rect_i32(rng, size);
             Command::Build {
-                // 0..=5 : murs, portes, sols, lits, feux et postes de fabrication.
-                kind: BuildKind::from_u8(rng.below(6) as u8),
+                // 0..=6 : murs, portes, sols, lits, feux, postes de
+                // fabrication et tombes.
+                kind: BuildKind::from_u8(rng.below(7) as u8),
                 material: Material::from_u8(rng.below(2) as u8),
                 x0,
                 y0,
@@ -386,7 +388,7 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
             // alterne les trois régimes de raid sur la même carte.
             level: Difficulty::from_u8(rng.below(256) as u8),
         },
-        _ => {
+        18 => {
             // Genres tirés dans toute la plage (cadavres compris) et quantités
             // le plus souvent aberrantes : le sim doit refuser tout ce qui ne
             // tombe pas juste — pas de marchand, stock absent d'un côté ou de
@@ -401,6 +403,9 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
                 take_count: random_count(rng),
             }
         }
+        // Un marchand qui débarque au milieu du chaos : refusé s'il y en a
+        // déjà un, sinon un pawn neutre de plus à bousculer.
+        _ => Command::TriggerTraderVisit,
     };
     (cmd, variant)
 }
@@ -419,6 +424,25 @@ mod tests {
             seen[variant] = true;
         }
         assert!(seen.iter().all(|&s| s), "variantes manquantes : {seen:?}");
+    }
+
+    /// `BuildKind::Grave` est la variante la plus récente (voir
+    /// `sim::build::BuildKind`) : elle doit rester tirable comme les autres.
+    #[test]
+    fn build_covers_the_grave() {
+        let mut rng = Rng::new(3);
+        let sim = Sim::new(1, 16, 16);
+        let mut seen_grave = false;
+        for _ in 0..2000 {
+            let (cmd, _) = random_command(&mut rng, &sim, 16);
+            if let Command::Build { kind, .. } = cmd
+                && kind == BuildKind::Grave
+            {
+                seen_grave = true;
+                break;
+            }
+        }
+        assert!(seen_grave, "BuildKind::Grave n'est jamais tiré");
     }
 
     #[test]

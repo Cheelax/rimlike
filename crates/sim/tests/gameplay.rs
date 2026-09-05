@@ -543,7 +543,12 @@ fn unreachable_food_spoils() {
         "............",
         "............",
     ]);
-    let mut s = Sim::from_map(1, map);
+    // Climat chaud imposé (`> 15 °C`, phase préservation) : le froid ralentit
+    // désormais la péremption (`Sim::spoil_items`), donc `shelf_life` ne
+    // décrit plus le temps de péremption qu'à vitesse nominale. Sans ce
+    // climat, le défaut tempéré (~12 °C) passerait le plus clair du temps
+    // sous ce seuil et les baies survivraient bien au-delà de `life` ticks.
+    let mut s = Sim::from_map_with_climate(1, map, sim::Climate::new(280, 0));
     s.spawn_item(ItemKind::Berries, 10, 11, 0);
     let life = u64::from(ItemKind::Berries.shelf_life().unwrap());
     for _ in 0..life - 1 {

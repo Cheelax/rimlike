@@ -277,6 +277,11 @@ impl WasmSim {
         });
     }
 
+    /// Fait venir un marchand tout de suite (débogage, comme `trigger_raid`).
+    pub fn trigger_trader_visit(&mut self) {
+        self.pending.push(sim::Command::TriggerTraderVisit);
+    }
+
     // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
     //
     // Fonctions **associées** : le client doit pouvoir encoder avant même
@@ -413,6 +418,11 @@ impl WasmSim {
             take: ItemKind::from_u8(take),
             take_count,
         })
+    }
+
+    /// Visite immédiate d'un marchand. Voir `trigger_trader_visit`.
+    pub fn encode_trigger_trader_visit() -> Vec<u8> {
+        encode(&sim::Command::TriggerTraderVisit)
     }
 
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
@@ -580,6 +590,23 @@ impl WasmSim {
             .find(|p| p.id == id)
             .map_or(0, |p| {
                 i32::try_from(p.sick_until.saturating_sub(tick)).unwrap_or(i32::MAX)
+            })
+    }
+
+    /// Fraîcheur d'une pile, en ‰ restant (1000 à sa création, 0 juste avant
+    /// de disparaître) ; −1 si son genre ne périme pas ou si l'id est
+    /// inconnu. Hors du tampon des piles : `ITEM_STRIDE` ne bouge pas.
+    pub fn item_freshness(&self, id: u32) -> i32 {
+        self.inner
+            .items()
+            .iter()
+            .find(|s| s.id == id)
+            .map_or(-1, |s| {
+                if s.freshness == u32::MAX {
+                    -1
+                } else {
+                    (s.freshness / 1000) as i32
+                }
             })
     }
 
@@ -1166,6 +1193,10 @@ mod tests {
                     take: ItemKind::Berries,
                     take_count: 10,
                 },
+            ),
+            (
+                WasmSim::encode_trigger_trader_visit(),
+                Command::TriggerTraderVisit,
             ),
         ];
         for (bytes, expected) in cases {

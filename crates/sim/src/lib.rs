@@ -144,6 +144,10 @@ pub enum EventKind {
     /// Le marchand est mort sur la carte. `arg` : son id. Ses marchandises
     /// tombent au sol, et les visites suivantes se font attendre.
     TraderDied = 29,
+    /// Un cadavre humain vient d'être enterré dans une tombe vide (voir
+    /// `pawn::Job::Bury`). `arg` : toujours 0 — `ItemKind::Corpse` ne garde
+    /// aucune trace de qui c'était.
+    Buried = 30,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -276,6 +280,11 @@ pub enum Command {
         take: ItemKind,
         take_count: u32,
     },
+    /// Fait entrer un marchand tout de suite, comme `TriggerRaid` fait entrer un
+    /// raid : outil de débogage, passe par le lockstep pour rester partagé. Sans
+    /// effet si un marchand est déjà là, si la colonie est éteinte ou si aucun
+    /// bord n'est atteignable. **Ajoutée en fin d'énumération.**
+    TriggerTraderVisit,
 }
 
 #[derive(Debug)]
@@ -687,6 +696,9 @@ impl Sim {
                 take,
                 take_count,
             } => self.trade(give, give_count, take, take_count),
+            Command::TriggerTraderVisit => {
+                self.spawn_trader();
+            }
         }
     }
 
@@ -705,10 +717,23 @@ impl Sim {
         self.tick_crops(outdoor);
         self.tick_spoilage();
         self.tick_storyteller();
+        // Un seul comptage par tick, partagé par tous les colons (comme
+        // `outdoor`) : voir `Pawn::corpses_on_map`.
+        let corpses = self.corpse_count();
         for i in 0..self.pawns.len() {
-            self.tick_pawn(i, outdoor);
+            self.tick_pawn(i, outdoor, corpses);
         }
         self.remove_dead();
+    }
+
+    /// Cadavres humains au sol, toutes piles confondues (voir
+    /// `Pawn::corpses_on_map`).
+    fn corpse_count(&self) -> u32 {
+        self.items
+            .iter()
+            .filter(|s| s.kind == ItemKind::Corpse)
+            .map(|s| s.count)
+            .sum()
     }
 
     /// Enregistre un fait notable pour le client. La file est bornée : le

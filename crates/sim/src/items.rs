@@ -264,8 +264,13 @@ impl ItemKind {
 /// Taille maximale d'une pile.
 pub const STACK_MAX: u32 = 75;
 
+/// Fraîcheur d'une pile fraîchement posée, en millionièmes : voir
+/// `ItemStack::freshness`.
+pub const FRESHNESS_MAX: u32 = 1_000_000;
+
 /// Une pile d'objets posée au sol. Une pile portée par un colon n'est plus
-/// dans la liste : elle vit dans `Pawn::carrying`.
+/// dans la liste : elle vit dans `Pawn::carrying`, à l'abri de la
+/// péremption (comme en caravane).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemStack {
     pub id: u32,
@@ -275,6 +280,19 @@ pub struct ItemStack {
     pub y: u32,
     /// Colon qui a réservé cette pile (transport, repas, cuisine, livraison).
     pub reserved_by: Option<u32>,
-    /// Tick à partir duquel la pile est perdue. `u64::MAX` si elle ne se gâte pas.
+    /// Estimation d'affichage du tick de péremption, à la vitesse **courante**
+    /// (voir `Sim::spoil_items`) : ce n'est plus elle qui décide de la
+    /// disparition de la pile (c'est `freshness`), seulement une projection
+    /// approximative recalculée à chaque évaluation. `u64::MAX` si la pile ne
+    /// se gâte pas, ou tant qu'elle est gelée (0 % de perte, la projection ne
+    /// veut plus rien dire).
     pub spoil_at: u64,
+    /// Fraîcheur restante, en millionièmes : `FRESHNESS_MAX` à la création,
+    /// 0 juste avant que la pile ne disparaisse, `u32::MAX` si le genre ne
+    /// périme pas (`ItemKind::shelf_life` à `None`). Avance dans
+    /// `Sim::spoil_items`, à une vitesse qui dépend de la température de la
+    /// case (voir `climate::spoilage_divisor`) : gelée, elle n'avance pas du
+    /// tout. **Champ ajouté en fin de structure** : un vieux snapshot est
+    /// refusé net plutôt que relu de travers.
+    pub freshness: u32,
 }

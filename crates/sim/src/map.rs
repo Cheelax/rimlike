@@ -73,6 +73,12 @@ pub enum Feature {
     /// Poste de fabrication : on y taille les armes (voir `craft`).
     /// Infranchissable comme le feu de camp : on travaille à côté.
     CraftingSpot = 13,
+    /// Tombe vide : un colon peut y porter un cadavre humain (voir
+    /// `pawn::Job::Bury`). Franchissable, contrairement au feu et au poste de
+    /// fabrication : on marche dessus pour y déposer le mort.
+    Grave = 14,
+    /// Tombe occupée : plus rien à y faire, on ne la recreuse pas.
+    GraveFilled = 15,
 }
 
 impl Feature {
@@ -91,6 +97,8 @@ impl Feature {
             11 => Feature::CropRipe,
             12 => Feature::Campfire,
             13 => Feature::CraftingSpot,
+            14 => Feature::Grave,
+            15 => Feature::GraveFilled,
             _ => Feature::None,
         }
     }
@@ -253,6 +261,11 @@ pub struct Map {
     /// Feux de camp par pièce, indexé par le numéro de pièce (l'entrée 0,
     /// « dehors », reste à zéro).
     room_campfires: Vec<u32>,
+    /// Tombes **vides** (`Feature::Grave`) : une tombe occupée
+    /// (`Feature::GraveFilled`) ne compte plus, un colon n'a plus rien à y
+    /// porter. **Champ ajouté en fin de structure** : un vieux snapshot est
+    /// refusé net plutôt que relu de travers.
+    grave_count: u32,
 }
 
 /// Au-delà, la zone est trop vaste pour être une pièce : c'est le dehors.
@@ -342,6 +355,10 @@ impl Map {
             .iter()
             .filter(|&&f| f == Feature::CraftingSpot as u8)
             .count() as u32;
+        let grave_count = features
+            .iter()
+            .filter(|&&f| f == Feature::Grave as u8)
+            .count() as u32;
         Map {
             width,
             height,
@@ -362,6 +379,7 @@ impl Map {
             indoor_count: 0,
             indoor_version: 0,
             room_campfires: Vec::new(),
+            grave_count,
         }
     }
 
@@ -414,12 +432,14 @@ impl Map {
                 Feature::Bed => self.bed_count -= 1,
                 Feature::Campfire => self.campfire_count -= 1,
                 Feature::CraftingSpot => self.crafting_spot_count -= 1,
+                Feature::Grave => self.grave_count -= 1,
                 _ => {}
             }
             match f {
                 Feature::Bed => self.bed_count += 1,
                 Feature::Campfire => self.campfire_count += 1,
                 Feature::CraftingSpot => self.crafting_spot_count += 1,
+                Feature::Grave => self.grave_count += 1,
                 _ => {}
             }
             if old.room_key() != f.room_key() {
@@ -523,6 +543,11 @@ impl Map {
 
     pub fn crafting_spot_count(&self) -> u32 {
         self.crafting_spot_count
+    }
+
+    /// Tombes vides, prêtes à recevoir un cadavre (voir `pawn::Job::Bury`).
+    pub fn grave_count(&self) -> u32 {
+        self.grave_count
     }
 
     /// Couche « intérieur », une valeur par case : 0 dehors, sinon le numéro

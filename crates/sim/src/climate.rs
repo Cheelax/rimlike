@@ -113,6 +113,30 @@ pub const HYPOTHERMIA_INTERVAL: u64 = 200;
 /// Sévérité ajoutée par chaque atteinte du froid.
 pub const COLD_SEVERITY: u32 = 5;
 
+/// Au-dessus, un vivre se gâte à la vitesse nominale de `ItemKind::shelf_life`
+/// (voir `spoilage_divisor`).
+pub const SPOILAGE_WARM_TEMP: i32 = 150;
+/// Au-dessus (et jusqu'à `SPOILAGE_WARM_TEMP`), la péremption est deux fois
+/// plus lente.
+pub const SPOILAGE_COLD_TEMP: i32 = 50;
+
+/// Diviseur de la vitesse de péremption d'un vivre selon la température de sa
+/// case, en dixièmes de degré : `None` sous `FREEZING` (gelé, aucune perte),
+/// sinon 4 sous `SPOILAGE_COLD_TEMP`, 2 sous `SPOILAGE_WARM_TEMP`, 1 au-delà.
+/// C'est tout ce qu'il faut pour que « la nourriture se conserve au froid »
+/// (voir `Sim::spoil_items`).
+pub fn spoilage_divisor(temperature: i32) -> Option<u32> {
+    if temperature < FREEZING {
+        None
+    } else if temperature <= SPOILAGE_COLD_TEMP {
+        Some(4)
+    } else if temperature <= SPOILAGE_WARM_TEMP {
+        Some(2)
+    } else {
+        Some(1)
+    }
+}
+
 /// Malus d'humeur du froid, du grand froid et de la chaleur.
 pub const COLD_MOOD_MALUS: i64 = 60_000;
 pub const FREEZING_MOOD_MALUS: i64 = 150_000;

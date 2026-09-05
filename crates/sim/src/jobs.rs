@@ -13,7 +13,7 @@ use crate::climate;
 use crate::craft::{self, CraftStage};
 use crate::farm::{self, Crop};
 use crate::health::{TEND_STEP, TEND_TICKS};
-use crate::items::{ItemKind, ItemStack, STACK_MAX};
+use crate::items::{FRESHNESS_MAX, ItemKind, ItemStack, STACK_MAX};
 use crate::map::{Designation, Feature, Zone, chebyshev};
 use crate::path;
 use crate::pawn::{
@@ -31,6 +31,8 @@ const BREAK_WANDER_INTERVAL: u64 = 30;
 /// Chance par tick qu'un colon au moral à zéro craque : une fois toutes les
 /// dix secondes de jeu en moyenne.
 const BREAK_CHANCE: u32 = 600;
+/// Cadence d'évaluation de la péremption (voir `Sim::tick_spoilage`).
+const SPOILAGE_INTERVAL: u64 = 60;
 
 /// Production d'un travail terminé.
 fn yield_of(kind: Designation) -> Option<(ItemKind, u32)> {
@@ -43,7 +45,7 @@ fn yield_of(kind: Designation) -> Option<(ItemKind, u32)> {
 }
 
 impl Sim {
-    pub(crate) fn tick_pawn(&mut self, i: usize, outdoor: i32) {
+    pub(crate) fn tick_pawn(&mut self, i: usize, outdoor: i32, corpses: u32) {
         if !self.pawns[i].is_alive() {
             return;
         }
@@ -94,6 +96,7 @@ impl Sim {
             .iter()
             .filter(|p| p.is_alive() && p.faction == Faction::Colony && p.id != my_id)
             .count() as u32;
+        self.pawns[i].corpses_on_map = corpses;
         self.decay_needs(i);
         // À terre : plus de défense, plus de crise, plus de recherche de job.
         // Sa position, s'il est porté, est recopiée par le porteur.
@@ -167,6 +170,11 @@ impl Sim {
                 picked,
                 progress,
             } => self.do_butcher(i, spot, item, picked, progress),
+            Job::Bury {
+                corpse,
+                grave,
+                picked,
+            } => self.do_bury(i, corpse, grave, picked),
             // Traité plus haut : un pawn à terre ne passe jamais par ici.
             Job::Downed => {}
             // Réservé aux assiégeants (traités plus haut) : un colon n'attend
@@ -368,7 +376,10 @@ impl Sim {
             // même priorité et la même place dans le tableau de travail.
             WorkType::Designated => self.try_start_work(i) || self.try_start_hunt(i),
             WorkType::Farm => self.try_start_farm(i),
-            WorkType::Haul => self.try_start_haul(i),
+            // Enterrer un cadavre suit le rangement : même priorité, même
+            // urgence relative — la colonie range d'abord ce qui se range,
+            // puis s'occupe de ses morts.
+            WorkType::Haul => self.try_start_haul(i) || self.try_start_bury(i),
         }
     }
 
@@ -876,6 +887,133 @@ impl Sim {
             }
         }
         false
+    }
+
+    /// Va chercher un cadavre humain non réservé et le porte jusqu'à la tombe
+    /// vide la plus proche **de lui** (pas du colon : c'est elle qu'il va
+    /// falloir porter). Deux court-circuits avant tout balayage : pas de
+    /// tombe vide, ou aucun cadavre au sol. Une dépouille de bête n'est pas
+    /// concernée (`ItemKind::is_animal_corpse`) : elle se dépèce, elle ne
+    /// s'enterre pas.
+    fn try_start_bury(&mut self, i: usize) -> bool {
+        if self.map.grave_count() == 0
+            || !self
+                .items
+                .iter()
+                .any(|s| s.kind == ItemKind::Corpse && s.reserved_by.is_none() && s.count > 0)
+        {
+            return false;
+        }
+        let from = self.pawns[i].tile();
+        let mut corpses: Vec<(u32, u32, u32, usize)> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.kind == ItemKind::Corpse && s.reserved_by.is_none() && s.count > 0)
+            .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
+            .collect();
+        corpses.sort_unstable();
+        let mut graves: Vec<(u32, u32)> = Vec::new();
+        for y in 0..self.map.height() {
+            for x in 0..self.map.width() {
+                if self.map.feature(x, y) == Feature::Grave && !self.is_reserved(x, y) {
+                    graves.push((x, y));
+                }
+            }
+        }
+        if graves.is_empty() {
+            return false;
+        }
+        for &(_, cx, cy, k) in corpses.iter().take(PATH_ATTEMPTS) {
+            let Some((gx, gy)) = graves
+                .iter()
+                .map(|&(x, y)| (chebyshev((cx, cy), (x, y)), x, y))
+                .min()
+                .map(|(_, x, y)| (x, y))
+            else {
+                continue;
+            };
+            if let Some(p) = path::find_path(&self.map, from, (cx, cy)) {
+                let pawn = self.pawns[i].id;
+                self.items[k].reserved_by = Some(pawn);
+                self.reservations.push(Reservation { x: gx, y: gy, pawn });
+                let corpse = self.items[k].id;
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Bury {
+                    corpse,
+                    grave: (gx, gy),
+                    picked: false,
+                };
+                return true;
+            }
+        }
+        false
+    }
+
+    fn do_bury(&mut self, i: usize, corpse: u32, grave: (u32, u32), picked: bool) {
+        // La tombe visée doit rester vide et exister : sinon on repose le
+        // cadavre où on en est et on retente ailleurs au prochain tick.
+        if self.map.feature(grave.0, grave.1) != Feature::Grave {
+            self.abandon_job(i);
+            return;
+        }
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        let here = self.pawns[i].tile();
+        if !picked {
+            let Some(k) = self.items.iter().position(|s| s.id == corpse) else {
+                self.abandon_job(i);
+                return;
+            };
+            if (self.items[k].x, self.items[k].y) != here || self.items[k].kind != ItemKind::Corpse
+            {
+                self.abandon_job(i);
+                return;
+            }
+            // Un cadavre se porte à l'unité, comme une dépouille.
+            self.items[k].count -= 1;
+            self.items[k].reserved_by = None;
+            if self.items[k].count == 0 {
+                self.items.remove(k);
+            }
+            self.pawns[i].carrying = Some((ItemKind::Corpse, 1));
+            // La tombe est franchissable : on marche dessus, comme pour un
+            // stockage, plutôt que de s'arrêter à côté.
+            match path::find_path(&self.map, here, grave) {
+                Some(p) => {
+                    self.pawns[i].set_path(p);
+                    self.pawns[i].job = Job::Bury {
+                        corpse,
+                        grave,
+                        picked: true,
+                    };
+                }
+                None => {
+                    self.drop_carried(i);
+                    self.pawns[i].job = Job::Idle;
+                }
+            }
+            return;
+        }
+        if here != grave || self.pawns[i].carrying.is_none() {
+            self.abandon_job(i);
+            return;
+        }
+        self.pawns[i].carrying = None;
+        self.map.set_feature(grave.0, grave.1, Feature::GraveFilled);
+        let id = self.pawns[i].id;
+        self.reservations.retain(|r| r.pawn != id);
+        self.pawns[i].job = Job::Idle;
+        // Un mort de moins à voir traîner : le deuil en cours se referme un
+        // peu, comme un vrai enterrement.
+        for p in &mut self.pawns {
+            if p.faction == Faction::Colony {
+                p.grief_ticks /= 2;
+            }
+        }
+        self.push_event(EventKind::Buried, 0);
     }
 
     /// Une pile est rangée si elle est seule de son genre sur une case de stockage.
@@ -2085,9 +2223,68 @@ impl Sim {
 
     /// La nourriture périmée disparaît. Les jobs qui la visaient s'arrêtent
     /// d'eux-mêmes en ne la retrouvant pas.
+    ///
+    /// Lire la température de chaque pile à chaque tick coûterait cher sur
+    /// une grande colonie : on n'évalue la péremption que tous les
+    /// `SPOILAGE_INTERVAL` ticks, en perdant d'un coup ce que ces ticks-là
+    /// auraient coûté à la vitesse mesurée à cet instant (voir
+    /// `Sim::spoil_items`).
     pub(crate) fn tick_spoilage(&mut self) {
+        if self.tick % SPOILAGE_INTERVAL != 0 {
+            return;
+        }
+        self.spoil_items(SPOILAGE_INTERVAL as u32);
+    }
+
+    /// Fait avancer la fraîcheur des piles au sol de `elapsed` ticks, à la
+    /// vitesse donnée par la température **actuelle** de chaque case
+    /// (`climate::spoilage_divisor`) : rien ne bouge sous le gel, vitesse
+    /// nominale au chaud. Une pile qui tombe à 0 disparaît ; sinon
+    /// `ItemStack::spoil_at` est ré-estimé à cette même vitesse, pour
+    /// l'affichage.
+    ///
+    /// Partagée par le sweep périodique ci-dessus (`elapsed` =
+    /// `SPOILAGE_INTERVAL`) et par l'avance rapide (`Sim::fast_forward`), qui
+    /// lui fait avaler tout l'écart gelé d'un coup — on ne connaît pas la
+    /// météo passée, seulement la température **actuelle** de chaque case.
+    pub(crate) fn spoil_items(&mut self, elapsed: u32) {
+        if elapsed == 0 {
+            return;
+        }
         let now = self.tick;
-        self.items.retain(|s| s.spoil_at > now);
+        let mut k = 0;
+        while k < self.items.len() {
+            let Some(life) = self.items[k].kind.shelf_life() else {
+                k += 1;
+                continue;
+            };
+            let (x, y) = (self.items[k].x, self.items[k].y);
+            let temperature = self.tile_temperature(x, y);
+            let Some(divisor) = climate::spoilage_divisor(temperature) else {
+                // Gelé : aucune perte ce coup-ci.
+                k += 1;
+                continue;
+            };
+            // Perte du lot, en millionièmes : voir `ItemStack::freshness`.
+            // Tout se fait en `u64` et la division vient en dernier — un
+            // `1_000_000 / shelf_life` tronqué trop tôt (`shelf_life` ne
+            // divise presque jamais pile un million) accumulerait un déficit
+            // qui retarderait la disparition de quelques ticks à chaque
+            // graine, ici sur toute une durée de vie.
+            let denom = u64::from(life) * u64::from(divisor);
+            let loss = (u64::from(FRESHNESS_MAX) * u64::from(elapsed) / denom.max(1)) as u32;
+            let s = &mut self.items[k];
+            s.freshness = s.freshness.saturating_sub(loss.max(1));
+            if s.freshness == 0 {
+                self.items.remove(k);
+                continue;
+            }
+            // Vitesse effective (en millionièmes par tick) pour l'estimation
+            // d'affichage ci-dessous : `.max(1)` pour ne jamais diviser par 0.
+            let effective = (FRESHNESS_MAX / (life.saturating_mul(divisor))).max(1);
+            s.spoil_at = now + u64::from(s.freshness / effective);
+            k += 1;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -2103,14 +2300,24 @@ impl Sim {
         let spoil_at = kind
             .shelf_life()
             .map_or(u64::MAX, |life| self.tick + u64::from(life));
+        // Fraîche à la création ; `u32::MAX` si le genre ne périme pas
+        // (voir `ItemStack::freshness`).
+        let freshness = if kind.shelf_life().is_some() {
+            FRESHNESS_MAX
+        } else {
+            u32::MAX
+        };
         if let Some(s) = self
             .items
             .iter_mut()
             .find(|s| (s.x, s.y) == (x, y) && s.kind == kind && s.count + count <= STACK_MAX)
         {
             s.count += count;
-            // La pile fusionnée se gâte à la date la plus proche.
+            // La pile fusionnée se gâte à la date la plus proche et prend la
+            // fraîcheur la plus basse : mélanger du frais à du vieux ne
+            // rajeunit rien.
             s.spoil_at = s.spoil_at.min(spoil_at);
+            s.freshness = s.freshness.min(freshness);
             return;
         }
         let id = self.next_id;
@@ -2123,6 +2330,7 @@ impl Sim {
             y,
             reserved_by: None,
             spoil_at,
+            freshness,
         });
     }
 

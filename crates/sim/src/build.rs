@@ -16,6 +16,9 @@ pub enum BuildKind {
     Campfire = 4,
     /// Poste de fabrication d'armes (voir `craft`).
     CraftingSpot = 5,
+    /// Tombe : franchissable, matériau pierre imposé (voir
+    /// `pawn::Job::Bury`).
+    Grave = 6,
 }
 
 impl BuildKind {
@@ -26,6 +29,7 @@ impl BuildKind {
             2 => BuildKind::Floor,
             3 => BuildKind::Bed,
             5 => BuildKind::CraftingSpot,
+            6 => BuildKind::Grave,
             _ => BuildKind::Campfire,
         }
     }
@@ -38,6 +42,7 @@ impl BuildKind {
             BuildKind::Bed => 500,
             BuildKind::Campfire => 200,
             BuildKind::CraftingSpot => 200,
+            BuildKind::Grave => 200,
         }
     }
 
@@ -50,10 +55,13 @@ impl BuildKind {
             BuildKind::Bed => 12,
             BuildKind::Campfire => 8,
             BuildKind::CraftingSpot => 10,
+            BuildKind::Grave => 5,
         }
     }
 
     /// Le constructeur doit rester à côté : la case devient infranchissable.
+    /// Une tombe reste franchissable une fois bâtie : le constructeur
+    /// termine debout dessus, comme pour un lit.
     pub fn adjacent_only(self) -> bool {
         matches!(
             self,
@@ -65,6 +73,7 @@ impl BuildKind {
     pub fn forced_material(self) -> Option<Material> {
         match self {
             BuildKind::Bed | BuildKind::Campfire | BuildKind::CraftingSpot => Some(Material::Wood),
+            BuildKind::Grave => Some(Material::Stone),
             _ => None,
         }
     }
@@ -145,6 +154,7 @@ pub fn result_feature(kind: BuildKind, material: Material) -> Option<Feature> {
         (BuildKind::Bed, _) => Some(Feature::Bed),
         (BuildKind::Campfire, _) => Some(Feature::Campfire),
         (BuildKind::CraftingSpot, _) => Some(Feature::CraftingSpot),
+        (BuildKind::Grave, _) => Some(Feature::Grave),
         (BuildKind::Floor, _) => None,
     }
 }

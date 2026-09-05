@@ -63,11 +63,14 @@ impl Sim {
         // Les buissons récoltés avant le gel ont repoussé pendant l'absence.
         let outdoor = self.outdoor_temperature();
         self.tick_regrowth(outdoor);
+        // La fraîcheur des vivres déjà posés avale tout l'écart d'un coup, à
+        // la température **actuelle** de leur case (on ne connaît pas la
+        // météo passée) : avant que les colons ne rentrent et ne lâchent
+        // leurs charges, qui doivent, elles, repartir fraîches
+        // (`Sim::spawn_item` les pose à `FRESHNESS_MAX`).
+        self.spoil_items(ticks);
         self.raiders_leave();
         self.recover_pawns(ticks);
-        // Après les colons : ce qu'ils ont lâché en abandonnant leur job vient
-        // d'être reposé, avec une date de péremption datée du nouveau tick.
-        self.tick_spoilage();
         // Le storyteller a dormi lui aussi : ses échéances glissent d'autant,
         // sinon le retour déclencherait une rafale de raids en attente.
         self.next_raid_at = self.next_raid_at.saturating_add(elapsed);

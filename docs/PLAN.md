@@ -398,8 +398,15 @@ jours démarre au jour 12. Ligne de stock unifiée (cinq genres de base, le rest
 tous les 4 à 7 jours (trois profils : vivrier, artisan, armurier), s'installe à 4-6 cases des
 colons pendant un jour, vend à 120 % et achète à 70 % de la valeur de richesse ; troc en
 valeur par `Trade` (prélevé en stockage, déposé à l'étal) ; attaqué, il devient hostile et la
-rancune espace ses visites ; interface à faire. À venir : recherche, relations, factions PNJ
-avec réputation, mods de contenu, événements monde.
+rancune espace ses visites ; interface à faire. Conservation par le froid et tombes livrées le
+2026-09-05 (Sonnet, sim) : chaque pile périssable porte une fraîcheur en millionièmes qui
+décroît selon la température de sa case (vitesse normale au-dessus de 15 °C, moitié entre 5 et
+15, quart entre 0 et 5, gelé sous zéro), évaluée toutes les 60 ticks ; une cave froide ou
+l'hiver conservent donc les vivres. Tombe (5 pierre) et job d'inhumation : un cadavre humain au
+sol pèse −40 000 d'humeur par cadavre (plafond −120 000) sur toute la colonie, l'enterrer divise
+le deuil en cours par deux. Interface à faire (outil Tombe, fraîcheur dans le panneau d'objet,
+événement 30). À venir : recherche, relations, factions PNJ avec réputation, mods de contenu,
+événements monde.
 
 ## 7. Risques identifiés
 
@@ -414,6 +421,16 @@ avec réputation, mods de contenu, événements monde.
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-05 : conservation par le froid. La date de péremption fixe devient une fraîcheur
+  entière par pile dont la perte dépend de la température de la case ; `spoil_at` reste
+  comme simple estimation d'affichage à la vitesse courante, il ne décide plus rien. Perte
+  calculée en `u64` avec la division en dernier : un quotient tronqué trop tôt laissait un
+  résidu qui retardait la disparition. L'avance rapide applique la vitesse de la température
+  actuelle (on ne connaît pas la température passée). Le test `unreachable_food_spoils`
+  force un climat chaud : sous le climat tempéré par défaut, les baies durent maintenant
+  plus longtemps, c'est l'effet voulu. Bench 100 000 ticks : aucune régression, le
+  scénario chargé gagne 20 % (péremption évaluée toutes les 60 ticks au lieu de chaque tick).
 
 - 2026-09-05 : reconnexion automatique (client). Le transport de salle et celui du monde
   sont enveloppés dans `ReconnectingTransport`, qui masque les essais intermédiaires : la couche

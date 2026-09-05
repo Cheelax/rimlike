@@ -42,6 +42,12 @@ pub const BREAK_TICKS: u32 = TICKS_PER_DAY / 4;
 /// Après s'être défoulé, le colon garde un bonus d'humeur une journée.
 pub const RELIEF_TICKS: u32 = TICKS_PER_DAY;
 
+/// Malus d'humeur par cadavre humain qui traîne au sol (voir
+/// `Pawn::corpses_on_map`), plafonné à `CORPSE_MOOD_MALUS_CAP` : au-delà de
+/// trois cadavres, ça ne peut pas être pire.
+pub const CORPSE_MOOD_MALUS: i64 = 40_000;
+pub const CORPSE_MOOD_MALUS_CAP: i64 = 120_000;
+
 /// Points de vie d'un pawn en pleine forme. **Valeur dérivée** : voir
 /// `Pawn::hp` et `Pawn::recompute_hp` (module `health`).
 pub const HP_MAX: u32 = 1000;
@@ -180,6 +186,17 @@ pub enum Job {
     Wait {
         until: u64,
     },
+    /// Porte un cadavre humain jusqu'à une tombe vide, puis l'y dépose : la
+    /// tombe devient `Feature::GraveFilled` et la pile disparaît. `picked` :
+    /// le cadavre est en main. Une dépouille de bête n'emprunte jamais ce
+    /// job : elle se dépèce (`Job::Butcher`).
+    ///
+    /// **Ajouté en fin d'énumération** : postcard encode l'indice.
+    Bury {
+        corpse: u32,
+        grave: (u32, u32),
+        picked: bool,
+    },
 }
 
 impl Job {
@@ -216,6 +233,7 @@ impl Job {
             Job::Hunt { .. } => 20,
             Job::Butcher { .. } => 21,
             Job::Wait { .. } => 22,
+            Job::Bury { .. } => 23,
         }
     }
 }
@@ -345,6 +363,12 @@ pub struct Pawn {
     /// Un marchand qu'on a attaqué (`Command::Attack`) : la visite est
     /// annulée, il se défend comme un pillard. Toujours faux ailleurs.
     pub hostile: bool,
+    /// Cadavres humains au sol sur toute la carte, recopié à chaque tick
+    /// comme `outdoor_storm` (`Sim::tick_pawn` ne voit qu'un pawn à la fois,
+    /// le compte est fait une seule fois pour tous). Sert à `mood()`. Champ
+    /// ajouté en fin de structure : un vieux snapshot est refusé net plutôt
+    /// que relu de travers.
+    pub corpses_on_map: u32,
 }
 
 impl Pawn {
@@ -400,6 +424,7 @@ impl Pawn {
             wares: Vec::new(),
             leaves_at: 0,
             hostile: false,
+            corpses_on_map: 0,
         }
     }
 
@@ -539,6 +564,11 @@ impl Pawn {
         }
         if self.in_snow {
             m -= SNOW_MOOD_MALUS;
+        }
+        // Voir les morts traîner au sol pèse sur tout le monde, colonie
+        // entière : un charnier n'est jamais un détail.
+        if self.corpses_on_map > 0 {
+            m -= (i64::from(self.corpses_on_map) * CORPSE_MOOD_MALUS).min(CORPSE_MOOD_MALUS_CAP);
         }
         // Être malade abat autant qu'une bonne blessure.
         if self.sick {
