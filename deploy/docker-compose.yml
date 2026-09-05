@@ -1,0 +1,51 @@
+# Déploiement du serveur relais + monde (apps/server) avec Docker Compose.
+#
+# Depuis ce dossier :
+#   docker compose up -d --build
+#
+# Le contexte de build (`..`) est la racine du dépôt : voir
+# apps/server/Dockerfile et deploy/README.md pour le détail. `rebuild` n'est
+# nécessaire qu'après un changement de code — pas après un changement des
+# seules variables d'environnement ci-dessous (`docker compose up -d` suffit).
+
+services:
+  rimlike-server:
+    build:
+      context: ..
+      dockerfile: apps/server/Dockerfile
+    image: rimlike-server
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      # Fichier unique d'état du monde (colonies, joueurs, caravanes) : voir
+      # apps/server/src/persistence.ts. Nommé plutôt que lié à un chemin hôte
+      # pour rester portable ; `docker volume inspect` en donne l'emplacement
+      # réel si besoin d'y accéder directement (sauvegarde, inspection).
+      - rimlike-world-data:/data
+    environment:
+      # Graine du globe généré au premier démarrage (1 par défaut). La
+      # changer régénère un globe DIFFÉRENT : voir deploy/README.md
+      # (« Changer le globe ») avant d'y toucher sur un serveur qui a déjà
+      # des colonies — le fichier d'état existant serait mis en quarantaine.
+      - WORLD_SEED=1
+      # Subdivisions de l'icosaèdre : 4 = 2 562 cases (défaut, correct pour
+      # tester), 5 = 10 242 cases (recommandé en production). 6 va au-delà
+      # mais alourdit sensiblement `GET /world` et la mémoire du serveur.
+      - WORLD_SUBDIVISIONS=4
+      # Durée réelle d'une heure de jeu du monde, en millisecondes (30000 =
+      # 30 s par défaut, soit un jour de monde en 12 minutes réelles).
+      - WORLD_HOUR_MS=30000
+      # Dé-commenter pour changer le port d'écoute interne (PORT) ou
+      # l'interface (HOST) ; garder cohérent avec le mappage `ports:` ci-dessus.
+      # - PORT=8787
+      # - HOST=0.0.0.0
+      # Dé-commenter pour changer la période du tick du monde (avancement
+      # des caravanes, diffusion), en millisecondes (5000 par défaut).
+      # - CARAVAN_TICK_MS=5000
+      # Dé-commenter pour désactiver la persistance disque (mode mémoire,
+      # tout est perdu à l'arrêt) : voir apps/server/README.md.
+      # - WORLD_PERSIST=0
+
+volumes:
+  rimlike-world-data:

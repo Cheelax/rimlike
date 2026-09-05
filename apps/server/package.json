@@ -9,7 +9,9 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:server": "rm -rf dist && tsc -p tsconfig.build.json && node -e \"const fs=require('node:fs');['protocol','world'].forEach(function(p){var dir='dist/node_modules/@rimlike/'+p;fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(dir+'/package.json',JSON.stringify({name:'@rimlike/'+p,version:'0.1.0',type:'module',main:'../../../packages/'+p+'/src/index.js'}));});\"",
+    "start:server": "node dist/apps/server/src/index.js"
   },
   "dependencies": {
     "@rimlike/protocol": "workspace:*",

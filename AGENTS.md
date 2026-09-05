@@ -154,6 +154,13 @@ chantiers les émet divisés par 100. Le client rebâtit ses meshes quand `map_v
 onglets, retard proche de 0, et une action faite dans l'un visible dans l'autre, y compris
 onglet masqué (le Worker tient la cadence).
 
+## Héberger le serveur
+
+`apps/server/Dockerfile` (contexte = racine du dépôt) compile serveur et paquets partagés en
+JavaScript pur (`pnpm --filter server run build:server` → `apps/server/dist/`) et lance `node`
+sans TypeScript ; `deploy/docker-compose.yml` porte le volume `/data` de persistance. Mode
+d'emploi : `deploy/README.md` ; variables : `apps/server/README.md`.
+
 ## Identité des joueurs
 
 Pas de compte : le serveur remet un jeton secret au premier `world_join` et une clé publique

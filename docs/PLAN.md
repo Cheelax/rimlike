@@ -372,6 +372,9 @@ mods de contenu, événements monde.
 - 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
   par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
   libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
+- 2026-09-05 : déploiement (Sonnet) : image Docker qui n'embarque que du JavaScript compilé
+  et `ws`, compose avec volume ; vérifié hors conteneur faute de démon Docker sur la machine
+  (serveur compilé démarré, `/health` et `/world` répondent).
 - 2026-09-05 : portée de l'identité = serveur + nom. Découvert à l'essai : deux onglets
   partageant `localStorage` devenaient un seul joueur renommé au dernier `world_join`. Le nom
   reste un libellé côté serveur, mais côté navigateur il choisit le profil.

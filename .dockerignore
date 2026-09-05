@@ -1,0 +1,29 @@
+# Contexte de build de apps/server/Dockerfile (docker build -f apps/server/Dockerfile .).
+# Le Dockerfile ne COPY que apps/server, packages/protocol et packages/world :
+# tout le reste est exclu ici pour ne pas envoyer le sim Rust, le client, le
+# wasm généré ni les node_modules au démon Docker (upload de contexte plus
+# rapide, cache plus stable).
+
+.git
+.github
+
+# Sim Rust, client, wasm : hors périmètre du serveur.
+crates/
+apps/client/
+target/
+
+# Docs, pas nécessaires à l'image.
+docs/
+
+# Réinstallés/reconstruits dans l'image, jamais copiés depuis l'hôte.
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+
+# Données persistées et fichiers de quarantaine du monde : jamais dans
+# l'image, le volume /data les fournit au démarrage du conteneur.
+apps/server/data/
+
+.DS_Store
+*.log
