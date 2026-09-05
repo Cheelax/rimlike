@@ -475,7 +475,10 @@ par jour, passage sous −50 qui avance le prochain raid, Guilde alliée qui ven
 hostile qui éloigne les marchands ; tribut `Gift` prélevé en stockage (valeur / 20) ; événements
 41-43. Interface livrée le 2026-09-05 (Sonnet) : panneau Factions (jauges de réputation par palier,
 tribut par faction avec aperçu du gain), tribu qui mène le raid dans l'annonce, événements 41-43 ;
-vérifié : 60 bois offerts au Clan des Cendres, réputation −20 → −17, journal à jour. Marchands itinérants côté serveur
+vérifié : 60 bois offerts au Clan des Cendres, réputation −20 → −17, journal à jour. Mini-carte
+livrée le 2026-09-05 (Sonnet) : canvas 2D en bas à droite (fond repeint au changement de version,
+pawns, feu et rectangle de vue à la cadence du HUD, clic pour recentrer, repli mémorisé) ;
+`Renderer.viewBounds()` projette les coins de l'écran sur le sol sans allocation. Marchands itinérants côté serveur
 livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
 caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;

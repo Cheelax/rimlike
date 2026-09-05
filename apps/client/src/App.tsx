@@ -7,6 +7,7 @@ import { CraftingPanel } from "./CraftingPanel";
 import { factionDefinite } from "./factions";
 import { FactionsPanel } from "./FactionsPanel";
 import { JournalPanel, type JournalEntry, type JournalFilter } from "./JournalPanel";
+import { Minimap, type MinimapHandle } from "./Minimap";
 import { decodeResearch, researchPercent, TECHS } from "./research";
 import { ResearchPanel } from "./ResearchPanel";
 import { decodeOpinions, opinionLabel, sortOpinions, type Opinion } from "./social";
@@ -568,6 +569,15 @@ export function App() {
   const rendererRef = useRef<Renderer | null>(null);
   const actionsRef = useRef<Actions | null>(null);
   const bridgeRef = useRef<SimBridge | null>(null);
+  const minimapRef = useRef<MinimapHandle | null>(null);
+  /**
+   * Dernier message `map` reçu (voir `onMap` dans l'effet de la partie), pour
+   * repeindre le fond de la mini-carte dès qu'elle apparaît même si `onMap`
+   * a déjà eu lieu avant son montage (en multi, la carte arrive au démarrage
+   * de l'hôte, avant que `running` ne fasse apparaître la mini-carte pour un
+   * rejoignant). Voir l'effet juste avant le `return` de ce composant.
+   */
+  const lastMapRef = useRef<{ width: number; height: number; tiles: Uint8Array; features: Uint8Array } | null>(null);
   /**
    * Journal des événements depuis le début de la session : alimenté par la
    * même boucle que les toasts (`notifyEvents`, dans l'effet de la partie),
@@ -1099,11 +1109,24 @@ export function App() {
      * seulement (comme `craftingSpotCount`), jamais à chaque frame.
      */
     let researchBenchCount = 0;
+    /**
+     * Dernière couche « feu » reçue (`onFire`), pour la mini-carte : elle ne
+     * la peint qu'à la cadence du HUD (voir l'intervalle plus bas), jamais à
+     * chaque `onFire` (`fireVersion` change bien plus souvent que ça).
+     */
+    let lastFire: Uint8Array | null = null;
 
     // --- Le Worker de simulation ---
     const bridge = new SimBridge({
       onMap: (m) => {
         renderer.setMap(m.width, m.height, m.tiles, m.features);
+        // Même rappel que le fond 3D : le fond de la mini-carte ne se
+        // recalcule, lui aussi, qu'au changement de `mapVersion` (mission
+        // mini-carte §1). Gardé à part pour la repeindre dès son montage,
+        // même si `onMap` a déjà eu lieu avant (voir `lastMapRef`, un
+        // rejoignant multi peut monter la mini-carte après coup).
+        lastMapRef.current = { width: m.width, height: m.height, tiles: m.tiles, features: m.features };
+        minimapRef.current?.setMap(m.width, m.height, m.tiles, m.features);
         let spots = 0;
         let benches = 0;
         for (const f of m.features) {
@@ -1115,7 +1138,13 @@ export function App() {
       },
       onOverlays: (m) => renderer.setOverlays(m.zones, m.designations),
       onIndoor: (m) => renderer.setIndoor(m.indoor),
-      onFire: (m) => renderer.setFire(m.fire),
+      onFire: (m) => {
+        renderer.setFire(m.fire);
+        // Seulement mémorisé : la mini-carte ne le peint qu'à la cadence du
+        // HUD (~500 ms, voir l'intervalle plus bas), jamais à ce rythme-ci
+        // (`fireVersion` peut changer bien plus souvent qu'un incendie actif).
+        lastFire = m.fire;
+      },
       onFrame: (f) => {
         const now = performance.now();
         if (freshSim) {
@@ -1937,6 +1966,9 @@ export function App() {
       } else if (!lowFreshness) {
         lowFreshnessActive = false;
       }
+      // Mini-carte : pawns, feu et rectangle de vue, à la cadence du HUD
+      // seulement (jamais à chaque frame, voir l'en-tête de `Minimap.tsx`).
+      minimapRef.current?.update(curPawns, f.animals, lastFire, renderer.viewBounds());
       setStats({
         tick: f.tick,
         day: Math.floor(f.tick / f.ticksPerDay) + 1,
@@ -1999,6 +2031,10 @@ export function App() {
       bridgeRef.current = null;
       dispatcherRef.current = null;
       isHostRef.current = false;
+      // Une carte neuve (nouvelle partie, nouvelle salle) n'a pas encore de
+      // `map` : la mini-carte ne doit pas repeindre celle de la partie d'avant
+      // (voir l'effet `[running]` juste avant le `return` du composant).
+      lastMapRef.current = null;
     };
   }, [session]);
 
@@ -2212,6 +2248,18 @@ export function App() {
   // celui de l'accueil ou du monde, qui ont leur propre interface.
   const running = session !== null && (!multi || (net !== null && net.phase === "running" && net.ready));
   const inWorld = worldSession !== null;
+  /**
+   * La mini-carte se monte en même temps que le HUD (`running`), mais peut
+   * apparaître après le `map` déjà reçu par le Worker (un rejoignant multi :
+   * la carte arrive au démarrage de l'hôte, avant que `net.ready` ne bascule
+   * `running`) : on repeint son fond depuis la dernière carte connue dès
+   * qu'elle existe, plutôt que de la laisser vide jusqu'au prochain mur posé.
+   */
+  useEffect(() => {
+    if (!running) return;
+    const map = lastMapRef.current;
+    if (map) minimapRef.current?.setMap(map.width, map.height, map.tiles, map.features);
+  }, [running]);
   /**
    * Quitte la salle et revient au globe, sans retélécharger quoi que ce soit :
    * le Worker (et donc sa connexion) est fermé par le nettoyage de l'effet,
@@ -2449,6 +2497,8 @@ export function App() {
             onSelect={(id) => actionsRef.current?.selectPawn(id)}
             onFocus={(id) => actionsRef.current?.focusPawn(id)}
           />
+
+          <Minimap ref={minimapRef} onFocus={(x, y) => rendererRef.current?.focusOn(x, y)} />
 
           {sel && sel.animal && (
             <div className="panel">

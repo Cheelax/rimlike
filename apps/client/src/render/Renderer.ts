@@ -82,9 +82,13 @@ export const PAWN_COLORS = [0xa85340, 0x527f98, 0xb59a4e, 0x8c718b, 0x6f8557, 0x
 const SKIN = 0xf1c9a5;
 /** Contrat avec `pawn::HP_MAX` (colons et pillards ; les bêtes ont leur propre plafond, hors rendu). */
 const PAWN_HP_MAX = 1000;
-const RAIDER_COLOR = 0x7a1f1f;
-/** Teinte du marchand (`pawn::Faction::Trader`) : ocre/brune, distincte du pillard et des colons. */
-const TRADER_COLOR = 0xb8863a;
+/** Exporté : réutilisé par `Minimap.tsx` pour peindre les pillards de la même couleur qu'en 3D. */
+export const RAIDER_COLOR = 0x7a1f1f;
+/**
+ * Teinte du marchand (`pawn::Faction::Trader`) : ocre/brune, distincte du pillard et des colons.
+ * Exporté : réutilisé par `Minimap.tsx`.
+ */
+export const TRADER_COLOR = 0xb8863a;
 /** Couleur du ballot porté sur le dos par un marchand, un cuir plus sombre que sa teinte. */
 const TRADER_PACK_COLOR = 0x6b4a26;
 /** Couleur du corps par espèce (`animals::Species` : 0 cerf, 1 lapin, 2 sanglier). */
@@ -98,9 +102,10 @@ const HUNT_MARKER_COLOR = 0xff3030;
 /**
  * Collier/ruban porté par une bête de la colonie (`pawn::Faction::Colony`
  * avec espèce, `sim::livestock`) : la distingue au premier coup d'œil d'une
- * bête sauvage de la même espèce, sans changer sa silhouette.
+ * bête sauvage de la même espèce, sans changer sa silhouette. Exporté :
+ * réutilisé par `Minimap.tsx` pour la même distinction.
  */
-const LIVESTOCK_COLLAR_COLOR = 0xd9b23a;
+export const LIVESTOCK_COLLAR_COLOR = 0xd9b23a;
 /** Largeur de la barre de vie, en cases. */
 const HP_BAR_WIDTH = 0.5;
 const HP_BAR_EMPTY = new THREE.Color(0xd94f4f);
@@ -115,7 +120,8 @@ const FIRE_FLAME_OFFSETS: readonly [number, number][] = [
   [-0.16, 0.14],
   [0.17, -0.12],
 ];
-const FIRE_OUTER_COLOR = 0xdb8139;
+/** Exporté : réutilisé par `Minimap.tsx` pour peindre les cases en feu de la même teinte qu'en 3D. */
+export const FIRE_OUTER_COLOR = 0xdb8139;
 const FIRE_INNER_COLOR = 0xffc668;
 const FIRE_GLOW_COLOR = 0xff7a1f;
 const FIRE_OUTER_RADIUS = 0.11;
@@ -125,6 +131,17 @@ const FIRE_INNER_HEIGHT = 0.22;
 const FIRE_GLOW_RADIUS = 0.55;
 /** Axe de rotation des flammes (autour de la verticale) : jamais recréé par case. */
 const FIRE_UP = new THREE.Vector3(0, 1, 0);
+
+/**
+ * Coins de l'écran en coordonnées normalisées (NDC), pour `viewBounds` :
+ * alloué une fois au chargement du module, jamais par appel.
+ */
+const VIEW_CORNERS: readonly (readonly [number, number])[] = [
+  [-1, -1],
+  [1, -1],
+  [-1, 1],
+  [1, 1],
+];
 
 interface PawnView {
   group: THREE.Group;
@@ -190,6 +207,9 @@ export class Renderer {
   private readonly sky: THREE.HemisphereLight;
   private readonly raycaster = new THREE.Raycaster();
   private readonly groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  /** Réutilisés par `viewBounds` (mini-carte) : aucune allocation par appel. */
+  private readonly viewCornerNdc = new THREE.Vector2();
+  private readonly viewCornerHit = new THREE.Vector3();
   private readonly hover: THREE.Mesh;
   private readonly selection: THREE.Mesh;
   private readonly dragRect: THREE.Mesh;
@@ -1353,6 +1373,32 @@ export class Renderer {
     const r = this.host.getBoundingClientRect();
     const ndc = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
+  }
+
+  /**
+   * Rectangle de la vue caméra projeté sur le sol (case), pour le rectangle
+   * de vue de la mini-carte (`Minimap.tsx`) : les quatre coins de l'écran,
+   * chacun intersecté avec le plan `y = 0`, puis englobés en un rectangle
+   * aligné aux axes. `null` si un coin ne touche pas le sol (caméra
+   * quasiment à plat ; ne devrait pas arriver avec l'orbite fixe de ce
+   * Renderer, mais on reste défensif). Aucune allocation par appel : coins et
+   * vecteurs de calcul sont des constantes de module ou des membres réutilisés.
+   */
+  viewBounds(): TileRect | null {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const [nx, ny] of VIEW_CORNERS) {
+      this.viewCornerNdc.set(nx, ny);
+      this.raycaster.setFromCamera(this.viewCornerNdc, this.camera);
+      if (!this.raycaster.ray.intersectPlane(this.groundPlane, this.viewCornerHit)) return null;
+      minX = Math.min(minX, this.viewCornerHit.x);
+      maxX = Math.max(maxX, this.viewCornerHit.x);
+      minY = Math.min(minY, this.viewCornerHit.z);
+      maxY = Math.max(maxY, this.viewCornerHit.z);
+    }
+    return { x0: minX, y0: minY, x1: maxX, y1: maxY };
   }
 
   /** `t` dans `[0, 1)` : 0 minuit, 0.25 lever, 0.5 midi, 0.75 coucher. */

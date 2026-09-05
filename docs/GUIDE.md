@@ -124,6 +124,7 @@ côté client.
 | — | Options (bouton dans la barre, `Échap` pour fermer) | change la difficulté en cours de partie ; en multi, réservé à l'hôte |
 | — | Troc (bouton grisé sans marchand de passage, voir §5) | négocier avec le marchand présent |
 | — | Factions | réputation auprès des trois factions PNJ et tribut (voir « Factions et réputation », §4) |
+| — | Mini-carte (coin bas droit, bouton « − » pour la replier) | vue d'ensemble de la carte 128×128 : colons, bêtes, pillards, marchand et cases en feu en pastilles colorées, rectangle blanc pour la vue caméra ; clic ou glisser dessus pour s'y déplacer |
 
 Le panneau d'un colon sélectionné montre son travail en cours, son arme et son
 habit, la température ressentie, ses besoins (PV, faim, repos, humeur), sa
