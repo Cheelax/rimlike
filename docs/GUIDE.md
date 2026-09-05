@@ -67,6 +67,10 @@ le globe, colonies gelées).
 - Molette : zoom. `Q` / `E` : rotation par pas de 90°.
 - Clic gauche sur un colon : le sélectionne. Clic droit avec un colon
   sélectionné : ordre de déplacement, ou d'attaque sur un ennemi ou un animal.
+- Plusieurs colons : `Maj` + clic ajoute ou retire un colon, `Maj` + glisser
+  gauche trace un rectangle de sélection, `Ctrl`/`Cmd` + `A` sélectionne tous
+  les colons. Clic droit : chacun part vers une case voisine distincte, ou tous
+  attaquent la même cible. Le panneau indique « N colons sélectionnés ».
 - `Échap` : ferme le menu Options s'il est ouvert ; sinon quitte l'outil en
   cours pour revenir à la sélection ; en sélection, désélectionne.
 - Barre des colons (bas d'écran) : clic pour sélectionner un colon, double

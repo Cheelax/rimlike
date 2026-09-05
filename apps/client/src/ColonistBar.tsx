@@ -32,24 +32,27 @@ export interface ColonistBadge {
 
 export interface ColonistBarProps {
   readonly colonists: readonly ColonistBadge[];
-  /** Id actuellement sélectionné, pour surligner sa pastille. */
-  readonly selected: number | null;
-  /** Clic : sélectionne le colon, comme un clic sur le pawn dans la scène. */
-  readonly onSelect: (id: number) => void;
+  /** Ids actuellement sélectionnés (`selection.ts`), pour surligner leurs pastilles. */
+  readonly selection: readonly number[];
+  /**
+   * Clic : sélectionne le colon, comme un clic sur son pawn dans la scène.
+   * Maj + clic (`additive`) l'ajoute à la sélection en cours, ou l'en retire.
+   */
+  readonly onSelect: (id: number, additive: boolean) => void;
   /** Double clic : centre la caméra sur lui (`Renderer.focusOn`). */
   readonly onFocus: (id: number) => void;
 }
 
-export function ColonistBar({ colonists, selected, onSelect, onFocus }: ColonistBarProps) {
+export function ColonistBar({ colonists, selection, onSelect, onFocus }: ColonistBarProps) {
   if (colonists.length === 0) return null;
   return (
     <div className="colonist-bar">
       {colonists.map((c) => (
         <button
           key={c.id}
-          className={`colonist-badge${c.id === selected ? " selected" : ""}`}
+          className={`colonist-badge${selection.includes(c.id) ? " selected" : ""}`}
           style={{ borderColor: c.color }}
-          onClick={() => onSelect(c.id)}
+          onClick={(e) => onSelect(c.id, e.shiftKey)}
           onDoubleClick={() => onFocus(c.id)}
           title={`${c.name || `Colon ${c.id}`} · ${c.job}${
             c.traits.length > 0 ? ` · ${c.traits.map((t) => TRAIT_LABELS[t] ?? "?").join(", ")}` : ""

@@ -211,7 +211,26 @@ export class Renderer {
   private readonly viewCornerNdc = new THREE.Vector2();
   private readonly viewCornerHit = new THREE.Vector3();
   private readonly hover: THREE.Mesh;
-  private readonly selection: THREE.Mesh;
+  /**
+   * Sélection courante (ids), réutilisé (jamais réalloué) par `setSelection` :
+   * un colon seul comme plusieurs partagent le même mécanisme. Positionnée en
+   * anneaux par `syncPawns`, seul endroit qui connaît la position monde d'un id.
+   */
+  private readonly selectedIds = new Set<number>();
+  /**
+   * Anneaux de sélection, un par pawn actuellement sélectionné et vivant : le
+   * pool grandit à la demande (`ringAt`) mais ne rétrécit jamais, les entrées
+   * en trop d'une frame à l'autre sont juste cachées. Géométrie et matériau
+   * partagés entre tous les anneaux : un seul jeu, quel que soit leur nombre.
+   */
+  private readonly selectionRings: THREE.Mesh[] = [];
+  private readonly selectionRingGeometry = new THREE.RingGeometry(0.34, 0.44, 32).rotateX(-Math.PI / 2);
+  private readonly selectionRingMaterial = new THREE.MeshBasicMaterial({
+    color: 0xffe066,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false,
+  });
   private readonly dragRect: THREE.Mesh;
   private readonly placementTexture = placementTexture();
   private readonly placementGrid = new THREE.Mesh(
@@ -269,7 +288,6 @@ export class Renderer {
   private mapW = 0;
   private mapH = 0;
   private framed = false;
-  private selectedId: number | null = null;
   private azimuth = 0;
   private targetAzimuth = 0;
   private clock = 0;
@@ -319,18 +337,14 @@ export class Renderer {
       new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.22, depthWrite: false }),
     );
     this.hover.visible = false;
-    this.selection = new THREE.Mesh(
-      new THREE.RingGeometry(0.34, 0.44, 32).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.9, depthWrite: false }),
-    );
-    this.selection.visible = false;
     this.dragRect = new THREE.Mesh(
       flat(),
       new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthWrite: false }),
     );
     this.dragRect.visible = false;
     this.placementGrid.visible = false;
-    this.scene.add(this.hover, this.selection, this.dragRect, this.placementGrid);
+    // Les anneaux de sélection eux-mêmes s'ajoutent à la demande (`ringAt`), pas ici.
+    this.scene.add(this.hover, this.dragRect, this.placementGrid);
 
     this.scene.add(this.featureProps.group, this.floorProps.group, this.itemProps.group, this.blueprintProps.group);
 
@@ -881,6 +895,17 @@ export class Renderer {
     };
   }
 
+  /**
+   * Suspend (ou restaure) tous les contrôles de caméra, le temps d'un
+   * Maj + glisser gauche en mode Sélection (rectangle multi-colons plutôt que
+   * panoramique, `App.tsx`) : sans ça, le glisser gauche panoramiquerait la
+   * caméra en même temps qu'il trace le rectangle (`setLeftDragPans` ne fait
+   * que choisir entre les deux, il ne les cumule pas).
+   */
+  setPanSuspended(suspended: boolean): void {
+    this.controls.enabled = !suspended;
+  }
+
   /** Tourne la vue d'un quart de tour, animé sur quelques frames. */
   rotate(direction: 1 | -1): void {
     this.targetAzimuth += (direction * Math.PI) / 2;
@@ -906,6 +931,10 @@ export class Renderer {
     const count = Math.floor(cur.length / PAWN_STRIDE);
     // Un seul calcul par frame : les étiquettes de nom n'encombrent pas la vue large.
     const showNames = this.camera.zoom >= NAME_LABEL_MIN_ZOOM;
+    // Anneaux de sélection : un par id de `selectedIds` encore vivant, repris
+    // du pool dans l'ordre où on les croise ; le reste du pool est caché à la
+    // fin, sans jamais désallouer (voir `ringAt`).
+    let ringsUsed = 0;
     for (let i = 0; i < count; i++) {
       const o = i * PAWN_STRIDE;
       const id = cur[o];
@@ -987,11 +1016,15 @@ export class Renderer {
       // Marqueur de chasse : une bête marquée gibier (`animals` buffer), et
       // elle seule (l'id d'un colon n'y figure jamais).
       view.huntMarker.visible = this.animalByPawn.get(id)?.hunted ?? false;
-      if (id === this.selectedId) {
-        this.selection.visible = true;
-        this.selection.position.set(x, 0.03, z);
+      if (this.selectedIds.has(id)) {
+        const ring = this.ringAt(ringsUsed++);
+        ring.visible = true;
+        ring.position.set(x, 0.03, z);
       }
     }
+    // Le reste du pool (sélection vidée, ou un id sélectionné disparu) : caché,
+    // jamais désalloué (voir `ringAt`).
+    for (let i = ringsUsed; i < this.selectionRings.length; i++) this.selectionRings[i].visible = false;
     for (const [id, view] of this.pawns) {
       if (!seen.has(id)) {
         this.pawnRoot.remove(view.group);
@@ -1003,10 +1036,17 @@ export class Renderer {
         this.pawns.delete(id);
       }
     }
-    if (this.selectedId !== null && !seen.has(this.selectedId)) {
-      this.selectedId = null;
-      this.selection.visible = false;
+  }
+
+  /** Anneau n°`index` du pool de sélection, créé à la demande et ajouté à la scène. */
+  private ringAt(index: number): THREE.Mesh {
+    let ring = this.selectionRings[index];
+    if (!ring) {
+      ring = new THREE.Mesh(this.selectionRingGeometry, this.selectionRingMaterial);
+      this.selectionRings[index] = ring;
+      this.scene.add(ring);
     }
+    return ring;
   }
 
   private prevOf(prev: Int32Array | null, id: number): { x: number; z: number } | null {
@@ -1300,9 +1340,25 @@ export class Renderer {
     };
   }
 
+  /**
+   * Sélection multiple : remplace l'ensemble des ids surlignés. Le `Set`
+   * interne est réutilisé (vidé puis rerempli), jamais réalloué. Un anneau par
+   * id encore vivant apparaît au prochain `syncPawns`, seul endroit qui
+   * connaît sa position monde ; une sélection vidée cache tout de suite le
+   * pool entier, sans attendre cette frame (Échap ne doit pas laisser un
+   * anneau flotter un instant à l'ancienne position).
+   */
+  setSelection(ids: readonly number[]): void {
+    this.selectedIds.clear();
+    for (const id of ids) this.selectedIds.add(id);
+    if (this.selectedIds.size === 0) {
+      for (const ring of this.selectionRings) ring.visible = false;
+    }
+  }
+
+  /** Sucre pour un seul id (ou aucun) : `setSelection([id])` / `setSelection([])`. */
   setSelected(id: number | null): void {
-    this.selectedId = id;
-    this.selection.visible = id !== null;
+    this.setSelection(id === null ? [] : [id]);
   }
 
   setHover(tile: TilePos | null): void {
@@ -1493,6 +1549,8 @@ export class Renderer {
     this.indoorMeshes.length = 0;
     this.heatMeshes.length = 0;
     this.fireMeshes.length = 0;
+    this.selectionRings.length = 0;
+    this.selectedIds.clear();
     // Toute la scène d'un coup : colons, pluie, calques, chantiers, lumières.
     disposeTree(this.scene);
     this.scene.clear();

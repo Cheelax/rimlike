@@ -481,7 +481,9 @@ pawns, feu et rectangle de vue à la cadence du HUD, clic pour recentrer, repli 
 `Renderer.viewBounds()` projette les coins de l'écran sur le sol sans allocation. Notifications et
 lignes du journal cliquables (Sonnet, 2026-09-05) : une table pure `eventTarget` associe à chaque
 `EventKind` un pawn, une case en feu ou rien ; le clic recentre la caméra sur la position courante
-et sélectionne le pawn. Marchands itinérants côté serveur
+et sélectionne le pawn. Sélection multiple (Sonnet, 2026-09-05) : Maj + clic, Maj + rectangle,
+Ctrl/Cmd + A, clic droit qui répartit les colons sur des cases voisines distinctes (spirale
+déterministe) ou les fait tous attaquer la même cible ; module `selection.ts` pur. Marchands itinérants côté serveur
 livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
 caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;

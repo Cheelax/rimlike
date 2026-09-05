@@ -69,6 +69,7 @@ import {
   SPECIES_LABELS,
   SPECIES_MAX_HP,
   TAME_HINT,
+  TERRAIN,
   TRAIT_HINTS,
   TRAIT_LABELS,
   visibleStock,
@@ -101,6 +102,7 @@ import {
   encodeTriggerRaid,
 } from "./sim/commands";
 import { initSim, SimHandle } from "./sim/SimHandle";
+import { selectInRect, spreadTargets, toggle, type RectPawn } from "./selection";
 import { tradeOffers } from "./trade";
 import { SimBridge } from "./worker/SimBridge";
 import type { FrameMessage } from "./worker/protocol";
@@ -121,6 +123,24 @@ const TOAST_MS = 6000;
 const JOB_BREAK = 14;
 /** Le Journal ne garde que les événements les plus récents (mission §3). */
 const MAX_JOURNAL_ENTRIES = 200;
+/** Couleur du rectangle de sélection multi-colons (Maj + glisser gauche), comme l'anneau de sélection. */
+const SELECT_RECT_COLOR = 0xffe066;
+/**
+ * Éléments infranchissables pour `spreadTargets` (clic droit à plusieurs
+ * colons) : même contrat que `map::Feature::passable` côté sim
+ * (`crates/sim/src/map.rs`), pas la peine d'y ajouter `Grave`/`SpikeTrap`
+ * (franchissables là-bas). N'affecte que le choix d'une case voisine : la
+ * marche réelle revient au sim (`MoveTo` pathfinde pour de vrai).
+ */
+const BLOCKING_FEATURES = new Set<number>([
+  FEATURE.Tree,
+  FEATURE.Rock,
+  FEATURE.WallWood,
+  FEATURE.WallStone,
+  FEATURE.Campfire,
+  FEATURE.CraftingSpot,
+  FEATURE.ResearchBench,
+]);
 
 const DEFAULT_SERVER = "ws://localhost:8787";
 const DEFAULT_SEED = 42;
@@ -347,6 +367,13 @@ interface Stats {
   /** Bêtes vivantes (`frame.animals`), ni colons ni ennemis (HUD : « N bêtes »). */
   beasts: number;
   selected: PawnInfo | null;
+  /**
+   * Sélection courante, ordonnée (voir `selection.ts`) : `selected` ci-dessus
+   * en est le premier id (ou l'unique). Surligne toutes les pastilles
+   * concernées dans `ColonistBar`, et pilote le panneau « N colons
+   * sélectionnés » quand elle en compte plusieurs.
+   */
+  selection: number[];
   /** Copie du tampon des priorités : `[id, p0..p5]` par colon. */
   priorities: number[];
   /** Nom de chaque pawn vivant, par id (voir `FrameMessage.names`). */
@@ -438,6 +465,7 @@ const INITIAL: Stats = {
   hostiles: 0,
   beasts: 0,
   selected: null,
+  selection: [],
   priorities: [],
   names: {},
   colonistList: [],
@@ -471,8 +499,12 @@ interface Actions {
   triggerRaid(): void;
   setPriority(pawn: number, work: number, priority: number): void;
   currentPriority(pawn: number, work: number): number | null;
-  /** Sélectionne un colon, comme un clic sur son pawn dans la scène (`ColonistBar`). */
-  selectPawn(id: number): void;
+  /**
+   * Sélectionne un colon, comme un clic sur son pawn dans la scène
+   * (`ColonistBar`). `additive` (Maj + clic) l'ajoute à la sélection en cours
+   * ou l'en retire, au lieu de la remplacer.
+   */
+  selectPawn(id: number, additive?: boolean): void;
   /** Centre la caméra sur un colon, sans changer le zoom (`ColonistBar`, double clic). */
   focusPawn(id: number): void;
   /**
@@ -975,6 +1007,14 @@ export function App() {
     // --- État vu du thread principal. Le sim, lui, vit dans le Worker ---
     let speed = 1;
     let paused = false;
+    /**
+     * Sélection courante, ordonnée (voir `selection.ts`) : `selected` reste le
+     * premier id (ou l'unique), gardé pour tout ce qui n'affiche qu'un seul
+     * colon (panneau simple, `focusPawn`, `__rimlike.selected`). Ne jamais
+     * assigner l'un ou l'autre à la main ailleurs que dans `applySelection`,
+     * seule à tenir `renderer.setSelection` à jour.
+     */
+    let selection: number[] = [];
     let selected: number | null = null;
     /** Dernier `frame` reçu : seule source de l'état affiché. */
     let lastFrame: FrameMessage | null = null;
@@ -1065,6 +1105,16 @@ export function App() {
     };
     const showError = (e: unknown) => {
       if (!disposed) setError(e instanceof Error ? (e.stack ?? e.message) : String(e));
+    };
+    /**
+     * Seul point qui change `selection`/`selected` : tient `renderer` à jour
+     * dans la foulée (`Renderer.setSelection`), jamais l'inverse. Une sélection
+     * à un id se comporte exactement comme avant (`selected` = cet id).
+     */
+    const applySelection = (ids: number[]) => {
+      selection = ids;
+      selected = ids.length > 0 ? ids[0] : null;
+      renderer.setSelection(selection);
     };
 
     /** Oublie une priorité cliquée dès que le sim la renvoie. */
@@ -1311,8 +1361,7 @@ export function App() {
           return;
         }
         freshSim = true;
-        selected = null;
-        renderer.setSelected(null);
+        applySelection([]);
         flash("Partie chargée");
       },
       onError: showError,
@@ -1409,8 +1458,7 @@ export function App() {
       const pos = buildEventFocusCtx().pawnById(target.id);
       if (!pos) return;
       renderer.focusOn(pos.x, pos.y);
-      selected = target.id;
-      renderer.setSelected(target.id);
+      applySelection([target.id]);
     };
 
     // --- Sauvegarde (solo seulement : l'horloge du multi ne s'arrête pas) ---
@@ -1455,9 +1503,8 @@ export function App() {
         }
         return null;
       },
-      selectPawn(id) {
-        selected = id;
-        renderer.setSelected(id);
+      selectPawn(id, additive) {
+        applySelection(additive ? toggle(selection, id) : [id]);
       },
       focusPawn(id) {
         // Position courante du colon dans le dernier tampon reçu ; silencieux
@@ -1482,7 +1529,14 @@ export function App() {
     actionsRef.current = actions;
 
     // --- Entrées ---
-    let down: { x: number; y: number; button: number; tile: TilePos | null } | null = null;
+    let down: {
+      x: number;
+      y: number;
+      button: number;
+      tile: TilePos | null;
+      /** Maj + glisser gauche en mode Sélection : rectangle multi-colons plutôt que panoramique. */
+      rectSelect: boolean;
+    } | null = null;
     const on = <K extends keyof HTMLElementEventMap>(
       target: HTMLElement | Window,
       type: K | keyof WindowEventMap,
@@ -1513,6 +1567,51 @@ export function App() {
         if (buf[o] === id) return { species: buf[o + 1], hunted: (buf[o + 2] & ANIMAL_FLAG.Hunted) !== 0 };
       }
       return null;
+    };
+    /**
+     * Vrai pour une bête **de la colonie** (`sim::livestock`, faction 0 avec
+     * une espèce), lue dans `frame.animals` comme `animalOf` — mais sans se
+     * limiter à la faune sauvage, puisque c'est justement l'inverse qu'on
+     * cherche ici. Exclut le bétail du rectangle de sélection et des ordres
+     * multi-colons, comme un pillard ou une bête sauvage.
+     */
+    const isLivestockId = (id: number): boolean => {
+      if (factionOf(id) !== FACTION_COLONY) return false;
+      const buf = lastFrame?.animals;
+      if (!buf) return false;
+      for (let o = 0; o + ANIMAL_STRIDE <= buf.length; o += ANIMAL_STRIDE) {
+        if (buf[o] === id) return true;
+      }
+      return false;
+    };
+    /** Pawns du tampon courant, prêts pour `selectInRect` (Maj + glisser gauche). */
+    const pawnsForSelect = (): RectPawn[] => {
+      const out: RectPawn[] = [];
+      for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
+        const id = curPawns[o];
+        out.push({
+          id,
+          x: Math.floor(curPawns[o + 1] / 256),
+          y: Math.floor(curPawns[o + 2] / 256),
+          faction: curPawns[o + 10],
+          livestock: isLivestockId(id),
+        });
+      }
+      return out;
+    };
+    /**
+     * Case franchissable pour `spreadTargets` (clic droit à plusieurs colons) :
+     * même contrat que `map::Terrain::walkable` et `map::Feature::passable`
+     * côté sim (`crates/sim/src/map.rs`) — pas la peine d'appeler le sim pour
+     * choisir une case voisine, la marche réelle lui revient de toute façon
+     * (`MoveTo` pathfinde pour de vrai, ceci ne fait que répartir les destinations).
+     */
+    const isFreeTile = (x: number, y: number): boolean => {
+      const map = lastMapRef.current;
+      if (!map || x < 0 || y < 0 || x >= map.width || y >= map.height) return false;
+      const i = y * map.width + x;
+      if (map.tiles[i] === TERRAIN.DeepWater) return false;
+      return !BLOCKING_FEATURES.has(map.features[i]);
     };
     const applyTool = (rect: TileRect) => {
       if (!live()) return;
@@ -1577,16 +1676,25 @@ export function App() {
       }
     };
     on(host, "pointerdown", (e: PointerEvent) => {
-      down = { x: e.clientX, y: e.clientY, button: e.button, tile: renderer.pickTile(e.clientX, e.clientY) };
-      if (toolRef.current !== "select" && e.button === 0 && down.tile) {
-        renderer.setDragRect({ x0: down.tile.x, y0: down.tile.y, x1: down.tile.x, y1: down.tile.y }, toolColor());
+      const tile = renderer.pickTile(e.clientX, e.clientY);
+      // Maj + glisser gauche en mode Sélection : rectangle multi-colons plutôt
+      // que panoramique (`AGENTS.md`) ; sans Maj, le glisser gauche continue
+      // de déplacer la caméra comme avant (`setLeftDragPans` seul décide).
+      const rectSelect = toolRef.current === "select" && e.button === 0 && e.shiftKey;
+      down = { x: e.clientX, y: e.clientY, button: e.button, tile, rectSelect };
+      if (rectSelect) renderer.setPanSuspended(true);
+      if (tile && e.button === 0 && (rectSelect || toolRef.current !== "select")) {
+        renderer.setDragRect({ x0: tile.x, y0: tile.y, x1: tile.x, y1: tile.y }, rectSelect ? SELECT_RECT_COLOR : toolColor());
       }
     });
     on(host, "pointermove", (e: PointerEvent) => {
       const tile = renderer.pickTile(e.clientX, e.clientY);
       renderer.setHover(tile);
-      if (down && down.button === 0 && toolRef.current !== "select" && down.tile && tile) {
-        renderer.setDragRect({ x0: down.tile.x, y0: down.tile.y, x1: tile.x, y1: tile.y }, toolColor());
+      if (down && down.button === 0 && down.tile && tile && (down.rectSelect || toolRef.current !== "select")) {
+        renderer.setDragRect(
+          { x0: down.tile.x, y0: down.tile.y, x1: tile.x, y1: tile.y },
+          down.rectSelect ? SELECT_RECT_COLOR : toolColor(),
+        );
       }
     });
     on(host, "pointerup", (e: PointerEvent) => {
@@ -1594,6 +1702,7 @@ export function App() {
       const start = down;
       down = null;
       renderer.setDragRect(null);
+      if (start.rectSelect) renderer.setPanSuspended(false);
       if (!live()) return;
       const moved = Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_TOLERANCE_PX;
       // Outil de débogage « Mettre le feu » : prend la main sur le clic quel
@@ -1605,6 +1714,18 @@ export function App() {
           setIgniteArmed(false);
         } else if (start.button === 2) {
           setIgniteArmed(false);
+        }
+        return;
+      }
+      if (start.rectSelect) {
+        // Les colons (faction 0, pas de bête) dont la case tombe dans le
+        // rectangle remplacent la sélection courante. Un glisser sans colon
+        // dedans ne vide pas la sélection en cours (comme un clic à vide en
+        // mode outil ne fait rien).
+        if (start.tile) {
+          const end = renderer.pickTile(e.clientX, e.clientY) ?? start.tile;
+          const ids = selectInRect(pawnsForSelect(), { x0: start.tile.x, y0: start.tile.y, x1: end.x, y1: end.y });
+          if (ids.length > 0) applySelection(ids);
         }
         return;
       }
@@ -1624,22 +1745,52 @@ export function App() {
       }
       if (moved) return;
       if (start.button === 0) {
-        selected = renderer.pickPawn(e.clientX, e.clientY);
-        renderer.setSelected(selected);
-      } else if (start.button === 2 && selected !== null) {
-        // Clic droit sur un ennemi ou un animal, avec un colon sélectionné :
-        // ordre d'attaque. Sinon : déplacement (une bête sélectionnée ne
-        // reçoit pas d'ordre d'attaque, le sim l'ignorerait de toute façon).
-        const target = renderer.pickPawn(e.clientX, e.clientY);
-        const targetFaction = target !== null ? factionOf(target) : -1;
-        const canAttack =
-          factionOf(selected) !== FACTION_ANIMAL &&
-          (targetFaction === FACTION_RAIDER || targetFaction === FACTION_ANIMAL);
-        if (target !== null && canAttack) {
-          issue(encodeAttack(selected, target));
+        const picked = renderer.pickPawn(e.clientX, e.clientY);
+        if (e.shiftKey) {
+          // Maj + clic dans le vide : rien à ajouter ni retirer, on ne vide
+          // pas la sélection en cours.
+          if (picked !== null) applySelection(toggle(selection, picked));
         } else {
-          const tile = renderer.pickTile(e.clientX, e.clientY);
-          if (tile) issue(encodeMoveTo(selected, tile.x, tile.y));
+          applySelection(picked === null ? [] : [picked]);
+        }
+      } else if (start.button === 2 && selection.length > 0 && selected !== null) {
+        const colonists = selection.filter((id) => factionOf(id) === FACTION_COLONY && !isLivestockId(id));
+        if (colonists.length > 1) {
+          // Plusieurs colons sélectionnés : une cible ennemie (ou une bête) les
+          // envoie tous l'attaquer ; sinon chacun vers sa propre case autour de
+          // celle visée (`spreadTargets`), pour ne pas s'empiler dessus.
+          const target = renderer.pickPawn(e.clientX, e.clientY);
+          const targetFaction = target !== null ? factionOf(target) : -1;
+          const canAttack = targetFaction === FACTION_RAIDER || targetFaction === FACTION_ANIMAL;
+          if (target !== null && canAttack) {
+            for (const id of colonists) issue(encodeAttack(id, target));
+          } else {
+            const tile = renderer.pickTile(e.clientX, e.clientY);
+            if (tile) {
+              const targets = spreadTargets(tile, colonists.length, isFreeTile);
+              for (let i = 0; i < colonists.length; i++) {
+                const dest = targets[i] ?? tile;
+                issue(encodeMoveTo(colonists[i], dest.x, dest.y));
+              }
+            }
+          }
+        } else {
+          // Un seul colon (ou une sélection à un seul pawn, quel qu'il soit) :
+          // comportement inchangé. Clic droit sur un ennemi ou un animal, avec
+          // un colon sélectionné : ordre d'attaque. Sinon : déplacement (une
+          // bête sélectionnée ne reçoit pas d'ordre d'attaque, le sim
+          // l'ignorerait de toute façon).
+          const target = renderer.pickPawn(e.clientX, e.clientY);
+          const targetFaction = target !== null ? factionOf(target) : -1;
+          const canAttack =
+            factionOf(selected) !== FACTION_ANIMAL &&
+            (targetFaction === FACTION_RAIDER || targetFaction === FACTION_ANIMAL);
+          if (target !== null && canAttack) {
+            issue(encodeAttack(selected, target));
+          } else {
+            const tile = renderer.pickTile(e.clientX, e.clientY);
+            if (tile) issue(encodeMoveTo(selected, tile.x, tile.y));
+          }
         }
       }
     });
@@ -1657,6 +1808,17 @@ export function App() {
         return;
       }
       const k = e.key.toUpperCase();
+      if ((e.metaKey || e.ctrlKey) && k === "A") {
+        // Ctrl/Cmd + A : tous les colons de la colonie (faction 0, pas de bête).
+        e.preventDefault();
+        const ids: number[] = [];
+        for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
+          const id = curPawns[o];
+          if (curPawns[o + 10] === FACTION_COLONY && !isLivestockId(id)) ids.push(id);
+        }
+        applySelection(ids);
+        return;
+      }
       if (e.metaKey || e.ctrlKey) return;
       if (k === "H") {
         // La touche H bascule la chasse quand un animal est sélectionné ;
@@ -1721,10 +1883,7 @@ export function App() {
           if (showOptionsRef.current) setShowOptions(false);
           else if (igniteArmedRef.current) setIgniteArmed(false);
           else if (toolRef.current !== "select") setTool("select");
-          else {
-            selected = null;
-            renderer.setSelected(null);
-          }
+          else applySelection([]);
           break;
       }
     });
@@ -1768,8 +1927,14 @@ export function App() {
           return selected;
         },
         set selected(v: number | null) {
-          selected = v;
-          renderer.setSelected(v);
+          applySelection(v === null ? [] : [v]);
+        },
+        /** Sélection courante, ordonnée (`selection.ts`) : copie, jamais la référence interne. */
+        get selection() {
+          return selection.slice();
+        },
+        set selection(ids: number[]) {
+          applySelection(ids.slice());
         },
         /** Copie du Journal des événements accumulé depuis le début de la session. */
         eventLog: () => eventLogRef.current.slice(),
@@ -2089,6 +2254,7 @@ export function App() {
         hostiles,
         beasts,
         selected: info,
+        selection: selection.slice(),
         priorities: Array.from(f.priorities),
         names: f.names,
         colonistList,
@@ -2328,6 +2494,11 @@ export function App() {
   if (error) return <div className="error">{error}</div>;
 
   const sel = stats.selected;
+  /**
+   * Plusieurs colons sélectionnés (Maj + clic, rectangle, Ctrl/Cmd + A) : le
+   * panneau détaillé d'un seul pawn cède la place à la liste courte, plus bas.
+   */
+  const multiSelection = stats.selection.length > 1;
   // Saison affichée « j.X/Y » : X = jour dans la saison (1-indexé, comme
   // `stats.day`), Y = longueur d'une saison (`sim::climate::SEASON_DAYS`).
   const seasonDays = Math.max(1, Math.floor(stats.yearDays / 4));
@@ -2592,14 +2763,25 @@ export function App() {
 
           <ColonistBar
             colonists={stats.colonistBadges}
-            selected={sel && !sel.hostile && !sel.animal && !sel.livestock ? sel.id : null}
-            onSelect={(id) => actionsRef.current?.selectPawn(id)}
+            selection={stats.selection}
+            onSelect={(id, additive) => actionsRef.current?.selectPawn(id, additive)}
             onFocus={(id) => actionsRef.current?.focusPawn(id)}
           />
 
           <Minimap ref={minimapRef} onFocus={(x, y) => rendererRef.current?.focusOn(x, y)} />
 
-          {sel && sel.animal && (
+          {multiSelection && (
+            <div className="panel">
+              <div className="panel-title">{stats.selection.length} colons sélectionnés</div>
+              <ul className="panel-selection-list">
+                {stats.selection.map((id) => (
+                  <li key={id}>{stats.names[id] || `Colon ${id}`}</li>
+                ))}
+              </ul>
+              <div className="help">clic droit : y aller tous, ou attaquer un ennemi ou un animal</div>
+            </div>
+          )}
+          {!multiSelection && sel && sel.animal && (
             <div className="panel">
               <div className="panel-title">
                 {SPECIES_LABELS[sel.species]
@@ -2630,7 +2812,7 @@ export function App() {
               <div className="help">touche H : bascule la chasse · clic droit avec un colon sélectionné : attaquer</div>
             </div>
           )}
-          {sel && sel.livestock && (
+          {!multiSelection && sel && sel.livestock && (
             <div className="panel">
               <div className="panel-title">
                 {SPECIES_LABELS[sel.species]
@@ -2653,7 +2835,7 @@ export function App() {
               </button>
             </div>
           )}
-          {sel && !sel.animal && !sel.livestock && (
+          {!multiSelection && sel && !sel.animal && !sel.livestock && (
             <div className="panel">
               <div className="panel-title">
                 {sel.hostile
