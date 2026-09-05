@@ -127,6 +127,20 @@ function moodLabel(mood: number): string {
   return "au bord de la crise";
 }
 
+/**
+ * Noms des joueurs connus comme déviants (`docs/protocol.md` §7), pour le
+ * bandeau de désync : « vous » pour soi-même, le nom d'affichage pour les
+ * autres (repli sur l'id si la liste de joueurs n'a pas suivi). Vide sans
+ * majorité jamais connue (`outliers` toujours vide à deux joueurs, ou avant
+ * trois hashes) : dans ce cas on ne sait pas dire qui diverge.
+ */
+function outlierNames(net: LockstepState): string {
+  if (net.outliers.length === 0) return "on ne sait pas qui";
+  return net.outliers
+    .map((id) => (id === net.playerId ? "vous" : (net.players.find((p) => p.id === id)?.name ?? `#${id}`)))
+    .join(", ");
+}
+
 /** Priorité suivante (`dir` 1) ou précédente (`dir` -1) : 1→2→3→4→0→1. */
 function nextPriority(p: number, dir: 1 | -1): number {
   if (dir === 1) return p === 0 ? 1 : p === 4 ? 0 : p + 1;
@@ -2277,6 +2291,12 @@ export function App() {
             )}
             <div className="help">
               {stats.tps} tps · {stats.fps} fps · hash {stats.hash}
+              {multi && net !== null && (
+                <span
+                  className={`hashdot ${net.isOutlier ? "bad" : "good"}`}
+                  title={net.isOutlier ? "Votre copie diverge de la majorité (§7)" : "Votre copie concorde avec la majorité"}
+                />
+              )}
             </div>
             <div className="help">
               glisser droit ou flèches : déplacer · molette : zoom · Q/E : tourner
@@ -2689,24 +2709,31 @@ export function App() {
           )}
         </>
       )}
-      {net?.roomDesynced && (
-        <div className="banner">
-          Désynchronisation détectée au tick {net.desync?.tick ?? "?"}
-          {net.isOutlier ? " · votre copie diverge" : ""}
-          {resyncPending ? (
-            " · resynchronisation…"
-          ) : (
-            <button
-              onClick={() => {
-                bridgeRef.current?.rpc("lockstep.requestResync");
-                setResyncPending(true);
-              }}
-            >
-              Resynchroniser
-            </button>
-          )}
-        </div>
-      )}
+      {net?.roomDesynced &&
+        (net.hostId !== null && net.outliers.includes(net.hostId) ? (
+          // §7 : l'hôte ne se resynchronise jamais sur lui-même, la salle
+          // reste désynchronisée indéfiniment dans ce cas ; pas de bouton qui
+          // ne mènerait à rien (`host_cannot_resync`).
+          <div className="banner">
+            L'hôte est en désaccord avec la majorité : la partie ne peut pas être réparée automatiquement
+          </div>
+        ) : (
+          <div className="banner">
+            Désynchronisation détectée · {outlierNames(net)} · réparation en cours…
+            {resyncPending ? (
+              " · resynchronisation…"
+            ) : (
+              <button
+                onClick={() => {
+                  bridgeRef.current?.rpc("lockstep.requestResync");
+                  setResyncPending(true);
+                }}
+              >
+                Resynchroniser
+              </button>
+            )}
+          </div>
+        ))}
       {toasts.length > 0 && (
         <div className="toasts">
           {toasts.map((t) => (

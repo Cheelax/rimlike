@@ -27,8 +27,30 @@ Le premier arrivé dans la salle est l'**hôte** : lui seul choisit la graine et
 la difficulté (à côté de la graine, même sélecteur qu'en solo) puis clique
 « Démarrer ». Une fois la partie lancée, chacun voit les actions des autres ;
 il n'y a plus ni pause ni choix de vitesse, l'horloge du serveur ne s'arrête
-jamais. Un bandeau signale une désynchronisation éventuelle, avec un bouton
-« Resynchroniser ».
+jamais.
+
+### Désynchronisation
+
+Le HUD affiche le hash de la partie à côté d'une petite pastille — verte tant
+que votre copie concorde avec celle de la majorité, rouge si vous êtes
+signalé comme déviant. Dès que trois joueurs ou plus sont réunis, le serveur
+compare les hashes annoncés par chacun toutes les 300 ticks (§7 du
+protocole) : si une majorité se dégage, les copies minoritaires sont
+réparées **automatiquement** depuis l'état de l'hôte, sans rien à faire. Un
+bandeau apparaît le temps de la réparation, nommant les joueurs déviants
+(« vous » si c'est votre propre copie), avec un bouton **Resynchroniser** pour
+la déclencher soi-même sans attendre le
+prochain point de contrôle (utile si on soupçonne sa propre copie sans
+attendre que le serveur la désigne). Le bandeau disparaît de lui-même dès que
+tout le monde concorde de nouveau, avec un toast « Resynchronisé au tick N ».
+À deux joueurs, il n'y a jamais de majorité possible : le bouton reste le
+seul recours, en pariant sur l'un des deux.
+
+Un cas ne se répare jamais tout seul : si c'est l'**hôte** qui diverge, le
+bandeau l'indique (« L'hôte est en désaccord avec la majorité : la partie ne
+peut pas être réparée automatiquement ») sans bouton, parce que tout
+rattrapage part justement de l'état de l'hôte — personne ne peut le corriger
+depuis lui-même. La seule issue est de quitter la salle et de la rouvrir.
 
 ### Monde partagé
 

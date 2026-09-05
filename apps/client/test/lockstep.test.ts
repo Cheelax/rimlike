@@ -342,6 +342,101 @@ describe("lockstep contre le vrai serveur", () => {
     expect(bob.fake().trace()).toEqual(alice.fake().trace());
   });
 
+  it("désynchronise un menteur parmi trois clients puis le répare automatiquement, sans resync manuel", async () => {
+    // Contrairement au test précédent (deux joueurs, jamais de majorité, §7),
+    // une troisième copie honnête donne une majorité : le serveur désigne le
+    // menteur comme déviant et déclenche tout seul la réparation par snapshot
+    // de l'hôte (docs/protocol.md §7). `testHashOverride` fait mentir carol
+    // sur le hash qu'elle annonce sans jamais faire diverger son sim : sa
+    // trace de commandes reste, depuis le début, identique à celle des autres.
+    const alice = await join("demo", "alice");
+    await waitFor("alice en lobby", () => alice.client.state.phase === "lobby");
+    const bob = await join("demo", "bob");
+    await waitFor("deux joueurs annoncés", () => alice.client.state.players.length === 2);
+
+    let lying = true;
+    const carolTransport = await WsTransport.connect(server.url);
+    const carolStates: LockstepState[] = [];
+    const carolErrors: LockstepError[] = [];
+    let carolRestores = 0;
+    const carolClient = new LockstepClient({
+      transport: carolTransport,
+      createSim: (seed) => Promise.resolve(FakeSim.fresh(seed)),
+      restoreSim: (data) => {
+        carolRestores += 1;
+        return Promise.resolve(FakeSim.fromSnapshot(data));
+      },
+      onState: (state) => carolStates.push(state),
+      onError: (error) => carolErrors.push(error),
+      // Un mensonge qui peut cesser : c'est ce qui permet de vérifier la
+      // reconvergence, pas seulement la détection de la désync.
+      testHashOverride: () => (lying ? "menteuse" : null),
+    });
+    const carol: Session = {
+      name: "carol",
+      client: carolClient,
+      states: carolStates,
+      errors: carolErrors,
+      fake: () => {
+        const sim = carolClient.sim;
+        if (sim === null) throw new Error("carol n'a pas de sim");
+        return sim as FakeSim;
+      },
+      restoreCount: () => carolRestores,
+    };
+    sessions.push(carol); // fermée par `afterEach`, comme les sessions de `join()`
+    carolClient.join("demo", "carol");
+    await waitFor("trois joueurs annoncés", () => alice.client.state.players.length === 3);
+
+    alice.client.startGame(99, 32, 32);
+    await waitFor(
+      "les trois sims créés",
+      () => alice.client.sim !== null && bob.client.sim !== null && carolClient.sim !== null,
+    );
+
+    const all = [alice, bob, carol] as const;
+    // Capturé avant toute chance de réparation : la seule qui doit survenir
+    // part de la désync provoquée par le mensonge, pas d'un rejoint ordinaire.
+    const restoresBefore = carol.restoreCount();
+
+    // Les hashes partent au premier multiple de HASH_EVERY_TICKS (300) ;
+    // alice et bob s'accordent, carol ment : elle est seule minoritaire.
+    await pumpUntil(all, "tick 300 atteint", reachedTick(all, 300), 10000);
+    await pumpUntil(
+      all,
+      "désync signalée avec carol en déviante",
+      () => alice.client.state.desync?.outliers?.includes(carolClient.state.playerId!) ?? false,
+    );
+    expect(server.room("demo")?.state).toBe("desynced");
+
+    // Le mensonge cesse ici : au prochain point de contrôle, le hash réel de
+    // carol (son état n'a jamais vraiment divergé) doit concorder avec la
+    // majorité, que la réparation automatique ait déjà eu lieu ou non.
+    lying = false;
+    await pumpUntil(
+      all,
+      "carol restaurée par la réparation automatique du serveur",
+      () => carol.restoreCount() > restoresBefore,
+    );
+
+    bob.client.issue(bytes(0xb1));
+    // Un point de contrôle de plus, pour laisser carol annoncer un hash vrai.
+    const target = Math.max(...all.map((s) => s.client.tick)) + 300;
+    await pumpUntil(all, `tick ${target} atteint (point de contrôle suivant)`, reachedTick(all, target), 15000);
+    await pumpUntil(
+      all,
+      "carol retirée des déviants (resynced)",
+      () => !alice.client.state.outliers.includes(carolClient.state.playerId!),
+    );
+
+    expect(server.room("demo")?.state).toBe("running");
+    expect(carol.fake().trace()).toEqual(alice.fake().trace());
+    expect(carol.fake().hash()).toBe(alice.fake().hash());
+    for (const session of all) {
+      expect(session.errors.map((e) => e.code)).not.toContain("history_gap");
+    }
+  });
+
   it("bob se reconnecte après une coupure de socket et retrouve le même hash", async () => {
     const alice = await join("demo", "alice");
     await waitFor("alice en lobby", () => alice.client.state.phase === "lobby");

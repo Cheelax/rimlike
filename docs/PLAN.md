@@ -245,8 +245,13 @@ onglet masqué : 60 ticks/s maintenus. Livré par trois sous-agents Opus. Reconn
 livrée le 2026-09-05 (Sonnet) : `ReconnectingTransport` (délai 1 s → 15 s, gigue, huit essais),
 `LockstepClient.reconnect()` rejoue `join` et reprend par le snapshot du rejoignant, commandes
 émises pendant la coupure comptées et signalées, bandeau « Serveur injoignable » avec « Réessayer ».
-Vérifié en navigateur : relais coupé puis relancé, les deux onglets retrouvent la salle. Reste :
-resynchronisation après désync côté client, essai d'une heure.
+Vérifié en navigateur : relais coupé puis relancé, les deux onglets retrouvent la salle.
+Resynchronisation côté client complétée le 2026-09-05 (Sonnet) : la restauration en cours de
+partie et le bouton existaient déjà ; ajoutés le cas de l'hôte déviant (message sans bouton), les
+noms des déviants dans le bandeau, la pastille verte/rouge sur le hash, et un test contre le vrai
+serveur à trois clients dont un qui ment sur son hash (option de test `testHashOverride`,
+jamais exposée au Worker) : désync détectée, snapshot de l'hôte, reconvergence. Reste : essai
+d'une heure.
 - Serveur relais : lobby, ordonnancement des commandes par tick, redistribution.
 - Lockstep 2-4 joueurs sur la même carte, hash de désync, resync par snapshot.
 - Rejoindre en cours de partie.

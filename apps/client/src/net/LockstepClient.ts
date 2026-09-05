@@ -190,6 +190,16 @@ export interface LockstepOptions {
    * compte quand même, rien n'est simplement émis.
    */
   readonly encodeTriggerTraderVisit?: () => Uint8Array;
+  /**
+   * Test seulement : remplace la valeur envoyée dans `hash` tant qu'elle
+   * renvoie une chaîne non nulle ; `null`/`undefined` laisse passer le vrai
+   * `sim.hash()`. Sert à fabriquer, sans sim truqué, un client qui ment sur
+   * son état pour éprouver la désync forcée et l'auto-réparation contre le
+   * vrai serveur (`docs/protocol.md` §7, `test/lockstep.test.ts`) : le
+   * mensonge peut cesser en cours de partie pour vérifier que le menteur
+   * reconverge une fois son sim restauré. Absent en production.
+   */
+  readonly testHashOverride?: () => string | null | undefined;
 }
 
 export class LockstepClient {
@@ -200,6 +210,7 @@ export class LockstepClient {
   private readonly onSim: ((sim: SimLike) => void) | null;
   private readonly onError: ((error: LockstepError) => void) | null;
   private readonly encodeTriggerTraderVisit: (() => Uint8Array) | null;
+  private readonly testHashOverride: (() => string | null | undefined) | null;
 
   private simInstance: SimLike | null = null;
   /** Incrémenté à chaque sim demandé : une création tardive ne l'écrase pas. */
@@ -269,6 +280,7 @@ export class LockstepClient {
     this.onSim = options.onSim ?? null;
     this.onError = options.onError ?? null;
     this.encodeTriggerTraderVisit = options.encodeTriggerTraderVisit ?? null;
+    this.testHashOverride = options.testHashOverride ?? null;
     this.transport.onMessage((text) => this.receive(text));
     // `code`/`reason` ne sont utiles qu'au diagnostic (pas affichés) : ce qui
     // compte pour le joueur est que la salle ne répond plus. Si le `Transport`
@@ -488,7 +500,7 @@ export class LockstepClient {
         // Hash de l'état **avant** d'exécuter ce tick, donc juste après le
         // précédent : `nextTick` compte les ticks appliqués.
         if (this.nextTick % HASH_EVERY_TICKS === 0) {
-          this.send({ type: "hash", tick: this.nextTick, hash: sim.hash() });
+          this.send({ type: "hash", tick: this.nextTick, hash: this.testHashOverride?.() ?? sim.hash() });
         }
       }
       if (this.nextTick > bundle.to) {
