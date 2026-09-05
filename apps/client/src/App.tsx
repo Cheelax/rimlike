@@ -4,6 +4,7 @@ import { BIOME_NAMES, findRoute, type World } from "@rimlike/world";
 import { CaravanPanel, type CaravanColonist, type CaravanDestination } from "./CaravanPanel";
 import { ColonistBar, type ColonistBadge } from "./ColonistBar";
 import { CraftingPanel } from "./CraftingPanel";
+import { eventTarget, type EventFocusCtx, type EventTarget } from "./eventFocus";
 import { factionDefinite } from "./factions";
 import { FactionsPanel } from "./FactionsPanel";
 import { JournalPanel, type JournalEntry, type JournalFilter } from "./JournalPanel";
@@ -474,11 +475,38 @@ interface Actions {
   selectPawn(id: number): void;
   /** Centre la caméra sur un colon, sans changer le zoom (`ColonistBar`, double clic). */
   focusPawn(id: number): void;
+  /**
+   * Cible d'un événement du sim (`eventFocus.ts`), recalculée sur l'état
+   * courant à chaque appel : jamais mémorisée, pour qu'un pawn mort depuis
+   * redevienne `null` même longtemps après (mission « clic sur un événement »).
+   */
+  resolveEventTarget(kind: number, arg: number): EventTarget;
+  /**
+   * Recentre la caméra sur la cible d'un événement et sélectionne le pawn
+   * visé, le cas échéant ; silencieux sans cible (`resolveEventTarget` a
+   * renvoyé `null`). Résout la cible à l'instant de l'appel : sert le clic
+   * sur une ligne du Journal (`kind`/`arg` toujours disponibles, la cible n'y
+   * est jamais figée).
+   */
+  focusEvent(kind: number, arg: number): void;
+  /**
+   * Comme `focusEvent`, mais à partir d'une cible déjà résolue : sert le clic
+   * sur un toast, dont `target` est figé à la réception (comme `text`) —
+   * seule la position d'un pawn est encore relue ici, courante.
+   */
+  activateTarget(target: EventTarget): void;
 }
 
 interface Toast {
   id: number;
   text: string;
+  /**
+   * Cible figée à la réception, comme `text` (`JournalPanel.tsx`) : un toast
+   * vit quelques secondes, la fraîcheur n'y est pas un enjeu comme pour le
+   * Journal. `null` pour les toasts hors sim (réseau, monde) et les genres
+   * sans lieu.
+   */
+  target: EventTarget;
 }
 
 /**
@@ -706,7 +734,7 @@ export function App() {
   /** Une notification de monde, hors de la plage des `seq` du sim. */
   const worldToast = (text: string) => {
     const id = worldToastId.current--;
-    setToasts((prev) => [...prev, { id, text }]);
+    setToasts((prev) => [...prev, { id, text, target: null }]);
     window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_MS);
   };
 
@@ -740,7 +768,7 @@ export function App() {
 
     const toast = (text: string) => {
       const id = worldToastId.current--;
-      setToasts((prev) => [...prev, { id, text }]);
+      setToasts((prev) => [...prev, { id, text, target: null }]);
       timers.push(window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_MS));
     };
     /**
@@ -1028,7 +1056,7 @@ export function App() {
 
     const pushToast = (text: string) => {
       const id = netToastId--;
-      setToasts((prev) => [...prev, { id, text }]);
+      setToasts((prev) => [...prev, { id, text, target: null }]);
       toastTimers.push(window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_MS));
     };
     const flash = (msg: string) => {
@@ -1085,14 +1113,19 @@ export function App() {
           text += ` — mené par ${factionDefinite(lastRaidFaction)}`;
         }
         if (!text) continue;
-        setToasts((prev) => [...prev, { id: seq, text }]);
+        const target = eventTarget(kind, arg, buildEventFocusCtx());
+        setToasts((prev) => [...prev, { id: seq, text, target }]);
         toastTimers.push(
           window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== seq)), TOAST_MS),
         );
         // Journal : même texte que le toast, figé avec les `names` de l'instant
         // (voir l'en-tête de `JournalPanel.tsx`) — pas un second lecteur d'événements.
+        // `arg` voyage aussi : `JournalPanel` recalcule sa cible à chaque rendu
+        // (`resolveTarget`), jamais figée comme `text`, pour qu'un pawn mort
+        // depuis redevienne non cliquable même longtemps après (mission
+        // « clic sur un événement » §3).
         const log = eventLogRef.current;
-        log.push({ seq, tick, kind, text });
+        log.push({ seq, tick, kind, arg, text });
         if (log.length > MAX_JOURNAL_ENTRIES) log.splice(0, log.length - MAX_JOURNAL_ENTRIES);
       }
     };
@@ -1115,6 +1148,41 @@ export function App() {
      * chaque `onFire` (`fireVersion` change bien plus souvent que ça).
      */
     let lastFire: Uint8Array | null = null;
+
+    /**
+     * Recherches sans DOM pour `eventTarget` (`eventFocus.ts`), toujours sur
+     * l'état **courant** (`curPawns`, `lastFrame`, `lastFire`, `lastMapRef`) :
+     * reconstruit à chaque appel, jamais mémorisé, pour qu'un pawn mort ou
+     * une case qui ne brûle plus se voient tout de suite, même bien après
+     * l'événement (le Journal garde ses entrées toute la session).
+     */
+    const buildEventFocusCtx = (): EventFocusCtx => ({
+      pawnById(id) {
+        for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
+          if (curPawns[o] === id) return { x: curPawns[o + 1] / 256, y: curPawns[o + 2] / 256 };
+        }
+        return null;
+      },
+      firstPawnOfFaction(faction) {
+        for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
+          if (curPawns[o + 10] === faction) {
+            return { id: curPawns[o], x: curPawns[o + 1] / 256, y: curPawns[o + 2] / 256 };
+          }
+        }
+        return null;
+      },
+      firstBurningTile() {
+        const map = lastMapRef.current;
+        if (!map || !lastFire) return null;
+        for (let i = 0; i < lastFire.length; i++) {
+          if (lastFire[i] !== 0) return { x: i % map.width, y: Math.floor(i / map.width) };
+        }
+        return null;
+      },
+      traderId() {
+        return lastFrame && lastFrame.traderPresent >= 0 ? lastFrame.traderPresent : null;
+      },
+    });
 
     // --- Le Worker de simulation ---
     const bridge = new SimBridge({
@@ -1323,6 +1391,28 @@ export function App() {
     /** Vrai dès que le sim tourne : avant, il n'y a rien à commander. */
     const live = () => lastFrame !== null;
 
+    /**
+     * Recentre la caméra sur une cible déjà résolue (`eventTarget`) et
+     * sélectionne le pawn visé, le cas échéant ; silencieux sans cible. Sert
+     * le clic sur un toast (`target` figé à la réception, mais la position
+     * d'un pawn est encore relue ici, **courante**) et sur une ligne du
+     * Journal (`focusEvent`, qui résout `target` juste avant d'appeler ceci).
+     */
+    const applyEventTarget = (target: EventTarget) => {
+      if (!target) return;
+      if (target.kind === "tile") {
+        // +0.5 : centre de la case, comme le clic sur la mini-carte (`Minimap.tsx`).
+        renderer.focusOn(target.x + 0.5, target.y + 0.5);
+        return;
+      }
+      // Pawn : sa position courante, jamais celle qu'il avait à l'événement.
+      const pos = buildEventFocusCtx().pawnById(target.id);
+      if (!pos) return;
+      renderer.focusOn(pos.x, pos.y);
+      selected = target.id;
+      renderer.setSelected(target.id);
+    };
+
     // --- Sauvegarde (solo seulement : l'horloge du multi ne s'arrête pas) ---
     const actions: Actions = {
       save() {
@@ -1378,6 +1468,15 @@ export function App() {
             break;
           }
         }
+      },
+      resolveEventTarget(kind, arg) {
+        return eventTarget(kind, arg, buildEventFocusCtx());
+      },
+      focusEvent(kind, arg) {
+        applyEventTarget(eventTarget(kind, arg, buildEventFocusCtx()));
+      },
+      activateTarget(target) {
+        applyEventTarget(target);
       },
     };
     actionsRef.current = actions;
@@ -2899,6 +2998,8 @@ export function App() {
               filter={journalFilter}
               onFilterChange={setJournalFilter}
               onClose={() => setShowJournal(false)}
+              resolveTarget={(kind, arg) => actionsRef.current?.resolveEventTarget(kind, arg) ?? null}
+              onActivate={(kind, arg) => actionsRef.current?.focusEvent(kind, arg)}
             />
           )}
           {showOptions && (
@@ -2984,11 +3085,31 @@ export function App() {
         ))}
       {toasts.length > 0 && (
         <div className="toasts">
-          {toasts.map((t) => (
-            <div key={t.id} className="toast">
-              {t.text}
-            </div>
-          ))}
+          {toasts.map((t) => {
+            const activate = () => {
+              if (!t.target) return;
+              actionsRef.current?.activateTarget(t.target);
+              setToasts((prev) => prev.filter((p) => p.id !== t.id));
+            };
+            return (
+              <div
+                key={t.id}
+                className={t.target ? "toast clickable" : "toast"}
+                role={t.target ? "button" : undefined}
+                tabIndex={t.target ? 0 : undefined}
+                onClick={t.target ? activate : undefined}
+                onKeyDown={
+                  t.target
+                    ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") activate();
+                      }
+                    : undefined
+                }
+              >
+                {t.text}
+              </div>
+            );
+          })}
         </div>
       )}
       {notice && <div className="notice">{notice}</div>}

@@ -126,6 +126,10 @@ côté client.
 | — | Factions | réputation auprès des trois factions PNJ et tribut (voir « Factions et réputation », §4) |
 | — | Mini-carte (coin bas droit, bouton « − » pour la replier) | vue d'ensemble de la carte 128×128 : colons, bêtes, pillards, marchand et cases en feu en pastilles colorées, rectangle blanc pour la vue caméra ; clic ou glisser dessus pour s'y déplacer |
 
+Un toast ou une ligne du Journal repérée d'un ⌖ se clique pour recentrer la
+caméra sur l'événement (un raid mène au premier pillard, un incendie à la
+première case en feu) et sélectionner le colon concerné s'il y en a un.
+
 Le panneau d'un colon sélectionné montre son travail en cours, son arme et son
 habit, la température ressentie, ses besoins (PV, faim, repos, humeur), sa
 santé (sang, conscience, blessures détaillées, heures de maladie restantes
