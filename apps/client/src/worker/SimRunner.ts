@@ -69,7 +69,10 @@ export interface RunnerSim extends SimLike {
   skills(): Int32Array;
   /** `[id, sang, conscience %, blessures]` par pawn. */
   health(): Int32Array;
-  /** Faune vivante : `[id, espèce, chassée]` par bête (`sim-wasm::ANIMAL_STRIDE`). */
+  /**
+   * Faune vivante : `[id, espèce, drapeaux]` par bête, sauvage et apprivoisée
+   * (`sim-wasm::ANIMAL_STRIDE`).
+   */
   animals(): Int32Array;
   /** Objectifs de fabrication courants, indexés par `ItemKind` (9 entrées). */
   craftTargets(): Uint32Array;
@@ -122,6 +125,8 @@ export interface RunnerSim extends SimLike {
   fireCount(): number;
   /** Couche « feu » : un octet par case, 0 éteint, sinon l'intensité de 1 à 3. */
   fire(): Uint8Array;
+  /** Bêtes de la colonie vivantes, tous genres confondus (`sim-wasm::livestock_count`). */
+  livestockCount(): number;
   dispose(): void;
 }
 
@@ -394,6 +399,7 @@ export class SimRunner {
       traits: sim.traits(),
       departures: sim.departuresCount(),
       fireCount: sim.fireCount(),
+      livestockCount: sim.livestockCount(),
       lag: this.lag,
       tps: this.tpsValue,
       difficulty: sim.difficulty(),

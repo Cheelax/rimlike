@@ -226,8 +226,23 @@ export const HEALTH_STRIDE = 4;
 /** Contrat avec `sim::health::BodyPart` : index = valeur de l'enum. */
 export const BODY_PART_LABELS = ["tête", "torse", "bras gauche", "bras droit", "jambe gauche", "jambe droite"] as const;
 
-/** Contrat avec `sim-wasm::ANIMAL_STRIDE` : `[id, espèce, chassée]` par bête vivante. */
+/**
+ * Contrat avec `sim-wasm::ANIMAL_STRIDE` : `[id, espèce, drapeaux]` par bête
+ * vivante, sauvage **et** apprivoisée (la faction du tampon `pawns` les
+ * départage : 2 sauvage, 0 colonie). La troisième valeur est un champ de
+ * drapeaux (`ANIMAL_FLAG`), pas un simple booléen : toujours tester au bit,
+ * jamais `!== 0` (la chasse seule valait 1, ce n'est plus vrai).
+ */
 export const ANIMAL_STRIDE = 3;
+
+/** Drapeaux du tampon `animals` (troisième valeur), contrat avec `sim::livestock`. */
+export const ANIMAL_FLAG = { Hunted: 1, TameMarked: 2, SlaughterMarked: 4 } as const;
+
+/** Infobulle du bouton Apprivoiser (panneau d'une bête sauvage sélectionnée). */
+export const TAME_HINT = "5 baies ou légumes ; lapin facile, cerf moyen, sanglier difficile";
+
+/** Infobulle du bouton Abattre (panneau d'une bête de la colonie sélectionnée). */
+export const SLAUGHTER_HINT = "un colon l'abat, la dépouille se dépèce au poste";
 
 /**
  * PV maximum par espèce (`animals::Species::max_hp`), pour convertir le PV
@@ -351,6 +366,8 @@ export const JOB_LABELS = [
   "bavarde",
   "réarme un piège",
   "combat le feu",
+  "apprivoise",
+  "abat",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
@@ -490,6 +507,22 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
     case 37:
       // `arg` = le nombre de cases qui ont brûlé (`sim::EventKind::FireOut`).
       return `Incendie éteint : ${arg} case${arg > 1 ? "s" : ""} brûlée${arg > 1 ? "s" : ""}`;
+    case 38: {
+      // `arg` = l'espèce apprivoisée (`sim::EventKind::Tamed`), pas un id de
+      // pawn. Les trois espèces sont masculines : jamais d'accord à porter.
+      const species = SPECIES_LABELS[arg] ?? "bête";
+      return `Un ${species} a été apprivoisé`;
+    }
+    case 39: {
+      // `arg` = l'espèce née dans la colonie (`sim::EventKind::AnimalBorn`).
+      const species = SPECIES_LABELS[arg] ?? "bête";
+      return `Un ${species} est né`;
+    }
+    case 40: {
+      // `arg` = l'espèce abattue (`sim::EventKind::Slaughtered`).
+      const species = SPECIES_LABELS[arg] ?? "bête";
+      return `Un ${species} a été abattu`;
+    }
     default:
       return "";
   }

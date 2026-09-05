@@ -83,6 +83,7 @@ function frame(): FrameMessage {
     foodFreshness: new Int32Array([-1, -1, 800, -1, -1, -1, -1, -1, -1, -1, -1, -1, 400, -1, -1, -1]),
     researchState: new Uint32Array([255, 0, 2000, 0, 0, 2500, 0, 0, 2500, 0, 0, 3000, 0, 0, 3000, 0]),
     fireCount: 2,
+    livestockCount: 1,
   };
 }
 
@@ -198,6 +199,9 @@ describe("protocole du Worker de simulation", () => {
     // Cases en feu (`sim-wasm::fire_count`) : un simple nombre, comme `wealth`
     // ou `difficulty` — la couche elle-même voyage à part (`FireMessage`).
     expect(clone.fireCount).toBe(2);
+    // Bêtes de la colonie (`sim-wasm::livestock_count`) : même contrat que
+    // `fireCount`, un simple nombre cloné tel quel.
+    expect(clone.livestockCount).toBe(1);
   });
 
   it("fait arriver la carte, les calques et l'intérieur copiés", () => {

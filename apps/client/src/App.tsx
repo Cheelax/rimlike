@@ -33,6 +33,7 @@ import {
 } from "./render/Renderer";
 import { acquireGl } from "./render/gl";
 import {
+  ANIMAL_FLAG,
   ANIMAL_STRIDE,
   APPAREL_NAMES,
   BLUEPRINT_STRIDE,
@@ -60,8 +61,10 @@ import {
   SEASON_LABELS,
   sickHoursRemaining,
   SKILL_STRIDE,
+  SLAUGHTER_HINT,
   SPECIES_LABELS,
   SPECIES_MAX_HP,
+  TAME_HINT,
   TRAIT_HINTS,
   TRAIT_LABELS,
   visibleStock,
@@ -87,6 +90,8 @@ import {
   encodeSetPriority,
   encodeSetResearch,
   encodeSetZone,
+  encodeSlaughter,
+  encodeTame,
   encodeTrade,
   encodeTriggerRaid,
 } from "./sim/commands";
@@ -100,6 +105,7 @@ const CLICK_TOLERANCE_PX = 5;
 const MAX_RENDER_DT_MS = 100;
 const SAVE_KEY = "rimlike.save.v1";
 /** Contrat avec `pawn::Faction` et `pawn::HP_MAX`. */
+const FACTION_COLONY = 0;
 const FACTION_RAIDER = 1;
 const FACTION_ANIMAL = 2;
 const FACTION_TRADER = 3;
@@ -279,12 +285,26 @@ interface PawnInfo {
   rangedXp: number;
   /** Température ressentie, en dixièmes de degré, rafraîchie par `rpc("pawnComfort", id)` au même rythme. */
   comfort: number;
-  /** Vrai pour une bête (`pawn::Faction::Animal`, lue dans `frame.animals`) : le panneau se réduit à PV/sang/chasse. */
+  /**
+   * Vrai pour une bête **sauvage** (`pawn::Faction::Animal`, lue dans
+   * `frame.animals`) : le panneau se réduit à PV/sang/chasse/apprivoisement.
+   * Faux pour une bête de la colonie (voir `livestock`).
+   */
   animal: boolean;
-  /** Espèce (`sim::animals::Species`), -1 si `animal` est faux. */
+  /** Espèce (`sim::animals::Species`), -1 si ni `animal` ni `livestock`. */
   species: number;
-  /** Marquée gibier (`animals` buffer), sans effet si `animal` est faux. */
+  /** Marquée gibier (bit `ANIMAL_FLAG.Hunted`), sans effet si `animal` est faux. */
   hunted: boolean;
+  /** Marquée pour apprivoisement (bit `ANIMAL_FLAG.TameMarked`), sans effet si `animal` est faux. */
+  tameMarked: boolean;
+  /**
+   * Vrai pour une bête **de la colonie** (faction 0 avec espèce ≥ 0,
+   * `sim::livestock::Pawn::is_livestock`) : panneau dédié, bouton Abattre
+   * seulement.
+   */
+  livestock: boolean;
+  /** Marquée pour l'abattoir (bit `ANIMAL_FLAG.SlaughterMarked`), sans effet si `livestock` est faux. */
+  slaughterMarked: boolean;
   /** Vrai pour le marchand de passage (`pawn::Faction::Trader`) : « Marchand » dans le panneau, bouton Troc. */
   trader: boolean;
   /**
@@ -377,6 +397,12 @@ interface Stats {
    * `SimBridge.onFire`, pas par cet état.
    */
   fireCount: number;
+  /**
+   * Bêtes de la colonie vivantes (`frame.livestockCount`), tous genres
+   * confondus : pilote la ligne « Bétail : N » du HUD, affichée seulement
+   * au-dessus de zéro.
+   */
+  livestockCount: number;
 }
 
 const INITIAL: Stats = {
@@ -419,6 +445,7 @@ const INITIAL: Stats = {
   // 255 = aucune recherche en cours, cinq technologies à 0/0/non acquise.
   researchState: [255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   fireCount: 0,
+  livestockCount: 0,
 };
 
 interface Actions {
@@ -1309,16 +1336,17 @@ export function App() {
       return -1;
     };
     /**
-     * Espèce et marquage gibier d'une bête, lus dans le dernier `frame.animals`
-     * reçu (stride 3 : id, espèce, chassée). `null` si l'id n'est pas celui
-     * d'un animal vivant.
+     * Espèce et marquage gibier d'une bête **sauvage**, lus dans le dernier
+     * `frame.animals` reçu (stride 3 : id, espèce, drapeaux). `null` si l'id
+     * n'est pas celui d'une bête sauvage vivante — en particulier une bête de
+     * la colonie (faction 0) n'y répond jamais : elle ne se chasse plus.
      */
     const animalOf = (id: number | null): { species: number; hunted: boolean } | null => {
-      if (id === null) return null;
+      if (id === null || factionOf(id) !== FACTION_ANIMAL) return null;
       const buf = lastFrame?.animals;
       if (!buf) return null;
       for (let o = 0; o + ANIMAL_STRIDE <= buf.length; o += ANIMAL_STRIDE) {
-        if (buf[o] === id) return { species: buf[o + 1], hunted: buf[o + 2] !== 0 };
+        if (buf[o] === id) return { species: buf[o + 1], hunted: (buf[o + 2] & ANIMAL_FLAG.Hunted) !== 0 };
       }
       return null;
     };
@@ -1639,14 +1667,18 @@ export function App() {
           [f.traits[t + 1], f.traits[t + 2]].filter((v) => v >= 0),
         );
       }
-      // Espèce et marquage gibier par id, depuis `frame.animals` : pas de RPC non plus.
-      const animalById = new Map<number, { species: number; hunted: boolean }>();
+      // Espèce et drapeaux par id, depuis `frame.animals` : pas de RPC non
+      // plus. Couvre les bêtes sauvages **et** de la colonie (la faction du
+      // tampon `pawns` les départage) : jamais `!== 0` sur les drapeaux, la
+      // chasse seule n'en vaut plus la valeur entière (`ANIMAL_FLAG`).
+      const animalById = new Map<number, { species: number; flags: number }>();
       for (let a = 0; a + ANIMAL_STRIDE <= f.animals.length; a += ANIMAL_STRIDE) {
-        animalById.set(f.animals[a], { species: f.animals[a + 1], hunted: f.animals[a + 2] !== 0 });
+        animalById.set(f.animals[a], { species: f.animals[a + 1], flags: f.animals[a + 2] });
       }
       const colonistList: CaravanColonist[] = [];
       const colonistBadges: ColonistBadge[] = [];
       for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
+        const pid = curPawns[o];
         const faction = curPawns[o + 10];
         const hostile = faction === FACTION_RAIDER;
         const isAnimal = faction === FACTION_ANIMAL;
@@ -1654,11 +1686,14 @@ export function App() {
         // pastille dans `ColonistBar`), ni un ennemi, ni une bête : sa
         // présence se lit à part, dans `frame.traderPresent`.
         const isTrader = faction === FACTION_TRADER;
+        // Bête **de la colonie** (faction 0 avec espèce ≥ 0, `sim::livestock`) :
+        // ni colon, ni gibier, ni pillard, ni marchand. Comme le marchand, à
+        // exclure de chaque compte et de chaque liste de « colons » ci-dessous.
+        const isLivestock = faction === FACTION_COLONY && animalById.has(pid);
         if (hostile) hostiles++;
         else if (isAnimal) beasts++;
-        else if (!isTrader) colonists++;
-        if (!hostile && !isAnimal && !isTrader) {
-          const pid = curPawns[o];
+        else if (!isTrader && !isLivestock) colonists++;
+        if (!hostile && !isAnimal && !isTrader && !isLivestock) {
           const flags = curPawns[o + 3];
           const name = f.names[pid] ?? "";
           colonistList.push({
@@ -1683,8 +1718,8 @@ export function App() {
             traits: traitsById.get(pid) ?? [],
           });
         }
-        if (curPawns[o] !== selected) continue;
-        const id = curPawns[o];
+        if (pid !== selected) continue;
+        const id = pid;
         const ck = curPawns[o + 8];
         const mood = curPawns[o + 6] / 10;
         let blood = 0;
@@ -1696,7 +1731,7 @@ export function App() {
           break;
         }
         const skills: SkillInfo[] = [];
-        if (!hostile && !isAnimal && !isTrader) {
+        if (!hostile && !isAnimal && !isTrader && !isLivestock) {
           for (let s = 0; s + SKILL_STRIDE <= f.skills.length; s += SKILL_STRIDE) {
             if (f.skills[s] !== id) continue;
             for (let w = 0; w < WORK_LABELS.length; w++) {
@@ -1709,9 +1744,11 @@ export function App() {
         }
         const animalInfo = animalById.get(id);
         const species = animalInfo?.species ?? -1;
-        // Le PV brut se lit sur l'échelle de l'espèce (`Species::max_hp`), pas
-        // sur `HP_MAX` (colons et pillards seulement).
-        const maxHp = isAnimal ? (SPECIES_MAX_HP[species] ?? HP_MAX) : HP_MAX;
+        const flags = animalInfo?.flags ?? 0;
+        // Le PV brut se lit sur l'échelle de l'espèce (`Species::max_hp`),
+        // pour une bête sauvage comme pour une bête de la colonie — jamais
+        // `HP_MAX` (colons, pillards et marchand seulement).
+        const maxHp = isAnimal || isLivestock ? (SPECIES_MAX_HP[species] ?? HP_MAX) : HP_MAX;
         info = {
           id,
           name: f.names[id] ?? "",
@@ -1740,7 +1777,10 @@ export function App() {
           sickHours: selectedSickId === id ? sickHoursRemaining(selectedSick) : 0,
           animal: isAnimal,
           species,
-          hunted: animalInfo?.hunted ?? false,
+          hunted: (flags & ANIMAL_FLAG.Hunted) !== 0,
+          tameMarked: (flags & ANIMAL_FLAG.TameMarked) !== 0,
+          livestock: isLivestock,
+          slaughterMarked: (flags & ANIMAL_FLAG.SlaughterMarked) !== 0,
           trader: isTrader,
           relations: selectedRelationsId === id ? selectedRelations : [],
         };
@@ -1901,6 +1941,7 @@ export function App() {
         foodFreshness: Array.from(f.foodFreshness),
         researchState: Array.from(f.researchState),
         fireCount: f.fireCount,
+        livestockCount: f.livestockCount,
       });
     }, 500);
 
@@ -2280,6 +2321,14 @@ export function App() {
               ) : (
                 ""
               )}
+              {stats.livestockCount > 0 ? (
+                <>
+                  {" · "}
+                  Bétail : <b>{stats.livestockCount}</b>
+                </>
+              ) : (
+                ""
+              )}
               {stats.hostiles > 0 ? (
                 <>
                   {" · "}
@@ -2349,7 +2398,7 @@ export function App() {
 
           <ColonistBar
             colonists={stats.colonistBadges}
-            selected={sel && !sel.hostile && !sel.animal ? sel.id : null}
+            selected={sel && !sel.hostile && !sel.animal && !sel.livestock ? sel.id : null}
             onSelect={(id) => actionsRef.current?.selectPawn(id)}
             onFocus={(id) => actionsRef.current?.focusPawn(id)}
           />
@@ -2372,10 +2421,43 @@ export function App() {
               >
                 {sel.hunted ? "Ne plus chasser" : "Chasser"}
               </button>
+              <button
+                className="panel-action"
+                title={TAME_HINT}
+                onClick={() => bridgeRef.current?.issue(encodeTame(sel.id, !sel.tameMarked))}
+              >
+                {sel.tameMarked ? "Ne plus apprivoiser" : "Apprivoiser"}
+              </button>
+              {(sel.hunted || sel.tameMarked) && (
+                <div className="panel-marked">{sel.hunted ? "marqué : chasse" : "marqué : apprivoisement"}</div>
+              )}
               <div className="help">touche H : bascule la chasse · clic droit avec un colon sélectionné : attaquer</div>
             </div>
           )}
-          {sel && !sel.animal && (
+          {sel && sel.livestock && (
+            <div className="panel">
+              <div className="panel-title">
+                {SPECIES_LABELS[sel.species]
+                  ? SPECIES_LABELS[sel.species].charAt(0).toUpperCase() + SPECIES_LABELS[sel.species].slice(1)
+                  : "Bête"}{" "}
+                de la colonie
+              </div>
+              <div className="panel-section">Santé</div>
+              <Bar label="PV" value={sel.hp} />
+              <Bar label="Faim" value={sel.hunger} />
+              <Bar label="Sang" value={sel.blood} />
+              {sel.downed && <div className="panel-downed">à terre</div>}
+              <button
+                className="panel-action"
+                title={SLAUGHTER_HINT}
+                disabled={sel.slaughterMarked}
+                onClick={() => bridgeRef.current?.issue(encodeSlaughter(sel.id))}
+              >
+                {sel.slaughterMarked ? "Sera abattu" : "Abattre"}
+              </button>
+            </div>
+          )}
+          {sel && !sel.animal && !sel.livestock && (
             <div className="panel">
               <div className="panel-title">
                 {sel.hostile

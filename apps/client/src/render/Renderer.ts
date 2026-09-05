@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { MapControls } from "three/addons/controls/MapControls.js";
 import {
+  ANIMAL_FLAG,
   ANIMAL_STRIDE,
   BLUEPRINT_STRIDE,
   BUILD_KIND,
@@ -94,6 +95,12 @@ const DEER_LEG_COLOR = 0x8a6a4a;
 const BOAR_SNOUT_COLOR = 0x241c14;
 /** Marqueur de chasse : petit cône rouge flottant au-dessus d'une bête marquée gibier. */
 const HUNT_MARKER_COLOR = 0xff3030;
+/**
+ * Collier/ruban porté par une bête de la colonie (`pawn::Faction::Colony`
+ * avec espèce, `sim::livestock`) : la distingue au premier coup d'œil d'une
+ * bête sauvage de la même espèce, sans changer sa silhouette.
+ */
+const LIVESTOCK_COLLAR_COLOR = 0xd9b23a;
 /** Largeur de la barre de vie, en cases. */
 const HP_BAR_WIDTH = 0.5;
 const HP_BAR_EMPTY = new THREE.Color(0xd94f4f);
@@ -144,7 +151,12 @@ interface PawnView {
   animal: boolean;
   /** Marqueur rouge visible quand la bête est marquée gibier (`animals` buffer). */
   huntMarker: THREE.Mesh;
-  /** Col du manteau, visible seulement quand l'habit porté est un manteau (`frame.apparel`). */
+  /**
+   * Col du manteau pour un colon (visible seulement quand l'habit porté est
+   * un manteau, `frame.apparel`), collier de la colonie pour une bête
+   * (visible tant qu'elle est apprivoisée, `pawn::Faction::Colony`) : jamais
+   * les deux usages à la fois, `animal` ci-dessous les départage.
+   */
   collar: THREE.Mesh;
   /** Ballot sur le dos, visible en permanence pour un marchand (`pawn::Faction::Trader`), jamais pour les autres. */
   pack: THREE.Mesh;
@@ -690,15 +702,17 @@ export class Renderer {
   }
 
   /**
-   * Faune vivante, `[id, espèce, chassée]×n` (`frame.animals`). `syncPawns` et
-   * `createPawn` s'en servent : la forme d'une bête dépend de son espèce, son
-   * marqueur de chasse de `hunted`. Appelé avant `syncPawns` par `App.tsx`,
-   * comme `setWeapons` et `setNames`.
+   * Faune vivante, `[id, espèce, drapeaux]×n` (`frame.animals`), sauvage
+   * **et** de la colonie — la faction du tampon `pawns` les départage.
+   * `syncPawns` et `createPawn` s'en servent : la forme d'une bête dépend de
+   * son espèce, son marqueur de chasse du bit `ANIMAL_FLAG.Hunted` (jamais
+   * `!== 0` sur le champ entier : la chasse seule n'en vaut plus la valeur).
+   * Appelé avant `syncPawns` par `App.tsx`, comme `setWeapons` et `setNames`.
    */
   setAnimals(buf: Int32Array): void {
     this.animalByPawn.clear();
     for (let o = 0; o + ANIMAL_STRIDE <= buf.length; o += ANIMAL_STRIDE) {
-      this.animalByPawn.set(buf[o], { species: buf[o + 1], hunted: buf[o + 2] !== 0 });
+      this.animalByPawn.set(buf[o], { species: buf[o + 1], hunted: (buf[o + 2] & ANIMAL_FLAG.Hunted) !== 0 });
     }
   }
 
@@ -879,6 +893,7 @@ export class Renderer {
       let x = cur[o + 1] / FX_ONE;
       let z = cur[o + 2] / FX_ONE;
       const flags = cur[o + 3];
+      const faction = cur[o + 10];
       const p = this.prevOf(prev, id);
       if (p) {
         x = p.x + (x - p.x) * alpha;
@@ -886,7 +901,7 @@ export class Renderer {
       }
       let view = this.pawns.get(id);
       if (!view) {
-        view = this.createPawn(id, cur[o + 10]);
+        view = this.createPawn(id, faction);
         this.pawns.set(id, view);
       }
       const g = view.group;
@@ -908,7 +923,12 @@ export class Renderer {
       const tint = APPAREL_TINT[apparel];
       const bodyBase = tint !== undefined ? this.apparelColor.setHex(tint) : view.baseColor;
       view.bodyMat.color.copy(bodyBase).lerp(WHITE, downed ? 0.55 : 0);
-      view.collar.visible = apparel === APPAREL_KIND.Coat;
+      // Le col du manteau (colon) et le collier de la colonie (bête) partagent
+      // le même champ `collar` (voir `PawnView`) : jamais les deux à la fois,
+      // `view.animal` les départage. Une bête change de faction en s'apprivoisant
+      // sans que son `PawnView` soit recréé : recalculé chaque frame, pas figé
+      // à la création comme `pack` pour le marchand.
+      view.collar.visible = view.animal ? faction === FACTION.Colony : apparel === APPAREL_KIND.Coat;
       const carrying = (flags & PAWN_FLAGS.CARRYING) !== 0;
       view.carry.visible = carrying;
       if (carrying) {
@@ -977,9 +997,15 @@ export class Renderer {
     return null;
   }
 
-  /** `faction` suit `pawn::Faction` (0 colonie, 1 pillard, 2 bête) : décide de la forme dessinée. */
+  /**
+   * `faction` suit `pawn::Faction` (0 colonie, 1 pillard, 2 bête) : décide de
+   * la forme dessinée. Une bête de la colonie (`sim::livestock`) garde la
+   * faction 0 d'un colon mais une espèce (`animalByPawn`, alimenté par
+   * `setAnimals` pour la faune sauvage **et** apprivoisée) : c'est ce qui la
+   * distingue d'un colon ici, la faction seule ne suffit plus.
+   */
   private createPawn(id: number, faction: number): PawnView {
-    if (faction === FACTION.Animal) return this.createAnimalPawn(id);
+    if (faction === FACTION.Animal || this.animalByPawn.has(id)) return this.createAnimalPawn(id);
     const group = new THREE.Group();
     const hostile = faction === FACTION.Raider;
     const isTrader = faction === FACTION.Trader;
@@ -1186,12 +1212,25 @@ export class Renderer {
     );
     huntMarker.position.set(0, 0.85, 0);
     huntMarker.visible = false;
+    // Collier/ruban de la colonie : une bête apprivoisée le porte en
+    // permanence, une bête sauvage jamais (`syncPawns` pilote sa visibilité
+    // sur la faction courante). Une seule taille pour les trois espèces,
+    // comme le marqueur de chasse ci-dessus : un simple repère, pas un
+    // habillage détaillé.
+    const collar = new THREE.Mesh(
+      new THREE.BoxGeometry(0.32, 0.07, 0.07),
+      new THREE.MeshLambertMaterial({ color: LIVESTOCK_COLLAR_COLOR }),
+    );
+    collar.position.set(0, 0.3, 0.16);
+    collar.castShadow = true;
+    collar.visible = false;
     for (const m of parts) {
       (m as THREE.Mesh).castShadow = true;
       m.userData.pawnId = id;
     }
     huntMarker.userData.pawnId = id;
-    group.add(...parts, huntMarker);
+    collar.userData.pawnId = id;
+    group.add(...parts, huntMarker, collar);
     this.pawnRoot.add(group);
 
     // Accessoires humains : jamais ajoutés au groupe (voir la note ci-dessus).
@@ -1214,8 +1253,6 @@ export class Renderer {
     spear.visible = false;
     const bow = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), new THREE.MeshBasicMaterial());
     bow.visible = false;
-    const collar = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), new THREE.MeshBasicMaterial());
-    collar.visible = false;
     const pack = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), new THREE.MeshBasicMaterial());
     pack.visible = false;
 

@@ -179,6 +179,34 @@ avec un colon armé sélectionné, le marque comme gibier. Seul un colon armé
 chasse ; le sanglier riposte s'il est blessé. Une dépouille rapportée au poste
 de fabrication est dépecée en viande et en cuir, selon l'espèce.
 
+### Élevage
+
+Sélectionner un animal sauvage puis le bouton Apprivoiser de son panneau (pas
+de raccourci clavier : `A` est déjà pris par le poste de fabrication) le
+marque pour l'apprivoisement, exclusif de la chasse — marquer l'un retire
+l'autre. Un colon libre apporte alors 5 baies ou légumes du stockage et tente
+sa chance : environ un quart de succès en moyenne, plus facile sur un lapin,
+moyen sur un cerf, difficile sur un sanglier (qui peut charger en cas
+d'échec) ; un essai raté n'est pas définitif, un colon retente plus tard tant
+que la bête reste marquée et le stock fourni.
+
+Apprivoisée, la bête rejoint la colonie (« *Espèce* de la colonie » dans son
+panneau, un collier de la couleur de la colonie sur son dessin) : elle reste
+à proximité du foyer, paît l'herbe alentour ou, à défaut, puise dans le
+stockage de vivres — sans pâture ni réserve à portée, elle maigrit puis
+meurt. Gardez de l'herbe non rasée près de la colonie plutôt que de tout
+couper autour d'elle. Deux bêtes de la même espèce se reproduisent d'elles-
+mêmes au bout de quelques jours (le lapin fait vite des petits, le sanglier
+prend son temps), jusqu'à douze têtes par espèce ; au-delà, plus de naissance
+tant que le troupeau n'a pas baissé. Le sanglier apprivoisé, en plus, défend
+la colonie comme un colon face à un ennemi proche.
+
+Le bouton Abattre du panneau d'une bête de la colonie la marque pour
+l'abattoir : un colon la rejoint et l'abat, sa dépouille se dépèce ensuite au
+poste de fabrication comme celle d'une bête chassée. Le marquage est
+irréversible (le bouton se grise une fois posé). Le HUD affiche « Bétail :
+N » tant que la colonie compte au moins une bête.
+
 ### Vêtements et armes
 
 Le poste de fabrication (touche `A`) produit, sur objectif réglé au panneau

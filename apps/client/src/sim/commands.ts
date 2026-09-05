@@ -132,6 +132,26 @@ export function encodeHunt(animal: number, on: boolean): Uint8Array {
 }
 
 /**
+ * Marque (`on`) ou démarque une bête **sauvage** pour l'apprivoisement
+ * (`sim::Command::Tame`). Exclusif de la chasse : marquer l'un retire l'autre
+ * côté sim. `animal` est l'id lu dans le tampon `animals`, comme `encodeHunt`.
+ */
+export function encodeTame(animal: number, on: boolean): Uint8Array {
+  return WasmSim.encode_tame(animal, on);
+}
+
+/**
+ * Marque une bête **de la colonie** pour l'abattoir (`sim::Command::Slaughter`) :
+ * un colon la rejoint, l'abat, et sa dépouille se dépèce comme celle d'une
+ * bête chassée. Refusée en silence par le sim sur une bête sauvage (elle se
+ * chasse). Pas de paramètre `on` contrairement à `encodeHunt`/`encodeTame` :
+ * le marquage ne se retire pas une fois posé.
+ */
+export function encodeSlaughter(animal: number): Uint8Array {
+  return WasmSim.encode_slaughter(animal);
+}
+
+/**
  * Climat hérité de la case du globe à la fondation d'une colonie neuve
  * (`docs/protocol.md` §11.6 « Le climat, hérité une fois »).
  * `baseTemperature`/`amplitude` viennent de `ServerStartMessage.climate`

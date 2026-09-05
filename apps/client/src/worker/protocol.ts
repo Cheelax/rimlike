@@ -146,7 +146,11 @@ export interface FrameMessage {
   readonly skills: Int32Array;
   /** Santé : `[id, sang, conscience %, blessures]` par pawn (`sim-wasm::HEALTH_STRIDE`). */
   readonly health: Int32Array;
-  /** Faune vivante : `[id, espèce, chassée]` par bête (`sim-wasm::ANIMAL_STRIDE`). */
+  /**
+   * Faune vivante : `[id, espèce, drapeaux]` par bête, sauvage **et**
+   * apprivoisée (`sim-wasm::ANIMAL_STRIDE`, `render/terrain.ts::ANIMAL_FLAG`) :
+   * la faction du tampon `pawns` les départage (2 sauvage, 0 colonie).
+   */
   readonly animals: Int32Array;
   /**
    * Nom de chaque pawn vivant, par id. Recalculé seulement quand la liste des
@@ -191,6 +195,13 @@ export interface FrameMessage {
    * `fireVersion` change.
    */
   readonly fireCount: number;
+  /**
+   * Bêtes de la colonie vivantes (`sim-wasm::livestock_count`), tous genres
+   * confondus. Un simple nombre, recalculé chaque frame comme `wealth` ou
+   * `fireCount` ; le détail par espèce se lit dans `animals` croisé avec la
+   * faction de `pawns` (voir `AGENTS.md`).
+   */
+  readonly livestockCount: number;
   /** Retard du lockstep en ticks. Toujours 0 en solo. */
   readonly lag: number;
   /** Ticks par seconde mesurés dans le Worker. */

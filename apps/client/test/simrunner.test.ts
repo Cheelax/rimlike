@@ -85,6 +85,13 @@ class FakeSim implements RunnerSim {
     return this.fireBuf ?? this.cells(0);
   }
 
+  /** Bêtes de la colonie simulées ; écrasable par les tests. */
+  livestockCountValue = 0;
+
+  livestockCount(): number {
+    return this.livestockCountValue;
+  }
+
   private cells(fill: number): Uint8Array {
     return new Uint8Array(this.width * this.height).fill(fill);
   }
@@ -407,6 +414,19 @@ describe("SimRunner en solo", () => {
     expect(changed.overlays).toBeNull();
     expect(changed.indoor).toBeNull();
     expect(changed.frame?.fireCount).toBe(0);
+  });
+
+  it("porte le compte de bêtes de la colonie dans chaque `frame` (`sim-wasm::livestock_count`)", () => {
+    const runner = new SimRunner();
+    const sim = new FakeSim();
+    sim.livestockCountValue = 3;
+    runner.setSim(sim);
+    const first = runner.advance(0);
+    expect(first.frame?.livestockCount).toBe(3);
+
+    sim.livestockCountValue = 0;
+    const changed = runner.advance(100);
+    expect(changed.frame?.livestockCount).toBe(0);
   });
 
   it("ne porte le hash qu'un `frame` sur trente", () => {

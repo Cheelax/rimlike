@@ -107,6 +107,12 @@ const SIM_API: ReadonlySet<string> = new Set([
   "animals",
   "pawnSpecies",
   "hunt",
+  // Élevage (`crates/sim/src/livestock.rs`) : apprivoisement et abattoir,
+  // exclusifs de la chasse côté sim. Le compte voyage aussi dans le `frame`
+  // (voir `SimRunner`), exposé ici pour le crochet de debug.
+  "tame",
+  "slaughter",
+  "livestockCount",
   // Caravanes : la file des départs se lit ici (le manifeste vit dans le sim,
   // donc dans le Worker) et se vide par commande, comme n'importe quel ordre.
   "formCaravan",

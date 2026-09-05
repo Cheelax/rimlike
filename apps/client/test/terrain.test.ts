@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ANIMAL_FLAG,
   APPAREL_NAMES,
   BASE_STOCK_COUNT,
   BUILD_KIND,
@@ -28,7 +29,9 @@ import {
   moodIcon,
   SEASON_LABELS,
   sickHoursRemaining,
+  SLAUGHTER_HINT,
   SPECIES_LABELS,
+  TAME_HINT,
   TRAIT_HINTS,
   TRAIT_LABELS,
   visibleStock,
@@ -222,6 +225,27 @@ describe("eventLabel", () => {
     expect(eventLabel(35, 4, { 4: "Cerf" })).toBe("Une bête s'est prise dans un piège");
     expect(eventLabel(35, 4, { 4: "Lapin" })).toBe("Une bête s'est prise dans un piège");
     expect(eventLabel(35, 4, { 4: "Sanglier" })).toBe("Une bête s'est prise dans un piège");
+  });
+
+  it("nomme l'espèce apprivoisée, née ou abattue, `arg` suivant `sim::animals::Species` et non un id", () => {
+    // Contrat avec `sim::EventKind` 38 (Tamed), 39 (AnimalBorn), 40 (Slaughtered) :
+    // lapin, cerf et sanglier sont masculins, aucun accord à porter.
+    expect(eventLabel(38, 0)).toBe("Un cerf a été apprivoisé");
+    expect(eventLabel(38, 1)).toBe("Un lapin a été apprivoisé");
+    expect(eventLabel(38, 2)).toBe("Un sanglier a été apprivoisé");
+    expect(eventLabel(39, 0)).toBe("Un cerf est né");
+    expect(eventLabel(39, 1)).toBe("Un lapin est né");
+    expect(eventLabel(40, 2)).toBe("Un sanglier a été abattu");
+    // Un nom connu ne doit pas s'y glisser : ce n'est pas un id de pawn.
+    expect(eventLabel(38, 0, { 0: "Alice" })).toBe("Un cerf a été apprivoisé");
+  });
+});
+
+describe("eventCategory : élevage", () => {
+  it("classe l'apprivoisement, la naissance et l'abattage en colonie, jamais en menace", () => {
+    expect(eventCategory(38)).toBe("colony");
+    expect(eventCategory(39)).toBe("colony");
+    expect(eventCategory(40)).toBe("colony");
   });
 });
 
@@ -442,6 +466,34 @@ describe("JOB_LABELS", () => {
     // Contrat avec `pawn::Job::code()` (`crates/sim/src/fire.rs`) : un colon
     // qui combat un incendie proche.
     expect(JOB_LABELS[27]).toBe("combat le feu");
+  });
+
+  it("nomme les jobs Tame (code 28) et Slaughter (code 29), `crates/sim/src/livestock.rs`", () => {
+    expect(JOB_LABELS[28]).toBe("apprivoise");
+    expect(JOB_LABELS[29]).toBe("abat");
+  });
+});
+
+describe("ANIMAL_FLAG", () => {
+  it("suit les drapeaux du tampon `animals` (`sim::livestock`)", () => {
+    expect(ANIMAL_FLAG).toEqual({ Hunted: 1, TameMarked: 2, SlaughterMarked: 4 });
+  });
+
+  it("teste chaque drapeau au bit, jamais sur la valeur entière", () => {
+    // La chasse seule valait 1 avant l'élevage ; ce n'est plus vrai dès
+    // qu'un autre drapeau se combine (contrat `AGENTS.md`, tampon `animals`).
+    const huntedAndTameMarked = ANIMAL_FLAG.Hunted | ANIMAL_FLAG.TameMarked;
+    expect((huntedAndTameMarked & ANIMAL_FLAG.Hunted) !== 0).toBe(true);
+    const tameOnly = ANIMAL_FLAG.TameMarked;
+    expect((tameOnly & ANIMAL_FLAG.Hunted) !== 0).toBe(false);
+    expect((ANIMAL_FLAG.SlaughterMarked & ANIMAL_FLAG.Hunted) !== 0).toBe(false);
+  });
+});
+
+describe("TAME_HINT et SLAUGHTER_HINT", () => {
+  it("donnent une infobulle non vide pour les boutons Apprivoiser et Abattre", () => {
+    expect(TAME_HINT.length).toBeGreaterThan(0);
+    expect(SLAUGHTER_HINT.length).toBeGreaterThan(0);
   });
 });
 

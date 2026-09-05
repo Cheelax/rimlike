@@ -460,7 +460,10 @@ mesurée sur 20 graines : lapin sûr, cerf patient, sanglier un pari sur deux), 
 (faction 0 avec une espèce) qui restent près du foyer, paissent ou puisent au stockage sous le
 gel, maigrissent sans pâture, se reproduisent par paire jusqu'à douze par espèce, sangliers qui
 défendent ; abattage `Slaughter` ; drapeaux dans le tampon `animals`, jobs 28-29, événements
-38-40. Interface à faire (marquage apprivoiser / abattre, bétail dans la barre et le HUD). Marchands itinérants côté serveur
+38-40. Interface livrée le 2026-09-05 (Sonnet) : boutons Apprivoiser (bête sauvage) et Abattre
+(bête de la colonie), panneau « <Espèce> de la colonie », collier de la couleur de la colonie,
+bétail exclu des comptes de colons, ligne HUD « Bétail : N », jobs 28-29 et événements 38-40 ;
+vérifié : un lapin marqué avec 88 baies en stock est apprivoisé en moins de 20 000 ticks. Marchands itinérants côté serveur
 livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
 caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;

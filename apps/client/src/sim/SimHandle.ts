@@ -161,10 +161,41 @@ export class SimHandle implements SimLike {
 
   /**
    * Espèce d'un pawn, suivant `sim::animals::Species` (0 cerf, 1 lapin,
-   * 2 sanglier). -1 : ce n'est pas un animal, ou l'id est inconnu.
+   * 2 sanglier). -1 : ce n'est pas un animal, ou l'id est inconnu. Une bête
+   * **apprivoisée** garde son espèce : `pawn_species(id) >= 0` avec une
+   * faction 0 dans le tampon `pawns` la distingue d'un colon (`sim::livestock`).
    */
   pawnSpecies(id: number): number {
     return this.inner.pawn_species(id);
+  }
+
+  /**
+   * Marque (`on`) ou démarque une bête **sauvage** pour l'apprivoisement,
+   * exclusif de la chasse. Outil de dev/console, comme `hunt` : en multi,
+   * cette commande doit passer par `encodeTame` puis `issue`, jamais être
+   * appliquée directement.
+   */
+  tame(animal: number, on: boolean): void {
+    this.inner.tame(animal, on);
+  }
+
+  /**
+   * Marque une bête **de la colonie** pour l'abattoir ; refusée en silence
+   * sur une bête sauvage, et le marquage ne se retire pas. Outil de
+   * dev/console, comme `hunt` : en multi, cette commande doit passer par
+   * `encodeSlaughter` puis `issue`, jamais être appliquée directement.
+   */
+  slaughter(animal: number): void {
+    this.inner.slaughter(animal);
+  }
+
+  /**
+   * Bêtes de la colonie vivantes, tous genres confondus (`sim::livestock`).
+   * Le détail par espèce se lit dans le tampon `animals` croisé avec la
+   * faction du tampon `pawns` (voir `AGENTS.md`).
+   */
+  livestockCount(): number {
+    return this.inner.livestock_count();
   }
 
   /**
@@ -590,7 +621,10 @@ export class SimHandle implements SimLike {
     );
   }
 
-  /** Faune vivante : `[id, espèce, chassée]` par bête (`sim-wasm::ANIMAL_STRIDE`). Copie. */
+  /**
+   * Faune vivante : `[id, espèce, drapeaux]` par bête, sauvage et apprivoisée
+   * (`sim-wasm::ANIMAL_STRIDE`, `render/terrain.ts::ANIMAL_FLAG`). Copie.
+   */
   animals(): Int32Array {
     return new Int32Array(
       new Int32Array(this.wasm.memory.buffer, this.inner.animals_ptr(), this.inner.animals_len()),
