@@ -1,3 +1,9 @@
+/** Contrat avec `pawn::Faction` (0 colonie, 1 pillard, 2 bête sauvage). */
+export const FACTION = { Colony: 0, Raider: 1, Animal: 2 } as const;
+
+/** Contrat avec `animals::Species` : index = valeur de l'enum. */
+export const SPECIES_LABELS = ["cerf", "lapin", "sanglier"] as const;
+
 /** Contrats avec `crates/sim/src/map.rs` et `items.rs` : index = valeur de l'enum. */
 export const TERRAIN = {
   DeepWater: 0,
@@ -60,10 +66,20 @@ export const ITEM_NAMES = [
   "gourdins",
   "épieux",
   "arcs",
+  "dépouilles de cerf",
+  "dépouilles de lapin",
+  "dépouilles de sanglier",
+  "viande",
+  "cuir",
 ] as const;
 export const ITEM_COLORS: readonly number[] = [
   0x9c6b3c, 0x8d8d8d, 0xc9304a, 0x5aa02c, 0xf0c070, 0x5c4a3a,
   0x5a3d22 /* gourdin : bois sombre */, 0x8a8f94 /* épieu : gris acier */, 0xd9b273 /* arc : bois clair */,
+  0x8a6a4a /* dépouille de cerf : brun clair */,
+  0xbfbfbf /* dépouille de lapin : gris clair */,
+  0x4a3a2a /* dépouille de sanglier : brun sombre */,
+  0x8a2020 /* viande : rouge sombre */,
+  0xc9a06a /* cuir : brun clair */,
 ];
 
 /**
@@ -94,6 +110,16 @@ export function xpToNext(level: number): number {
 export const HEALTH_STRIDE = 4;
 /** Contrat avec `sim::health::BodyPart` : index = valeur de l'enum. */
 export const BODY_PART_LABELS = ["tête", "torse", "bras gauche", "bras droit", "jambe gauche", "jambe droite"] as const;
+
+/** Contrat avec `sim-wasm::ANIMAL_STRIDE` : `[id, espèce, chassée]` par bête vivante. */
+export const ANIMAL_STRIDE = 3;
+
+/**
+ * PV maximum par espèce (`animals::Species::max_hp`), pour convertir le PV
+ * brut du tampon `pawns` en pourcentage : contrairement aux colons et aux
+ * pillards (`pawn::HP_MAX` = 1000), chaque espèce a son propre plafond.
+ */
+export const SPECIES_MAX_HP = [600, 150, 800] as const;
 
 /**
  * Texte d'une ligne du panneau du colon pour une blessure du tampon
@@ -147,6 +173,8 @@ export const JOB_LABELS = [
   "soigne",
   "fabrique",
   "s'équipe",
+  "chasse",
+  "dépèce",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
@@ -201,7 +229,29 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
     case 16:
       // `arg` = le jour de l'année de la première gelée, pas un id de pawn.
       return "Premières gelées";
+    case 17:
+      // `arg` = le nombre de bêtes arrivées (`sim::EventKind::AnimalsArrived`).
+      return `Une harde de ${arg} bête${arg > 1 ? "s" : ""} est arrivée`;
+    case 18: {
+      // `arg` = l'espèce chassée (`sim::animals::Species`), pas un id de pawn.
+      const species = SPECIES_LABELS[arg] ?? "bête";
+      return `Un ${species} a été chassé`;
+    }
+    case 19:
+      // `arg` = l'id du sanglier qui charge (`sim::EventKind::BoarAttacks`), pas affiché.
+      return "Un sanglier charge !";
     default:
       return "";
   }
+}
+
+/**
+ * Ce que fait la touche H, qui portait « Récolter » avant la chasse : bascule
+ * la chasse si la sélection est une bête (`pawn_species` ≥ 0), sinon choisit
+ * l'outil Récolter comme toujours. `selectedSpecies` : -1 si rien d'animal
+ * n'est sélectionné (id inconnu ou pawn non animal).
+ */
+export type HKeyAction = "hunt" | "harvest";
+export function hKeyAction(selectedSpecies: number): HKeyAction {
+  return selectedSpecies >= 0 ? "hunt" : "harvest";
 }

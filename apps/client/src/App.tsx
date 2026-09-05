@@ -16,6 +16,7 @@ import { fetchWorld, type WorldProgress } from "./net/worldFetch";
 import { WorldScreen, type CaravanOrder } from "./WorldScreen";
 import { HEAT_COLD, HEAT_HOT, PAWN_FLAGS, PAWN_STRIDE, Renderer, type TilePos, type TileRect } from "./render/Renderer";
 import {
+  ANIMAL_STRIDE,
   BLUEPRINT_STRIDE,
   BUILD_KIND,
   clampCraftTarget,
@@ -25,6 +26,7 @@ import {
   FEATURE,
   formatInjury,
   formatTemperature,
+  hKeyAction,
   HEALTH_STRIDE,
   ITEM_NAMES,
   JOB_LABELS,
@@ -32,6 +34,8 @@ import {
   PRIORITY_STRIDE,
   SEASON_LABELS,
   SKILL_STRIDE,
+  SPECIES_LABELS,
+  SPECIES_MAX_HP,
   WEAPON_NAMES,
   WEATHER_LABELS,
   WORK_LABELS,
@@ -46,6 +50,7 @@ import {
   encodeClearDepartures,
   encodeDesignate,
   encodeFormCaravan,
+  encodeHunt,
   encodeMoveTo,
   encodeSetCraftTarget,
   encodeSetPriority,
@@ -62,6 +67,7 @@ const MAX_RENDER_DT_MS = 100;
 const SAVE_KEY = "rimlike.save.v1";
 /** Contrat avec `pawn::Faction` et `pawn::HP_MAX`. */
 const FACTION_RAIDER = 1;
+const FACTION_ANIMAL = 2;
 const HP_MAX = 1000;
 /** Durée d'affichage d'une notification. */
 const TOAST_MS = 6000;
@@ -106,6 +112,8 @@ const TOOLS: { id: Tool; label: string; key: string; color: number; group: "orde
   { id: "select", label: "Sélection", key: "S", color: 0xffffff, group: "orders" },
   { id: "chop", label: "Couper", key: "C", color: 0xff9a2e, group: "orders" },
   { id: "mine", label: "Miner", key: "M", color: 0xff9a2e, group: "orders" },
+  // Touche H : Récolter, sauf si un animal est sélectionné, où elle bascule
+  // la chasse à la place (voir `hKeyAction` et le gestionnaire de `keydown`).
   { id: "harvest", label: "Récolter", key: "H", color: 0xff9a2e, group: "orders" },
   { id: "stockpile", label: "Stockage", key: "Z", color: 0x4a90d9, group: "orders" },
   { id: "growing", label: "Culture", key: "G", color: 0x5cc25c, group: "orders" },
@@ -127,8 +135,18 @@ const BUILD_TOOL_KIND: Partial<Record<Tool, number>> = {
   craftingSpot: BUILD_KIND.CraftingSpot,
 };
 const WOOD_ONLY: ReadonlySet<Tool> = new Set<Tool>(["bed", "campfire", "craftingSpot"]);
-/** HUD stock : comme les cadavres, les armes n'apparaissent que si on en a. */
-const HIDE_STOCK_WHEN_EMPTY: ReadonlySet<string> = new Set(["cadavres", "gourdins", "épieux", "arcs"]);
+/** HUD stock : comme les cadavres, les armes, la viande, le cuir et les dépouilles n'apparaissent que si on en a. */
+const HIDE_STOCK_WHEN_EMPTY: ReadonlySet<string> = new Set([
+  "cadavres",
+  "gourdins",
+  "épieux",
+  "arcs",
+  "dépouilles de cerf",
+  "dépouilles de lapin",
+  "dépouilles de sanglier",
+  "viande",
+  "cuir",
+]);
 
 /** Une ligne de blessure du panneau Santé, depuis `pawn_injuries` (voir `pawnInjuries`). */
 interface InjuryInfo {
@@ -178,6 +196,12 @@ interface PawnInfo {
   rangedXp: number;
   /** Température ressentie, en dixièmes de degré, rafraîchie par `rpc("pawnComfort", id)` au même rythme. */
   comfort: number;
+  /** Vrai pour une bête (`pawn::Faction::Animal`, lue dans `frame.animals`) : le panneau se réduit à PV/sang/chasse. */
+  animal: boolean;
+  /** Espèce (`sim::animals::Species`), -1 si `animal` est faux. */
+  species: number;
+  /** Marquée gibier (`animals` buffer), sans effet si `animal` est faux. */
+  hunted: boolean;
 }
 
 interface Stats {
@@ -202,6 +226,8 @@ interface Stats {
   blueprints: number;
   colonists: number;
   hostiles: number;
+  /** Bêtes vivantes (`frame.animals`), ni colons ni ennemis (HUD : « N bêtes »). */
+  beasts: number;
   selected: PawnInfo | null;
   /** Copie du tampon des priorités : `[id, p0..p5]` par colon. */
   priorities: number[];
@@ -233,10 +259,11 @@ const INITIAL: Stats = {
   dayOfYear: 0,
   yearDays: 60,
   temperature: 120,
-  stored: [0, 0, 0, 0, 0, 0, 0, 0, 0],
+  stored: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   blueprints: 0,
   colonists: 0,
   hostiles: 0,
+  beasts: 0,
   selected: null,
   priorities: [],
   names: {},
@@ -667,6 +694,7 @@ export function App() {
         renderer.setTimeOfDay(f.timeOfDay / f.ticksPerDay);
         renderer.setNames(f.names);
         renderer.setWeapons(f.weapons);
+        renderer.setAnimals(f.animals);
         confirmPriorities(f.priorities);
         notifyEvents(f.events, f.names, freshSim);
         freshSim = false;
@@ -865,6 +893,20 @@ export function App() {
       }
       return -1;
     };
+    /**
+     * Espèce et marquage gibier d'une bête, lus dans le dernier `frame.animals`
+     * reçu (stride 3 : id, espèce, chassée). `null` si l'id n'est pas celui
+     * d'un animal vivant.
+     */
+    const animalOf = (id: number | null): { species: number; hunted: boolean } | null => {
+      if (id === null) return null;
+      const buf = lastFrame?.animals;
+      if (!buf) return null;
+      for (let o = 0; o + ANIMAL_STRIDE <= buf.length; o += ANIMAL_STRIDE) {
+        if (buf[o] === id) return { species: buf[o + 1], hunted: buf[o + 2] !== 0 };
+      }
+      return null;
+    };
     const applyTool = (rect: TileRect) => {
       if (!live()) return;
       switch (toolRef.current) {
@@ -947,9 +989,15 @@ export function App() {
         selected = renderer.pickPawn(e.clientX, e.clientY);
         renderer.setSelected(selected);
       } else if (start.button === 2 && selected !== null) {
-        // Clic droit sur un ennemi : ordre d'attaque. Sinon : déplacement.
+        // Clic droit sur un ennemi ou un animal, avec un colon sélectionné :
+        // ordre d'attaque. Sinon : déplacement (une bête sélectionnée ne
+        // reçoit pas d'ordre d'attaque, le sim l'ignorerait de toute façon).
         const target = renderer.pickPawn(e.clientX, e.clientY);
-        if (target !== null && factionOf(target) === FACTION_RAIDER) {
+        const targetFaction = target !== null ? factionOf(target) : -1;
+        const canAttack =
+          factionOf(selected) !== FACTION_ANIMAL &&
+          (targetFaction === FACTION_RAIDER || targetFaction === FACTION_ANIMAL);
+        if (target !== null && canAttack) {
           issue(encodeAttack(selected, target));
         } else {
           const tile = renderer.pickTile(e.clientX, e.clientY);
@@ -972,6 +1020,18 @@ export function App() {
       }
       const k = e.key.toUpperCase();
       if (e.metaKey || e.ctrlKey) return;
+      if (k === "H") {
+        // La touche H bascule la chasse quand un animal est sélectionné ;
+        // sinon elle garde son sens historique (outil Récolter). Voir
+        // `hKeyAction`, testé sans DOM dans `terrain.test.ts`.
+        const animal = animalOf(selected);
+        if (hKeyAction(animal ? animal.species : -1) === "hunt" && selected !== null && animal !== null) {
+          issue(encodeHunt(selected, !animal.hunted));
+        } else {
+          setTool("harvest");
+        }
+        return;
+      }
       const toolHit = TOOLS.find((t) => t.key === k);
       if (toolHit) {
         setTool(toolHit.id);
@@ -1089,6 +1149,7 @@ export function App() {
       let info: PawnInfo | null = null;
       let colonists = 0;
       let hostiles = 0;
+      let beasts = 0;
       // Sang par id : le panneau Caravane l'affiche pour chaque colon, une
       // recherche linéaire par colon coûterait un balayage de plus par tour.
       const bloodById = new Map<number, number>();
@@ -1100,12 +1161,20 @@ export function App() {
       for (let w = 0; w + 2 <= f.weapons.length; w += 2) {
         weaponById.set(f.weapons[w], f.weapons[w + 1]);
       }
+      // Espèce et marquage gibier par id, depuis `frame.animals` : pas de RPC non plus.
+      const animalById = new Map<number, { species: number; hunted: boolean }>();
+      for (let a = 0; a + ANIMAL_STRIDE <= f.animals.length; a += ANIMAL_STRIDE) {
+        animalById.set(f.animals[a], { species: f.animals[a + 1], hunted: f.animals[a + 2] !== 0 });
+      }
       const colonistList: CaravanColonist[] = [];
       for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
-        const hostile = curPawns[o + 10] === FACTION_RAIDER;
+        const faction = curPawns[o + 10];
+        const hostile = faction === FACTION_RAIDER;
+        const isAnimal = faction === FACTION_ANIMAL;
         if (hostile) hostiles++;
+        else if (isAnimal) beasts++;
         else colonists++;
-        if (!hostile) {
+        if (!hostile && !isAnimal) {
           const pid = curPawns[o];
           colonistList.push({
             id: pid,
@@ -1128,7 +1197,7 @@ export function App() {
           break;
         }
         const skills: SkillInfo[] = [];
-        if (!hostile) {
+        if (!hostile && !isAnimal) {
           for (let s = 0; s + SKILL_STRIDE <= f.skills.length; s += SKILL_STRIDE) {
             if (f.skills[s] !== id) continue;
             for (let w = 0; w < WORK_LABELS.length; w++) {
@@ -1139,6 +1208,11 @@ export function App() {
             break;
           }
         }
+        const animalInfo = animalById.get(id);
+        const species = animalInfo?.species ?? -1;
+        // Le PV brut se lit sur l'échelle de l'espèce (`Species::max_hp`), pas
+        // sur `HP_MAX` (colons et pillards seulement).
+        const maxHp = isAnimal ? (SPECIES_MAX_HP[species] ?? HP_MAX) : HP_MAX;
         info = {
           id,
           name: f.names[id] ?? "",
@@ -1148,7 +1222,7 @@ export function App() {
           mood,
           moodLabel: moodLabel(mood),
           breaking: curPawns[o + 7] === JOB_BREAK,
-          hp: (curPawns[o + 11] * 100) / HP_MAX,
+          hp: (curPawns[o + 11] * 100) / maxHp,
           hostile,
           job: JOB_LABELS[curPawns[o + 7]] ?? "?",
           carrying: ck >= 0 ? `${curPawns[o + 9]} ${ITEM_NAMES[ck]}` : null,
@@ -1162,6 +1236,9 @@ export function App() {
             ? selectedCombat
             : { meleeLevel: 0, meleeXp: 0, rangedLevel: 0, rangedXp: 0 }),
           comfort: selectedComfortId === id ? selectedComfort : 0,
+          animal: isAnimal,
+          species,
+          hunted: animalInfo?.hunted ?? false,
         };
       }
       // Blessures, compétences de combat et ressenti du colon sélectionné :
@@ -1240,6 +1317,7 @@ export function App() {
         blueprints: f.blueprints.length / BLUEPRINT_STRIDE,
         colonists,
         hostiles,
+        beasts,
         selected: info,
         priorities: Array.from(f.priorities),
         names: f.names,
@@ -1531,6 +1609,14 @@ export function App() {
             )}
             <div>
               <b>{stats.colonists}</b> colon{stats.colonists > 1 ? "s" : ""}
+              {stats.beasts > 0 ? (
+                <>
+                  {" · "}
+                  <b>{stats.beasts}</b> bête{stats.beasts > 1 ? "s" : ""}
+                </>
+              ) : (
+                ""
+              )}
               {stats.hostiles > 0 ? (
                 <>
                   {" · "}
@@ -1557,7 +1643,28 @@ export function App() {
             </div>
           </div>
 
-          {sel && (
+          {sel && sel.animal && (
+            <div className="panel">
+              <div className="panel-title">
+                {SPECIES_LABELS[sel.species]
+                  ? SPECIES_LABELS[sel.species].charAt(0).toUpperCase() + SPECIES_LABELS[sel.species].slice(1)
+                  : "Bête"}{" "}
+                (sauvage)
+              </div>
+              <div className="panel-section">Santé</div>
+              <Bar label="PV" value={sel.hp} />
+              <Bar label="Sang" value={sel.blood} />
+              {sel.downed && <div className="panel-downed">à terre</div>}
+              <button
+                className="panel-action"
+                onClick={() => bridgeRef.current?.issue(encodeHunt(sel.id, !sel.hunted))}
+              >
+                {sel.hunted ? "Ne plus chasser" : "Chasser"}
+              </button>
+              <div className="help">touche H : bascule la chasse · clic droit avec un colon sélectionné : attaquer</div>
+            </div>
+          )}
+          {sel && !sel.animal && (
             <div className="panel">
               <div className="panel-title">
                 {sel.hostile
@@ -1631,7 +1738,7 @@ export function App() {
                   </div>
                 ))}
 
-              <div className="help">clic droit : y aller, ou attaquer un ennemi</div>
+              <div className="help">clic droit : y aller, ou attaquer un ennemi ou un animal</div>
             </div>
           )}
 

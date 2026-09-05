@@ -87,6 +87,10 @@ const SIM_API: ReadonlySet<string> = new Set([
   "health",
   "pawnName",
   "pawnInjuries",
+  // Faune (`crates/sim/src/animals.rs`) : chasse par bête, pas par rectangle.
+  "animals",
+  "pawnSpecies",
+  "hunt",
   // Caravanes : la file des départs se lit ici (le manifeste vit dans le sim,
   // donc dans le Worker) et se vide par commande, comme n'importe quel ordre.
   "formCaravan",

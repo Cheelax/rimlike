@@ -119,6 +119,8 @@ export interface FrameMessage {
   readonly skills: Int32Array;
   /** Santé : `[id, sang, conscience %, blessures]` par pawn (`sim-wasm::HEALTH_STRIDE`). */
   readonly health: Int32Array;
+  /** Faune vivante : `[id, espèce, chassée]` par bête (`sim-wasm::ANIMAL_STRIDE`). */
+  readonly animals: Int32Array;
   /**
    * Nom de chaque pawn vivant, par id. Recalculé seulement quand la liste des
    * ids change (voir `SimRunner`) : pas un appel à `pawn_name` par frame.
@@ -185,6 +187,7 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
         message.priorities.buffer as ArrayBuffer,
         message.skills.buffer as ArrayBuffer,
         message.health.buffer as ArrayBuffer,
+        message.animals.buffer as ArrayBuffer,
         message.stored.buffer as ArrayBuffer,
         message.craftTargets.buffer as ArrayBuffer,
         message.weapons.buffer as ArrayBuffer,

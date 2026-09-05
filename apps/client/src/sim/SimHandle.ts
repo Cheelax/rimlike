@@ -111,6 +111,23 @@ export class SimHandle implements SimLike {
   }
 
   /**
+   * Marque (`on`) ou démarque un animal comme gibier. Outil de dev/console,
+   * comme `triggerRaid` : en multi, cette commande doit passer par
+   * `encodeHunt` puis `issue`, jamais être appliquée directement.
+   */
+  hunt(animal: number, on: boolean): void {
+    this.inner.hunt(animal, on);
+  }
+
+  /**
+   * Espèce d'un pawn, suivant `sim::animals::Species` (0 cerf, 1 lapin,
+   * 2 sanglier). -1 : ce n'est pas un animal, ou l'id est inconnu.
+   */
+  pawnSpecies(id: number): number {
+    return this.inner.pawn_species(id);
+  }
+
+  /**
    * Objectif de fabrication d'un genre (`sim::ItemKind` 6 gourdin, 7 épieu,
    * 8 arc). Un genre sans recette est ignoré par le sim.
    */
@@ -365,6 +382,13 @@ export class SimHandle implements SimLike {
   health(): Int32Array {
     return new Int32Array(
       new Int32Array(this.wasm.memory.buffer, this.inner.health_ptr(), this.inner.health_len()),
+    );
+  }
+
+  /** Faune vivante : `[id, espèce, chassée]` par bête (`sim-wasm::ANIMAL_STRIDE`). Copie. */
+  animals(): Int32Array {
+    return new Int32Array(
+      new Int32Array(this.wasm.memory.buffer, this.inner.animals_ptr(), this.inner.animals_len()),
     );
   }
 

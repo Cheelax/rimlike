@@ -10,7 +10,9 @@ import {
   eventLabel,
   formatInjury,
   formatTemperature,
+  hKeyAction,
   SEASON_LABELS,
+  SPECIES_LABELS,
   WEAPON_NAMES,
   WEATHER_LABELS,
 } from "../src/render/terrain";
@@ -75,6 +77,32 @@ describe("eventLabel", () => {
   it("annonce la première gelée de l'automne, sans dépendre de `arg`", () => {
     // Contrat avec `sim::EventKind::FirstFrost` (16) : `arg` = jour de l'année.
     expect(eventLabel(16, 45)).toBe("Premières gelées");
+  });
+
+  it("annonce l'arrivée d'une harde, `arg` étant son effectif", () => {
+    // Contrat avec `sim::EventKind::AnimalsArrived` (17).
+    expect(eventLabel(17, 1)).toBe("Une harde de 1 bête est arrivée");
+    expect(eventLabel(17, 3)).toBe("Une harde de 3 bêtes est arrivée");
+  });
+
+  it("nomme l'espèce chassée, `arg` suivant `sim::animals::Species` et non un id", () => {
+    // Contrat avec `sim::EventKind::AnimalHunted` (18).
+    expect(eventLabel(18, 0)).toBe("Un cerf a été chassé");
+    expect(eventLabel(18, 1)).toBe("Un lapin a été chassé");
+    expect(eventLabel(18, 2)).toBe("Un sanglier a été chassé");
+    // Un nom connu ne doit pas s'y glisser : ce n'est pas un id de pawn.
+    expect(eventLabel(18, 0, { 0: "Alice" })).toBe("Un cerf a été chassé");
+  });
+
+  it("annonce la charge d'un sanglier, sans dépendre de `arg`", () => {
+    // Contrat avec `sim::EventKind::BoarAttacks` (19) : `arg` = l'id du sanglier.
+    expect(eventLabel(19, 7)).toBe("Un sanglier charge !");
+  });
+});
+
+describe("SPECIES_LABELS", () => {
+  it("suit `sim::animals::Species` (0 cerf, 1 lapin, 2 sanglier)", () => {
+    expect(SPECIES_LABELS).toEqual(["cerf", "lapin", "sanglier"]);
   });
 });
 
@@ -143,5 +171,17 @@ describe("formatInjury", () => {
     expect(formatInjury(3, 0, 0, 0)).toContain("bras droit");
     expect(formatInjury(4, 0, 0, 0)).toContain("jambe gauche");
     expect(formatInjury(5, 0, 0, 0)).toContain("jambe droite");
+  });
+});
+
+describe("hKeyAction", () => {
+  it("bascule la chasse quand la sélection est une bête (espèce ≥ 0)", () => {
+    expect(hKeyAction(0)).toBe("hunt"); // cerf
+    expect(hKeyAction(1)).toBe("hunt"); // lapin
+    expect(hKeyAction(2)).toBe("hunt"); // sanglier
+  });
+
+  it("retombe sur l'outil Récolter sans bête sélectionnée", () => {
+    expect(hKeyAction(-1)).toBe("harvest");
   });
 });

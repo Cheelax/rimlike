@@ -1,10 +1,12 @@
 import * as THREE from "three";
 import { MapControls } from "three/addons/controls/MapControls.js";
 import {
+  ANIMAL_STRIDE,
   BLUEPRINT_STRIDE,
   BUILD_KIND,
   DESIGNATION,
   DOOR_COLORS,
+  FACTION,
   FEATURE,
   ITEM_COLORS,
   TERRAIN,
@@ -27,6 +29,8 @@ const NAME_LABEL_MIN_ZOOM = 1.6;
 const MAX_ITEMS = 2048;
 /** `ItemKind::Corpse` côté sim. */
 const ITEM_CORPSE = 5;
+/** Dépouilles de bêtes (`ItemKind` 9 cerf, 10 lapin, 11 sanglier) : rendues allongées comme un cadavre. */
+const ANIMAL_CORPSE_KINDS: ReadonlySet<number> = new Set([9, 10, 11]);
 const MAX_BLUEPRINTS = 2048;
 
 /** Contrat avec `sim::Weather` (3 : la pluie qui gèle). */
@@ -66,10 +70,17 @@ export const HEAT_HOT = 400;
 
 const PAWN_COLORS = [0xd94f4f, 0x4f8fd9, 0xe0b040, 0x8f4fd9, 0x3fb08f, 0xd97f2f];
 const SKIN = 0xf1c9a5;
-/** Contrat avec `pawn::Faction` et `pawn::HP_MAX`. */
-const FACTION_RAIDER = 1;
+/** Contrat avec `pawn::HP_MAX` (colons et pillards ; les bêtes ont leur propre plafond, hors rendu). */
 const PAWN_HP_MAX = 1000;
 const RAIDER_COLOR = 0x7a1f1f;
+/** Couleur du corps par espèce (`animals::Species` : 0 cerf, 1 lapin, 2 sanglier). */
+const ANIMAL_COLORS = [0xc2a878, 0xb0b0b0, 0x3a3128];
+/** Couleur des pattes du cerf, plus sombre que le corps. */
+const DEER_LEG_COLOR = 0x8a6a4a;
+/** Couleur du groin du sanglier. */
+const BOAR_SNOUT_COLOR = 0x241c14;
+/** Marqueur de chasse : petit cône rouge flottant au-dessus d'une bête marquée gibier. */
+const HUNT_MARKER_COLOR = 0xff3030;
 /** Largeur de la barre de vie, en cases. */
 const HP_BAR_WIDTH = 0.5;
 const HP_BAR_EMPTY = new THREE.Color(0xd94f4f);
@@ -98,6 +109,10 @@ interface PawnView {
   club: THREE.Mesh;
   spear: THREE.Group;
   bow: THREE.Mesh;
+  /** Vrai pour une bête (`pawn::Faction::Animal`) : pas d'étiquette de nom, pas de barre de vie flottante. */
+  animal: boolean;
+  /** Marqueur rouge visible quand la bête est marquée gibier (`animals` buffer). */
+  huntMarker: THREE.Mesh;
 }
 
 export interface TilePos {
@@ -153,6 +168,8 @@ export class Renderer {
   private names: Record<number, string> = {};
   /** Arme équipée par id (`frame.weapons`), absent des mains nues. */
   private weaponByPawn = new Map<number, number>();
+  /** Espèce et marquage gibier par id (`frame.animals`), absent pour un pawn qui n'est pas une bête. */
+  private animalByPawn = new Map<number, { species: number; hunted: boolean }>();
   /** Textures d'étiquette de nom, mises en cache par nom : jamais recréées par frame. */
   private readonly nameTextures = new Map<string, THREE.CanvasTexture>();
   private mapW = 0;
@@ -632,8 +649,8 @@ export class Renderer {
       const o = i * ITEM_STRIDE;
       const kind = buf[o + 1];
       const count = buf[o + 2];
-      if (kind === ITEM_CORPSE) {
-        // Un corps allongé, pas une caisse.
+      if (kind === ITEM_CORPSE || ANIMAL_CORPSE_KINDS.has(kind)) {
+        // Un corps allongé, pas une caisse (dépouille de bête comme cadavre humain).
         mat.compose(pos.set(buf[o + 3] + 0.5, 0.09, buf[o + 4] + 0.5), q, scl.set(0.85, 0.18, 0.42));
       } else {
         const s = 0.22 + 0.3 * Math.min(count, 75) / 75;
@@ -692,6 +709,19 @@ export class Renderer {
     this.weaponByPawn.clear();
     for (let o = 0; o + 2 <= buf.length; o += 2) {
       this.weaponByPawn.set(buf[o], buf[o + 1]);
+    }
+  }
+
+  /**
+   * Faune vivante, `[id, espèce, chassée]×n` (`frame.animals`). `syncPawns` et
+   * `createPawn` s'en servent : la forme d'une bête dépend de son espèce, son
+   * marqueur de chasse de `hunted`. Appelé avant `syncPawns` par `App.tsx`,
+   * comme `setWeapons` et `setNames`.
+   */
+  setAnimals(buf: Int32Array): void {
+    this.animalByPawn.clear();
+    for (let o = 0; o + ANIMAL_STRIDE <= buf.length; o += ANIMAL_STRIDE) {
+      this.animalByPawn.set(buf[o], { species: buf[o + 1], hunted: buf[o + 2] !== 0 });
     }
   }
 
@@ -866,7 +896,7 @@ export class Renderer {
       }
       let view = this.pawns.get(id);
       if (!view) {
-        view = this.createPawn(id, cur[o + 10] === FACTION_RAIDER);
+        view = this.createPawn(id, cur[o + 10]);
         this.pawns.set(id, view);
       }
       const g = view.group;
@@ -892,17 +922,20 @@ export class Renderer {
       view.club.visible = weapon === WEAPON_KIND.Club;
       view.spear.visible = weapon === WEAPON_KIND.Spear;
       view.bow.visible = weapon === WEAPON_KIND.Bow;
-      // Étiquette de nom : cachée de loin, sinon rafraîchie seulement si le nom a changé.
+      // Étiquette de nom : jamais pour une bête (pas de prénom), sinon cachée
+      // de loin ou rafraîchie seulement si le nom a changé.
       const name = this.names[id];
-      view.nameSprite.visible = showNames && !!name;
-      if (name && view.nameShown !== name) {
+      view.nameSprite.visible = !view.animal && showNames && !!name;
+      if (!view.animal && name && view.nameShown !== name) {
         view.nameMat.map = this.nameTexture(name, view.hostile);
         view.nameMat.needsUpdate = true;
         view.nameShown = name;
       }
-      // Barre de vie : visible seulement quand le pawn est blessé.
+      // Barre de vie : visible seulement quand le pawn est blessé. Pas pour
+      // une bête, dont le plafond de PV dépend de l'espèce (`Species::max_hp`),
+      // pas de `PAWN_HP_MAX` : le panneau de sélection l'affiche autrement.
       const hp = cur[o + 11];
-      const wounded = hp < PAWN_HP_MAX;
+      const wounded = !view.animal && hp < PAWN_HP_MAX;
       view.hpBack.visible = wounded;
       view.hpFill.visible = wounded;
       if (wounded) {
@@ -912,6 +945,9 @@ export class Renderer {
         view.hpFill.position.x = (-HP_BAR_WIDTH * (1 - ratio)) / 2;
         view.hpMat.color.copy(HP_BAR_EMPTY).lerp(HP_BAR_FULL, ratio);
       }
+      // Marqueur de chasse : une bête marquée gibier (`animals` buffer), et
+      // elle seule (l'id d'un colon n'y figure jamais).
+      view.huntMarker.visible = this.animalByPawn.get(id)?.hunted ?? false;
       if (id === this.selectedId) {
         this.selection.visible = true;
         this.selection.position.set(x, 0.03, z);
@@ -937,8 +973,11 @@ export class Renderer {
     return null;
   }
 
-  private createPawn(id: number, hostile: boolean): PawnView {
+  /** `faction` suit `pawn::Faction` (0 colonie, 1 pillard, 2 bête) : décide de la forme dessinée. */
+  private createPawn(id: number, faction: number): PawnView {
+    if (faction === FACTION.Animal) return this.createAnimalPawn(id);
     const group = new THREE.Group();
+    const hostile = faction === FACTION.Raider;
     const color = hostile ? RAIDER_COLOR : PAWN_COLORS[id % PAWN_COLORS.length];
     const bodyMat = new THREE.MeshLambertMaterial({ color });
     const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.32, 4, 10), bodyMat);
@@ -1014,6 +1053,11 @@ export class Renderer {
       m.castShadow = true;
       m.userData.pawnId = id;
     }
+    // Marqueur de chasse : jamais montré pour un pawn humain (`syncPawns` ne
+    // le lit que via `animalByPawn`, toujours vide pour ces id), donc jamais
+    // ajouté au groupe — juste un objet détaché pour garder `PawnView` uniforme.
+    const huntMarker = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.16, 6), new THREE.MeshBasicMaterial());
+    huntMarker.visible = false;
     group.add(body, head, nose, carry, zz, hpBack, hpFill, nameSprite, club, spear, bow);
     this.pawnRoot.add(group);
     return {
@@ -1033,6 +1077,121 @@ export class Renderer {
       club,
       spear,
       bow,
+      animal: false,
+      huntMarker,
+    };
+  }
+
+  /**
+   * Bête : forme propre à l'espèce (`animals` buffer, `setAnimals`), orientée
+   * dans le sens du déplacement comme un colon (géré génériquement par
+   * `syncPawns`), sans étiquette de nom ; un marqueur rouge la signale
+   * marquée gibier. Les accessoires humains (portage, arme, sommeil, nom)
+   * existent pour que `PawnView` reste uniforme, mais ne sont jamais ajoutés
+   * au groupe : ils ne peuvent donc jamais s'afficher par erreur.
+   */
+  private createAnimalPawn(id: number): PawnView {
+    const species = this.animalByPawn.get(id)?.species ?? 0;
+    const group = new THREE.Group();
+    const color = ANIMAL_COLORS[species] ?? 0xffffff;
+    const bodyMat = new THREE.MeshLambertMaterial({ color });
+    const parts: THREE.Object3D[] = [];
+    if (species === 1) {
+      // Lapin : petite sphère grise, deux oreilles.
+      const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), bodyMat);
+      sphere.position.y = 0.18;
+      const earGeo = new THREE.CylinderGeometry(0.02, 0.03, 0.18, 6);
+      const earL = new THREE.Mesh(earGeo, bodyMat);
+      earL.position.set(-0.06, 0.34, 0);
+      earL.rotation.x = -0.2;
+      const earR = new THREE.Mesh(earGeo, bodyMat);
+      earR.position.set(0.06, 0.34, 0);
+      earR.rotation.x = -0.2;
+      parts.push(sphere, earL, earR);
+    } else if (species === 2) {
+      // Sanglier : boîte sombre, un groin.
+      const box = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.45, 0.4), bodyMat);
+      box.position.y = 0.225;
+      const snout = new THREE.Mesh(
+        new THREE.BoxGeometry(0.14, 0.12, 0.14),
+        new THREE.MeshLambertMaterial({ color: BOAR_SNOUT_COLOR }),
+      );
+      snout.position.set(0, 0.2, 0.36);
+      parts.push(box, snout);
+    } else {
+      // Cerf (par défaut) : corps allongé, tête cubique, quatre pattes fines.
+      const box = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.4, 0.35), bodyMat);
+      box.position.y = 0.35;
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.2), bodyMat);
+      head.position.set(0, 0.5, 0.4);
+      parts.push(box, head);
+      const legMat = new THREE.MeshLambertMaterial({ color: DEER_LEG_COLOR });
+      const legGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.35, 6);
+      for (const [lx, lz] of [
+        [-0.22, -0.12],
+        [0.22, -0.12],
+        [-0.22, 0.12],
+        [0.22, 0.12],
+      ] as const) {
+        const leg = new THREE.Mesh(legGeo, legMat);
+        leg.position.set(lx, 0.175, lz);
+        parts.push(leg);
+      }
+    }
+    const huntMarker = new THREE.Mesh(
+      new THREE.ConeGeometry(0.08, 0.16, 6),
+      new THREE.MeshBasicMaterial({ color: HUNT_MARKER_COLOR }),
+    );
+    huntMarker.position.set(0, 0.85, 0);
+    huntMarker.visible = false;
+    for (const m of parts) {
+      (m as THREE.Mesh).castShadow = true;
+      m.userData.pawnId = id;
+    }
+    huntMarker.userData.pawnId = id;
+    group.add(...parts, huntMarker);
+    this.pawnRoot.add(group);
+
+    // Accessoires humains : jamais ajoutés au groupe (voir la note ci-dessus).
+    const carryMat = new THREE.MeshLambertMaterial();
+    const carry = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), carryMat);
+    carry.visible = false;
+    const zz = new THREE.Mesh(new THREE.SphereGeometry(0.01, 4, 4), new THREE.MeshBasicMaterial());
+    zz.visible = false;
+    const hpBack = new THREE.Mesh(new THREE.BoxGeometry(HP_BAR_WIDTH, 0.06, 0.06), new THREE.MeshBasicMaterial());
+    hpBack.visible = false;
+    const hpMat = new THREE.MeshBasicMaterial({ color: HP_BAR_FULL.getHex() });
+    const hpFill = new THREE.Mesh(new THREE.BoxGeometry(HP_BAR_WIDTH, 0.06, 0.06), hpMat);
+    hpFill.visible = false;
+    const nameMat = new THREE.SpriteMaterial({ transparent: true, depthWrite: false });
+    const nameSprite = new THREE.Sprite(nameMat);
+    nameSprite.visible = false;
+    const club = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), new THREE.MeshBasicMaterial());
+    club.visible = false;
+    const spear = new THREE.Group();
+    spear.visible = false;
+    const bow = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), new THREE.MeshBasicMaterial());
+    bow.visible = false;
+
+    return {
+      group,
+      carry,
+      carryMat,
+      zz,
+      hpBack,
+      hpFill,
+      hpMat,
+      bodyMat,
+      baseColor: new THREE.Color(color),
+      hostile: false,
+      nameSprite,
+      nameMat,
+      nameShown: null,
+      club,
+      spear,
+      bow,
+      animal: true,
+      huntMarker,
     };
   }
 

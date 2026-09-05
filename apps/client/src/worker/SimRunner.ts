@@ -59,6 +59,8 @@ export interface RunnerSim extends SimLike {
   skills(): Int32Array;
   /** `[id, sang, conscience %, blessures]` par pawn. */
   health(): Int32Array;
+  /** Faune vivante : `[id, espèce, chassée]` par bête (`sim-wasm::ANIMAL_STRIDE`). */
+  animals(): Int32Array;
   /** Objectifs de fabrication courants, indexés par `ItemKind` (9 entrées). */
   craftTargets(): Uint32Array;
   /** Arme équipée de chaque pawn armé : `[id, genre]` par pawn qui en porte une. */
@@ -316,6 +318,7 @@ export class SimRunner {
       priorities: sim.priorities(),
       skills: sim.skills(),
       health: sim.health(),
+      animals: sim.animals(),
       names: this.namesFor(sim, pawns),
       stored: sim.storedTotals(),
       craftTargets: sim.craftTargets(),

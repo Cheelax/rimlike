@@ -61,6 +61,7 @@ function frame(): FrameMessage {
     priorities: new Int32Array([1, 3, 3, 3, 3, 3, 3]),
     skills: new Int32Array([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
     health: new Int32Array([1, 1000, 100, 0]),
+    animals: new Int32Array([2, 0, 1]),
     names: { 1: "Alice" },
     stored: new Uint32Array([9, 8, 7, 6, 5, 4, 0, 0, 0]),
     craftTargets: new Uint32Array([0, 0, 0, 0, 0, 0, 3, 0, 1]),
@@ -140,7 +141,7 @@ describe("protocole du Worker de simulation", () => {
     const original = frame();
     const clone = structuredClone(original);
     for (const key of [
-      "pawns", "items", "blueprints", "events", "priorities", "skills", "health", "stored",
+      "pawns", "items", "blueprints", "events", "priorities", "skills", "health", "animals", "stored",
       "craftTargets", "weapons",
     ] as const) {
       expect(clone[key]).toEqual(original[key]);
@@ -186,9 +187,9 @@ describe("protocole du Worker de simulation", () => {
   it("annonce des tampons distincts, transférables sans copie", () => {
     const original = frame();
     const transfer = transferablesOf(original);
-    // Dix tampons, tous différents : un tampon transféré deux fois lèverait.
-    expect(transfer.length).toBe(10);
-    expect(new Set(transfer).size).toBe(10);
+    // Onze tampons, tous différents : un tampon transféré deux fois lèverait.
+    expect(transfer.length).toBe(11);
+    expect(new Set(transfer).size).toBe(11);
 
     const clone = structuredClone(original, { transfer });
     expect(Array.from(clone.stored)).toEqual([9, 8, 7, 6, 5, 4, 0, 0, 0]);

@@ -122,6 +122,10 @@ class FakeSim implements RunnerSim {
     return new Int32Array([1, 1000, 100, 0]);
   }
 
+  animals(): Int32Array {
+    return new Int32Array(0);
+  }
+
   pawnName(id: number): string {
     this.nameCalls += 1;
     return `pawn${id}`;

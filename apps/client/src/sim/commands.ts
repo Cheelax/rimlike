@@ -116,3 +116,12 @@ export function encodeFastForward(ticks: number): Uint8Array {
 export function encodeSetCraftTarget(kind: number, target: number): Uint8Array {
   return WasmSim.encode_set_craft_target(kind, target);
 }
+
+/**
+ * Marque (`on`) ou démarque un animal comme gibier (`sim::Command::Hunt`). La
+ * chasse se désigne par bête, pas par rectangle : `animal` est l'id lu dans
+ * le tampon `animals` (voir `render/terrain.ts::ANIMAL_STRIDE`).
+ */
+export function encodeHunt(animal: number, on: boolean): Uint8Array {
+  return WasmSim.encode_hunt(animal, on);
+}
