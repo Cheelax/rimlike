@@ -359,8 +359,10 @@ paissent, fuient et parfois quittent la carte, hardes qui arrivent tous les 2 à
 (12 bêtes au plus), sanglier qui riposte ; chasse par bête marquée (`Hunt`), réservée aux
 colons armés, avec XP de tir ou de mêlée ; dépeçage automatique au poste (viande selon
 l'espèce, cuir), viande crue ou cuisinée. Perf : le coût par tick suit le nombre de pawns
-(les bêtes comptent), à surveiller ; `u64::isqrt` remplace la racine maison. Interface à
-faire (bêtes, marquage de chasse, viande et cuir).
+(les bêtes comptent), à surveiller ; `u64::isqrt` remplace la racine maison. Interface livrée le
+2026-09-05 (Sonnet) : bêtes dessinées par espèce, marquage de chasse au clic ou à la touche
+H, panneau animal, viande et cuir dans le stock ; chasse rejouée dans le navigateur : arc
+fabriqué, lapin abattu, viande rangée.
 À venir : recherche, traits et relations, storyteller adaptatif, factions PNJ et commerce,
 mods de contenu, événements monde.
 
