@@ -330,6 +330,21 @@ pub struct Map {
     /// **Champ ajouté en fin de structure** : un vieux snapshot est refusé net
     /// plutôt que relu de travers.
     stockpile_tiles: Vec<(u32, u32)>,
+    /// **Liste** des tombes **vides** (`Feature::Grave`), triée par `(x, y)`,
+    /// tenue à jour par `set_feature`. Même patron que `stockpile_tiles`, et
+    /// pour la même raison : `grave_count` dit s'il reste une tombe, cette
+    /// liste dit **où**, pour que la recherche d'une sépulture ne balaie plus
+    /// la carte (voir `Sim::try_start_bury`). Une tombe se creuse ou se remplit
+    /// à la commande du joueur ou à la fin d'un job, jamais par tick :
+    /// l'insertion triée coûte un `memmove` sur une liste courte.
+    ///
+    /// **Sérialisée comme le reste** : elle décide de l'avenir (c'est elle qui
+    /// dit où un colon porte un cadavre), donc elle ne peut pas être un cache
+    /// reconstruit à la relecture. Elle reste une fonction **canonique** de la
+    /// couche `features` — même carte, même liste, toujours triée.
+    /// **Champ ajouté en fin de structure** : un vieux snapshot est refusé net
+    /// plutôt que relu de travers.
+    grave_tiles: Vec<(u32, u32)>,
 }
 
 /// Au-delà, la zone est trop vaste pour être une pièce : c'est le dehors.
@@ -423,6 +438,17 @@ impl Map {
             .iter()
             .filter(|&&f| f == Feature::Grave as u8)
             .count() as u32;
+        // Un seul passage sur les éléments, à la construction : ensuite la
+        // liste ne bouge plus qu'à `set_feature`. Le tri est explicite : la
+        // couche est parcourue par rangée, donc en ordre `(y, x)`, quand
+        // `binary_search` attend l'ordre `(x, y)` du tuple.
+        let mut grave_tiles: Vec<(u32, u32)> = features
+            .iter()
+            .enumerate()
+            .filter(|&(_, &f)| f == Feature::Grave as u8)
+            .map(|(i, _)| (i as u32 % width, i as u32 / width))
+            .collect();
+        grave_tiles.sort_unstable();
         let research_bench_count = features
             .iter()
             .filter(|&&f| f == Feature::ResearchBench as u8)
@@ -463,6 +489,7 @@ impl Map {
             fire_count: 0,
             fire_version: 0,
             stockpile_tiles: Vec::new(),
+            grave_tiles,
         }
     }
 
@@ -515,7 +542,12 @@ impl Map {
                 Feature::Bed => self.bed_count -= 1,
                 Feature::Campfire => self.campfire_count -= 1,
                 Feature::CraftingSpot => self.crafting_spot_count -= 1,
-                Feature::Grave => self.grave_count -= 1,
+                Feature::Grave => {
+                    self.grave_count -= 1;
+                    if let Ok(k) = self.grave_tiles.binary_search(&(x, y)) {
+                        self.grave_tiles.remove(k);
+                    }
+                }
                 Feature::ResearchBench => self.research_bench_count -= 1,
                 Feature::SpikeTrap => self.trap_count -= 1,
                 Feature::SpikeTrapSprung => self.sprung_trap_count -= 1,
@@ -525,7 +557,12 @@ impl Map {
                 Feature::Bed => self.bed_count += 1,
                 Feature::Campfire => self.campfire_count += 1,
                 Feature::CraftingSpot => self.crafting_spot_count += 1,
-                Feature::Grave => self.grave_count += 1,
+                Feature::Grave => {
+                    self.grave_count += 1;
+                    if let Err(k) = self.grave_tiles.binary_search(&(x, y)) {
+                        self.grave_tiles.insert(k, (x, y));
+                    }
+                }
                 Feature::ResearchBench => self.research_bench_count += 1,
                 Feature::SpikeTrap => self.trap_count += 1,
                 Feature::SpikeTrapSprung => self.sprung_trap_count += 1,
@@ -681,6 +718,12 @@ impl Map {
     /// Tombes vides, prêtes à recevoir un cadavre (voir `pawn::Job::Bury`).
     pub fn grave_count(&self) -> u32 {
         self.grave_count
+    }
+
+    /// Les tombes vides, triées par `(x, y)`. C'est le domaine de toute
+    /// recherche de sépulture : jamais la carte entière.
+    pub fn grave_tiles(&self) -> &[(u32, u32)] {
+        &self.grave_tiles
     }
 
     /// Pièges à pointes armés (`Feature::SpikeTrap`).

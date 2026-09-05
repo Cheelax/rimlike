@@ -115,8 +115,15 @@ pub const DOWNED_BLOOD: u32 = 300;
 pub const UP_CONSCIOUSNESS: u32 = 40;
 pub const UP_BLOOD: u32 = 400;
 
-/// Durée d'un soin.
+/// Durée d'un soin complet : la plaie est bandée, elle cicatrisera deux fois
+/// plus vite.
 pub const TEND_TICKS: u32 = 240;
+/// Moment du soin où l'hémorragie est jugulée : le quart du geste. Il se
+/// décompose — on comprime d'abord, c'est ce qui sauve ; on bande ensuite,
+/// c'est ce qui fait cicatriser. Un soignant seul arrête donc quatre
+/// hémorragies dans le temps qu'il met à finir un pansement (constat n°5 de
+/// `CAMPAIGN-FINDINGS.md`).
+pub const HEMOSTASIS_TICKS: u32 = TEND_TICKS / 4;
 /// Vitesse de soin, en centièmes de tick. Neutre : le soin n'a pas de
 /// `WorkType` (en ajouter un changerait `WORK_TYPES` et les tampons de
 /// priorités), donc ni humeur ni compétence ne le modulent pour l'instant.
@@ -302,6 +309,22 @@ impl Pawn {
     /// Sang perdu par `BLEED_INTERVAL` ticks.
     pub fn bleed_rate(&self) -> u32 {
         self.injuries.iter().map(|i| i.bleeding).sum()
+    }
+
+    /// Ticks avant que l'hémorragie ne vide le corps, `u32::MAX` si rien ne
+    /// coule. C'est le **tri** des blessés : le soignant va d'abord à celui
+    /// qui se vide le plus vite, pas au plus proche ni au plus abîmé — un bras
+    /// à moitié arraché qui ne saigne plus attend, une entaille au torse non.
+    ///
+    /// L'estimation ignore volontairement que la plaie finira par se refermer
+    /// seule (`bleed_ticks`) : elle sert à ordonner des blessés entre eux, pas
+    /// à prédire une heure de mort.
+    pub fn ticks_to_bleed_out(&self) -> u32 {
+        let rate = self.bleed_rate();
+        if rate == 0 {
+            return u32::MAX;
+        }
+        self.blood.saturating_mul(BLEED_INTERVAL as u32) / rate
     }
 
     /// Reste-t-il une blessure à panser — ou une maladie à veiller ? Le même

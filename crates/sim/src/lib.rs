@@ -531,6 +531,11 @@ pub struct Sim {
     /// ni hash, ni égalité. C'est une mesure, pas une donnée de jeu.
     #[serde(skip)]
     haul_scans: WorkCounter,
+    /// Tombes examinées par la recherche d'inhumation depuis le début de la
+    /// partie. Même facture que `haul_scans` : **hors état**, ni snapshot, ni
+    /// hash, ni égalité.
+    #[serde(skip)]
+    bury_scans: WorkCounter,
 }
 
 /// Compteur d'observation. Il compte du **travail**, jamais de l'état : il
@@ -630,6 +635,7 @@ impl Sim {
             last_raid_faction: u8::MAX,
             raid_unresolved: false,
             haul_scans: WorkCounter::default(),
+            bury_scans: WorkCounter::default(),
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -1106,5 +1112,17 @@ impl Sim {
 
     pub(crate) fn count_haul_scan(&mut self, n: u64) {
         self.haul_scans.add(n);
+    }
+
+    /// Tombes examinées depuis le début de la partie par la recherche d'une
+    /// sépulture. Même usage que `haul_scans` (`tests/burial_perf.rs`) : le
+    /// coût de l'inhumation par tick doit rester borné par le nombre de
+    /// tombes, jamais par la surface de la carte ni par le nombre de cadavres.
+    pub fn bury_scans(&self) -> u64 {
+        self.bury_scans.get()
+    }
+
+    pub(crate) fn count_bury_scan(&mut self, n: u64) {
+        self.bury_scans.add(n);
     }
 }

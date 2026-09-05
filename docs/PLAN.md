@@ -527,6 +527,24 @@ hors du frame), job « bavarde », événements 32-34 ; vérifié : avis mutuels
 
 ## 8. Journal des décisions
 
+- 2026-09-05 : le feu suit le vent. Un feu isotrope sur un bosquet homogène est de la
+  percolation : sous le seuil il meurt, au-dessus il prend tout, et aucun dénominateur
+  (1/100 à 1/150, `SPREAD_MIN` 3, foyers plus courts) ne donnait plus de 11 graines sur 20
+  entre 15 et 60 % du bosquet brûlé. Le vent (lu dans le bruit météo, aucun champ de plus)
+  brise la symétrie : 1/40 sous le vent, ÷ 3 de côté, ÷ 16 à contre-vent → 17/20 dans la bande,
+  médiane 28 %. Le gel ne fait plus qu'halver la propagation : seul ce qui tombe du ciel éteint.
+  Campagne normale : maximum brûlé 57 % → 13 % de la carte. Défaut relevé au passage :
+  `fire_to_fight` relance jusqu'à 48 A* par tick et par colon inactif tant qu'un feu brûle à
+  portée, à corriger comme le rangement.
+- 2026-09-05 : soigner d'abord ce qui saigne. Mesure tick par tick de 24 morts d'après-raid : 10
+  pendant un soin trop lent, 6 pendant un sauvetage, 4 avec un camarade endormi, 4 sans personne
+  debout. Réglage : hémostase au quart du geste (60 ticks) qui arrête tous les saignements avant
+  la fin du pansement, soin des hémorragies avant le brancard, triage par temps avant de se
+  vider, une hémorragie réveille un dormeur. Rapport morts de leurs plaies / tués au combat :
+  0,35 → 0,17 sur 30 graines × 30 jours ; les tués au combat montent un peu (un colon pansé se
+  relève et repart). L'inhumation reçoit le même index que le rangement (`grave_tiles`), avec
+  un tri explicite `(x, y)` que le chargement par rangées ne garantissait pas.
+
 - 2026-09-05 : le rangement saturé ne balaie plus la carte. `Map` porte la liste triée des cases
   d'entrepôt (sérialisée comme le reste : elle décide où un colon porte sa charge, donc pas un
   cache), le rangement relève en un passage ce que chaque case accepte, « saturé » est exact

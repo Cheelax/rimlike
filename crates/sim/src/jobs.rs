@@ -13,7 +13,7 @@ use crate::climate;
 use crate::combat;
 use crate::craft::{self, CraftStage};
 use crate::farm::{self, Crop};
-use crate::health::{TEND_STEP, TEND_TICKS};
+use crate::health::{HEMOSTASIS_TICKS, TEND_STEP, TEND_TICKS};
 use crate::items::{FRESHNESS_MAX, ItemKind, ItemStack, STACK_MAX};
 use crate::map::{Designation, Feature, Zone, chebyshev};
 use crate::path::{self, Walker};
@@ -396,12 +396,19 @@ impl Sim {
         if self.try_start_firefight(i) {
             return;
         }
+        // Un blessé qui saigne se panse **là où il est tombé**. Le porter au
+        // lit d'abord lui coûte exactement le sang qu'on venait lui garder :
+        // sur les morts d'après-raid mesurées, une sur quatre survenait
+        // pendant le transport (constat n°5). Le lit attend l'hémostase.
+        if self.try_start_tend(i, true) {
+            return;
+        }
         // Le secours passe avant tout travail, mais après ses propres besoins :
         // un colon épuisé ou affamé ne porte personne.
         if self.try_start_rescue(i) {
             return;
         }
-        if self.try_start_tend(i) {
+        if self.try_start_tend(i, false) {
             return;
         }
         // S'armer passe avant le travail : un colon désarmé qui part couper du
@@ -674,11 +681,20 @@ impl Sim {
         self.pawns[carried].y = y;
     }
 
-    /// Va panser un colon blessé. D'abord ceux qui saignent, puis ceux qui sont
-    /// à terre, puis les plus proches. On ne se soigne pas soi-même.
-    fn try_start_tend(&mut self, i: usize) -> bool {
+    /// Va panser un colon blessé. **Triage** : celui qui se vide le plus vite
+    /// d'abord (`Pawn::ticks_to_bleed_out`), à terre avant debout, puis le
+    /// plus proche. On ne se soigne pas soi-même.
+    ///
+    /// `bleeding_only` restreint aux hémorragies : c'est le passage qui
+    /// devance le secours dans `find_job`. Une écorchure, elle, attend son
+    /// tour derrière le brancard.
+    fn try_start_tend(&mut self, i: usize, bleeding_only: bool) -> bool {
         // Court-circuit : personne à panser, on ne compare rien.
-        if !self.pawns.iter().any(|p| p.needs_tending()) {
+        if !self
+            .pawns
+            .iter()
+            .any(|p| p.needs_tending() && (!bleeding_only || p.is_bleeding()))
+        {
             return false;
         }
         let me = self.pawns[i].id;
@@ -689,13 +705,14 @@ impl Sim {
                 || !p.is_colonist()
                 || !p.is_alive()
                 || !p.needs_tending()
+                || (bleeding_only && !p.is_bleeding())
                 || self.already_handled(p.id)
             {
                 continue;
             }
             let (x, y) = p.tile();
             candidates.push((
-                u32::from(!p.is_bleeding()),
+                p.ticks_to_bleed_out(),
                 u32::from(!p.is_downed()),
                 chebyshev(from, (x, y)),
                 x,
@@ -740,6 +757,15 @@ impl Sim {
         }
         let progress =
             progress + research::tend_step(TEND_STEP, self.research.is_done(Tech::Medicine));
+        // Premier quart du geste : on comprime. Le sang s'arrête bien avant
+        // que la plaie soit bandée — c'est ce qui sauve. La blessure reste
+        // « non pansée » pour autant : la séance continue jusqu'au bandage,
+        // qui seul fait cicatriser plus vite.
+        if progress >= HEMOSTASIS_TICKS * 100 {
+            for inj in &mut self.pawns[k].injuries {
+                inj.close();
+            }
+        }
         if progress < TEND_TICKS * 100 {
             self.pawns[i].job = Job::Tend { target, progress };
             return;
@@ -1033,10 +1059,15 @@ impl Sim {
 
     /// Va chercher un cadavre humain non réservé et le porte jusqu'à la tombe
     /// vide la plus proche **de lui** (pas du colon : c'est elle qu'il va
-    /// falloir porter). Deux court-circuits avant tout balayage : pas de
-    /// tombe vide, ou aucun cadavre au sol. Une dépouille de bête n'est pas
-    /// concernée (`ItemKind::is_animal_corpse`) : elle se dépèce, elle ne
-    /// s'enterre pas.
+    /// falloir porter). Une dépouille de bête n'est pas concernée
+    /// (`ItemKind::is_animal_corpse`) : elle se dépèce, elle ne s'enterre pas.
+    ///
+    /// Trois court-circuits avant tout travail, du moins cher au plus cher —
+    /// le même patron que `try_start_haul` : pas de tombe vide du tout
+    /// (`grave_count`), aucun cadavre au sol, et aucune tombe **libre** (elles
+    /// sont toutes réservées par un porteur en route). Le relevé des tombes
+    /// part de `Map::grave_tiles`, jamais de la carte entière, et il est fait
+    /// **une fois** pour tout l'appel : rien ne bouge d'un cadavre à l'autre.
     fn try_start_bury(&mut self, i: usize) -> bool {
         if self.map.grave_count() == 0
             || !self
@@ -1044,6 +1075,18 @@ impl Sim {
                 .iter()
                 .any(|s| s.kind == ItemKind::Corpse && s.reserved_by.is_none() && s.count > 0)
         {
+            return false;
+        }
+        let graves: Vec<(u32, u32)> = self
+            .map
+            .grave_tiles()
+            .iter()
+            .copied()
+            .filter(|&(x, y)| !self.is_reserved(x, y))
+            .collect();
+        self.count_bury_scan(self.map.grave_tiles().len() as u64);
+        // Toutes les tombes sont déjà promises : inutile de trier les cadavres.
+        if graves.is_empty() {
             return false;
         }
         let from = self.pawns[i].tile();
@@ -1055,18 +1098,10 @@ impl Sim {
             .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
             .collect();
         corpses.sort_unstable();
-        let mut graves: Vec<(u32, u32)> = Vec::new();
-        for y in 0..self.map.height() {
-            for x in 0..self.map.width() {
-                if self.map.feature(x, y) == Feature::Grave && !self.is_reserved(x, y) {
-                    graves.push((x, y));
-                }
-            }
-        }
-        if graves.is_empty() {
-            return false;
-        }
+        // `take` borne les candidats **examinés**, pas les seuls candidats
+        // aboutis : un cadavre sans chemin consomme un essai comme les autres.
         for &(_, cx, cy, k) in corpses.iter().take(PATH_ATTEMPTS) {
+            self.count_bury_scan(graves.len() as u64);
             let Some((gx, gy)) = graves
                 .iter()
                 .map(|&(x, y)| (chebyshev((cx, cy), (x, y)), x, y))
@@ -1255,6 +1290,15 @@ impl Sim {
     // ------------------------------------------------------------------
 
     fn do_sleep(&mut self, i: usize, in_bed: bool) {
+        // Un cri dans la nuit : une hémorragie que personne ne panse tire le
+        // dormeur du lit. Le sommeil n'est interrompu que s'il y a vraiment
+        // un geste à faire — `try_start_tend` échoue si le blessé est déjà
+        // pris en charge ou hors d'atteinte, et on se rendort sans y penser.
+        // Sans cela, le blessé se vidait pendant que la colonie dormait :
+        // trois des neuf morts d'après-raid de la mesure ciblée.
+        if self.try_start_tend(i, true) {
+            return;
+        }
         if self.pawns[i].is_moving() {
             self.pawns[i].advance(&self.map);
             return;
