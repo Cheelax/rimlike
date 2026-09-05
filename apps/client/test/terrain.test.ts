@@ -191,6 +191,20 @@ describe("eventLabel", () => {
     // Un nom connu ne doit pas s'y glisser : ce n'est pas un id de pawn.
     expect(eventLabel(31, 0, { 0: "Alice" })).toBe("Agriculture : recherche terminée");
   });
+
+  it("nomme le colon d'une dispute ou d'une rixe, `arg` étant le plus petit des deux ids", () => {
+    // Contrat avec `sim::EventKind` 32 (dispute) et 33 (rixe), `crates/sim/src/social.rs`.
+    expect(eventLabel(32, 3, { 3: "Alice" })).toBe("Alice s'est disputé avec un camarade");
+    expect(eventLabel(32, 5)).toBe("Un colon s'est disputé avec un camarade");
+    expect(eventLabel(33, 3, { 3: "Alice" })).toBe("Alice s'est battu avec un camarade");
+    expect(eventLabel(33, 5)).toBe("Un colon s'est battu avec un camarade");
+  });
+
+  it("nomme le colon qui perd un ami, `arg` étant l'id du survivant", () => {
+    // Contrat avec `sim::EventKind::FriendLost` (34).
+    expect(eventLabel(34, 3, { 3: "Alice" })).toBe("Alice a perdu un ami");
+    expect(eventLabel(34, 5)).toBe("Un colon a perdu un ami");
+  });
 });
 
 describe("BUILD_KIND et FEATURE : établi de recherche", () => {
@@ -366,8 +380,10 @@ describe("eventCategory", () => {
     // ColonistTended, les deux caravanes, FastForwarded, les deux artisanats,
     // saison, gelée, harde et chasse, largage, coup de froid et canicule,
     // les quatre événements du marchand, une inhumation, une recherche
-    // acquise : rien de tout ça n'est une menace.
-    for (const kind of [4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 25, 26, 27, 28, 29, 30, 31]) {
+    // acquise, dispute, rixe et ami perdu : rien de tout ça n'est une menace.
+    for (const kind of [
+      4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+    ]) {
       expect(eventCategory(kind)).toBe("colony");
     }
   });
@@ -378,6 +394,12 @@ describe("JOB_LABELS", () => {
     // Contrat avec `pawn::Job::code()` : un colon qui porte un cadavre vers
     // une tombe vide.
     expect(JOB_LABELS[23]).toBe("enterre");
+  });
+
+  it("nomme le job Chat (code 25) « bavarde »", () => {
+    // Contrat avec `pawn::Job::code()` (`crates/sim/src/social.rs`) : deux
+    // colons désœuvrés et voisins qui s'arrêtent pour discuter.
+    expect(JOB_LABELS[25]).toBe("bavarde");
   });
 });
 

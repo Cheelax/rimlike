@@ -94,6 +94,8 @@ const SIM_API: ReadonlySet<string> = new Set([
   "health",
   "pawnName",
   "pawnInjuries",
+  // Relations entre colons (`crates/sim/src/social.rs`) : avis sur les camarades.
+  "pawnOpinions",
   // Faune (`crates/sim/src/animals.rs`) : chasse par bête, pas par rectangle.
   "animals",
   "pawnSpecies",

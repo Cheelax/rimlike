@@ -7,6 +7,7 @@ import { CraftingPanel } from "./CraftingPanel";
 import { JournalPanel, type JournalEntry, type JournalFilter } from "./JournalPanel";
 import { decodeResearch, researchPercent, TECHS } from "./research";
 import { ResearchPanel } from "./ResearchPanel";
+import { decodeOpinions, opinionLabel, sortOpinions, type Opinion } from "./social";
 import { TradePanel } from "./TradePanel";
 import {
   CaravanDispatcher,
@@ -262,6 +263,14 @@ interface PawnInfo {
   hunted: boolean;
   /** Vrai pour le marchand de passage (`pawn::Faction::Trader`) : « Marchand » dans le panneau, bouton Troc. */
   trader: boolean;
+  /**
+   * Avis sur les camarades (`sim::social::Opinion`), triés par avis
+   * décroissant. Rafraîchi à part par `rpc("pawnOpinions", id)`, une fois par
+   * seconde (pas au rythme des autres accesseurs ponctuels : un avis ne bouge
+   * qu'à la fin d'un bavardage, pas en continu). Vide pour un pillard, un
+   * marchand ou une bête.
+   */
+  relations: Opinion[];
 }
 
 interface Stats {
@@ -894,6 +903,18 @@ export function App() {
     /** Ticks de maladie restants du colon sélectionné, rafraîchis au même rythme. */
     let selectedSick = 0;
     let selectedSickId: number | null = null;
+    /**
+     * Avis du colon sélectionné sur ses camarades (`sim::social::Opinion`),
+     * rafraîchis par `rpc("pawnOpinions", id)` au moment où le panneau
+     * s'ouvre (changement de sélection) puis une fois par seconde tant qu'il
+     * reste ouvert — plus rare que les autres accesseurs ponctuels
+     * ci-dessus (2×/s) : un avis ne bouge qu'à la fin d'un bavardage, jamais
+     * en continu, pas la peine d'interroger le sim aussi souvent.
+     */
+    let selectedRelations: Opinion[] = [];
+    let selectedRelationsId: number | null = null;
+    /** Dernier instant (`performance.now()`) où `pawnOpinions` a été relu. */
+    let relationsRefreshedAt = -Infinity;
     /**
      * Ticks de maladie restants par id, pour le point vert de `ColonistBar` :
      * pas dans le tampon `pawns` (`sim-wasm::PAWN_STRIDE` ne bouge pas), donc
@@ -1655,6 +1676,7 @@ export function App() {
           species,
           hunted: animalInfo?.hunted ?? false,
           trader: isTrader,
+          relations: selectedRelationsId === id ? selectedRelations : [],
         };
       }
       // Blessures, compétences de combat et ressenti du colon sélectionné :
@@ -1676,6 +1698,12 @@ export function App() {
         if (selectedSickId !== info.id) {
           selectedSickId = info.id;
           selectedSick = 0;
+        }
+        if (selectedRelationsId !== info.id) {
+          selectedRelationsId = info.id;
+          selectedRelations = [];
+          // Sélection neuve : on relit tout de suite, pas au bout d'une seconde.
+          relationsRefreshedAt = -Infinity;
         }
         const id = info.id;
         void bridge
@@ -1721,12 +1749,28 @@ export function App() {
           .catch(() => {
             /* colon disparu entre-temps : rien à afficher au prochain tour */
           });
+        // Une fois par seconde seulement (voir la déclaration de
+        // `relationsRefreshedAt`), pas au rythme des autres accesseurs ci-dessus.
+        if (now - relationsRefreshedAt >= 1000) {
+          relationsRefreshedAt = now;
+          void bridge
+            .rpc("pawnOpinions", id)
+            .then((raw) => {
+              if (selectedRelationsId !== id) return; // sélection changée entre-temps
+              selectedRelations = sortOpinions(decodeOpinions(raw as Int32Array));
+            })
+            .catch(() => {
+              /* colon disparu entre-temps : rien à afficher au prochain tour */
+            });
+        }
       } else {
         selectedInjuriesId = null;
         selectedInjuries = [];
         selectedCombatId = null;
         selectedComfortId = null;
         selectedSickId = null;
+        selectedRelationsId = null;
+        selectedRelations = [];
       }
       // Pastille « malade » de la barre des colons : un `pawnSick` par colon
       // vivant, comme les autres accesseurs ponctuels ci-dessus (pas dans le
@@ -2348,6 +2392,23 @@ export function App() {
                     </span>
                   </div>
                 ))}
+
+              {!sel.hostile && !sel.trader && (
+                <>
+                  <div className="panel-section">Relations</div>
+                  {sel.relations.length === 0 ? (
+                    <div className="panel-relations-empty">Ne connaît personne encore</div>
+                  ) : (
+                    <ul className="panel-relations">
+                      {sel.relations.map((r) => (
+                        <li key={r.other}>
+                          {stats.names[r.other] || `Colon ${r.other}`} · {r.value} · {opinionLabel(r.value)}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              )}
 
               <div className="help">clic droit : y aller, ou attaquer un ennemi ou un animal</div>
             </div>

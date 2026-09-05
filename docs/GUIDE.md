@@ -203,6 +203,24 @@ genre pris × quantité) ; en dessous, le bouton Proposer reste grisé et le
 motif du refus s'affiche. Les marchandises reçues sont déposées au sol près
 de l'étal, à ranger comme n'importe quel butin.
 
+### Relations
+
+Deux colons désœuvrés et à deux cases l'un de l'autre au plus s'arrêtent pour
+bavarder (un travail à part entière : « bavarde » dans son panneau et la
+barre des colons, essayé seulement quand rien d'autre ne presse). La
+conversation dure une minute et demie de jeu, remonte l'avis de chacun sur
+l'autre et redonne un peu d'humeur pour la journée. Une fois sur huit environ
+(une sur quatre si l'un des deux est bagarreur) elle tourne à la dispute :
+l'avis baisse au lieu de monter, et l'humeur avec, pour la journée ; entre
+deux colons qui s'apprécient déjà très peu, la dispute dégénère en rixe (une
+bourrade chacun, jamais mortelle). Un ami (avis très bon, deux au plus
+comptés) remonte durablement l'humeur de la colonie ; un rival (avis très
+mauvais) la fait baisser d'autant ; perdre un ami double le deuil habituel.
+Les avis d'un colon se lisent dans la section « Relations » de son panneau :
+le nom de l'autre, l'avis chiffré et son qualificatif (ami, apprécié, toléré,
+mal vu, rival), triés du plus apprécié au moins apprécié — « Ne connaît
+personne encore » tant qu'il n'a parlé à personne.
+
 ### Lits, sommeil et humeur
 
 Un colon fatigué dort sur place ou, mieux, dans un lit libre (bonus
@@ -339,6 +357,6 @@ effacé) est une identité perdue, sans recours simple.
 
 ## 7. Limites connues
 
-Pas encore de relations entre colons ; pas de toits (tout le monde est dehors
-sous l'orage, la chaleur ne se gère pas encore) ; pas de compte joueur
-(identité par jeton local uniquement, sans recouvrement en cas de perte).
+Pas de toits (tout le monde est dehors sous l'orage, la chaleur ne se gère pas
+encore) ; pas de compte joueur (identité par jeton local uniquement, sans
+recouvrement en cas de perte).

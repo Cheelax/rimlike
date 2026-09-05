@@ -343,6 +343,7 @@ export const JOB_LABELS = [
   "attend",
   "enterre",
   "recherche",
+  "bavarde",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
@@ -456,6 +457,16 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
       const name = TECHS[arg]?.name ?? "Une technologie";
       return `${name} : recherche terminée`;
     }
+    case 32:
+      // `arg` = le plus petit des deux ids de colons disputés (`sim::EventKind::Quarrel`,
+      // `crates/sim/src/social.rs`).
+      return `${who} s'est disputé avec un camarade`;
+    case 33:
+      // `arg` = le plus petit des deux ids de colons (`sim::EventKind::Brawl`).
+      return `${who} s'est battu avec un camarade`;
+    case 34:
+      // `arg` = l'id du colon survivant qui perd un ami (`sim::EventKind::FriendLost`).
+      return `${who} a perdu un ami`;
     default:
       return "";
   }

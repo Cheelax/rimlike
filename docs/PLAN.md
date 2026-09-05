@@ -439,8 +439,10 @@ un jour, délai de 1 200 ticks par paire, moitié pour un sociable), dispute une
 sur quatre avec un bagarreur : −10, −10 000), rixe non mortelle sous −60, amis (≥ 50) et rivaux
 (≤ −50) qui pèsent ±10 000 sur l'humeur (deux au plus), deuil doublé à la mort d'un ami ;
 événements 32-34, `pawn_opinions(id)`. Mesuré sur 20 graines : douze bavardages par paire et par
-jour, 12 % de disputes, avis final toujours positif. Interface à faire (avis dans le panneau du
-colon, événements au journal). À venir : factions PNJ avec réputation, mods de contenu,
+jour, 12 % de disputes, avis final toujours positif. Interface livrée le 2026-09-05 (Sonnet) :
+section « Relations » du panneau du colon (avis triés, qualificatifs, lue une fois par seconde
+hors du frame), job « bavarde », événements 32-34 ; vérifié : avis mutuels et une dispute après
+20 000 ticks. À venir : factions PNJ avec réputation, mods de contenu,
 événements monde (marchands itinérants en cours côté serveur).
 
 ## 7. Risques identifiés

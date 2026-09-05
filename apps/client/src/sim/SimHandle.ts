@@ -586,6 +586,16 @@ export class SimHandle implements SimLike {
     return this.inner.pawn_injuries(id);
   }
 
+  /**
+   * Avis de ce colon sur ses camarades (`crates/sim/src/social.rs`), à plat :
+   * `[autre, avis] × n`, trié par id, avis dans `-100..=100`. Vide pour un id
+   * inconnu ou un non-colon. Copie ponctuelle, comme `pawnInjuries` : à
+   * n'appeler que pour le colon sélectionné, pas à chaque frame.
+   */
+  pawnOpinions(id: number): Int32Array {
+    return this.inner.pawn_opinions(id);
+  }
+
   dispose(): void {
     this.inner.free();
   }
