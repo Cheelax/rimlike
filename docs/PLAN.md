@@ -327,8 +327,15 @@ notifications, étiquettes au-dessus des pawns quand la caméra est proche), pan
 avec Besoins, Santé (sang, conscience, blessures détaillées) et Compétences (niveau et XP),
 pose « à terre ». À surveiller : les raids tuent vite depuis les saignements (deux colons sur
 trois perdus dans un essai de 2 500 ticks), l'équilibrage viendra avec les soins actifs et
-l'armement. À venir : recherche, traits et relations, storyteller adaptatif, factions PNJ et
-commerce, mods de contenu, événements monde.
+l'armement. Armes et combat à distance livrés le 2026-09-05 (Opus, sim) : poste de fabrication
+(10 bois), recettes gourdin / épieu / arc, ordres de fabrication « jusqu'à N » par genre,
+équipement automatique de la meilleure arme disponible en stockage, compétences de mêlée et de
+tir hors tableau de travail, tir à l'arc à 8 cases avec ligne de vue entière (murs, portes,
+rochers bloquent), pillards armés selon la taille du raid, butin à leur mort ; seuil de fuite
+des pillards 600 → 650 mesuré sur 60 graines pour garder « jamais deux morts d'un coup ».
+Interface à faire (noms et couleurs des armes, poste, ordres de fabrication, arme équipée).
+À venir : recherche, traits et relations, storyteller adaptatif, factions PNJ et commerce,
+mods de contenu, événements monde.
 
 ## 7. Risques identifiés
 
