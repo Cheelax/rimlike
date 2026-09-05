@@ -76,7 +76,11 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/server/package.json apps/server/package.json
 COPY packages/protocol/package.json packages/protocol/package.json
 COPY packages/world/package.json packages/world/package.json
-RUN pnpm install --frozen-lockfile --prod --filter server...
+# node-linker=hoisted : de vrais répertoires à la racine de /repo/node_modules
+# (ws en tête) au lieu de liens symboliques vers un dépôt .pnpm qui ne serait
+# pas copié dans l'image. Les liens vers les paquets workspace y restent
+# pendants, mais dist/node_modules/@rimlike/* est trouvé avant eux.
+RUN pnpm install --frozen-lockfile --prod --filter server... --config.node-linker=hoisted
 
 # --- runtime : image finale, minimale ---------------------------------------
 FROM ${NODE_IMAGE} AS runtime
@@ -89,7 +93,7 @@ RUN addgroup -S rimlike && adduser -S rimlike -G rimlike \
     && mkdir -p /data \
     && chown -R rimlike:rimlike /data /app
 
-COPY --from=deps-prod --chown=rimlike:rimlike /repo/apps/server/node_modules ./node_modules
+COPY --from=deps-prod --chown=rimlike:rimlike /repo/node_modules ./node_modules
 COPY --from=build --chown=rimlike:rimlike /repo/apps/server/dist ./dist
 
 # Défauts alignés sur docs/protocol.md et apps/server/src/index.ts. Le reste
