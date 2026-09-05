@@ -340,180 +340,180 @@ caravane chez l'autre. **Atteint le 2026-09-05**, en tests d'intégration contre
 serveur et en essai réel à deux onglets (alice sur la case 5, bob sur la 199, un colon
 d'alice arrivé chez bob).
 
-### Phase 5 — Profondeur (ouvert) — entamée le 2026-09-05
-Fait : noms de colons (tirés au sort par faction, déterministes) et compétences (six
-types, niveau 0-20, XP par tick de travail, montée de niveau avec événement ; la vitesse de
-travail combine humeur et compétence, les transports ne rapportent pas d'XP). Côté sim et
-sim-wasm seulement pour l'instant : l'interface (noms au lieu de « Colon N », onglet
-compétences) suit dès que l'écran Monde est posé. Livré par un sous-agent Sonnet.
-Santé détaillée livrée le 2026-09-05 (Opus) : six parties du corps, blessures avec sévérité
-et saignement qui se referme seul, sang, `hp` dérivé, mobilité et manipulation qui ralentissent,
-conscience, colons à terre, sauvetage vers un lit et soins par les camarades, pillards qui
-ignorent les colons à terre, mort par hémorragie ou coup fatal. Fuzz : `rimlike-sim fuzz`
-(Sonnet), aucune panique ni désync sur des millions de commandes aberrantes.
-Interface livrée le 2026-09-05 (Sonnet) : noms partout (panneau, tableau Travail,
-notifications, étiquettes au-dessus des pawns quand la caméra est proche), panneau du colon
-avec Besoins, Santé (sang, conscience, blessures détaillées) et Compétences (niveau et XP),
-pose « à terre ». À surveiller : les raids tuent vite depuis les saignements (deux colons sur
-trois perdus dans un essai de 2 500 ticks), l'équilibrage viendra avec les soins actifs et
-l'armement. Armes et combat à distance livrés le 2026-09-05 (Opus, sim) : poste de fabrication
-(10 bois), recettes gourdin / épieu / arc, ordres de fabrication « jusqu'à N » par genre,
-équipement automatique de la meilleure arme disponible en stockage, compétences de mêlée et de
-tir hors tableau de travail, tir à l'arc à 8 cases avec ligne de vue entière (murs, portes,
-rochers bloquent), pillards armés selon la taille du raid, butin à leur mort ; seuil de fuite
-des pillards 600 → 650 mesuré sur 60 graines pour garder « jamais deux morts d'un coup ».
-Interface des armes livrée le 2026-09-05 (Sonnet) : outil Poste, panneau Fabrication avec
-cibles par arme, établi et armes dessinés, arme et compétences de combat dans le panneau du
-colon ; au passage, les caravanes passent par la connexion monde et le relais par le Worker a
-disparu. Saisons et température livrées le 2026-09-05 (Opus, sim) : année de 60 jours en quatre
-saisons, courbe annuelle en table entière plus variation journalière, météo et bruit lent ;
-climat réglable par carte (`SetClimate`, pour que chaque case du globe ait le sien) ; pièces
-détectées par remplissage paresseux (murs, portes, rochers ; le bord de carte est ouvert),
-isolation et chaleur des feux par pièce ; gel qui arrête les cultures et peut tuer les plants,
-buissons qui ne repoussent pas sous zéro, neige ; froid qui pèse sur l'humeur, hypothermie par
-blessures « froid » dont la cicatrisation est bloquée sous −5 °C, chaleur excessive. Pas encore
-de vêtements ni de toits explicites. Interface à faire (température, saison, neige, pièces).
-Faune, chasse et dépeçage livrés le 2026-09-05 (Opus, sim) : cerfs, lapins et sangliers qui
-paissent, fuient et parfois quittent la carte, hardes qui arrivent tous les 2 à 4 jours
-(12 bêtes au plus), sanglier qui riposte ; chasse par bête marquée (`Hunt`), réservée aux
-colons armés, avec XP de tir ou de mêlée ; dépeçage automatique au poste (viande selon
-l'espèce, cuir), viande crue ou cuisinée. Perf : le coût par tick suit le nombre de pawns
-(les bêtes comptent), à surveiller ; `u64::isqrt` remplace la racine maison. Vêtements livrés le 2026-09-05 (Opus, sim) : tunique (6 cuir) et manteau (12 cuir) au poste,
-isolation qui s'ajoute au confort (+6 et +15 °C), habillage automatique quand il fait moins de
-6 °C (seuil mesuré : 12 °C faisait s'habiller la colonie la moitié du temps en climat doux),
-manteau préféré, habit qui tombe à la mort, pillards en tunique par temps froid. Pas de
-gestion de la chaleur (on garde son manteau). Interface livrée le 2026-09-05 (Sonnet) : habit dans le panneau et sur le corps du colon,
-tuniques et manteaux dans la fabrication ; au passage une barre des colons (santé, humeur,
-à terre, endormi ; clic pour sélectionner, double clic pour centrer) et un journal des
-événements filtrable (touche N).
-Interface faune livrée le
-2026-09-05 (Sonnet) : bêtes dessinées par espèce, marquage de chasse au clic ou à la touche
-H, panneau animal, viande et cuir dans le stock ; chasse rejouée dans le navigateur : arc
-fabriqué, lapin abattu, viande rangée.
-Storyteller adaptatif livré le 2026-09-05 (Opus, sim) : points de menace `40 × colons +
-richesse / 400 + jours / 4` (plafond 600) × difficulté (paisible, facile, normal, difficile ;
-`SetDifficulty`), taille de bande `points / 60` puis équipement acheté avec le reliquat
-(tunique d'abord), trois types de raid (charge, archers, siège qui campe 1200 ticks à
-l'entrée), répit d'un jour après une mort, largages de vivres, maladie (deux jours, un si
-soignée), coups de froid et canicules d'un jour ; richesse de la colonie mise en cache ;
-`MAX_RAIDERS` 6 → 12. Interface livrée le 2026-09-05 (Sonnet) : sélecteur de difficulté à l'accueil, dans le lobby
-(hôte) et dans un menu Options, richesse dans le HUD, maladie signalée sur la pastille et dans
-le panneau, événements 21-25 libellés et classés ; vérifié : Difficile → trois pillards annoncés
-en archers. Traits livrés le 2026-09-05 (Sonnet, sim) : douze traits en six paires opposées (travailleur /
-paresseux, optimiste / pessimiste, bagarreur / lâche, gourmand / ascète, noctambule, robuste /
-fragile, sociable), deux par colon tirés sans contradiction, effets sur vitesse de travail,
-humeur, dégâts donnés et reçus, défense automatique ; interface livrée le 2026-09-05 (Sonnet : traits
-et infobulles dans le panneau et sur les pastilles). Calendrier partagé (Sonnet) : `SetCalendar`
-décale le jour de l'année sans toucher au tick, le serveur impose le jour du monde à la
-fondation (`start.dayOfYear`), l'hôte l'émet après le climat et avant la difficulté,
-l'avance rapide garde l'alignement au gel ; vérifié : une colonie fondée sur un monde de douze
-jours démarre au jour 12. Ligne de stock unifiée (cinq genres de base, le reste si > 0). Marchands et troc livrés le 2026-09-05 (Opus, sim) : un marchand neutre visite la colonie
-tous les 4 à 7 jours (trois profils : vivrier, artisan, armurier), s'installe à 4-6 cases des
-colons pendant un jour, vend à 120 % et achète à 70 % de la valeur de richesse ; troc en
-valeur par `Trade` (prélevé en stockage, déposé à l'étal) ; attaqué, il devient hostile et la
-rancune espace ses visites. Interface du troc livrée le 2026-09-05 (Sonnet) : marchand ocre au
-ballot sur le dos, ligne HUD « Marchand … repart dans N h », panneau Troc (il vend / vous donnez,
-balance en valeur pré-validée avec le motif de refus, le sim refusant en silence), événements
-26-29 au journal, `TriggerTraderVisit` pour le débogage ; vérifié : 72 bois contre un arc, stock
-et étal mis à jour, « Troc conclu : arcs ». Conservation par le froid et tombes livrées le
-2026-09-05 (Sonnet, sim) : chaque pile périssable porte une fraîcheur en millionièmes qui
-décroît selon la température de sa case (vitesse normale au-dessus de 15 °C, moitié entre 5 et
-15, quart entre 0 et 5, gelé sous zéro), évaluée toutes les 60 ticks ; une cave froide ou
-l'hiver conservent donc les vivres. Tombe (5 pierre) et job d'inhumation : un cadavre humain au
-sol pèse −40 000 d'humeur par cadavre (plafond −120 000) sur toute la colonie, l'enterrer divise
-le deuil en cours par deux. Interface livrée le 2026-09-05 (Sonnet) : outil Tombe (pierre
-imposée), tertre vide et tombe refermée dans le catalogue de props, job « enterre », événement
-« Un mort a été enterré », pastille de fraîcheur par genre dans la ligne de stock (pile la plus
-ancienne, calculée dans le Worker) ; vérifié : tombe bâtie puis refermée après un raid.
-Recherche livrée le 2026-09-05 (Opus, sim) : septième type de travail `Research` (les strides
-`priorities` et `skills` passent à 8 et 15), établi de recherche (15 bois), cinq technologies à
-bonus passifs — agriculture (+25 % de pousse), médecine (soins et cicatrisation pansée +50 %),
-conservation (péremption ÷ 2), archerie (portée 10, dégâts +25 %), maçonnerie (pierre −25 % de
-temps) — rien n'est verrouillé derrière la recherche ; `SetResearch` choisit la cible, 10 points
-par tick modulés par humeur et compétence, séances de 600 ticks. Interface livrée le 2026-09-05
-(Sonnet) : outil Établi de recherche, panneau Recherche (touche R : cinq technologies, barre
-d'avancement, « Arrêter », avertissement sans établi), ligne HUD, événement 31 ; cadence
-corrigée après mesure (voir journal) ; vérifié : Médecine à 31 % après 6 000 ticks d'un
-chercheur. Pièges à pointes livrés le 2026-09-05 (Opus, sim) : piège (5 bois, 150 ticks, une case,
-franchissable) qui blesse une jambe du premier pillard, marchand hostile ou animal qui y entre puis
-se déclenche ; les colons le connaissent et le contournent (`path::Walker`, court-circuité sans
-piège) ; réarmement par un colon (100 ticks, sans bois) ; poids modeste dans la richesse ; sévérité
-250 mesurée sur 120 graines (un pillard piégé sur deux à terre ou tué, pertes de la colonie 741
-contre 1 210 sans pièges ; non monotone : à 300 le pillard fuit avant de saigner). Interface
-livrée le 2026-09-05 (Sonnet) : outil Piège (bois imposé), props armé / déclenché, job « réarme un
-piège », événement 35 classé menace ; vérifié : anneau de pièges autour des colons, un pillard
-s'y prend au premier raid. Incendies livrés le 2026-09-05 (Opus, sim) : couche `fire` (intensité
-0-3 par case, `fire_version`, liste des foyers), combustible (arbres, buissons, plants, bois bâti,
-lits, postes, établis, pièges, piles sauf la pierre, herbe par temps chaud et sec), propagation
-1/40 par voisin toutes les 10 ticks (÷ 4 sous la pluie, qui éteint ; neige et gel aussi),
-consommation en 900 ticks (arbre → terre, bois bâti → rien), brûlures pour qui reste dedans,
-tout le monde contourne le feu ; lutte prioritaire des colons (`Firefight`, 80 ticks par cran, à
-25 cases du barycentre) qui conserve le combustible ; foudre pendant les orages (1,03 impact par
-orage mesuré sur 20 graines × 20 jours), feu de camp par temps chaud et sec (un départ par cinq
-jours d'été mesuré), `Ignite` pour le débogage ; événements 36-37, job 27. Interface livrée le
-2026-09-05 (Sonnet) : couche `fire` envoyée au changement de version comme `indoor`, flammes
-instanciées (cônes deux tons et lueur au sol, animation à coût constant), ligne HUD rouge, job
-« combat le feu », événements 36-37 classés menace, bouton de débogage « Mettre le feu » ;
-vérifié : un arbre allumé à six cases est éteint par les colons en moins de 600 ticks, un arbre
-à trente-deux cases brûle à intensité 3 avec ses flammes à l'écran. Apprivoisement et élevage
-livrés le 2026-09-05 (Opus, sim) : marquage `Tame` exclusif de la chasse, job d'apprivoisement
-(5 baies ou légumes, 300 ticks, réussite de base 25 % modulée par l'espèce et la compétence Culture,
-mesurée sur 20 graines : lapin sûr, cerf patient, sanglier un pari sur deux), bêtes de la colonie
-(faction 0 avec une espèce) qui restent près du foyer, paissent ou puisent au stockage sous le
-gel, maigrissent sans pâture, se reproduisent par paire jusqu'à douze par espèce, sangliers qui
-défendent ; abattage `Slaughter` ; drapeaux dans le tampon `animals`, jobs 28-29, événements
-38-40. Interface livrée le 2026-09-05 (Sonnet) : boutons Apprivoiser (bête sauvage) et Abattre
-(bête de la colonie), panneau « <Espèce> de la colonie », collier de la couleur de la colonie,
-bétail exclu des comptes de colons, ligne HUD « Bétail : N », jobs 28-29 et événements 38-40 ;
-vérifié : un lapin marqué avec 88 baies en stock est apprivoisé en moins de 20 000 ticks.
-Factions PNJ et réputation livrées le 2026-09-05 (Opus, sim) : trois factions fixes (Clan des
-Cendres et Fraternité du Fer, pillards ; Guilde des Colporteurs, marchands), réputation −100..100
-par faction (départ −20 / −20 / +10), raids attribués à une tribu tirée selon son hostilité (une
-alliée à ≥ 50 n'attaque plus ; deux alliées : plus aucune bande), raid mené −10, raid repoussé +5
-Guilde et +3 tribu rivale, troc +2, marchand frappé −30 ou tué −40, rancunes qui s'estompent de +1
-par jour, passage sous −50 qui avance le prochain raid, Guilde alliée qui vend à 110 %, réputation
-hostile qui éloigne les marchands ; tribut `Gift` prélevé en stockage (valeur / 20) ; événements
-41-43. Campagne d'équilibrage livrée le 2026-09-05 (Opus, sim-cli) : `rimlike-sim campaign`, joueur
-scripté, cinq constats chiffrés dans `crates/sim-cli/CAMPAIGN-FINDINGS.md` (voir journal), tous
-traités le 2026-09-05/06 par des tranches mesurées : rangement saturé sans balayage, feu qui suit
-le vent, soins d'urgence et inhumation indexée, difficulté plafonnée et richesse qui pèse, lutte
-contre le feu à budget d'A*. Interface livrée le 2026-09-05 (Sonnet) : panneau Factions (jauges de réputation par palier,
-tribut par faction avec aperçu du gain), tribu qui mène le raid dans l'annonce, événements 41-43 ;
-vérifié : 60 bois offerts au Clan des Cendres, réputation −20 → −17, journal à jour. Mini-carte
-livrée le 2026-09-05 (Sonnet) : canvas 2D en bas à droite (fond repeint au changement de version,
-pawns, feu et rectangle de vue à la cadence du HUD, clic pour recentrer, repli mémorisé) ;
-`Renderer.viewBounds()` projette les coins de l'écran sur le sol sans allocation. Notifications et
-lignes du journal cliquables (Sonnet, 2026-09-05) : une table pure `eventTarget` associe à chaque
-`EventKind` un pawn, une case en feu ou rien ; le clic recentre la caméra sur la position courante
-et sélectionne le pawn. Sélection multiple (Sonnet, 2026-09-05) : Maj + clic, Maj + rectangle,
-Ctrl/Cmd + A, clic droit qui répartit les colons sur des cases voisines distinctes (spirale
-déterministe) ou les fait tous attaquer la même cible ; module `selection.ts` pur. Réglages
-graphiques (Sonnet, 2026-09-05) : rapport de pixels et densité des props appliqués à chaud, ombres
-lues au démarrage (jamais basculées à chaud), compteur fps et draw calls, mémorisés en
-`localStorage` ; densité « moyenne » sans rochers ni buissons ni joints de sol, « basse » sans
-cultures en plus. Écran d'aide (Sonnet, 2026-09-05) : touche `?` ou `F1`, table des raccourcis
-construite à partir des mêmes constantes que la barre d'outils et le clavier (`tools.ts`,
-`shortcuts.ts`, test d'unicité des touches), rappel à la première partie. Marchands itinérants côté serveur
-livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
-caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
-tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;
-à l'arrivée, `trader_arrival` à l'hôte seul (qui doit émettre `TriggerTraderVisit`), ou
-`pendingTraders` (borné à 3) remis au prochain `start`/`snapshot` d'une colonie gelée ;
-`world_caravans.merchants` pour le globe, persistance v3 tolérante. Client câblé le 2026-09-05
-(Sonnet) : `trader_arrival` traité dans le Worker par `LockstepClient` (l'hôte émet
-`TriggerTraderVisit`, l'invité l'ignore), `startTraders.ts` rejoue les passages manqués après
-`FastForward`, chariots ocres sur le globe avec étiquette, compte dans la ligne d'état ; vérifié en
-conditions réelles : deux caravanes PNJ arrivées sur la colonie, marchand entré, événement 26. Relations entre colons livrées le 2026-09-05 (Opus, sim) : avis de −100 à +100 (seize au
-plus par colon), bavardage de 90 ticks entre voisins désœuvrés (+4 d'avis mutuel, +8 000 d'humeur
-un jour, délai de 1 200 ticks par paire, moitié pour un sociable), dispute une fois sur huit (un
-sur quatre avec un bagarreur : −10, −10 000), rixe non mortelle sous −60, amis (≥ 50) et rivaux
-(≤ −50) qui pèsent ±10 000 sur l'humeur (deux au plus), deuil doublé à la mort d'un ami ;
-événements 32-34, `pawn_opinions(id)`. Mesuré sur 20 graines : douze bavardages par paire et par
-jour, 12 % de disputes, avis final toujours positif. Interface livrée le 2026-09-05 (Sonnet) :
-section « Relations » du panneau du colon (avis triés, qualificatifs, lue une fois par seconde
-hors du frame), job « bavarde », événements 32-34 ; vérifié : avis mutuels et une dispute après
-20 000 ticks. À venir : factions PNJ avec réputation, mods de contenu,
-événements monde (marchands itinérants en cours côté serveur).
+### Phase 5 — Profondeur (ouvert)
+
+État : entamée le 2026-09-05, l'essentiel livré les 2026-09-05 et 06.
+
+**Livré**
+
+- **Noms et compétences** (2026-09-05, sim/sim-wasm + interface client) : noms tirés au
+  sort par faction (déterministe), six compétences niveau 0-20 avec XP par tick de
+  travail et montée de niveau ; la vitesse de travail combine humeur et compétence, les
+  transports ne rapportent pas d'XP. Interface : noms partout (panneau, tableau Travail,
+  notifications, étiquettes au-dessus des pawns), onglet Compétences dans le panneau.
+- **Santé détaillée** (2026-09-05, sim + interface client) : six parties du corps,
+  blessures à sévérité et saignement qui se referme seul, sang, conscience, mobilité et
+  manipulation réduites, colons à terre secourus vers un lit puis soignés par leurs
+  camarades (pillards qui les ignorent), mort par hémorragie ou coup fatal. Mesure :
+  rapport morts de leurs plaies / tués au combat 0,35 → 0,17 sur 30 graines × 30 jours
+  (réglé le 2026-09-05 : hémostase à 60 ticks, triage par temps de saignement avant le
+  brancard).
+- **Armes et combat à distance** (2026-09-05, sim + interface client) : poste de
+  fabrication (10 bois), recettes gourdin / épieu / arc, ordres « jusqu'à N »,
+  équipement automatique de la meilleure arme, compétences mêlée et tir, tir à l'arc à
+  8 cases en ligne de vue directe (murs, portes, rochers bloquent), pillards armés selon
+  la taille du raid. Mesure : seuil de fuite des pillards fixé à 650 (60 graines, pour
+  garder « jamais deux morts d'un coup »).
+- **Saisons et température** (2026-09-05, sim) : année de 60 jours en quatre saisons,
+  météo et climat réglable par carte (`SetClimate`), pièces détectées par remplissage
+  paresseux (isolation, chaleur des feux par pièce), gel qui arrête les cultures et peut
+  tuer les plants, neige, chaleur excessive, hypothermie par blessures « froid ». Pas de
+  toits explicites à ce stade. Interface livrée le 2026-09-05 : saison, jour, température et
+  météo au HUD, neige et pluie rendues, calque de température (touche I), ressenti dans le
+  panneau du colon.
+- **Faune, chasse et dépeçage** (2026-09-05, sim + interface client) : cerfs, lapins,
+  sangliers qui paissent et fuient, hardes tous les 2 à 4 jours (12 bêtes au plus),
+  sanglier qui riposte ; chasse par bête marquée (`Hunt`, colons armés seulement, XP de
+  tir ou de mêlée), dépeçage automatique au poste (viande selon l'espèce, cuir). Interface :
+  bêtes dessinées par espèce, marquage au clic ou à la touche H, panneau animal. À
+  surveiller : le coût par tick suit le nombre de pawns, bêtes comprises.
+- **Vêtements** (2026-09-05, sim + interface client) : tunique (6 cuir) et manteau
+  (12 cuir) au poste, isolation ajoutée au confort (+6 et +15 °C), habillage automatique
+  sous 6 °C (seuil mesuré sur dix graines : 12 °C habillait la colonie la moitié du
+  temps en climat doux), manteau préféré, habit perdu à la mort. Pas de gestion de la
+  chaleur excessive (le manteau reste porté). Interface : habit dans le panneau et sur
+  le corps du colon ; au passage, barre des colons (santé, humeur, à terre, endormi) et
+  journal des événements filtrable (touche N).
+- **Storyteller adaptatif** (2026-09-05, sim + interface client, réglé le 2026-09-06) :
+  points de menace selon colons, richesse, jours et difficulté (`SetDifficulty`), taille
+  de bande puis équipement acheté avec le reliquat, trois types de raid (charge, archers,
+  siège), répit d'un jour après une mort, largages, maladie, coups de froid, canicules ;
+  `MAX_RAIDERS` 6 → 12. Interface : sélecteur de difficulté (accueil, lobby, Options),
+  richesse au HUD, événements 21-25 libellés. Mesure (réglé le 2026-09-06, plafond plutôt
+  que sursis) : premier raid plafonné à deux têtes, difficile à 120 % de menace (cadence
+  1,75 à 2 jours), richesse comptée deux fois au-delà de 2 000 ; sur 30 graines × 30
+  jours, difficile 0/30 → 8/30 colonies vivantes au jour 30 (11/30 → 24/30 au jour 10),
+  normale stable (20 → 22).
+- **Traits** (2026-09-05, sim + interface client) : douze traits en six paires opposées,
+  deux par colon tirés sans contradiction, effets sur vitesse de travail, humeur, dégâts
+  donnés et reçus, défense automatique. Interface : traits et infobulles dans le panneau
+  et sur les pastilles.
+- **Calendrier partagé** (2026-09-05, sim + serveur + client) : `SetCalendar` décale le
+  jour de l'année sans toucher au tick, le serveur impose le jour du monde à la
+  fondation (`start.dayOfYear`), l'avance rapide garde l'alignement au gel ; vérifié :
+  une colonie fondée sur un monde de douze jours démarre au jour 12. HUD : ligne de
+  stock unifiée (cinq genres de base affichés en permanence, le reste si présent).
+- **Marchands et troc** (2026-09-05, sim + interface client) : marchand neutre tous les
+  4 à 7 jours (trois profils : vivrier, artisan, armurier), installé 4-6 cases des
+  colons pendant un jour, vend à 120 % et achète à 70 % de la valeur, troc en valeur par
+  `Trade` (stockage → étal) ; attaqué, il devient hostile et la rancune espace ses
+  visites. Interface : marchand ocre au ballot, ligne HUD « repart dans N h », panneau
+  Troc (balance pré-validée, motif de refus) ; vérifié : 72 bois contre un arc.
+- **Conservation par le froid et tombes** (2026-09-05, sim + interface client) :
+  fraîcheur en millionièmes par pile périssable, décroissance selon la température de la
+  case (normale au-dessus de 15 °C, moitié entre 5 et 15, quart entre 0 et 5, gelée sous
+  zéro), évaluée toutes les 60 ticks ; tombe (5 pierre) et job d'inhumation, un cadavre
+  au sol pèse −40 000 d'humeur par cadavre (plafond −120 000) sur toute la colonie,
+  l'enterrer divise le deuil en cours par deux. Interface : outil Tombe, job « enterre »,
+  pastille de fraîcheur par genre dans la ligne de stock.
+- **Recherche** (2026-09-05, sim + interface client) : septième type de travail (strides
+  `priorities`/`skills` → 8/15), établi de recherche (15 bois), cinq technologies à
+  bonus passifs — agriculture (+25 % de pousse), médecine (soins et cicatrisation +50 %),
+  conservation (péremption ÷ 2), archerie (portée 10, dégâts +25 %), maçonnerie (pierre
+  −25 % de temps) — rien n'est verrouillé derrière la recherche. Interface : outil
+  Établi, panneau Recherche (touche R), ligne HUD. Mesure (réglée le 2026-09-05, cadence
+  mesurée et non devinée) : deux dixièmes de point par tick (la consigne initiale
+  donnait une technologie en trois secondes) — environ 14 000 ticks pour un chercheur
+  seul (un peu plus d'une journée), test borné entre une demi-journée et trois jours.
+- **Pièges à pointes** (2026-09-05, sim + interface client) : piège (5 bois, 150 ticks,
+  une case, franchissable) qui blesse une jambe du premier pillard, marchand hostile ou
+  animal qui s'y engage ; les colons le connaissent et le contournent, réarmement par un
+  colon (100 ticks). Interface : outil Piège, props armé/déclenché, job « réarme ».
+  Mesure : sévérité 250 sur 120 graines — un pillard piégé sur deux à terre ou tué,
+  pertes de la colonie 741 contre 1 210 sans pièges (non monotone : à 300 le pillard fuit
+  avant d'avoir saigné).
+- **Incendies** (2026-09-05, sim + interface client, budget de lutte réglé le
+  2026-09-06) : couche `fire` (intensité 0-3, liste de foyers), combustible (arbres,
+  buissons, plants, bois bâti, lits, postes, établis, pièges, piles sauf la pierre,
+  herbe par temps chaud et sec), consommation en 900 ticks, lutte prioritaire des colons
+  (`Firefight`), foudre pendant les orages, feu de camp par temps chaud et sec. Interface :
+  flammes à l'écran, ligne HUD rouge, job « combat le feu ». Mesure : le feu suit
+  désormais le vent (1/40 sous le vent, ÷ 3 de côté, ÷ 16 à contre-vent) — pire incendie
+  de la campagne normale 57 % → 13 % de la carte ; budget de lutte réglé le 2026-09-06
+  (10 688 → 461 recherches de chemin sur 600 ticks, 49 → 1 153 ticks/s, indépendant du
+  nombre de foyers).
+- **Apprivoisement et élevage** (2026-09-05, sim + interface client) : marquage `Tame`
+  exclusif de la chasse, job d'apprivoisement (5 baies ou légumes, 300 ticks, réussite
+  de base 25 % modulée par l'espèce et la compétence Culture), bêtes de la colonie qui
+  restent près du foyer, paissent ou puisent au stockage sous le gel, se reproduisent
+  par paire (douze au plus par espèce), sangliers qui défendent ; abattage `Slaughter`.
+  Interface : boutons Apprivoiser/Abattre, panneau « <Espèce> de la colonie », ligne HUD
+  « Bétail : N ». Mesure sur 20 graines : lapin sûr, cerf patient, sanglier un pari sur
+  deux.
+- **Factions PNJ et réputation** (2026-09-05, sim + interface client) : trois factions
+  fixes (Clan des Cendres et Fraternité du Fer, pillards ; Guilde des Colporteurs,
+  marchands), réputation −100..100 par faction (départ −20 / −20 / +10), raids
+  attribués selon l'hostilité (alliée à ≥ 50 n'attaque plus, deux alliées : plus aucune
+  bande), effets des actions (raid mené −10, repoussé +5/+3, troc +2, marchand frappé
+  −30 ou tué −40, rancune qui s'estompe de +1/jour), tribut `Gift` (valeur / 20), Guilde
+  alliée qui vend à 110 %. Réputation encore locale à la colonie (pas de globe, voir
+  Reste). Interface : panneau Factions (jauges par palier, tribut avec aperçu du gain) ;
+  vérifié : 60 bois offerts au Clan des Cendres, réputation −20 → −17.
+- **Marchands itinérants côté serveur** (2026-09-05, serveur + client) : `WORLD_MERCHANTS`
+  caravanes PNJ (deux par défaut) qui visent la colonie fondée la plus proche, avancent
+  au tick monde, séjournent `MERCHANT_STAY_HOURS` puis repartent ; `trader_arrival` à
+  l'hôte (qui émet `TriggerTraderVisit`) ou `pendingTraders` (borné à 3) remis à la
+  réouverture d'une colonie gelée. Client : `startTraders.ts` rejoue les passages
+  manqués après `FastForward`, chariots ocres sur le globe ; vérifié : deux caravanes
+  PNJ arrivées, marchand entré, événement 26.
+- **Relations entre colons** (2026-09-05, sim + interface client) : avis de −100 à +100
+  (seize au plus par colon), bavardage de 90 ticks entre voisins désœuvrés (+4 d'avis
+  mutuel, +8 000 d'humeur un jour, délai de 1 200 ticks par paire), dispute une fois sur
+  huit (un sur quatre avec un bagarreur), rixe non mortelle sous −60, amis (≥ 50) et
+  rivaux (≤ −50) qui pèsent sur l'humeur, deuil doublé à la mort d'un ami. Interface :
+  section Relations du panneau (avis triés, qualificatifs). Mesure sur 20 graines : douze
+  bavardages par paire et par jour, 12 % de disputes, avis final toujours positif.
+- **Campagne d'équilibrage et ses cinq réglages** (2026-09-05, `crates/sim-cli`,
+  réglages appliqués les 2026-09-05 et 06) : `rimlike-sim campaign` rejoue un joueur
+  scripté déterministe sur N graines × D jours, rapport chiffré dans
+  `crates/sim-cli/CAMPAIGN-FINDINGS.md`. Cinq constats mesurés puis traités : (1)
+  rangement — recherche de case de stockage sans balayage de carte, 2 000 → 1 000 000
+  ticks/s à 60 piles au sol ; (2) difficulté — premier raid plafonné (voir Storyteller) ;
+  (3) menace — richesse comptée deux fois au-delà de 2 000 (voir Storyteller) ; (4) feu —
+  propagation orientée par le vent (voir Incendies) ; (5) soins — triage par temps de
+  saignement (voir Santé détaillée).
+- **Mini-carte** (2026-09-05, client) : canvas 2D en bas à droite (fond repeint au
+  changement de version, pawns, feu et rectangle de vue à la cadence du HUD), clic pour
+  recentrer, repli mémorisé ; `Renderer.viewBounds()` projette les coins de l'écran sur
+  le sol sans allocation.
+- **Notifications et journal cliquables** (2026-09-05, client) : table pure
+  `eventTarget` qui associe à chaque `EventKind` un pawn, une case en feu ou rien ; le
+  clic recentre la caméra et sélectionne le pawn.
+- **Sélection multiple** (2026-09-05, client) : Maj + clic, Maj + rectangle, Ctrl/Cmd + A,
+  clic droit qui répartit les colons sur des cases voisines distinctes (spirale
+  déterministe) ou les fait tous attaquer la même cible ; module `selection.ts` pur.
+- **Réglages graphiques** (2026-09-05, client) : rapport de pixels et densité des props
+  appliqués à chaud, ombres lues au démarrage (jamais basculées à chaud), compteur fps
+  et draw calls, mémorisés en `localStorage` ; densité « moyenne » sans rochers ni
+  buissons ni joints de sol, « basse » sans cultures en plus.
+- **Écran d'aide** (2026-09-05, client) : touche `?` ou `F1`, table des raccourcis
+  construite à partir des mêmes constantes que la barre d'outils et le clavier
+  (`tools.ts`, `shortcuts.ts`, test d'unicité des touches), rappel à la première partie.
+
+**Reste**
+
+- Mods de contenu : pas commencés.
+- Toits et métal (matériau de construction) : absents.
+- Réputation partagée : `SetGoodwill` côté sim et réputation par joueur côté serveur en
+  cours (2026-09-06), câblage client à suivre.
+- Faune : coût par tick qui suit le nombre de pawns, bêtes comprises — à surveiller,
+  pas encore mesuré ni optimisé.
+- Vêtements : pas de gestion de la chaleur excessive (le colon garde son manteau même
+  par forte chaleur).
+
+**Mesure** : chaque chiffre ci-dessus vient d'un test statistique sur plusieurs graines,
+jamais de l'intuition (règle « on mesure avant de régler », `AGENTS.md`) ; méthode et
+détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 7. Risques identifiés
 
