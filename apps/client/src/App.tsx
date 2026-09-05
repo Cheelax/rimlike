@@ -44,10 +44,13 @@ import {
   formatTemperature,
   formatTraderLeaves,
   formatWealth,
+  freshnessLevel,
+  freshnessPercent,
   hKeyAction,
   HEALTH_STRIDE,
   ITEM_NAMES,
   JOB_LABELS,
+  MATERIAL,
   MATERIAL_NAMES,
   PRIORITY_STRIDE,
   SEASON_LABELS,
@@ -138,9 +141,18 @@ type Tool =
   | "bed"
   | "campfire"
   | "craftingSpot"
+  | "grave"
   | "cancel";
 
-const TOOLS: { id: Tool; label: string; key: string; color: number; group: "orders" | "build" }[] = [
+const TOOLS: {
+  id: Tool;
+  label: string;
+  key: string;
+  color: number;
+  group: "orders" | "build";
+  /** Coût affiché dans l'infobulle du bouton, à la place de « Touche X » (mission tombes : « 5 pierre »). */
+  hint?: string;
+}[] = [
   { id: "select", label: "Sélection", key: "S", color: 0xffffff, group: "orders" },
   { id: "chop", label: "Couper", key: "C", color: 0xff9a2e, group: "orders" },
   { id: "mine", label: "Miner", key: "M", color: 0xff9a2e, group: "orders" },
@@ -155,6 +167,9 @@ const TOOLS: { id: Tool; label: string; key: string; color: number; group: "orde
   { id: "bed", label: "Lit", key: "L", color: 0x4ad9ff, group: "build" },
   { id: "campfire", label: "Feu", key: "F", color: 0x4ad9ff, group: "build" },
   { id: "craftingSpot", label: "Poste", key: "A", color: 0x4ad9ff, group: "build" },
+  // Aucune lettre libre ne rappelle « tombe » (T, O, G... sont déjà pris) :
+  // pas de raccourci clavier, un bouton suffit (mission tombes §1).
+  { id: "grave", label: "Tombe", key: "", color: 0x4ad9ff, group: "build", hint: "5 pierre" },
   { id: "cancel", label: "Annuler", key: "X", color: 0xff4040, group: "orders" },
 ];
 
@@ -165,8 +180,11 @@ const BUILD_TOOL_KIND: Partial<Record<Tool, number>> = {
   bed: BUILD_KIND.Bed,
   campfire: BUILD_KIND.Campfire,
   craftingSpot: BUILD_KIND.CraftingSpot,
+  grave: BUILD_KIND.Grave,
 };
 const WOOD_ONLY: ReadonlySet<Tool> = new Set<Tool>(["bed", "campfire", "craftingSpot"]);
+/** Les tombes n'existent qu'en pierre (contrat sim) : jamais le matériau courant du joueur. */
+const STONE_ONLY: ReadonlySet<Tool> = new Set<Tool>(["grave"]);
 
 /** Une ligne de blessure du panneau Santé, depuis `pawn_injuries` (voir `pawnInjuries`). */
 interface InjuryInfo {
@@ -291,6 +309,12 @@ interface Stats {
   traderOffers: number[];
   /** Prix unitaire d'achat par genre, indexé par `ItemKind` (`frame.buyPrices`). */
   buyPrices: number[];
+  /**
+   * Fraîcheur la plus basse par genre, en ‰ restant, indexée par `ItemKind`
+   * (`frame.foodFreshness`) : −1 si aucune pile de ce genre, ou genre non
+   * périssable. Pilote la pastille de fraîcheur du HUD stock.
+   */
+  foodFreshness: number[];
 }
 
 const INITIAL: Stats = {
@@ -328,6 +352,7 @@ const INITIAL: Stats = {
   traderLeavesIn: 0,
   traderOffers: [],
   buyPrices: new Array(ITEM_NAMES.length).fill(0),
+  foodFreshness: new Array(ITEM_NAMES.length).fill(-1),
 };
 
 interface Actions {
@@ -753,6 +778,13 @@ export function App() {
     /** Dernier `lastReconnectAt` déjà annoncé par toast, pour ne le dire qu'une fois. */
     let lastReconnectNotified: number | null = null;
     /**
+     * Vrai tant qu'au moins un genre périssable est sous 20 % de fraîcheur :
+     * un seul toast par passage sous ce seuil (§4 mission tombes), pas un par
+     * demi-seconde tant que ça dure. Remis à faux dès que plus aucun genre
+     * n'y est, pour qu'une rechute ultérieure retoaste.
+     */
+    let lowFreshnessActive = false;
+    /**
      * Vrai jusqu'au premier `frame` d'un sim neuf, chargé ou restauré : rien à
      * interpoler depuis l'état d'avant, et ses événements sont du passé.
      */
@@ -1153,6 +1185,7 @@ export function App() {
         case "floor":
         case "bed":
         case "campfire":
+        case "craftingSpot":
           issue(
             encodeBuild(
               BUILD_TOOL_KIND[toolRef.current]!,
@@ -1163,6 +1196,12 @@ export function App() {
               rect.y1,
             ),
           );
+          break;
+        case "grave":
+          // Les tombes n'existent qu'en pierre (contrat sim, qui l'imposerait
+          // de toute façon) : jamais `materialRef.current`, pour ne pas
+          // laisser croire que le choix du joueur y change quoi que ce soit.
+          issue(encodeBuild(BUILD_KIND.Grave, MATERIAL.Stone, rect.x0, rect.y0, rect.x1, rect.y1));
           break;
         case "cancel":
           issue(encodeDesignate(DESIGNATION.None, rect.x0, rect.y0, rect.x1, rect.y1));
@@ -1596,6 +1635,16 @@ export function App() {
             /* colon disparu entre-temps : la pastille garde sa dernière valeur connue */
           });
       }
+      // Pastille de fraîcheur du HUD stock : un toast discret la première
+      // fois qu'un genre périssable passe sous 20 % (`freshnessLevel`), pas
+      // un par demi-seconde tant que ça dure (voir `lowFreshnessActive`).
+      const lowFreshness = f.foodFreshness.some((v) => v >= 0 && freshnessLevel(v) === "bad");
+      if (lowFreshness && !lowFreshnessActive) {
+        lowFreshnessActive = true;
+        pushToast("Des vivres vont se perdre");
+      } else if (!lowFreshness) {
+        lowFreshnessActive = false;
+      }
       setStats({
         tick: f.tick,
         day: Math.floor(f.tick / f.ticksPerDay) + 1,
@@ -1632,6 +1681,7 @@ export function App() {
         traderLeavesIn: f.traderLeavesIn,
         traderOffers: Array.from(f.traderOffers),
         buyPrices: Array.from(f.buyPrices),
+        foodFreshness: Array.from(f.foodFreshness),
       });
     }, 500);
 
@@ -2007,9 +2057,26 @@ export function App() {
             </div>
             <div>
               stock :{" "}
-              {visibleStock(stats.stored)
-                .map(({ name, count }) => `${count} ${name}`)
-                .join(" · ")}
+              {visibleStock(stats.stored).map(({ name, count }, i) => {
+                // Fraîcheur de la pile la plus ancienne de ce genre
+                // (`stats.foodFreshness`, indexé par `ItemKind` comme `ITEM_NAMES`).
+                const freshness = stats.foodFreshness[(ITEM_NAMES as readonly string[]).indexOf(name)] ?? -1;
+                return (
+                  <span key={name}>
+                    {i > 0 ? " · " : ""}
+                    {count} {name}
+                    {freshness >= 0 && (
+                      <span
+                        className={`freshness ${freshnessLevel(freshness)}`}
+                        title={`Pile la plus ancienne : ${freshnessPercent(freshness)} % de fraîcheur`}
+                      >
+                        {" "}
+                        · {freshnessPercent(freshness)} %
+                      </span>
+                    )}
+                  </span>
+                );
+              })}
               {stats.blueprints > 0 ? ` · ${stats.blueprints} chantier${stats.blueprints > 1 ? "s" : ""}` : ""}
               {" · richesse "}
               {formatWealth(stats.wealth)}
@@ -2165,8 +2232,13 @@ export function App() {
             ))}
             <span className="sep" />
             {TOOLS.filter((t) => t.group === "build").map((t) => (
-              <button key={t.id} className={t.id === tool ? "active" : ""} onClick={() => setTool(t.id)} title={`Touche ${t.key}`}>
-                {t.label} <span className="key">{t.key}</span>
+              <button
+                key={t.id}
+                className={t.id === tool ? "active" : ""}
+                onClick={() => setTool(t.id)}
+                title={t.hint ?? `Touche ${t.key}`}
+              >
+                {t.label} {t.key && <span className="key">{t.key}</span>}
               </button>
             ))}
             <button
@@ -2268,7 +2340,7 @@ export function App() {
                   : tool === "cancel"
                     ? "Tracez un rectangle pour annuler désignations, zones et chantiers"
                     : tool in BUILD_TOOL_KIND
-                      ? `Tracez un rectangle pour poser des plans de ${TOOLS.find((t) => t.id === tool)?.label.toLowerCase()} en ${WOOD_ONLY.has(tool) ? "bois" : MATERIAL_NAMES[material]}`
+                      ? `Tracez un rectangle pour poser des plans de ${TOOLS.find((t) => t.id === tool)?.label.toLowerCase()} en ${WOOD_ONLY.has(tool) ? "bois" : STONE_ONLY.has(tool) ? "pierre" : MATERIAL_NAMES[material]}`
                       : "Tracez un rectangle sur les éléments à traiter"}{" "}
               · clic droit ou Échap pour revenir à la sélection
             </div>

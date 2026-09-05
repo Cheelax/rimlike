@@ -29,6 +29,10 @@ canvas.scene { display: block; width: 100%; height: 100%; }
 .toolbar button.active .key { opacity: .7; }
 .toolbar .sep { width: 1px; background: rgba(255,255,255,.15); margin: 0 4px; }
 .tool-hint { position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%); padding: 4px 10px; background: rgba(0,0,0,.5); border-radius: 5px; font: 12px system-ui, sans-serif; pointer-events: none; }
+.freshness { pointer-events: auto; cursor: help; font-weight: 600; }
+.freshness.good { color: #8fd18f; }
+.freshness.warn { color: #e0b040; }
+.freshness.bad { color: #ff6b6b; }
 .notice { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 10px 18px; background: rgba(0,0,0,.75); border: 1px solid rgba(255,255,255,.2); border-radius: 8px; font: 14px system-ui, sans-serif; pointer-events: none; }
 .toasts { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; }
 .toast { padding: 7px 16px; background: rgba(90,20,20,.82); border: 1px solid rgba(255,120,120,.4); border-radius: 6px; font: 13px/1.3 system-ui, sans-serif; box-shadow: 0 2px 10px rgba(0,0,0,.4); }

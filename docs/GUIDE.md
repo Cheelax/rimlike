@@ -78,6 +78,7 @@ Constructions (posées en plans, matériau réglé par `T`) :
 | L | Lit | 12, bois seulement |
 | F | Feu de camp | 8, bois seulement |
 | A | Poste de fabrication | 10, bois seulement |
+| — | Tombe (bouton, pas de raccourci) | 5, pierre seulement |
 
 `T` bascule le matériau (bois/pierre) des murs, portes et sols. Les plans
 apparaissent en bleu, puis en jaune quand les matériaux livrés suffisent ; un
@@ -133,6 +134,18 @@ repas cuisinés aussi mais plus vite (baies : trois jours ; légumes : quatre
 jours ; repas : deux jours). Ordre de préférence d'un colon affamé : repas
 cuisiné, puis baies, puis légumes crus, puis viande crue en dernier recours.
 Un repas cuisiné remonte l'humeur, un cru ou une viande crue la fait baisser.
+
+### Conserver les vivres
+
+La vitesse de péremption d'une pile dépend de la température de la case où
+elle repose : normale au-dessus de 15 °C, deux fois plus lente de 5 à 15 °C,
+quatre fois plus lente de 0 à 5 °C, à l'arrêt complet sous 0 °C. Une pièce
+fermée et fraîche, ou tout simplement l'hiver, ralentit donc la péremption
+sans rien faire de plus ; le gel l'arrête net. Le HUD affiche, à côté de
+chaque genre entamé, une pastille de fraîcheur (« · 72 % » : verte au-dessus
+de 50 %, orange de 20 à 50, rouge en dessous) reprenant la pile la plus
+proche de se perdre ; en dessous de 20 %, un message discret prévient que des
+vivres vont se perdre.
 
 ### Chasse et dépeçage
 
@@ -212,6 +225,17 @@ et un camarade peut le porter jusqu'à un lit puis le soigner. Une blessure
 grave à la tête ou au torse, ou une perte de sang totale, est mortelle. Un
 mort laisse un cadavre (se décompose en trois jours) et un deuil de deux
 jours pèse sur le moral de la colonie.
+
+### Morts et tombes
+
+Un cadavre laissé au sol démoralise toute la colonie tant qu'il traîne, pas
+seulement le jour de la mort. Construire une tombe (bouton dédié de la barre
+d'outils, 5 pierre, une case) répare cela : un colon libre s'en charge de
+lui-même, sans ordre à donner, dès qu'une tombe vide et un chemin jusqu'au
+corps existent. L'inhumation apaise le deuil de la colonie. Les dépouilles
+animales, elles, ne s'enterrent pas : elles se dépècent au poste de
+fabrication (voir « Chasse et dépeçage » ci-dessus) pour leur viande et leur
+cuir.
 
 ### Famine, froid et chaleur
 

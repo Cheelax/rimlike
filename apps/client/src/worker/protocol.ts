@@ -197,6 +197,15 @@ export interface FrameMessage {
    * indépendant de la présence du marchand.
    */
   readonly buyPrices: Uint32Array;
+  /**
+   * Fraîcheur la plus basse par genre, indexée par `ItemKind` (16 entrées) :
+   * le ‰ restant (`sim-wasm::item_freshness`) de la pile la plus proche de
+   * disparaître parmi celles de ce genre sur la carte, −1 si aucune pile n'en
+   * existe ou si le genre ne périme pas. Recalculée chaque frame depuis
+   * `items` (voir `SimRunner.foodFreshnessOf`), pour la pastille de fraîcheur
+   * du HUD stock (`App.tsx`).
+   */
+  readonly foodFreshness: Int32Array;
 }
 
 export type WorkerToMain =
@@ -245,6 +254,7 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
         message.traits.buffer as ArrayBuffer,
         message.traderOffers.buffer as ArrayBuffer,
         message.buyPrices.buffer as ArrayBuffer,
+        message.foodFreshness.buffer as ArrayBuffer,
       ];
     case "saved":
       return [message.bytes.buffer as ArrayBuffer];

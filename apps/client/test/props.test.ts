@@ -46,6 +46,17 @@ describe("catalogue de props modulaires", () => {
     expect(doorRotation(1, 1, 3, 3, () => false)).toBe(0);
   });
 
+  it("distingue la tombe vide de la tombe occupée par une stèle plus haute", () => {
+    const library = new PropLibrary();
+    const empty = library.geometry(`feature:${FEATURE.Grave}`).boundingBox!;
+    const filled = library.geometry(`feature:${FEATURE.GraveFilled}`).boundingBox!;
+    expect(filled.max.y).toBeGreaterThan(empty.max.y);
+    // La tombe n'existe qu'en pierre (contrat sim) : les deux matériaux de
+    // plan pointent vers la même géométrie.
+    expect(blueprintKey(BUILD_KIND.Grave, 0)).toBe(blueprintKey(BUILD_KIND.Grave, 1));
+    library.dispose();
+  });
+
   it("réutilise les instances, ne tronque pas 3000 plans et actualise leurs bornes", () => {
     const library = new PropLibrary(), batch = new PropBatch(library, true);
     const entries = Array.from({ length: 3000 }, (_, i) => ({ key: `feature:${FEATURE.WallWood}`, x: i, z: 0 }));

@@ -18,8 +18,11 @@ import {
   formatTemperature,
   formatTraderLeaves,
   formatWealth,
+  freshnessLevel,
+  freshnessPercent,
   hKeyAction,
   ITEM_NAMES,
+  JOB_LABELS,
   moodIcon,
   SEASON_LABELS,
   sickHoursRemaining,
@@ -170,6 +173,12 @@ describe("eventLabel", () => {
     // Contrat avec `sim::EventKind` 29.
     expect(eventLabel(29, 9, { 9: "Zara" })).toBe("Zara le marchand est mort");
     expect(eventLabel(29, 9)).toBe("Le marchand est mort");
+  });
+
+  it("annonce une inhumation, sans dépendre de `arg` ni d'un nom connu", () => {
+    // Contrat avec `sim::EventKind::Buried` (30) : `arg` vaut toujours 0, pas un id.
+    expect(eventLabel(30, 0)).toBe("Un mort a été enterré");
+    expect(eventLabel(30, 0, { 0: "Alice" })).toBe("Un mort a été enterré");
   });
 });
 
@@ -329,10 +338,36 @@ describe("eventCategory", () => {
     // WandererJoined, ColonistBreak, LevelUp, RaiderLeft, ColonistRescued,
     // ColonistTended, les deux caravanes, FastForwarded, les deux artisanats,
     // saison, gelée, harde et chasse, largage, coup de froid et canicule,
-    // les quatre événements du marchand : rien de tout ça n'est une menace.
-    for (const kind of [4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 25, 26, 27, 28, 29]) {
+    // les quatre événements du marchand, une inhumation : rien de tout ça
+    // n'est une menace.
+    for (const kind of [4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 25, 26, 27, 28, 29, 30]) {
       expect(eventCategory(kind)).toBe("colony");
     }
+  });
+});
+
+describe("JOB_LABELS", () => {
+  it("nomme le job Bury (code 23) « enterre »", () => {
+    // Contrat avec `pawn::Job::code()` : un colon qui porte un cadavre vers
+    // une tombe vide.
+    expect(JOB_LABELS[23]).toBe("enterre");
+  });
+});
+
+describe("freshnessPercent et freshnessLevel", () => {
+  it("convertit le ‰ restant d'`item_freshness` en pourcentage arrondi", () => {
+    expect(freshnessPercent(1000)).toBe(100);
+    expect(freshnessPercent(720)).toBe(72);
+    expect(freshnessPercent(0)).toBe(0);
+  });
+
+  it("classe la fraîcheur : verte au-dessus de 50 %, orange de 20 à 50, rouge en dessous", () => {
+    expect(freshnessLevel(1000)).toBe("good");
+    expect(freshnessLevel(500)).toBe("good"); // seuil inclus
+    expect(freshnessLevel(499)).toBe("warn");
+    expect(freshnessLevel(200)).toBe("warn"); // seuil bas inclus
+    expect(freshnessLevel(199)).toBe("bad");
+    expect(freshnessLevel(0)).toBe("bad");
   });
 });
 

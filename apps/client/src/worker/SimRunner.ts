@@ -25,6 +25,10 @@ import {
 
 /** Entiers par pawn dans le tampon `pawns()` ; seul l'id (offset 0) sert ici. */
 const PAWN_STRIDE = 12;
+/** Entiers par pile dans le tampon `items()` : `[id, genre, quantité, x, y]` (`sim-wasm::ITEM_STRIDE`). */
+const ITEM_STRIDE = 5;
+/** Genres de `sim::ItemKind` (contrat `AGENTS.md` : `ItemKind::COUNT` = 16). */
+const ITEM_KIND_COUNT = 16;
 
 /** 60 ticks de jeu par seconde à la vitesse x1. */
 export const TICKS_PER_SECOND = 60;
@@ -52,6 +56,11 @@ export interface RunnerSim extends SimLike {
   designations(): Uint8Array;
   pawns(): Int32Array;
   items(): Int32Array;
+  /**
+   * Fraîcheur d'une pile, en ‰ restant ; −1 si son genre ne périme pas ou si
+   * l'id est inconnu (`sim-wasm::item_freshness`). Sert à `foodFreshnessOf`.
+   */
+  itemFreshness(id: number): number;
   blueprints(): Int32Array;
   events(): Int32Array;
   priorities(): Int32Array;
@@ -131,6 +140,25 @@ export interface RunnerOutput {
 }
 
 const NOTHING: RunnerOutput = { ticks: 0, map: null, overlays: null, indoor: null, frame: null };
+
+/**
+ * Fraîcheur la plus basse par genre (`sim::ItemKind`), depuis le tampon
+ * `items` et `itemFreshness` : la pile la plus proche de disparaître. `-1`
+ * si aucune pile de ce genre n'est sur la carte, ou si le genre ne périme
+ * pas (`itemFreshness` renvoie déjà `-1` dans ce cas, un simple minimum sur
+ * les valeurs valides suffit à distinguer les deux du HUD).
+ */
+export function foodFreshnessOf(sim: RunnerSim, items: Int32Array): Int32Array {
+  const out = new Int32Array(ITEM_KIND_COUNT).fill(-1);
+  for (let o = 0; o + ITEM_STRIDE <= items.length; o += ITEM_STRIDE) {
+    const kind = items[o + 1];
+    if (kind < 0 || kind >= ITEM_KIND_COUNT) continue;
+    const freshness = sim.itemFreshness(items[o]);
+    if (freshness < 0) continue;
+    if (out[kind] === -1 || freshness < out[kind]) out[kind] = freshness;
+  }
+  return out;
+}
 
 export class SimRunner {
   private readonly lockstep: LockstepLike | null;
@@ -316,6 +344,7 @@ export class SimRunner {
     const withHash = this.frameCount % this.hashEveryFrames === 0;
     this.frameCount += 1;
     const pawns = sim.pawns();
+    const items = sim.items();
     const frame: FrameMessage = {
       type: "frame",
       tick: sim.tick(),
@@ -328,7 +357,8 @@ export class SimRunner {
       yearDays: sim.yearDays(),
       hash: withHash ? sim.hash() : null,
       pawns,
-      items: sim.items(),
+      items,
+      foodFreshness: foodFreshnessOf(sim, items),
       blueprints: sim.blueprints(),
       events: sim.events(),
       priorities: sim.priorities(),

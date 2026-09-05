@@ -85,6 +85,8 @@ const SIM_API: ReadonlySet<string> = new Set([
   "designations",
   "pawns",
   "items",
+  // Fraîcheur des piles (`crates/sim/src/items.rs`) : voir `foodFreshnessOf`.
+  "itemFreshness",
   "blueprints",
   "events",
   "priorities",

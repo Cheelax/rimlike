@@ -471,6 +471,15 @@ export class SimHandle implements SimLike {
     return this.inner.stored_totals();
   }
 
+  /**
+   * Fraîcheur d'une pile, en ‰ restant (1000 à sa création, 0 juste avant de
+   * disparaître) ; −1 si son genre ne périme pas ou si l'id est inconnu.
+   * Sert à `SimRunner.foodFreshnessOf` (voir `worker/SimRunner.ts`).
+   */
+  itemFreshness(id: number): number {
+    return this.inner.item_freshness(id);
+  }
+
   snapshot(): Uint8Array {
     return this.inner.snapshot();
   }

@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { HASH_EVERY_FRAMES } from "../src/worker/protocol";
 import {
   BASE_TICK_MS,
+  foodFreshnessOf,
   MAX_TICKS_PER_STEP,
   SimRunner,
   type LockstepLike,
@@ -98,8 +99,17 @@ class FakeSim implements RunnerSim {
     return new Int32Array(out);
   }
 
+  itemsBuf: Int32Array = new Int32Array([1, 0, 5, 2, 2]);
+
   items(): Int32Array {
-    return new Int32Array([1, 0, 5, 2, 2]);
+    return this.itemsBuf;
+  }
+
+  /** Fraîcheur simulée par id de pile ; absente = -1 (non périssable ou id inconnu). */
+  freshnessById = new Map<number, number>();
+
+  itemFreshness(id: number): number {
+    return this.freshnessById.get(id) ?? -1;
   }
 
   blueprints(): Int32Array {
@@ -409,6 +419,49 @@ describe("SimRunner en solo", () => {
     const runner = new SimRunner();
     const out = runner.advance(1000);
     expect(out).toEqual({ ticks: 0, map: null, overlays: null, indoor: null, frame: null });
+  });
+
+  it("porte la fraîcheur la plus basse par genre dans le `frame`", () => {
+    const { runner, sim } = soloStarted();
+    sim.itemsBuf = new Int32Array([
+      1, 4, 5, 0, 0, // pile 1 : légumes (genre 4)
+      2, 4, 3, 1, 0, // pile 2 : légumes aussi, plus vieille
+      3, 12, 2, 2, 2, // pile 3 : viande (genre 12), genre inconnu du sim (`-1`)
+    ]);
+    sim.freshnessById.set(1, 800);
+    sim.freshnessById.set(2, 300);
+    sim.freshnessById.set(3, -1);
+    const out = runner.advance(100);
+    expect(out.frame?.foodFreshness[4]).toBe(300); // la plus basse des deux piles de légumes
+    expect(out.frame?.foodFreshness[12]).toBe(-1); // genre non périssable (ou pile disparue)
+    expect(out.frame?.foodFreshness[0]).toBe(-1); // aucune pile de bois sur la carte
+  });
+});
+
+describe("foodFreshnessOf", () => {
+  it("prend le minimum par genre, ignore les genres sans pile valide", () => {
+    const sim = new FakeSim();
+    sim.freshnessById.set(1, 900);
+    sim.freshnessById.set(2, 400);
+    const items = new Int32Array([1, 3, 10, 0, 0, 2, 3, 5, 1, 0]); // deux piles de baies (genre 3)
+    const out = foodFreshnessOf(sim, items);
+    expect(out.length).toBe(16);
+    expect(out[3]).toBe(400);
+    expect(out[0]).toBe(-1);
+  });
+
+  it("renvoie -1 pour un genre entièrement non périssable", () => {
+    const sim = new FakeSim();
+    // `freshnessById` vide : `itemFreshness` renvoie -1 pour toute pile, comme le bois.
+    const items = new Int32Array([1, 0, 40, 0, 0]);
+    expect(foodFreshnessOf(sim, items)[0]).toBe(-1);
+  });
+
+  it("ignore un genre hors bornes sans planter", () => {
+    const sim = new FakeSim();
+    sim.freshnessById.set(1, 500);
+    const items = new Int32Array([1, 99, 1, 0, 0]);
+    expect(() => foodFreshnessOf(sim, items)).not.toThrow();
   });
 });
 

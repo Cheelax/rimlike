@@ -52,9 +52,13 @@ export const FEATURE = {
   Campfire: 12,
   /** Poste de fabrication d'armes (`crates/sim/src/craft.rs`) : infranchissable, comme le feu. */
   CraftingSpot: 13,
+  /** Tombe vide (`crates/sim/src/build.rs`) : franchissable, une case, matériau pierre imposé. */
+  Grave: 14,
+  /** Tombe occupée : posée par le job `Bury` (code 23), jamais par une commande directe. */
+  GraveFilled: 15,
 } as const;
 
-export const BUILD_KIND = { Wall: 0, Door: 1, Floor: 2, Bed: 3, Campfire: 4, CraftingSpot: 5 } as const;
+export const BUILD_KIND = { Wall: 0, Door: 1, Floor: 2, Bed: 3, Campfire: 4, CraftingSpot: 5, Grave: 6 } as const;
 export const MATERIAL = { Wood: 0, Stone: 1 } as const;
 export const MATERIAL_NAMES = ["bois", "pierre"] as const;
 /** Couleurs des matériaux construits : [bois, pierre]. */
@@ -247,6 +251,29 @@ export function formatTemperature(tenths: number): string {
 }
 
 /**
+ * Pourcentage de fraîcheur affiché par la pastille du HUD stock, à partir du
+ * ‰ restant d'une pile (`sim-wasm::item_freshness`, `frame.foodFreshness`).
+ */
+export function freshnessPercent(perMille: number): number {
+  return Math.round(perMille / 10);
+}
+
+/**
+ * Couleur de la pastille de fraîcheur du HUD stock : verte au-dessus de 50 %,
+ * orange de 20 à 50 %, rouge en dessous (mission « tombes et fraîcheur »).
+ * `perMille` est la valeur brute de `item_freshness` (‰ restant), jamais déjà
+ * convertie : la fonction fait la conversion elle-même pour ne jamais désaccorder
+ * le seuil de son unité.
+ */
+export function freshnessLevel(perMille: number): "good" | "warn" | "bad" {
+  // Comparé au ‰ brut, pas au pourcentage arrondi : un arrondi ferait basculer
+  // une valeur comme 499 ‰ (49,9 %) dans « good » au lieu de « warn ».
+  if (perMille >= 500) return "good";
+  if (perMille >= 200) return "warn";
+  return "bad";
+}
+
+/**
  * « 1 240 » : un entier groupé par milliers avec un espace, pour la richesse
  * de la colonie affichée dans le HUD (`sim-wasm::wealth`). Espace normal (pas
  * insécable) : un simple `replace`, pas `toLocaleString` dont le séparateur
@@ -302,6 +329,7 @@ export const JOB_LABELS = [
   "chasse",
   "dépèce",
   "attend",
+  "enterre",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
@@ -406,6 +434,10 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
     }
     case 29:
       return traderLabel(arg, names, "est mort");
+    case 30:
+      // `arg` vaut toujours 0 (`sim::EventKind::Buried`) : ce n'est pas un id
+      // de pawn, l'inhumation ne nomme personne.
+      return "Un mort a été enterré";
     default:
       return "";
   }

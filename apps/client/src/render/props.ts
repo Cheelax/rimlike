@@ -235,6 +235,30 @@ function item(m: Model, kind: number): void {
   } else m.box(0.32, 0.22, 0.32, C.wood);
 }
 
+/**
+ * Tombe (`Feature::Grave` = 14 vide, `GraveFilled` = 15 occupée) : un tertre
+ * de terre remuée bordé de pierres plates, une case entière comme le sim
+ * l'impose (matériau pierre forcé, jamais de variante bois). Occupée, le
+ * tertre est bombé et porte une petite stèle ; vide, la terre reste à plat.
+ */
+function grave(m: Model, filled: boolean): void {
+  // Bordure de pierres plates creusée dans le sol, commune aux deux états.
+  for (let i = 0; i < 8; i++) {
+    const a = (i * Math.PI) / 4;
+    m.stone(Math.cos(a) * 0.37, 0.035, Math.sin(a) * 0.37, 0.09, 0.032, 0.09, i % 2 ? 0x8c8e82 : C.stone);
+  }
+  if (filled) {
+    // Tertre bombé : terre remuée en dôme.
+    m.stone(0, 0.11, 0, 0.3, 0.09, 0.3, C.soil);
+    // Stèle de pierre plantée en tête de tombe, avec son chapeau.
+    m.box(0.16, 0.26, 0.05, 0x8c8e82, 0, 0.13, -0.2);
+    m.box(0.19, 0.04, 0.07, 0x76766b, 0, 0.24, -0.2);
+  } else {
+    // Tombe vide : terre remuée à plat, plus sombre que le sol autour.
+    m.add(new THREE.CylinderGeometry(0.3, 0.28, 0.04, 10), C.soil, 0, 0.02);
+  }
+}
+
 function floorDetail(m: Model, wood: boolean): void {
   // Dessins à plat : overlays de zone/intérieur restent au-dessus du sol.
   for (let i = 0; i < (wood ? 5 : 4); i++) {
@@ -254,6 +278,9 @@ export function blueprintKey(kind: number, material: number): string {
     case BUILD_KIND.Bed: return `feature:${FEATURE.Bed}`;
     case BUILD_KIND.Campfire: return `feature:${FEATURE.Campfire}`;
     case BUILD_KIND.CraftingSpot: return `feature:${FEATURE.CraftingSpot}`;
+    // Matériau pierre imposé (le sim ignore le matériau demandé) : une seule
+    // géométrie, quel que soit `material` reçu.
+    case BUILD_KIND.Grave: return `feature:${FEATURE.Grave}`;
     default: return "item:unknown";
   }
 }
@@ -299,6 +326,8 @@ export class PropLibrary {
       case FEATURE.CropRipe: plant(m, true); break;
       case FEATURE.Campfire: fire(m); break;
       case FEATURE.CraftingSpot: bench(m); break;
+      case FEATURE.Grave: grave(m, false); break;
+      case FEATURE.GraveFilled: grave(m, true); break;
       default: m.box(0.3, 0.3, 0.3, C.wood);
     }
     const g = m.finish();
