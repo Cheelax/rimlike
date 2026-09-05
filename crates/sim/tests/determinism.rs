@@ -2,8 +2,8 @@
 //! entrées doivent produire exactement le même état.
 
 use sim::{
-    BuildKind, Command, Designation, Faction, ItemKind, Material, Sim, TICKS_PER_DAY, WorkType,
-    Zone,
+    BuildKind, Command, Designation, Difficulty, Faction, ItemKind, Material, Sim, TICKS_PER_DAY,
+    WorkType, Zone,
 };
 
 const TICKS: u64 = 10_000;
@@ -71,6 +71,13 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             y0: h / 2 + 4,
             x1: w / 2 + k + 1,
             y1: h / 2 + 4,
+        });
+    }
+    if t == 50 {
+        // La difficulté change la dose de menace **et** la cadence des raids :
+        // elle fait partie de l'état, donc du hash.
+        cmds.push(Command::SetDifficulty {
+            level: Difficulty::Hard,
         });
     }
     if t == 60 {

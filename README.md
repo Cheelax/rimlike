@@ -4,6 +4,7 @@ Jeu de gestion de colonie à la RimWorld, multijoueur sur un globe partagé.
 Sim déterministe en Rust (WASM + natif), client Three.js/React, serveur Node.
 
 Plan complet et journal des décisions : [docs/PLAN.md](docs/PLAN.md).
+Guide du joueur (contrôles, survie, dangers, monde partagé) : [docs/GUIDE.md](docs/GUIDE.md).
 
 ## Démarrer
 

@@ -56,6 +56,9 @@ impl Sim {
         // Le nouveau tick d'abord : tout ce qui suit date de là (péremption
         // des piles reposées, événements émis, échéances comparées).
         self.tick += elapsed;
+        // La vague de froid d'il y a deux mois est finie depuis longtemps.
+        self.temperature_offset = 0;
+        self.offset_until = 0;
         self.grow_plants(ticks);
         // Les buissons récoltés avant le gel ont repoussé pendant l'absence.
         let outdoor = self.outdoor_temperature();
@@ -70,6 +73,9 @@ impl Sim {
         self.next_raid_at = self.next_raid_at.saturating_add(elapsed);
         self.next_wanderer_at = self.next_wanderer_at.saturating_add(elapsed);
         self.next_herd_at = self.next_herd_at.saturating_add(elapsed);
+        self.next_supply_at = self.next_supply_at.saturating_add(elapsed);
+        self.next_illness_at = self.next_illness_at.saturating_add(elapsed);
+        self.next_extreme_at = self.next_extreme_at.saturating_add(elapsed);
         // La météo d'il y a deux mois ne veut plus rien dire : on retire.
         self.weather_until = self.tick;
         self.tick_weather();
@@ -134,6 +140,7 @@ impl Sim {
         // deux si elle est pansée : exactement le rythme de `tick_injuries`,
         // en une seule opération.
         let healed = ticks / HEAL_INTERVAL as u32;
+        let now = self.tick;
         for i in 0..self.pawns.len() {
             let was_downed = self.pawns[i].is_downed();
             // Personne n'était là pour donner des ordres : réservations,
@@ -161,6 +168,14 @@ impl Sim {
             p.attack_cooldown = 0;
             p.idle_ticks = 0;
             p.outdoor_storm = false;
+            // Les maladies dont l'échéance est passée sont guéries ; celle qui
+            // vient d'être déclarée (avance rapide plus courte qu'elle) suit
+            // son cours, avec sa recopie remise d'aplomb.
+            if p.sick_until <= now {
+                p.sick_until = 0;
+                p.illness_tended = false;
+            }
+            p.sick = p.sick_until > now;
             // `hp` est dérivé des blessures et du sang.
             p.recompute_hp();
             // `abandon_job` a remis tout le monde debout : un colon à terre ne

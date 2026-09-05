@@ -251,7 +251,9 @@ impl Sim {
             + seasonal
             + i64::from(DAY_CURVE[hour])
             + i64::from(self.weather().temperature_offset())
-            + i64::from(self.weather_noise);
+            + i64::from(self.weather_noise)
+            // Vague de froid ou canicule du storyteller, le temps qu'elle dure.
+            + i64::from(self.temperature_swing());
         total.clamp(i64::from(TEMPERATURE_MIN), i64::from(TEMPERATURE_MAX)) as i32
     }
 

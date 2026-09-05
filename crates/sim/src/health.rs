@@ -304,8 +304,10 @@ impl Pawn {
         self.injuries.iter().map(|i| i.bleeding).sum()
     }
 
-    /// Reste-t-il une blessure à panser ?
+    /// Reste-t-il une blessure à panser — ou une maladie à veiller ? Le même
+    /// job (`Job::Tend`) traite les deux : un malade non soigné appelle un
+    /// camarade à son chevet exactement comme une plaie ouverte.
     pub fn needs_tending(&self) -> bool {
-        self.injuries.iter().any(|i| !i.tended)
+        self.injuries.iter().any(|i| !i.tended) || (self.sick && !self.illness_tended)
     }
 }

@@ -1,7 +1,7 @@
 //! API minimale exposée au navigateur. Tout ce qui est ici doit rester
 //! trivial : la logique vit dans `sim`, testée en natif.
 
-use sim::{BuildKind, Designation, Faction, ItemKind, Job, Material, WorkType, Zone};
+use sim::{BuildKind, Designation, Difficulty, Faction, ItemKind, Job, Material, WorkType, Zone};
 use wasm_bindgen::prelude::*;
 
 /// Entiers par pawn dans le tampon de rendu :
@@ -245,6 +245,15 @@ impl WasmSim {
         self.pending.push(sim::Command::Hunt { animal, on });
     }
 
+    /// Règle la dose de menace du storyteller, suivant `sim::Difficulty`
+    /// (0 paisible, 1 facile, 2 normal, 3 difficile). Une valeur inconnue
+    /// vaut « normal ». En paisible, le storyteller n'envoie plus de raid.
+    pub fn set_difficulty(&mut self, level: u8) {
+        self.pending.push(sim::Command::SetDifficulty {
+            level: Difficulty::from_u8(level),
+        });
+    }
+
     // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
     //
     // Fonctions **associées** : le client doit pouvoir encoder avant même
@@ -359,6 +368,13 @@ impl WasmSim {
     /// Ordre de chasse sur une bête. Voir `hunt`.
     pub fn encode_hunt(animal: u32, on: bool) -> Vec<u8> {
         encode(&sim::Command::Hunt { animal, on })
+    }
+
+    /// Dose de menace du storyteller. Voir `set_difficulty`.
+    pub fn encode_set_difficulty(level: u8) -> Vec<u8> {
+        encode(&sim::Command::SetDifficulty {
+            level: Difficulty::from_u8(level),
+        })
     }
 
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
@@ -500,6 +516,33 @@ impl WasmSim {
     /// Objectifs de fabrication courants, indexés par `ItemKind`.
     pub fn craft_targets(&self) -> Vec<u32> {
         self.inner.craft_targets().to_vec()
+    }
+
+    /// Dose de menace courante, suivant `sim::Difficulty` (0 paisible,
+    /// 1 facile, 2 normal, 3 difficile).
+    pub fn difficulty(&self) -> u8 {
+        self.inner.difficulty() as u8
+    }
+
+    /// Richesse de la colonie : ce qui décide de la taille des raids. Valeur
+    /// **en cache**, rafraîchie par le sim au plus une fois par 600 ticks : la
+    /// lire ne coûte rien et ne change rien à l'état.
+    pub fn wealth(&self) -> u32 {
+        self.inner.wealth()
+    }
+
+    /// Ticks de maladie restants pour un pawn ; 0 s'il va bien ou si l'id est
+    /// inconnu. Hors du tampon des pawns comme `pawn_weapon` : `PAWN_STRIDE`
+    /// ne bouge pas.
+    pub fn pawn_sick(&self, id: u32) -> i32 {
+        let tick = self.inner.tick();
+        self.inner
+            .pawns()
+            .iter()
+            .find(|p| p.id == id)
+            .map_or(0, |p| {
+                i32::try_from(p.sick_until.saturating_sub(tick)).unwrap_or(i32::MAX)
+            })
     }
 
     /// Arme équipée d'un pawn, suivant `sim::ItemKind`. -1 : à mains nues, ou
@@ -1007,6 +1050,20 @@ mod tests {
                 Command::Hunt {
                     animal: 12,
                     on: true,
+                },
+            ),
+            (
+                WasmSim::encode_set_difficulty(sim::Difficulty::Hard as u8),
+                Command::SetDifficulty {
+                    level: sim::Difficulty::Hard,
+                },
+            ),
+            (
+                // Un octet qui ne désigne aucune difficulté retombe sur
+                // « normal » avant même de partir sur le réseau.
+                WasmSim::encode_set_difficulty(200),
+                Command::SetDifficulty {
+                    level: sim::Difficulty::Normal,
                 },
             ),
         ];

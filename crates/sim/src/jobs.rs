@@ -64,6 +64,8 @@ impl Sim {
             match self.pawns[i].job.clone() {
                 Job::Attack { target } => self.do_attack(i, target),
                 Job::Flee => self.do_flee(i),
+                // Un assiégeant patiente à son point d'entrée.
+                Job::Wait { until } => self.do_wait(i, until),
                 _ => self.raider_ai(i),
             }
             return;
@@ -148,6 +150,9 @@ impl Sim {
             } => self.do_butcher(i, spot, item, picked, progress),
             // Traité plus haut : un pawn à terre ne passe jamais par ici.
             Job::Downed => {}
+            // Réservé aux assiégeants (traités plus haut) : un colon n'attend
+            // jamais. S'il s'en trouvait un, il reprendrait le travail.
+            Job::Wait { .. } => self.pawns[i].job = Job::Idle,
         }
     }
 
@@ -615,6 +620,8 @@ impl Sim {
             inj.tended = true;
             inj.close();
         }
+        // Le même chevet soigne la maladie : elle passe deux fois plus vite.
+        self.tend_illness(k);
         self.pawns[i].job = Job::Idle;
         self.push_event(EventKind::ColonistTended, target);
     }

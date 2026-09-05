@@ -32,6 +32,7 @@ pub mod noise;
 pub mod path;
 pub mod pawn;
 pub mod rng;
+pub mod storyteller;
 pub mod testmap;
 pub mod weather;
 pub mod work;
@@ -51,6 +52,7 @@ pub use jobs::{Regrow, Reservation};
 pub use map::{Designation, Feature, Map, ROOM_MAX_TILES, Rect, Terrain, Zone};
 pub use pawn::{Faction, Job, Pawn};
 pub use rng::Rng;
+pub use storyteller::{Difficulty, RaidKind};
 pub use weather::Weather;
 pub use work::{WORK_TYPES, WorkType};
 
@@ -113,6 +115,19 @@ pub enum EventKind {
     /// déjà afficher : un genre d'événement de plus coûte moins cher qu'un
     /// contrat cassé.
     ItemCrafted = 20,
+    /// Une bande vient d'entrer sur la carte. `arg` : sa manière d'aborder la
+    /// colonie (`storyteller::RaidKind` : 0 charge, 1 archers, 2 siège). Émis
+    /// juste avant `Raid`, qui garde le compte des pillards : le client peut
+    /// afficher l'un, l'autre, ou les deux.
+    RaidIncoming = 21,
+    /// Des vivres tombent près de la colonie. `arg` : le nombre de piles.
+    SupplyDrop = 22,
+    /// Un colon est tombé malade. `arg` : son id.
+    Illness = 23,
+    /// Vague de froid : une journée plus froide de `arg` dixièmes de degré.
+    ColdSnap = 24,
+    /// Canicule : une journée plus chaude de `arg` dixièmes de degré.
+    Heatwave = 25,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -215,6 +230,12 @@ pub enum Command {
     /// les chasseurs en route. Un id qui n'est pas celui d'un animal vivant
     /// est ignoré.
     Hunt { animal: u32, on: bool },
+    /// Règle la dose de menace du storyteller (voir `storyteller::Difficulty`) :
+    /// elle multiplie les points de menace d'un raid et espace ou resserre leur
+    /// cadence. En `Peaceful`, le storyteller n'envoie plus aucun raid — le
+    /// `TriggerRaid` du joueur, lui, reste un outil de débogage et fonctionne
+    /// toujours. **Ajoutée en fin d'énumération** : postcard encode l'indice.
+    SetDifficulty { level: Difficulty },
 }
 
 #[derive(Debug)]
@@ -276,6 +297,26 @@ pub struct Sim {
     frost_announced: bool,
     /// Tick d'entrée du prochain troupeau (voir `animals`).
     next_herd_at: u64,
+    /// Dose de menace (`Command::SetDifficulty`). **Champs ajoutés en fin de
+    /// structure** : un vieux snapshot est refusé net (fin de tampon) plutôt
+    /// que relu de travers.
+    difficulty: Difficulty,
+    /// Dernière richesse calculée et tick de ce calcul : le storyteller la
+    /// rafraîchit au plus une fois par `storyteller::WEALTH_CACHE_TICKS`.
+    /// C'est un cache qui **influence le futur** (les points de menace en
+    /// dépendent), donc il fait partie de l'état et du hash.
+    wealth_cache: u32,
+    wealth_cache_tick: u64,
+    /// Tick du prochain largage de vivres.
+    next_supply_at: u64,
+    /// Tick de la prochaine maladie.
+    next_illness_at: u64,
+    /// Tick du prochain coup de temps (vague de froid ou canicule).
+    next_extreme_at: u64,
+    /// Écart de température du coup de temps en cours, en dixièmes de degré,
+    /// et tick où il s'arrête.
+    temperature_offset: i32,
+    offset_until: u64,
 }
 
 impl Sim {
@@ -328,6 +369,14 @@ impl Sim {
             // La partie commence au printemps : rien à guetter avant l'automne.
             frost_announced: true,
             next_herd_at: 0,
+            difficulty: Difficulty::default(),
+            wealth_cache: 0,
+            wealth_cache_tick: 0,
+            next_supply_at: 0,
+            next_illness_at: 0,
+            next_extreme_at: 0,
+            temperature_offset: 0,
+            offset_until: 0,
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -339,6 +388,11 @@ impl Sim {
         // La première journée reste claire un moment, le temps de s'installer.
         sim.weather_until = u64::from(TICKS_PER_DAY / 2 + sim.rng.below(TICKS_PER_DAY / 2));
         sim.next_wanderer_at = u64::from(4 * TICKS_PER_DAY + sim.rng.below(TICKS_PER_DAY));
+        // En dernier : les échéances des événements ajoutés après coup tirent
+        // à la suite, sans décaler ce que les tirages précédents donnaient.
+        sim.schedule_first_events();
+        // Ne consomme aucun hasard : c'est un simple comptage de ce qui existe.
+        sim.init_wealth();
         sim
     }
 
@@ -560,6 +614,7 @@ impl Sim {
                 .sanitized();
             }
             Command::Hunt { animal, on } => self.set_hunted(animal, on),
+            Command::SetDifficulty { level } => self.difficulty = level,
         }
     }
 

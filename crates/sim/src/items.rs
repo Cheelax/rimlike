@@ -213,6 +213,27 @@ impl ItemKind {
         }
     }
 
+    /// Ce qu'une unité vaut dans la richesse de la colonie
+    /// (`Sim::wealth`) : c'est cette somme qui décide de la taille des raids.
+    /// Un cadavre humain ne vaut rien — la colonie n'en tire ni butin ni
+    /// prestige, et il serait absurde qu'un charnier attire les pillards.
+    pub fn wealth_value(self) -> u32 {
+        match self {
+            ItemKind::Wood | ItemKind::Stone => 1,
+            ItemKind::Berries | ItemKind::Vegetables => 2,
+            ItemKind::Meat => 3,
+            ItemKind::Leather => 4,
+            ItemKind::DeerCorpse | ItemKind::RabbitCorpse | ItemKind::BoarCorpse => 5,
+            ItemKind::Meal => 6,
+            ItemKind::Club => 30,
+            ItemKind::Spear => 45,
+            ItemKind::Bow => 60,
+            ItemKind::Tunic => 25,
+            ItemKind::Coat => 50,
+            ItemKind::Corpse => 0,
+        }
+    }
+
     /// Durée de conservation en ticks. `None` : ne se gâte pas.
     pub fn shelf_life(self) -> Option<u32> {
         match self {

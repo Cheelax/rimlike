@@ -8,11 +8,15 @@ use sim::pawn::RESTED;
 use sim::pawn::{
     BREAK_TICKS, HP_MAX, HP_WOUNDED, HUNGER_DECAY, HUNGRY, MOOD_BREAK, NEED_MAX, REST_DECAY, TIRED,
 };
+use sim::storyteller::{
+    EXTREME_OFFSET, EXTREME_TICKS, ILLNESS_TENDED_TICKS, ILLNESS_TICKS, SIEGE_TICKS, SUPPLY_RADIUS,
+    WEALTH_CACHE_TICKS,
+};
 use sim::testmap::map_from;
 use sim::{
-    BodyPart, BuildKind, CaravanManifest, Command, Designation, EventKind, Faction, Feature,
-    ItemKind, Job, MAX_ANIMALS, MAX_FAST_FORWARD, Material, Pawn, Sim, Species, TICKS_PER_DAY,
-    Terrain, Weather, WorkType, Zone,
+    BodyPart, BuildKind, CaravanManifest, Command, Designation, Difficulty, EventKind, Faction,
+    Feature, ItemKind, Job, MAX_ANIMALS, MAX_FAST_FORWARD, Material, Pawn, RaidKind, Sim, Species,
+    TICKS_PER_DAY, Terrain, Weather, WorkType, Zone,
 };
 
 const DAY: u64 = sim::TICKS_PER_DAY as u64;
@@ -1604,23 +1608,29 @@ fn armed_raiders_drop_weapons() {
     // La graine est choisie pour qu'un pillard y laisse sa peau : sur la
     // graine 1 les deux décrochent à temps et repartent avec leurs armes,
     // ce qui est un déroulement légitime mais ne prouve rien sur le butin.
+    // Le genre du raid est imposé pour la même raison : un siège passerait
+    // vingt secondes à camper au bord de la carte, ce qui ne dit rien du butin.
     let mut s = Sim::new(2, 32, 32);
     let (bx, by) = s
         .map()
         .nearest_passable(16, 16)
         .expect("carte 32x32 sans centre franchissable");
     s.spawn_item(ItemKind::Berries, 200, bx, by);
-    s.step(&[Command::TriggerRaid]);
+    s.trigger_raid_of(RaidKind::Rush);
     let armed: Vec<ItemKind> = s
         .pawns()
         .iter()
         .filter(|p| p.faction == Faction::Raider)
         .filter_map(|p| p.weapon)
         .collect();
+    // L'arme n'est plus décidée par le rang mais par les points de menace :
+    // 121 points achètent deux pillards (60 chacun) et laissent 41 points
+    // d'équipement, de quoi armer les deux — le tirage choisit avec quoi.
+    assert_eq!(raiders(&s), 2, "deux pillards attendus : {:?}", s.pawns());
     assert_eq!(
-        armed,
-        vec![ItemKind::Club, ItemKind::Spear],
-        "les deux premiers pillards portent gourdin puis épieu"
+        armed.len(),
+        2,
+        "le budget d'équipement n'a pas armé les deux : {armed:?}"
     );
 
     assert!(
@@ -3071,4 +3081,360 @@ fn boar_fights_back() {
     }
     assert!(charged, "le sanglier n'a pas riposté : {:?}", s.events());
     assert!(wounded, "le sanglier n'a blessé personne");
+}
+
+// ----------------------------------------------------------------------
+// Storyteller : menace qui suit la colonie, largages, maladies, temps
+// ----------------------------------------------------------------------
+
+/// Somme des qualités d'arme des pillards présents : 0 à mains nues, 1 pour un
+/// gourdin, 2 pour un épieu, 3 pour un arc. C'est la mesure la plus simple de
+/// « mieux armés ».
+fn raider_gear(s: &Sim) -> u32 {
+    s.pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Raider)
+        .map(|p| p.weapon.map_or(0, |w| w.weapon_rank()))
+        .sum()
+}
+
+/// Trois colons sans le sou reçoivent une petite bande ; six colons assis sur
+/// deux mille bois en reçoivent une grosse, et mieux équipée.
+#[test]
+fn threat_points_scale_with_colony() {
+    // La richesse est **en cache** : elle n'est recalculée qu'une fois par
+    // `WEALTH_CACHE_TICKS`. Les deux colonies jouent donc le même nombre de
+    // ticks avant d'être comparées, sinon la riche serait jugée sur son
+    // inventaire d'avant le premier tick.
+    let settle = |s: &mut Sim| {
+        for _ in 0..=WEALTH_CACHE_TICKS {
+            feed(s);
+            s.step(&[]);
+        }
+    };
+
+    let mut poor = Sim::new(4, 32, 32);
+    settle(&mut poor);
+    let poor_points = poor.threat_points();
+    poor.trigger_raid_of(RaidKind::Rush);
+
+    let mut rich = Sim::new(4, 32, 32);
+    let (cx, cy) = rich
+        .map()
+        .nearest_passable(16, 16)
+        .expect("carte 32x32 sans centre franchissable");
+    rich.spawn_item(ItemKind::Wood, 2_000, cx, cy);
+    for k in 1..=3 {
+        let (x, y) = rich
+            .map()
+            .nearest_passable(cx + k, cy)
+            .expect("pas de case libre près du centre");
+        rich.spawn_pawn(x, y, Faction::Colony);
+    }
+    settle(&mut rich);
+    let rich_points = rich.threat_points();
+    rich.trigger_raid_of(RaidKind::Rush);
+
+    assert!(
+        rich_points > poor_points,
+        "menace : riche {rich_points}, pauvre {poor_points}"
+    );
+    assert!(
+        rich.wealth() > poor.wealth(),
+        "richesse : riche {}, pauvre {}",
+        rich.wealth(),
+        poor.wealth()
+    );
+    assert!(
+        raiders(&rich) > raiders(&poor),
+        "pillards : riche {}, pauvre {}",
+        raiders(&rich),
+        raiders(&poor)
+    );
+    assert!(
+        raider_gear(&rich) > raider_gear(&poor),
+        "équipement : riche {}, pauvre {}",
+        raider_gear(&rich),
+        raider_gear(&poor)
+    );
+    // Le plafond tient : même une colonie démesurée reste sous `MAX_RAIDERS`.
+    assert!(raiders(&rich) <= 12);
+}
+
+/// En paisible, le storyteller ne lance plus rien. La même colonie en normal
+/// est attaquée dans les mêmes délais qu'avant : le test compare deux régimes,
+/// pas deux hasards.
+#[test]
+fn peaceful_has_no_raids() {
+    let mut calm = clearing();
+    calm.step(&[Command::SetDifficulty {
+        level: Difficulty::Peaceful,
+    }]);
+    assert_eq!(calm.difficulty(), Difficulty::Peaceful);
+    assert_eq!(calm.threat_points(), 0, "aucune menace en paisible");
+    assert!(
+        !raid_within(&mut calm, 6 * DAY),
+        "un raid est entré en paisible : {:?}",
+        calm.events()
+    );
+    assert!(!has_event(&calm, EventKind::Raid));
+
+    let mut normal = clearing();
+    assert!(
+        raid_within(&mut normal, 4 * DAY),
+        "aucun raid en normal : le test ne prouverait rien"
+    );
+
+    // Repasser en normal ne déclenche pas un raid dans la seconde : l'échéance
+    // a continué d'avancer pendant la paix.
+    calm.step(&[Command::SetDifficulty {
+        level: Difficulty::Normal,
+    }]);
+    calm.step(&[]);
+    assert_eq!(raiders(&calm), 0, "raid instantané au retour à la normale");
+}
+
+/// Un siège campe à son point d'entrée, puis charge.
+#[test]
+fn siege_waits_before_attacking() {
+    // Grande carte : les colons naissent au centre, loin des vingt-quatre
+    // cases qui les séparent du bord — personne ne va chatouiller les
+    // assiégeants avant l'heure.
+    let mut s = Sim::new(12, 48, 48);
+    let count = s.trigger_raid_of(RaidKind::Siege);
+    assert!(count > 0, "aucun assiégeant n'est entré");
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::RaidIncoming && e.arg == RaidKind::Siege as u32),
+        "genre de raid non annoncé : {:?}",
+        s.events()
+    );
+
+    let posts: Vec<(u32, u32)> = s
+        .pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Raider)
+        .map(|p| p.tile())
+        .collect();
+    assert!(
+        s.pawns()
+            .iter()
+            .filter(|p| p.faction == Faction::Raider)
+            .all(|p| matches!(p.job, Job::Wait { .. })),
+        "un assiégeant a chargé tout de suite : {:?}",
+        s.pawns()
+            .iter()
+            .filter(|p| p.faction == Faction::Raider)
+            .map(|p| p.job.clone())
+            .collect::<Vec<_>>()
+    );
+
+    for _ in 0..SIEGE_TICKS {
+        feed(&mut s);
+        s.step(&[]);
+    }
+    let camping: Vec<(u32, u32)> = s
+        .pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Raider)
+        .map(|p| p.tile())
+        .collect();
+    assert_eq!(camping, posts, "les assiégeants ont bougé avant l'heure");
+    assert!(
+        s.pawns()
+            .iter()
+            .filter(|p| p.faction == Faction::Raider)
+            .all(|p| matches!(p.job, Job::Wait { .. })),
+        "l'attente s'est arrêtée trop tôt"
+    );
+
+    // Le tick suivant, l'attente expire : tout le monde charge.
+    s.step(&[]);
+    assert!(
+        s.pawns()
+            .iter()
+            .filter(|p| p.faction == Faction::Raider)
+            .all(|p| matches!(p.job, Job::Attack { .. })),
+        "les assiégeants n'ont pas chargé : {:?}",
+        s.pawns()
+            .iter()
+            .filter(|p| p.faction == Faction::Raider)
+            .map(|p| p.job.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Un largage tombe à portée de la colonie, sur des cases où l'on peut aller
+/// le chercher.
+#[test]
+fn supply_drop_lands_near_colony() {
+    let mut s = clearing();
+    let before: Vec<u32> = s.items().iter().map(|i| i.id).collect();
+    let center = {
+        let (mut sx, mut sy, mut n) = (0u32, 0u32, 0u32);
+        for p in s.pawns().iter().filter(|p| p.faction == Faction::Colony) {
+            let (x, y) = p.tile();
+            sx += x;
+            sy += y;
+            n += 1;
+        }
+        (sx / n, sy / n)
+    };
+
+    let piles = s.trigger_supply_drop();
+    assert!((2..=4).contains(&piles), "piles larguées : {piles}");
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::SupplyDrop && e.arg == piles),
+        "largage non annoncé : {:?}",
+        s.events()
+    );
+
+    let dropped: Vec<&sim::ItemStack> = s
+        .items()
+        .iter()
+        .filter(|i| !before.contains(&i.id))
+        .collect();
+    assert!(!dropped.is_empty(), "rien n'est tombé : {:?}", s.items());
+    for stack in &dropped {
+        assert!(stack.count > 0);
+        assert!(
+            s.map().passable(stack.x, stack.y),
+            "pile larguée sur une case infranchissable : {stack:?}"
+        );
+        let d = (stack.x as i32 - center.0 as i32)
+            .abs()
+            .max((stack.y as i32 - center.1 as i32).abs());
+        assert!(
+            d <= SUPPLY_RADIUS,
+            "pile larguée à {d} cases du barycentre {center:?} : {stack:?}"
+        );
+    }
+}
+
+/// Un malade traîne des pieds, broie du noir, appelle un chevet — puis guérit.
+#[test]
+fn illness_slows_then_heals() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Berries, 200, 6, 6);
+    let id = s.pawns()[0].id;
+    let healthy_speed = find_pawn(&s, id).unwrap().speed_percent();
+    let healthy_work = find_pawn(&s, id).unwrap().work_step(WorkType::Designated);
+    let healthy_mood = find_pawn(&s, id).unwrap().mood();
+
+    assert!(s.trigger_illness(id), "le colon n'est pas tombé malade");
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::Illness && e.arg == id),
+        "maladie non annoncée : {:?}",
+        s.events()
+    );
+    // Un id qui n'est pas celui d'un colon vivant est refusé.
+    assert!(!s.trigger_illness(9_999));
+
+    let p = find_pawn(&s, id).unwrap();
+    assert!(p.sick);
+    assert!(
+        p.speed_percent() < healthy_speed,
+        "vitesse : {} vs {healthy_speed}",
+        p.speed_percent()
+    );
+    assert!(
+        p.work_step(WorkType::Designated) < healthy_work,
+        "travail : {} vs {healthy_work}",
+        p.work_step(WorkType::Designated)
+    );
+    assert!(
+        p.mood() < healthy_mood,
+        "humeur : {} vs {healthy_mood}",
+        p.mood()
+    );
+    assert!(p.needs_tending(), "un malade réclame un chevet");
+
+    // Deux jours plus tard (un seul si on l'a soigné entre-temps), il est sur
+    // pied et ne réclame plus rien.
+    assert!(
+        run_until(&mut s, u64::from(ILLNESS_TICKS) + 60, |s| find_pawn(s, id)
+            .is_some_and(|p| !p.sick)),
+        "toujours malade : {:?}",
+        find_pawn(&s, id).map(|p| p.sick_until)
+    );
+    let p = find_pawn(&s, id).unwrap();
+    assert!(!p.needs_tending() || !p.injuries.is_empty());
+    assert_eq!(p.speed_percent(), healthy_speed);
+}
+
+/// Un soin abrège la maladie : elle ne dure plus qu'un jour.
+#[test]
+fn tending_shortens_illness() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Berries, 200, 6, 6);
+    let id = s.pawns()[0].id;
+    s.trigger_illness(id);
+    // Les camarades vont d'eux-mêmes au chevet du malade (`Job::Tend`).
+    assert!(
+        run_until(&mut s, DAY, |s| find_pawn(s, id)
+            .is_some_and(|p| p.illness_tended)),
+        "personne n'est venu soigner le malade"
+    );
+    let tended_at = s.tick();
+    let until = find_pawn(&s, id).unwrap().sick_until;
+    assert!(
+        until <= tended_at + u64::from(ILLNESS_TENDED_TICKS),
+        "le soin n'a pas raccourci la maladie : fin prévue {until}, soigné à {tended_at}"
+    );
+    assert!(
+        !find_pawn(&s, id).unwrap().needs_tending()
+            || !find_pawn(&s, id).unwrap().injuries.is_empty(),
+        "un malade soigné n'appelle plus personne"
+    );
+}
+
+/// Une vague de froid refroidit la carte une journée, sous la neige ou
+/// l'orage ; une canicule fait l'inverse, sans changer le ciel.
+#[test]
+fn cold_snap_lowers_temperature() {
+    let mut s = clearing();
+    let before = s.outdoor_temperature();
+    s.trigger_cold_snap();
+    let during = s.outdoor_temperature();
+    assert!(
+        during <= before - EXTREME_OFFSET,
+        "vague de froid : {during} contre {before} avant"
+    );
+    assert!(
+        matches!(s.weather(), Weather::Snow | Weather::Storm),
+        "météo de vague de froid : {:?}",
+        s.weather()
+    );
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::ColdSnap && e.arg == EXTREME_OFFSET as u32),
+        "vague de froid non annoncée : {:?}",
+        s.events()
+    );
+
+    // Une journée plus tard, l'écart est retombé : la même heure du jour, mais
+    // sans les cent dixièmes en moins.
+    for _ in 0..EXTREME_TICKS {
+        s.step(&[]);
+    }
+    assert!(
+        s.outdoor_temperature() > during,
+        "le froid n'est jamais reparti : {} contre {during}",
+        s.outdoor_temperature()
+    );
+
+    // La canicule ne touche pas au ciel : l'écart est exactement l'inverse.
+    let mut hot = clearing();
+    let mild = hot.outdoor_temperature();
+    let weather = hot.weather();
+    hot.trigger_heatwave();
+    assert_eq!(hot.outdoor_temperature(), mild + EXTREME_OFFSET);
+    assert_eq!(hot.weather(), weather, "la canicule a changé le temps");
+    assert!(has_event(&hot, EventKind::Heatwave));
 }

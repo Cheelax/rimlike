@@ -11,6 +11,7 @@ use crate::health::{BLOOD_MAX, Injury};
 use crate::items::ItemKind;
 use crate::map::{Designation, Map};
 use crate::path::Tile;
+use crate::storyteller::{ILLNESS_MOBILITY_PERCENT, ILLNESS_MOOD_MALUS, ILLNESS_WORK_PERCENT};
 use crate::work::{self, Skill, WORK_TYPES, WorkType};
 
 /// Vitesse nominale : 1/256 de case par tick. 18 ≈ 4,2 cases/s à 60 ticks/s.
@@ -164,6 +165,15 @@ pub enum Job {
         picked: bool,
         progress: u32,
     },
+    /// Attend sur place jusqu'à `until`, sans rien faire ni frapper. C'est le
+    /// job des assiégeants (`storyteller::RaidKind::Siege`) pendant qu'ils
+    /// campent à leur point d'entrée. Un pillard blessé pendant l'attente
+    /// reprend l'IA normale : il charge ou il décroche.
+    ///
+    /// **Ajouté en fin d'énumération** : postcard encode l'indice.
+    Wait {
+        until: u64,
+    },
 }
 
 impl Job {
@@ -199,6 +209,7 @@ impl Job {
             Job::Equip { .. } => 19,
             Job::Hunt { .. } => 20,
             Job::Butcher { .. } => 21,
+            Job::Wait { .. } => 22,
         }
     }
 }
@@ -289,6 +300,17 @@ pub struct Pawn {
     /// structure** : un vieux snapshot est refusé net plutôt que relu de
     /// travers.
     pub apparel: Option<ItemKind>,
+    /// Tick jusqu'auquel le colon est malade ; 0 quand il va bien (voir
+    /// `storyteller`). C'est la **source de vérité** de la maladie.
+    pub sick_until: u64,
+    /// Recopie de `sick_until > tick`, refaite à chaque tick par
+    /// `Sim::tick_health` — même procédé que `outdoor_storm` et `in_snow` :
+    /// `mood()`, `work_step()` et `speed_percent()` ne voient que le pawn, pas
+    /// l'horloge du sim.
+    pub sick: bool,
+    /// La maladie a été soignée : elle ne demande plus de chevet et se termine
+    /// deux fois plus vite. Remis à faux dès que le colon est guéri.
+    pub illness_tended: bool,
 }
 
 impl Pawn {
@@ -334,6 +356,9 @@ impl Pawn {
             graze_at: 0,
             leaving: false,
             apparel: None,
+            sick_until: 0,
+            sick: false,
+            illness_tended: false,
         }
     }
 
@@ -432,6 +457,10 @@ impl Pawn {
         if self.in_snow {
             m -= SNOW_MOOD_MALUS;
         }
+        // Être malade abat autant qu'une bonne blessure.
+        if self.sick {
+            m -= ILLNESS_MOOD_MALUS;
+        }
         m.clamp(0, i64::from(NEED_MAX)) as u32
     }
 
@@ -448,7 +477,11 @@ impl Pawn {
             100
         };
         let level = self.skills[work as usize].level;
+        // Un malade traîne : dernier facteur, comme la maladresse des bras.
+        let sick_percent = if self.sick { ILLNESS_WORK_PERCENT } else { 100 };
         mood_percent * work::skill_percent(level) / 100 * self.manipulation_percent() / 100
+            * sick_percent
+            / 100
     }
 
     /// Vitesse en pourcentage de la nominale. Les malus globaux de blessure ne
@@ -468,7 +501,14 @@ impl Pawn {
         };
         // Le lapin détale, le sanglier pèse : c'est le dernier facteur.
         let species = self.species.map_or(100, |s| s.speed_percent());
-        wounded * self.mobility_percent() / 100 * species / 100
+        // La maladie s'y multiplie comme le reste : elle ne cloue pas au lit,
+        // elle ralentit.
+        let sick_percent = if self.sick {
+            ILLNESS_MOBILITY_PERCENT
+        } else {
+            100
+        };
+        wounded * self.mobility_percent() / 100 * species / 100 * sick_percent / 100
     }
 
     /// Remplace le chemin courant. `path` est dans l'ordre de parcours.

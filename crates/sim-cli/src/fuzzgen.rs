@@ -5,12 +5,12 @@
 //! passe par `sim::Rng`, comme l'exige le sim.
 
 use sim::{
-    BuildKind, CaravanManifest, Command, Designation, ItemKind, MANIFEST_VERSION, Material, Pawn,
-    Rng, Sim, WorkType, Zone,
+    BuildKind, CaravanManifest, Command, Designation, Difficulty, ItemKind, MANIFEST_VERSION,
+    Material, Pawn, Rng, Sim, WorkType, Zone,
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 16;
+pub const VARIANT_COUNT: usize = 17;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -31,6 +31,7 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "SetCraftTarget",
     "SetClimate",
     "Hunt",
+    "SetDifficulty",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -349,12 +350,20 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
             base_temperature: random_temperature(rng),
             amplitude: random_temperature(rng),
         },
-        _ => Command::Hunt {
+        15 => Command::Hunt {
             // Le plus souvent un id de pawn réel : le sim doit refuser tout ce
             // qui n'est pas un animal vivant (colon, pillard, mort, id
             // inventé) sans jamais poser de `Job::Hunt` dans le vide.
             animal: random_pawn_id(rng, sim),
             on: rng.chance(1, 2),
+        },
+        _ => Command::SetDifficulty {
+            // Le tirage sur 256 cogne largement au-delà des quatre valeurs
+            // valides : `Difficulty::from_u8` doit retomber sur « normal »
+            // plutôt que de laisser passer une dose de menace inventée. Le
+            // paisible et le difficile passent donc aussi, et une campagne
+            // alterne les trois régimes de raid sur la même carte.
+            level: Difficulty::from_u8(rng.below(256) as u8),
         },
     };
     (cmd, variant)

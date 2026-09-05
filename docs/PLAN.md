@@ -373,8 +373,15 @@ Interface faune livrée le
 2026-09-05 (Sonnet) : bêtes dessinées par espèce, marquage de chasse au clic ou à la touche
 H, panneau animal, viande et cuir dans le stock ; chasse rejouée dans le navigateur : arc
 fabriqué, lapin abattu, viande rangée.
-À venir : recherche, traits et relations, storyteller adaptatif, factions PNJ et commerce,
-mods de contenu, événements monde.
+Storyteller adaptatif livré le 2026-09-05 (Opus, sim) : points de menace `40 × colons +
+richesse / 400 + jours / 4` (plafond 600) × difficulté (paisible, facile, normal, difficile ;
+`SetDifficulty`), taille de bande `points / 60` puis équipement acheté avec le reliquat
+(tunique d'abord), trois types de raid (charge, archers, siège qui campe 1200 ticks à
+l'entrée), répit d'un jour après une mort, largages de vivres, maladie (deux jours, un si
+soignée), coups de froid et canicules d'un jour ; richesse de la colonie mise en cache ;
+`MAX_RAIDERS` 6 → 12. Interface à faire (sélecteur de difficulté, libellés des événements
+21-25, indicateur de maladie, job « attend »). À venir : recherche, traits et relations,
+factions PNJ et commerce, mods de contenu, événements monde.
 
 ## 7. Risques identifiés
 
@@ -413,6 +420,11 @@ mods de contenu, événements monde.
 - 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
   par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
   libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
+- 2026-09-05 : storyteller (sim). La taille d'une bande est tranchée d'abord (60 points par
+  pillard), l'équipement se paie avec le reste : une boucle « 40 points = un pillard » donnait
+  trois pillards au tick 0 et cassait la mesure du premier raid. La richesse se lit sans
+  recalcul (`&self`, cache rafraîchi par le tick) pour que le client puisse l'afficher sans
+  risque de désync.
 - 2026-09-05 : `GET /rooms` (Sonnet) pour rejoindre ses amis sans connaître le nom de la
   salle ; au passage, trois tests serveur dépendant du temps réel sont passés sur horloge et
   planificateur injectés : plus de faux échecs sous charge, suite quatre fois plus rapide.

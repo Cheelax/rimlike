@@ -12,7 +12,7 @@ use crate::health::{
 use crate::items::ItemKind;
 use crate::map::{Feature, Map, chebyshev};
 use crate::path;
-use crate::pawn::{Faction, Job, NEED_MAX, Pawn};
+use crate::pawn::{Faction, Job, Pawn};
 use crate::work;
 use crate::{EventKind, Sim, TICKS_PER_DAY};
 
@@ -129,8 +129,11 @@ const _: () = assert!(HEAL_INTERVAL % HEAL_INTERVAL_BED == 0);
 pub const GRACE_DAYS: u32 = 3;
 /// Durée du deuil après la mort d'un colon.
 pub const GRIEF_TICKS: u32 = TICKS_PER_DAY * 2;
-/// Taille maximale d'un raid.
-pub const MAX_RAIDERS: u32 = 6;
+/// Taille maximale d'un raid. Relevée de 6 à 12 le 2026-09-05 : la taille
+/// d'une bande n'est plus « 1 + colons / 2 » mais ce que les points de menace
+/// achètent (`storyteller::POINTS_PER_RAIDER`), et une colonie riche en
+/// difficile dépasse largement l'ancien plafond.
+pub const MAX_RAIDERS: u32 = 12;
 
 /// Ce qu'a donné un tour d'approche-et-frappe (`Sim::engage`). L'appelant
 /// décide quoi faire d'un échec : un pillard repart, un chasseur abandonne son
@@ -161,6 +164,14 @@ impl Sim {
     /// perd ou se refait, écroulement et relevé, minuteries de combat et de
     /// deuil. Le chemin d'un pawn en pleine forme reste court : deux tests.
     pub(crate) fn tick_health(&mut self, i: usize) {
+        // La maladie : `sick` est la recopie de `sick_until`, comme
+        // `outdoor_storm` est celle de la météo. Guéri, on oublie aussi le
+        // pansement : la prochaine maladie repartira de zéro.
+        let sick = self.pawns[i].sick_until > self.tick;
+        self.pawns[i].sick = sick;
+        if !sick {
+            self.pawns[i].illness_tended = false;
+        }
         if self.pawns[i].hunger == 0 && self.tick % STARVE_DAMAGE_INTERVAL == 0 {
             // La famine n'entame plus les PV directement : elle affaiblit le torse.
             self.pawns[i].starve_torso();
@@ -273,37 +284,11 @@ impl Sim {
     }
 
     // ------------------------------------------------------------------
-    // Storyteller
+    // Arrivées
     // ------------------------------------------------------------------
-
-    /// Programme le premier raid, après quelques jours de répit.
-    pub(crate) fn schedule_first_raid(&mut self) {
-        let grace = u64::from(TICKS_PER_DAY) * u64::from(GRACE_DAYS);
-        self.next_raid_at = grace + u64::from(self.rng.below(TICKS_PER_DAY / 2));
-    }
-
-    /// Déclenche les événements à l'heure dite et programme les suivants.
-    pub(crate) fn tick_storyteller(&mut self) {
-        if self.tick >= self.next_wanderer_at {
-            self.spawn_wanderer();
-            let three_days = u64::from(TICKS_PER_DAY) * 3;
-            self.next_wanderer_at =
-                self.tick + three_days + u64::from(self.rng.below(TICKS_PER_DAY * 2));
-        }
-        // Avant la sortie rapide du raid : sinon un troupeau n'entrerait
-        // jamais tant qu'un raid est en attente, c'est-à-dire presque toujours.
-        if self.tick >= self.next_herd_at {
-            self.spawn_herd();
-            let two_days = u64::from(TICKS_PER_DAY) * 2;
-            self.next_herd_at = self.tick + two_days + u64::from(self.rng.below(TICKS_PER_DAY * 2));
-        }
-        if self.tick < self.next_raid_at {
-            return;
-        }
-        self.spawn_raid();
-        let two_days = u64::from(TICKS_PER_DAY) * 2;
-        self.next_raid_at = self.tick + two_days + u64::from(self.rng.below(TICKS_PER_DAY * 2));
-    }
+    //
+    // Ce qui **décide** de faire entrer quelqu'un vit dans `storyteller` ;
+    // ici, on ne fait que trouver par où et le poser sur la carte.
 
     /// Case de bord d'où la colonie est vraiment atteignable : sinon un
     /// arrivant resterait planté derrière un mur ou de l'eau.
@@ -368,77 +353,6 @@ impl Sim {
             r += 1;
         }
         false
-    }
-
-    /// Fait entrer un groupe de pillards par un bord de la carte depuis lequel
-    /// la colonie est atteignable. Renvoie le nombre de pillards apparus.
-    pub fn spawn_raid(&mut self) -> u32 {
-        let colonists = self.living_tiles(Faction::Colony);
-        if colonists.is_empty() {
-            return 0;
-        }
-        let count = (1 + colonists.len() as u32 / 2).min(MAX_RAIDERS);
-        let Some(entry) = self.find_entry_tile() else {
-            return 0;
-        };
-        // En hiver, ou par n'importe quel temps où un colon aurait froid, les
-        // pillards arrivent couverts : leur tunique ne change ni leurs coups ni
-        // leur résistance, seulement le butin qu'ils laissent en mourant.
-        let dressed = self.season() == crate::Season::Winter
-            || self.outdoor_temperature() < crate::climate::COLD_MOOD_TEMP;
-        let mut spawned = 0;
-        let mut r: i32 = 0;
-        while spawned < count && r < 8 {
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    if spawned >= count || (dx.abs() != r && dy.abs() != r) {
-                        continue;
-                    }
-                    let x = entry.0 as i32 + dx;
-                    let y = entry.1 as i32 + dy;
-                    if !self.map.in_bounds(x, y) {
-                        continue;
-                    }
-                    let tile = (x as u32, y as u32);
-                    if !self.map.passable(tile.0, tile.1)
-                        || self.pawns.iter().any(|p| p.tile() == tile)
-                    {
-                        continue;
-                    }
-                    self.spawn_pawn(tile.0, tile.1, Faction::Raider);
-                    let k = self.pawns.len() - 1;
-                    self.pawns[k].hunger = NEED_MAX;
-                    self.pawns[k].rest = NEED_MAX;
-                    self.pawns[k].weapon = Some(self.raider_weapon(spawned));
-                    if dressed {
-                        self.pawns[k].apparel = Some(ItemKind::Tunic);
-                    }
-                    spawned += 1;
-                }
-            }
-            r += 1;
-        }
-        if spawned > 0 {
-            self.push_event(EventKind::Raid, spawned);
-        }
-        spawned
-    }
-
-    /// Arme du `rank`-ième pillard d'un raid. Un petit raid arrive au gourdin,
-    /// un raid moyen ajoute l'épieu, un gros amène l'arc ; au-delà du
-    /// troisième, la bande est panachée au hasard. Les armes tombent au sol à
-    /// leur mort : plus le raid est gros, plus le butin est beau.
-    fn raider_weapon(&mut self, rank: u32) -> ItemKind {
-        match rank {
-            0 => ItemKind::Club,
-            1 => ItemKind::Spear,
-            2 => ItemKind::Bow,
-            _ => match self.rng.below(3) {
-                0 => ItemKind::Club,
-                1 => ItemKind::Spear,
-                _ => ItemKind::Bow,
-            },
-        }
     }
 
     /// Cases des pawns vivants d'un camp, dans l'ordre des indices.
@@ -537,6 +451,19 @@ impl Sim {
             }
             Some(id) => self.pawns[i].job = Job::Attack { target: id },
         }
+    }
+
+    /// Un assiégeant campe à son point d'entrée jusqu'à l'heure dite
+    /// (`storyteller::SIEGE_TICKS`). Il ne bouge pas, ne frappe pas, ne fuit
+    /// pas — mais le premier coup reçu le décide : blessé, il reprend l'IA
+    /// normale et charge (ou décroche s'il est déjà mal en point).
+    pub(crate) fn do_wait(&mut self, i: usize, until: u64) {
+        let hurt = self.pawns[i].hp < self.pawns[i].max_hp();
+        if self.tick < until && !hurt {
+            return;
+        }
+        self.pawns[i].job = Job::Idle;
+        self.raider_ai(i);
     }
 
     /// Une bête compte-t-elle comme ennemi qu'on prend de soi-même ? Non :
@@ -827,6 +754,9 @@ impl Sim {
                                     q.grief_ticks = GRIEF_TICKS;
                                 }
                             }
+                            // Une mort sous les coups d'un raid vaut un répit :
+                            // le storyteller laisse passer un jour de plus.
+                            self.grant_raid_respite();
                             self.push_event(EventKind::ColonistDied, p.id);
                         } else {
                             self.push_event(EventKind::RaiderDied, p.id);
