@@ -15,7 +15,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Caravan, Settlement } from "@rimlike/protocol";
-import { BIOME_NAMES, findRoute, movementCost, type Tile, type World } from "@rimlike/world";
+import { BIOME_NAMES, climateForTile, findRoute, movementCost, type Tile, type World } from "@rimlike/world";
+import { formatClimate } from "./render/terrain";
 import { formatHours } from "./CaravanPanel";
 import type { IdentitySummary, WorldClientState } from "./net/WorldClient";
 import { GlobeRenderer } from "./render/GlobeRenderer";
@@ -591,6 +592,7 @@ export function WorldScreen({
                     {selectedTile.temperature.toFixed(1)} °C · humidité{" "}
                     {Math.round(selectedTile.moisture * 100)} % · élévation {selectedTile.elevation.toFixed(2)}
                   </div>
+                  <div className="help">Climat de la colonie : {formatClimate(climateForTile(selectedTile))}</div>
                   {selectedSettlement && (
                     <div className="help">
                       colonie de <b>{selectedSettlement.ownerName}</b> · salle {selectedSettlement.room}

@@ -21,7 +21,8 @@ import {
   type ClientMessage,
   type PlayerId,
   type PlayerInfo,
-  type ServerMessage, NO_PLAYER } from "@rimlike/protocol";
+  type ServerMessage,
+  type StartClimate, NO_PLAYER } from "@rimlike/protocol";
 
 import type { CreateSim, RestoreSim, SimLike } from "./SimLike";
 import type { Transport } from "./Transport";
@@ -77,6 +78,14 @@ export interface LockstepState {
    * quel ; `consumeFrozenTicks` est le seul chemin qui le met à profit.
    */
   readonly frozenTicks: number;
+  /**
+   * Climat hérité de la case du globe, reçu par `start.climate` à la
+   * fondation d'une colonie neuve (`docs/protocol.md` §11.6). `null` en salle
+   * simple (pas de case) ou une fois consommé par `consumeStartClimate` — même
+   * schéma que `frozenTicks`/`consumeFrozenTicks` : un champ qui se vide dès
+   * qu'il a été mis à profit, pour garantir une émission unique.
+   */
+  readonly climate: StartClimate | null;
   /**
    * Joueurs actuellement connus comme déviants (§7) : `desync.outliers` au
    * départ, réduit à chaque `resynced` reçu. Vide tant qu'aucune majorité n'a
@@ -154,6 +163,8 @@ export class LockstepClient {
   private lastError: LockstepError | null = null;
   /** Voir `LockstepState.frozenTicks` et `consumeFrozenTicks`. */
   private frozenTicksValue = 0;
+  /** Voir `LockstepState.climate` et `consumeStartClimate`. */
+  private climateValue: StartClimate | null = null;
   /** Voir `LockstepState.outliers` : réduit par `resynced`, jamais réétendu que par `desync`. */
   private deviating = new Set<PlayerId>();
   /** Vrai dès qu'un `desync` a porté des `outliers` : sans ça, `deviating` vide ne prouve rien. */
@@ -238,6 +249,18 @@ export class LockstepClient {
   consumeFrozenTicks(): number {
     const value = this.frozenTicksValue;
     this.frozenTicksValue = 0;
+    return value;
+  }
+
+  /**
+   * Lit le climat hérité de la case et le remet à `null` : deux appels ne le
+   * renvoient qu'une fois. C'est ce qui garantit qu'un seul `SetClimate` part
+   * par colonie neuve, même si l'appelant se trompe et appelle deux fois
+   * (`docs/protocol.md` §11.6, même garantie que `consumeFrozenTicks`).
+   */
+  consumeStartClimate(): StartClimate | null {
+    const value = this.climateValue;
+    this.climateValue = null;
     return value;
   }
 
@@ -332,6 +355,10 @@ export class LockstepClient {
         this.height = message.height;
         this.phase = "running";
         this.resetTo(message.tick);
+        // Climat hérité de la case (§11.6) : stocké, jamais appliqué ici.
+        // `consumeStartClimate` est le seul chemin qui le consomme, dès que le
+        // sim neuf est adopté (voir le Worker) — même schéma que `frozenTicks`.
+        this.climateValue = message.climate ?? null;
         this.adopt(this.createSim(message.seed, message.width, message.height));
         this.emit();
         return;
@@ -506,6 +533,7 @@ export class LockstepClient {
       desync: this.desyncInfo,
       lastError: this.lastError,
       frozenTicks: this.frozenTicksValue,
+      climate: this.climateValue,
       outliers: Object.freeze([...this.deviating]),
       isOutlier: this.playerId !== null && this.deviating.has(this.playerId),
       roomDesynced: this.desyncInfo !== null && !(this.outliersKnown && this.deviating.size === 0),

@@ -36,6 +36,7 @@ const netState: LockstepState = Object.freeze({
   desync: null,
   lastError: null,
   frozenTicks: 0,
+  climate: null,
   outliers: Object.freeze([]),
   isOutlier: false,
   roomDesynced: false,

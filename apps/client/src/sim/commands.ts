@@ -125,3 +125,15 @@ export function encodeSetCraftTarget(kind: number, target: number): Uint8Array {
 export function encodeHunt(animal: number, on: boolean): Uint8Array {
   return WasmSim.encode_hunt(animal, on);
 }
+
+/**
+ * Climat hérité de la case du globe à la fondation d'une colonie neuve
+ * (`docs/protocol.md` §11.6 « Le climat, hérité une fois »).
+ * `baseTemperature`/`amplitude` viennent de `ServerStartMessage.climate`
+ * (dixièmes de °C, `@rimlike/protocol`) : à n'émettre qu'une fois, par
+ * l'hôte, en première commande après le `start` (voir `worker/sim.worker.ts`,
+ * `worker/startClimate.ts` et `LockstepClient.consumeStartClimate`).
+ */
+export function encodeSetClimate(baseTemperature: number, amplitude: number): Uint8Array {
+  return WasmSim.encode_set_climate(baseTemperature, amplitude);
+}

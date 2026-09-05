@@ -15,9 +15,10 @@
 
 import { LockstepClient } from "../net/LockstepClient";
 import { WebSocketTransport } from "../net/Transport";
-import { encodeFastForward } from "../sim/commands";
+import { encodeFastForward, encodeSetClimate } from "../sim/commands";
 import { SimHandle } from "../sim/SimHandle";
 import { fastForwardOnReopen } from "./fastForward";
+import { setClimateOnStart } from "./startClimate";
 import { SimRunner, type RunnerOutput, type RunnerSim } from "./SimRunner";
 import { transferablesOf, type MainToWorker, type WorkerToMain } from "./protocol";
 
@@ -183,6 +184,18 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
       // tampons, que `SimLike` n'expose pas.
       onSim: (sim) => {
         runner?.setSim(sim as RunnerSim);
+        // Ordre imposé par §11.6 : le climat d'abord, l'avance rapide ensuite
+        // (elle fait tourner des formules de rattrapage qui en dépendent).
+        // Aujourd'hui mutuellement exclusifs (`start` neuf vs `restore` gelé),
+        // mais l'ordre est câblé comme si les deux pouvaient survenir.
+        //
+        // Climat hérité de la case (§11.6) : le sim neuf vient d'être adopté,
+        // c'est le seul moment où émettre. `consumeStartClimate` remet la
+        // valeur à `null`, donc un deuxième sim adopté sans nouveau `climate`
+        // n'émettra rien.
+        const climate = lockstep?.consumeStartClimate() ?? null;
+        const climateBytes = setClimateOnStart(lockstep?.state.isHost ?? false, climate, encodeSetClimate);
+        if (climateBytes) lockstep?.issue(climateBytes);
         // Réouverture d'une colonie gelée (§11.6) : le sim restauré vient
         // d'être adopté, c'est le seul moment où émettre. `consumeFrozenTicks`
         // remet la valeur à 0, donc un deuxième sim adopté sans nouveau

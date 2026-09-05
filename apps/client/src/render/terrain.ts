@@ -1,3 +1,5 @@
+import type { TileClimate } from "@rimlike/world";
+
 /** Contrat avec `pawn::Faction` (0 colonie, 1 pillard, 2 bête sauvage). */
 export const FACTION = { Colony: 0, Raider: 1, Animal: 2 } as const;
 
@@ -258,4 +260,18 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
 export type HKeyAction = "hunt" | "harvest";
 export function hKeyAction(selectedSpecies: number): HKeyAction {
   return selectedSpecies >= 0 ? "hunt" : "harvest";
+}
+
+/**
+ * Climat d'une case, en français : « N °C en moyenne, ± A °C ». Convertit les
+ * dixièmes de degré de `climateForTile` (`@rimlike/world`) en degrés entiers,
+ * la même granularité que l'affichage de la température de la case
+ * (`selectedTile.temperature.toFixed(1)` juste au-dessus). Purement informatif
+ * côté client : c'est le serveur monde qui calcule le `climate` réellement
+ * diffusé dans `start` (`docs/protocol.md` §11.6), jamais ce composant.
+ */
+export function formatClimate(climate: TileClimate): string {
+  const base = Math.round(climate.baseTemperature / 10);
+  const amplitude = Math.round(climate.amplitude / 10);
+  return `${base} °C en moyenne, ± ${amplitude} °C`;
 }

@@ -310,7 +310,9 @@ connexion monde d'un joueur présent dans la salle et l'arrivée est envoyée su
 connexions (Sonnet, 109 tests). Essai réel à deux onglets : alice et bob installés sur deux
 cases, un colon d'alice parti en caravane est arrivé chez bob en huit heures de jeu. Climat par case livré côté serveur le 2026-09-05 (Sonnet) : `start.climate` dérivé de la
 température et de la latitude de la case (désert plus contrasté), l'hôte l'émet en `SetClimate`
-en première commande (client à brancher). Reste : un seul contexte WebGL par onglet.
+en première commande ; côté client livré le 2026-09-05 (Sonnet, coupé par la limite puis
+terminé par l'orchestrateur : tests) avec l'affichage du climat de la case sur l'écran Monde.
+Reste : un seul contexte WebGL par onglet.
 - Globe hexagonal, rendu du globe, biomes, choix de case de départ.
 - Serveur autoritaire persistant : cases, propriétaires, horloge globale.
 - Cartes gelées + avance rapide abstraite.
