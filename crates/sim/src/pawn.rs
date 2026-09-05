@@ -233,6 +233,23 @@ pub enum Job {
         at: (u32, u32),
         progress: u32,
     },
+    /// Bat les flammes d'une case en feu (`fire`), depuis une case **voisine**
+    /// qui ne brûle pas. `EXTINGUISH_TICKS` par cran d'intensité, après quoi la
+    /// case retombe à zéro d'un coup et garde son combustible : un arbre sauvé
+    /// des flammes reste un arbre.
+    ///
+    /// Ce n'est pas un travail réglable : aucun `WorkType`, aucune priorité,
+    /// aucune compétence (en ajouter un changerait `WORK_TYPES` et les tampons
+    /// de priorités). C'est une urgence, placée juste après les besoins
+    /// critiques dans `Sim::find_job` et qui fait lâcher tout le reste.
+    /// `progress` vit dans le job, comme celui de `Job::RearmTrap` :
+    /// l'avancement appartient au colon qui s'y colle.
+    ///
+    /// **Ajouté en fin d'énumération** : postcard encode l'indice.
+    Firefight {
+        at: (u32, u32),
+        progress: u32,
+    },
 }
 
 impl Job {
@@ -273,6 +290,7 @@ impl Job {
             Job::Research { .. } => 24,
             Job::Chat { .. } => 25,
             Job::RearmTrap { .. } => 26,
+            Job::Firefight { .. } => 27,
         }
     }
 }

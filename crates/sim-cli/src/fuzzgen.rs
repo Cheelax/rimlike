@@ -10,7 +10,7 @@ use sim::{
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 21;
+pub const VARIANT_COUNT: usize = 22;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -36,6 +36,7 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "Trade",
     "TriggerTraderVisit",
     "SetResearch",
+    "Ignite",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -412,12 +413,21 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
         // dernière), sinon n'importe quel octet — la plupart ne désignent
         // rien et doivent être ignorés — ou 255, qui arrête la recherche. Une
         // technologie déjà acquise est refusée sans repartir de zéro.
-        _ => Command::SetResearch {
+        20 => Command::SetResearch {
             tech: match rng.below(4) {
                 0 => rng.below(256) as u8,
                 1 => sim::research::NO_TECH,
                 _ => rng.below(sim::Tech::COUNT as u32 + 2) as u8,
             },
+        },
+        // Le feu : le plus souvent une case de la carte (elle prendra si elle
+        // porte du combustible), parfois une case franchement hors carte, qui
+        // doit être refusée sans rien allumer. Une campagne finit ainsi par
+        // faire brûler ses propres murs, ses piles et ses colons — c'est le
+        // seul moyen d'éprouver la propagation et la lutte.
+        _ => Command::Ignite {
+            x: random_coord_u32(rng, size),
+            y: random_coord_u32(rng, size),
         },
     };
     (cmd, variant)

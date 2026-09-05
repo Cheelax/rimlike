@@ -440,7 +440,16 @@ piège) ; réarmement par un colon (100 ticks, sans bois) ; poids modeste dans l
 contre 1 210 sans pièges ; non monotone : à 300 le pillard fuit avant de saigner). Interface
 livrée le 2026-09-05 (Sonnet) : outil Piège (bois imposé), props armé / déclenché, job « réarme un
 piège », événement 35 classé menace ; vérifié : anneau de pièges autour des colons, un pillard
-s'y prend au premier raid. Marchands itinérants côté serveur
+s'y prend au premier raid. Incendies livrés le 2026-09-05 (Opus, sim) : couche `fire` (intensité
+0-3 par case, `fire_version`, liste des foyers), combustible (arbres, buissons, plants, bois bâti,
+lits, postes, établis, pièges, piles sauf la pierre, herbe par temps chaud et sec), propagation
+1/40 par voisin toutes les 10 ticks (÷ 4 sous la pluie, qui éteint ; neige et gel aussi),
+consommation en 900 ticks (arbre → terre, bois bâti → rien), brûlures pour qui reste dedans,
+tout le monde contourne le feu ; lutte prioritaire des colons (`Firefight`, 80 ticks par cran, à
+25 cases du barycentre) qui conserve le combustible ; foudre pendant les orages (1,03 impact par
+orage mesuré sur 20 graines × 20 jours), feu de camp par temps chaud et sec (un départ par cinq
+jours d'été mesuré), `Ignite` pour le débogage ; événements 36-37, job 27. Interface à faire
+(flammes, événements, outil d'allumage de débogage). Marchands itinérants côté serveur
 livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
 caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;
@@ -475,6 +484,15 @@ hors du frame), job « bavarde », événements 32-34 ; vérifié : avis mutuels
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-05 : le feu est une couche de carte, pas un élément. Une case qui brûle garde son arbre
+  ou son mur jusqu'à consommation : `fire` (u8 par case) s'ajoute aux quatre couches existantes
+  avec sa propre version, et une liste de foyers porte l'horloge de chaque feu pour ne jamais
+  balayer la carte. Toute la dynamique s'évalue une fois sur dix ticks ; sans feu, le coût est
+  un test de compteur. La lutte passe avant le travail mais après les besoins critiques, et ne
+  fait lâcher un job qu'un tick sur dix et seulement si un foyer est atteignable : un feu
+  emmuré ne paralyse pas la colonie. Les cadences (propagation, foudre, feu de camp) sont
+  mesurées sur 10 à 20 graines et notées sur les constantes.
 
 - 2026-09-05 : pièges à pointes réglés à la mesure. Sévérité choisie sur 120 graines jouées avec
   et sans pièges ; la courbe n'est pas monotone (à 300 le pillard tombe sous le seuil de fuite au

@@ -27,7 +27,7 @@ use crate::work::{self, WorkType};
 use crate::{EventKind, Sim, TICKS_PER_DAY, Tech, Weather};
 
 /// Nombre maximal de candidats pour lesquels on tente un A* par recherche.
-const PATH_ATTEMPTS: usize = 6;
+pub(crate) const PATH_ATTEMPTS: usize = 6;
 /// Un colon en crise ne change de direction que tous ces ticks.
 const BREAK_WANDER_INTERVAL: u64 = 30;
 /// Chance par tick qu'un colon au moral à zéro craque : une fois toutes les
@@ -118,6 +118,10 @@ impl Sim {
         {
             self.abandon_job(i);
         }
+        // Le feu qui menace la colonie fait tout lâcher, comme la famine
+        // ci-dessus : un colon qui range du bois pendant que le toit brûle n'a
+        // aucun sens. Court-circuité par `Map::fire_count` (voir `fire`).
+        self.drop_work_for_fire(i);
         self.break_if_desperate(i);
         match self.pawns[i].job.clone() {
             Job::Idle => self.find_job(i),
@@ -180,6 +184,7 @@ impl Sim {
             Job::Research { bench } => self.do_research(i, bench),
             Job::Chat { with, ticks } => self.do_chat(i, with, ticks),
             Job::RearmTrap { at, progress } => self.do_rearm(i, at, progress),
+            Job::Firefight { at, progress } => self.do_firefight(i, at, progress),
             // Traité plus haut : un pawn à terre ne passe jamais par ici.
             Job::Downed => {}
             // Réservé aux assiégeants (traités plus haut) : un colon n'attend
@@ -341,6 +346,13 @@ impl Sim {
             return;
         }
         if self.pawns[i].is_hungry() && self.try_start_eat(i) {
+            return;
+        }
+        // Le feu passe avant tout le reste — secours compris : un blessé ne
+        // sera pas mieux au lit dans une colonie qui brûle. Seuls les besoins
+        // critiques ci-dessus le devancent : un colon épuisé ou affamé ne bat
+        // pas les flammes.
+        if self.try_start_firefight(i) {
             return;
         }
         // Le secours passe avant tout travail, mais après ses propres besoins :
@@ -1110,7 +1122,7 @@ impl Sim {
         }
     }
 
-    fn is_reserved(&self, x: u32, y: u32) -> bool {
+    pub(crate) fn is_reserved(&self, x: u32, y: u32) -> bool {
         self.reservations.iter().any(|r| r.x == x && r.y == y)
     }
 
@@ -1410,7 +1422,7 @@ impl Sim {
 
     /// Recalcule le chemin des colons qui passaient par une case devenue
     /// infranchissable ; abandonne le job si la destination n'est plus atteignable.
-    fn replan_paths_through(&mut self, x: u32, y: u32) {
+    pub(crate) fn replan_paths_through(&mut self, x: u32, y: u32) {
         let tile: path::Tile = (x as u16, y as u16);
         for i in 0..self.pawns.len() {
             if !self.pawns[i].path.contains(&tile) {

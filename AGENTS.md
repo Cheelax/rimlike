@@ -132,10 +132,11 @@ Les valeurs numériques des enums sont un contrat, à modifier des deux côtés 
 | `work::WorkType::Research = 6` (`WORK_TYPES` = 7 : `PRIORITY_STRIDE` = 8, `SKILL_STRIDE` = 15), `BuildKind::ResearchBench = 7` (15 bois), `Feature::ResearchBench = 16`, job 24 recherche, `research::Tech` (0 agriculture, 1 médecine, 2 conservation, 3 archerie, 4 maçonnerie), `Command::SetResearch { tech }` (255 = aucune, invalide ignorée), `EventKind::ResearchDone = 31` (`arg` = tech) | `set_research`, `encode_set_research`, `research_state()` → `[courante, (avancement, coût, acquise) × 5]`, `tech_cost(tech)` ; `WORK_LABELS` à 7 entrées |
 | `social::Opinion` (avis −100..=100, 16 par colon), job 25 bavarde, `EventKind` 32 dispute / 33 rixe (`arg` = le plus petit des deux ids) / 34 ami perdu (`arg` = id du survivant) | `pawn_opinions(id)` → `[autre, avis] × n` trié par id, vide pour un non-colon ; aucun stride ne change |
 | `BuildKind::SpikeTrap = 8` (5 bois, bois imposé), `Feature::SpikeTrap = 17` (armé) / `SpikeTrapSprung = 18`, job 26 réarme, `EventKind::TrapSprung = 35` (`arg` = id de la victime) ; `path::Walker` : les colons contournent les pièges armés | `build(8, …)` / `encode_build(8, …)` existants ; `BUILD_KIND`, `FEATURE` 17/18, `JOB_LABELS[26]`, `eventLabel(35)` |
+| couche `fire` (u8 par case : 0 éteint, 1-3 intensité) et `fire_version`, `Command::Ignite { x, y }`, job 27 combat le feu, `EventKind::FireStarted = 36` (`arg` 0 foudre / 1 feu de camp / 2 ordre) / `FireOut = 37` (`arg` = cases enflammées) | vue zéro-copie `fire` (comme `indoor`), `fire_version`, `fire_count`, `ignite`, `encode_ignite` ; `JOB_LABELS[27]`, `eventLabel` 36-37 |
 | `pawn::Job::code()` | `terrain.ts` (`JOB_LABELS`) |
 | `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, `PRIORITY_STRIDE` = 8, `SKILL_STRIDE` = 15, `HEALTH_STRIDE` = 4, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |
 
-Les vues mémoire (`tiles`, `features`, `zones`, `designations`) sont en zéro-copie sur la
+Les vues mémoire (`tiles`, `features`, `zones`, `designations`, `indoor`, `fire`) sont en zéro-copie sur la
 mémoire WASM : à recréer après chaque appel au sim, jamais conservées. `pawns()`,
 `items()`, `blueprints()`, `events()` et `priorities()` renvoient des copies. Les avancements
 de travail sont en centièmes de tick dans le sim (l'humeur module la vitesse) ; le tampon des

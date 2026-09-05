@@ -597,7 +597,10 @@ impl Sim {
     }
 
     /// Barycentre des colons vivants, `None` si la colonie est éteinte.
-    pub(crate) fn colony_center(&self) -> Option<(u32, u32)> {
+    /// Public parce qu'il ne fait que lire : c'est le repère du largage de
+    /// vivres, du rayon de lutte contre le feu (`fire::FIREFIGHT_RADIUS`) et
+    /// des tests qui veulent savoir où se tient la colonie.
+    pub fn colony_center(&self) -> Option<(u32, u32)> {
         let mut sum = (0u64, 0u64);
         let mut n = 0u64;
         for p in &self.pawns {

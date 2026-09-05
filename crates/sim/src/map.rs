@@ -297,6 +297,21 @@ pub struct Map {
     /// Pièges déclenchés (`Feature::SpikeTrapSprung`), à réarmer : court-circuit
     /// de `Job::RearmTrap`, sur le modèle de `grave_count`.
     sprung_trap_count: u32,
+    /// Couche « feu », une valeur par case : 0 éteint, sinon l'intensité
+    /// (1 à `fire::FIRE_MAX`). Lue en zéro-copie par le client, comme `zones`
+    /// et `indoor`. La **liste** des cases en feu vit dans `Sim::burning` :
+    /// cette couche est là pour le rendu et pour les tests d'appartenance en
+    /// temps constant, jamais pour être balayée. **Champs ajoutés en fin de
+    /// structure** : un vieux snapshot est refusé net plutôt que relu de
+    /// travers.
+    fire: Vec<u8>,
+    /// Cases en feu. Court-circuit de tout ce qui touche au feu : sans
+    /// incendie, ni l'évaluation, ni la lutte, ni la recherche de chemin ne
+    /// coûtent quoi que ce soit.
+    fire_count: u32,
+    /// Incrémenté à chaque changement d'intensité, comme `overlay_version` :
+    /// le client rebâtit son rendu du feu quand il bouge.
+    fire_version: u32,
 }
 
 /// Au-delà, la zone est trop vaste pour être une pièce : c'est le dehors.
@@ -426,6 +441,9 @@ impl Map {
             research_bench_count,
             trap_count,
             sprung_trap_count,
+            fire: vec![0; n],
+            fire_count: 0,
+            fire_version: 0,
         }
     }
 
@@ -553,11 +571,19 @@ impl Map {
     /// pointes de la colonie et ne pose jamais le pied sur un piège **armé**
     /// (voir `path::Walker`). Un pillard, une bête ou un marchand ne savent
     /// rien : pour eux, le coût est celui de la case nue.
+    ///
+    /// Le feu, lui, se voit : **tout le monde** l'évite (voir
+    /// `path::Walker::avoids_fire`), et il coûte cher sans être un mur — un
+    /// colon cerné par les flammes traverse plutôt que de rester planté.
     pub fn move_cost_for(&self, x: u32, y: u32, walker: crate::path::Walker) -> Option<u32> {
         if walker.avoids_traps && self.feature(x, y) == Feature::SpikeTrap {
             return None;
         }
-        self.move_cost(x, y)
+        let cost = self.move_cost(x, y)?;
+        if walker.avoids_fire && self.fire[self.index(x, y)] != 0 {
+            return Some(cost.saturating_mul(crate::fire::FIRE_PATH_COST_MULT));
+        }
+        Some(cost)
     }
 
     pub fn passable_for(&self, x: u32, y: u32, walker: crate::path::Walker) -> bool {
@@ -630,6 +656,46 @@ impl Map {
     /// Pièges déclenchés en attente de réarmement (`Feature::SpikeTrapSprung`).
     pub fn sprung_trap_count(&self) -> u32 {
         self.sprung_trap_count
+    }
+
+    /// Couche « feu », une valeur par case : 0 éteint, sinon l'intensité
+    /// (1 à `fire::FIRE_MAX`). Vue plate, comme `zones`.
+    pub fn fire(&self) -> &[u8] {
+        &self.fire
+    }
+
+    /// Intensité du feu sur une case, 0 si elle ne brûle pas.
+    pub fn fire_at(&self, x: u32, y: u32) -> u8 {
+        self.fire[self.index(x, y)]
+    }
+
+    /// Cases en feu. Court-circuit de tout ce qui touche au feu.
+    pub fn fire_count(&self) -> u32 {
+        self.fire_count
+    }
+
+    /// Change à chaque changement d'intensité : le client rebâtit son rendu.
+    pub fn fire_version(&self) -> u32 {
+        self.fire_version
+    }
+
+    /// Pose (ou retire, avec 0) le feu sur une case. La liste des foyers vit
+    /// dans `Sim::burning` : c'est elle qui décide, celle-ci ne fait
+    /// qu'enregistrer. Une intensité au-delà de `fire::FIRE_MAX` est bornée.
+    pub fn set_fire(&mut self, x: u32, y: u32, level: u8) {
+        let level = level.min(crate::fire::FIRE_MAX);
+        let i = self.index(x, y);
+        let old = self.fire[i];
+        if old == level {
+            return;
+        }
+        if old == 0 {
+            self.fire_count += 1;
+        } else if level == 0 {
+            self.fire_count -= 1;
+        }
+        self.fire[i] = level;
+        self.fire_version += 1;
     }
 
     /// Couche « intérieur », une valeur par case : 0 dehors, sinon le numéro

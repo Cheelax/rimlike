@@ -60,6 +60,9 @@ impl Sim {
         // La vague de froid d'il y a deux mois est finie depuis longtemps.
         self.temperature_offset = 0;
         self.offset_until = 0;
+        // L'incendie en cours a fini de brûler : les cases déjà en feu ont
+        // consommé leur combustible, et pas une de plus (voir `Sim::burn_out`).
+        self.burn_out();
         self.grow_plants(ticks);
         // Les buissons récoltés avant le gel ont repoussé pendant l'absence.
         let outdoor = self.outdoor_temperature();

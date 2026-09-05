@@ -34,6 +34,11 @@ fn heuristic(a: (u32, u32), b: (u32, u32)) -> u32 {
 pub struct Walker {
     /// Les pièges armés (`map::Feature::SpikeTrap`) sont infranchissables.
     pub avoids_traps: bool,
+    /// Les cases en feu coûtent `fire::FIRE_PATH_COST_MULT` fois leur prix.
+    /// Contrairement aux pièges, **tout le monde** voit le feu : ce drapeau
+    /// n'est pas une propriété du marcheur mais un court-circuit, posé par
+    /// `find_path_for` quand — et seulement quand — la carte brûle.
+    pub avoids_fire: bool,
 }
 
 impl Walker {
@@ -41,9 +46,13 @@ impl Walker {
     /// ce que voient les appels historiques (`find_path`).
     pub const ANYONE: Walker = Walker {
         avoids_traps: false,
+        avoids_fire: false,
     };
     /// Un membre de la colonie : il contourne ses propres pièges.
-    pub const COLONIST: Walker = Walker { avoids_traps: true };
+    pub const COLONIST: Walker = Walker {
+        avoids_traps: true,
+        avoids_fire: false,
+    };
 }
 
 /// Chemin de `from` (exclu) à `to` (inclus), pour quelqu'un qui ne connaît pas
@@ -62,11 +71,12 @@ pub fn find_path_for(
     walker: Walker,
 ) -> Option<Vec<Tile>> {
     // Sans piège armé sur la carte, le marcheur averti est un marcheur comme
-    // un autre : on s'épargne la lecture d'élément par case.
-    let walker = if map.trap_count() == 0 {
-        Walker::ANYONE
-    } else {
-        walker
+    // un autre : on s'épargne la lecture d'élément par case. Le feu, lui,
+    // n'est l'apanage de personne : dès qu'une case brûle, tout le monde la
+    // contourne — et sans feu, le drapeau reste à faux, donc gratuit.
+    let walker = Walker {
+        avoids_traps: walker.avoids_traps && map.trap_count() > 0,
+        avoids_fire: map.fire_count() > 0,
     };
     if !map.passable_for(to.0, to.1, walker) {
         return None;

@@ -294,6 +294,14 @@ impl WasmSim {
         self.pending.push(sim::Command::SetResearch { tech });
     }
 
+    /// Met le feu à une case (débogage, futur outil du joueur). Sans effet si
+    /// la case est hors carte, si elle brûle déjà ou si elle ne porte aucun
+    /// combustible : arbre, buisson, plant, bois bâti, plancher, herbe sèche
+    /// par temps chaud, ou pile inflammable (tout sauf la pierre).
+    pub fn ignite(&mut self, x: u32, y: u32) {
+        self.pending.push(sim::Command::Ignite { x, y });
+    }
+
     // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
     //
     // Fonctions **associées** : le client doit pouvoir encoder avant même
@@ -445,6 +453,11 @@ impl WasmSim {
         encode(&sim::Command::SetResearch { tech })
     }
 
+    /// Met le feu à une case. Voir `ignite`.
+    pub fn encode_ignite(x: u32, y: u32) -> Vec<u8> {
+        encode(&sim::Command::Ignite { x, y })
+    }
+
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
     pub fn encode_set_priority(pawn: u32, work: u8, priority: u8) -> Vec<u8> {
         encode(&sim::Command::SetPriority {
@@ -574,6 +587,18 @@ impl WasmSim {
     /// Change à chaque modification des zones ou des désignations.
     pub fn overlay_version(&self) -> u32 {
         self.inner.map().overlay_version()
+    }
+
+    /// Change à chaque changement d'intensité du feu : le client rebâtit son
+    /// rendu des flammes seulement quand ce nombre bouge.
+    pub fn fire_version(&self) -> u32 {
+        self.inner.map().fire_version()
+    }
+
+    /// Cases en feu. À zéro, la couche `fire` est entièrement nulle : le
+    /// client n'a rien à dessiner.
+    pub fn fire_count(&self) -> u32 {
+        self.inner.map().fire_count()
     }
 
     /// Total rangé en stockage, indexé par `ItemKind`.
@@ -754,6 +779,17 @@ impl WasmSim {
 
     pub fn indoor_len(&self) -> usize {
         self.inner.map().indoor().len()
+    }
+
+    /// Couche « feu », un octet par case comme `zones` : 0 éteint, sinon
+    /// l'intensité de 1 à 3 (voir `sim::fire`). Le rendu n'a qu'à tester le
+    /// zéro, et ne se rebâtit que quand `fire_version` bouge.
+    pub fn fire_ptr(&self) -> *const u8 {
+        self.inner.map().fire().as_ptr()
+    }
+
+    pub fn fire_len(&self) -> usize {
+        self.inner.map().fire().len()
     }
 
     pub fn designations_ptr(&self) -> *const u8 {

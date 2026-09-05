@@ -21,6 +21,7 @@ pub mod combat;
 pub mod craft;
 pub mod farm;
 pub mod fastforward;
+pub mod fire;
 pub mod fixed;
 pub mod hash;
 pub mod health;
@@ -50,6 +51,7 @@ pub use climate::{Climate, Season, YEAR_DAYS};
 pub use craft::{CraftStage, RECIPES, Recipe};
 pub use farm::Crop;
 pub use fastforward::MAX_FAST_FORWARD;
+pub use fire::Fire;
 pub use health::{BodyPart, Injury};
 pub use items::{ItemKind, ItemStack};
 pub use jobs::{Regrow, Reservation};
@@ -175,6 +177,17 @@ pub enum EventKind {
     /// désormais déclenché (`Feature::SpikeTrapSprung`) et attend d'être
     /// réarmé.
     TrapSprung = 35,
+    /// Un incendie vient de se déclarer (voir `fire`). `arg` : ce qui l'a
+    /// allumé — 0 la foudre, 1 une escarbille de feu de camp, 2 un ordre du
+    /// joueur (`Command::Ignite`). La **propagation** n'annonce rien : un
+    /// incendie, c'est un `FireStarted` puis un `FireOut`, quelle que soit la
+    /// surface parcourue entre les deux.
+    FireStarted = 36,
+    /// Plus rien ne brûle sur la carte. `arg` : le nombre de cases qui ont
+    /// pris feu depuis le `FireStarted` — pas celles qui ont été détruites,
+    /// puisqu'un foyer battu par les colons ou noyé par la pluie laisse son
+    /// combustible intact.
+    FireOut = 37,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -320,6 +333,15 @@ pub enum Command {
     /// (`BuildKind::ResearchBench`), s'il y en a un.
     /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
     SetResearch { tech: u8 },
+    /// Met le feu à une case (voir `fire`). Outil de débogage aujourd'hui,
+    /// futur outil du joueur (torche, brûlis) : la commande passe par le
+    /// lockstep comme `TriggerRaid`, donc tous les clients d'une salle
+    /// allument le même foyer au même tick. Sans effet si la case est hors
+    /// carte, si elle brûle déjà ou si elle ne porte aucun combustible
+    /// (`fire::feature_burns`, `fire::terrain_burns`, `fire::item_burns`) —
+    /// sans plus de manières que `Hunt` sur un id inconnu.
+    /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
+    Ignite { x: u32, y: u32 },
 }
 
 #[derive(Debug)]
@@ -418,6 +440,15 @@ pub struct Sim {
     /// **Champ ajouté en fin de structure** : un vieux snapshot est refusé net
     /// (fin de tampon) plutôt que relu de travers.
     research: ResearchState,
+    /// Cases en feu, dans l'ordre où elles se sont enflammées (voir `fire`).
+    /// C'est la **seule** chose que l'évaluation du feu parcourt : la couche
+    /// `Map::fire` sert au rendu et aux tests d'appartenance, jamais aux
+    /// balayages. **Champs ajoutés en fin de structure** : un vieux snapshot
+    /// est refusé net (fin de tampon) plutôt que relu de travers.
+    burning: Vec<Fire>,
+    /// Cases enflammées depuis le début de l'incendie en cours, remis à zéro
+    /// par `EventKind::FireOut` qui l'annonce.
+    fires_lit: u32,
 }
 
 impl Sim {
@@ -482,6 +513,8 @@ impl Sim {
             next_trader_at: 0,
             trader_grudge_until: 0,
             research: ResearchState::default(),
+            burning: Vec::new(),
+            fires_lit: 0,
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -743,6 +776,7 @@ impl Sim {
                 self.spawn_trader();
             }
             Command::SetResearch { tech } => self.set_research(tech),
+            Command::Ignite { x, y } => self.ignite_command(x, y),
         }
     }
 
@@ -761,6 +795,11 @@ impl Sim {
         self.tick_crops(outdoor);
         self.tick_spoilage();
         self.tick_storyteller();
+        // Le feu, avant que les colons ne jouent : ils voient donc la carte
+        // telle que l'incendie vient de la laisser, et les brûlures de ce tour
+        // comptent dans leur santé. Un tick sur `fire::FIRE_INTERVAL`, et rien
+        // du tout sans case en feu, sans orage et sans feu de camp au sec.
+        self.tick_fire(outdoor);
         // Un seul comptage par tick, partagé par tous les colons (comme
         // `outdoor`) : voir `Pawn::corpses_on_map`.
         let corpses = self.corpse_count();
