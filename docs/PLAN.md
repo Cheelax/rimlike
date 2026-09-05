@@ -293,8 +293,14 @@ la connexion de salle ; le client relaie donc par le Worker et fait un `world_jo
 sur cette connexion (le joueur apparaît deux fois dans la liste, dédoublonné par nom).
 **À corriger côté serveur** : accepter ces messages depuis la connexion monde d'un joueur
 présent dans la salle, ou documenter §12.3 comme réservé aux clients mono-connexion.
-Reste : `frozenTicks` côté client (émission de l'avance rapide par l'hôte), jetons
-d'identité côté client, un seul contexte WebGL par onglet.
+Identité par jeton livrée côté serveur le 2026-09-05 (Sonnet) : `world_join` sans jeton
+crée un joueur (clé publique + jeton secret rendu une fois), avec jeton le reconnaît ;
+colonies et caravanes appartiennent à une clé, le nom n'est qu'un libellé résolu à la
+diffusion (`ownerName`) ; comparaison en temps constant ; migration du fichier de
+persistance v1 → v2 ; protocole version 2 ; 106 tests serveur. Client : avance rapide à la
+réouverture (Sonnet) et adaptation à l'identité (Sonnet, en cours). Reste : accepter les
+messages de caravane depuis la connexion monde côté serveur (en cours), un seul contexte
+WebGL par onglet.
 - Globe hexagonal, rendu du globe, biomes, choix de case de départ.
 - Serveur autoritaire persistant : cases, propriétaires, horloge globale.
 - Cartes gelées + avance rapide abstraite.
@@ -350,6 +356,9 @@ commerce, mods de contenu, événements monde.
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
+  par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
+  libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
 - 2026-09-05 : avance rapide abstraite plutôt que rejouée : O(entités), déterministe, sans
   rien semer ni récolter (personne n'était là) ; la commande est ajoutée en fin d'enum pour
   ne pas décaler les indices postcard des manifestes et snapshots existants. Équilibrage :

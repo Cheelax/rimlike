@@ -16,6 +16,7 @@
 pub mod build;
 pub mod caravan;
 pub mod combat;
+pub mod craft;
 pub mod farm;
 pub mod fastforward;
 pub mod fixed;
@@ -37,6 +38,7 @@ use serde::{Deserialize, Serialize};
 
 pub use build::{Blueprint, BuildKind, Material};
 pub use caravan::{CaravanManifest, MANIFEST_VERSION};
+pub use craft::{CraftStage, RECIPES, Recipe};
 pub use farm::Crop;
 pub use fastforward::MAX_FAST_FORWARD;
 pub use health::{BodyPart, Injury};
@@ -87,6 +89,9 @@ pub enum EventKind {
     /// La carte gelée a rattrapé le temps passé sans joueur
     /// (`Command::FastForward`). `arg` : le nombre de jours entiers écoulés.
     FastForwarded = 13,
+    /// Une arme vient de sortir d'un poste de fabrication. `arg` : le genre
+    /// fabriqué (`ItemKind`).
+    WeaponCrafted = 14,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -167,6 +172,12 @@ pub enum Command {
     /// serveur monde a calculé (`docs/protocol.md` §11.6). Bornée à
     /// `MAX_FAST_FORWARD` (60 jours) ; 0 ne fait rien.
     FastForward { ticks: u32 },
+    /// Règle le nombre d'exemplaires de `kind` que la colonie doit maintenir :
+    /// les colons fabriquent tant que le total en jeu (au sol, en main,
+    /// équipé par un colon) est inférieur à `target`. Un genre sans recette
+    /// (`craft::recipe_for`) est ignoré. Tout est à 0 au départ : sans ordre,
+    /// aucune arme n'est fabriquée.
+    SetCraftTarget { kind: ItemKind, target: u32 },
 }
 
 #[derive(Debug)]
@@ -213,6 +224,10 @@ pub struct Sim {
     /// tant que `Command::ClearDepartures` ne les a pas retirés : sans ça,
     /// deux clients de la même salle divergeraient dès le premier départ.
     departures: Vec<Vec<u8>>,
+    /// Objectif de fabrication par genre (`Command::SetCraftTarget`), indexé
+    /// par `ItemKind`. Ajouté **en fin de structure** : un vieux snapshot est
+    /// alors refusé net (fin de tampon) au lieu d'être relu de travers.
+    craft_targets: [u32; ItemKind::COUNT],
 }
 
 impl Sim {
@@ -248,6 +263,7 @@ impl Sim {
             weather_until: 0,
             next_id: 1,
             departures: Vec::new(),
+            craft_targets: [0; ItemKind::COUNT],
         };
         sim.spawn_starting_pawns(3);
         sim.schedule_first_raid();
@@ -295,6 +311,10 @@ impl Sim {
             for work in WorkType::ALL {
                 pawn.skills[work as usize].level = self.rng.below(9) as u8;
             }
+            // Le combat n'est pas un type de travail, mais ses deux
+            // compétences se tirent comme les autres.
+            pawn.melee.level = self.rng.below(9) as u8;
+            pawn.ranged.level = self.rng.below(9) as u8;
         }
         self.pawns.push(pawn);
         id
@@ -450,6 +470,11 @@ impl Sim {
             Command::ClearDepartures { count } => self.clear_departures(count),
             Command::ArriveCaravan { ref manifest } => self.arrive_caravan(manifest),
             Command::FastForward { ticks } => self.fast_forward(ticks),
+            Command::SetCraftTarget { kind, target } => {
+                if craft::recipe_for(kind).is_some() {
+                    self.craft_targets[kind as usize] = target;
+                }
+            }
         }
     }
 
@@ -532,6 +557,11 @@ impl Sim {
     /// Faits notables récents, du plus ancien au plus récent.
     pub fn events(&self) -> &[GameEvent] {
         &self.events
+    }
+
+    /// Objectifs de fabrication courants, indexés par `ItemKind`.
+    pub fn craft_targets(&self) -> &[u32; ItemKind::COUNT] {
+        &self.craft_targets
     }
 
     /// Total d'objets rangés en zone de stockage, par genre.

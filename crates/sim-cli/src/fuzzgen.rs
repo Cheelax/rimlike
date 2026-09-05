@@ -10,7 +10,7 @@ use sim::{
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 13;
+pub const VARIANT_COUNT: usize = 14;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -28,6 +28,7 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "ClearDepartures",
     "ArriveCaravan",
     "FastForward",
+    "SetCraftTarget",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -238,7 +239,8 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
         4 => {
             let (x0, y0, x1, y1) = random_rect_i32(rng, size);
             Command::Build {
-                kind: BuildKind::from_u8(rng.below(5) as u8),
+                // 0..=5 : murs, portes, sols, lits, feux et postes de fabrication.
+                kind: BuildKind::from_u8(rng.below(6) as u8),
                 material: Material::from_u8(rng.below(2) as u8),
                 x0,
                 y0,
@@ -302,7 +304,7 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
                 (0..rng.below(64)).map(|_| rng.below(256) as u8).collect()
             },
         },
-        _ => Command::FastForward {
+        12 => Command::FastForward {
             // 0 (sans effet), des durées plausibles, et des valeurs aberrantes
             // bien au-delà de `sim::MAX_FAST_FORWARD` : la borne doit tronquer
             // sans jamais faire boucler le sim ni déborder un compteur.
@@ -311,6 +313,18 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
                 1 => u32::MAX - rng.below(1_000),
                 2 => sim::MAX_FAST_FORWARD.saturating_add(rng.below(1_000_000)),
                 _ => rng.below(4 * sim::TICKS_PER_DAY),
+            },
+        },
+        _ => Command::SetCraftTarget {
+            // Genres tirés dans toute la plage (la plupart n'ont pas de
+            // recette : ils doivent être ignorés), objectifs le plus souvent
+            // plausibles, parfois énormes — le sim ne fabrique jamais plus vite
+            // que le bois ne rentre.
+            kind: ItemKind::from_u8(rng.below(ItemKind::COUNT as u32 + 4) as u8),
+            target: match rng.below(4) {
+                0 => 0,
+                1 => u32::MAX - rng.below(1_000),
+                _ => rng.below(6),
             },
         },
     };

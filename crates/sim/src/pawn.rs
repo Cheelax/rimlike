@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::TICKS_PER_DAY;
+use crate::craft::CraftStage;
 use crate::fixed::{self, FX_HALF, Fx};
 use crate::health::{BLOOD_MAX, Injury};
 use crate::items::ItemKind;
@@ -126,6 +127,17 @@ pub enum Job {
         target: u32,
         progress: u32,
     },
+    /// Fabrique une arme au poste `spot` : va chercher les ingrédients de la
+    /// recette qui produit `recipe`, les rapporte, puis taille (voir `craft`).
+    Craft {
+        spot: (u32, u32),
+        recipe: ItemKind,
+        stage: CraftStage,
+    },
+    /// Va chercher une arme rangée en stockage et l'équipe.
+    Equip {
+        item: u32,
+    },
 }
 
 impl Job {
@@ -157,6 +169,8 @@ impl Job {
             Job::Downed => 15,
             Job::Rescue { .. } => 16,
             Job::Tend { .. } => 17,
+            Job::Craft { .. } => 18,
+            Job::Equip { .. } => 19,
         }
     }
 }
@@ -211,6 +225,15 @@ pub struct Pawn {
     /// Le colon est dehors sous l'orage (recopié du sim à chaque tick, parce
     /// que `mood()` ne voit que le pawn).
     pub outdoor_storm: bool,
+    /// Arme équipée, `None` à mains nues. Une seule à la fois ; elle tombe au
+    /// sol à la mort du porteur et voyage avec lui en caravane.
+    pub weapon: Option<ItemKind>,
+    /// Compétence de corps à corps. **Hors du tableau `skills`** : le combat
+    /// n'est pas un type de travail, `WORK_TYPES` et les priorités ne bougent
+    /// pas. Tirée au sort à la création pour les colons.
+    pub melee: Skill,
+    /// Compétence de tir, même statut que `melee`.
+    pub ranged: Skill,
 }
 
 impl Pawn {
@@ -243,6 +266,9 @@ impl Pawn {
             skills: [Skill::default(); WORK_TYPES],
             relief_ticks: 0,
             outdoor_storm: false,
+            weapon: None,
+            melee: Skill::default(),
+            ranged: Skill::default(),
         }
     }
 

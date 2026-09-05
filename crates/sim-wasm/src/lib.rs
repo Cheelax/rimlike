@@ -146,7 +146,8 @@ impl WasmSim {
         });
     }
 
-    /// `kind` : 0 mur, 1 porte, 2 sol, 3 lit. `material` : 0 bois, 1 pierre.
+    /// `kind` : 0 mur, 1 porte, 2 sol, 3 lit, 4 feu, 5 poste de fabrication.
+    /// `material` : 0 bois, 1 pierre.
     pub fn build(&mut self, kind: u8, material: u8, x0: i32, y0: i32, x1: i32, y1: i32) {
         self.pending.push(sim::Command::Build {
             kind: BuildKind::from_u8(kind),
@@ -203,6 +204,16 @@ impl WasmSim {
         });
     }
 
+    /// Règle l'objectif de fabrication d'un genre. `kind` suit `sim::ItemKind`
+    /// (6 gourdin, 7 épieu, 8 arc) ; un genre sans recette est ignoré par le
+    /// sim. Les colons fabriquent tant que la colonie en a moins que `target`.
+    pub fn set_craft_target(&mut self, kind: u8, target: u32) {
+        self.pending.push(sim::Command::SetCraftTarget {
+            kind: ItemKind::from_u8(kind),
+            target,
+        });
+    }
+
     /// Rattrape le temps passé carte gelée (voir `sim::fastforward`).
     /// Émise une seule fois par l'hôte à la réouverture d'une colonie, avec le
     /// `frozenTicks` du `snapshot` reçu du serveur.
@@ -250,7 +261,8 @@ impl WasmSim {
         })
     }
 
-    /// `kind` : 0 mur, 1 porte, 2 sol, 3 lit, 4 feu. `material` : 0 bois, 1 pierre.
+    /// `kind` : 0 mur, 1 porte, 2 sol, 3 lit, 4 feu, 5 poste de fabrication.
+    /// `material` : 0 bois, 1 pierre.
     pub fn encode_build(kind: u8, material: u8, x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<u8> {
         encode(&sim::Command::Build {
             kind: BuildKind::from_u8(kind),
@@ -301,6 +313,15 @@ impl WasmSim {
     /// 60 jours côté sim ; le client émet le `frozenTicks` du `snapshot`.
     pub fn encode_fast_forward(ticks: u32) -> Vec<u8> {
         encode(&sim::Command::FastForward { ticks })
+    }
+
+    /// Objectif de fabrication. `kind` suit `sim::ItemKind` (6 gourdin,
+    /// 7 épieu, 8 arc).
+    pub fn encode_set_craft_target(kind: u8, target: u32) -> Vec<u8> {
+        encode(&sim::Command::SetCraftTarget {
+            kind: ItemKind::from_u8(kind),
+            target,
+        })
     }
 
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
@@ -392,6 +413,41 @@ impl WasmSim {
     /// Total rangé en stockage, indexé par `ItemKind`.
     pub fn stored_totals(&self) -> Vec<u32> {
         self.inner.stored_totals().to_vec()
+    }
+
+    /// Objectifs de fabrication courants, indexés par `ItemKind`.
+    pub fn craft_targets(&self) -> Vec<u32> {
+        self.inner.craft_targets().to_vec()
+    }
+
+    /// Arme équipée d'un pawn, suivant `sim::ItemKind`. -1 : à mains nues, ou
+    /// id inconnu. Hors du tampon des pawns : `PAWN_STRIDE` ne bouge pas.
+    pub fn pawn_weapon(&self, id: u32) -> i32 {
+        self.inner
+            .pawns()
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.weapon)
+            .map_or(-1, |w| w as i32)
+    }
+
+    /// Compétences de combat d'un pawn : `[niveau mêlée, xp mêlée, niveau tir,
+    /// xp tir]`. Vide si l'id est inconnu. Elles ne sont pas dans le tampon des
+    /// compétences, qui suit `WorkType` et garde son `SKILL_STRIDE`.
+    pub fn pawn_combat_skills(&self, id: u32) -> Vec<i32> {
+        self.inner
+            .pawns()
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| {
+                vec![
+                    i32::from(p.melee.level),
+                    p.melee.xp as i32,
+                    i32::from(p.ranged.level),
+                    p.ranged.xp as i32,
+                ]
+            })
+            .unwrap_or_default()
     }
 
     // --- Vues mémoire (zéro copie ; à recréer après tout appel au sim) ---
@@ -790,6 +846,13 @@ mod tests {
                 WasmSim::encode_fast_forward(3_000),
                 Command::FastForward { ticks: 3_000 },
             ),
+            (
+                WasmSim::encode_set_craft_target(ItemKind::Bow as u8, 2),
+                Command::SetCraftTarget {
+                    kind: ItemKind::Bow,
+                    target: 2,
+                },
+            ),
         ];
         for (bytes, expected) in cases {
             assert!(!bytes.is_empty(), "une commande encodée n'est jamais vide");
@@ -905,6 +968,40 @@ mod tests {
         s.clear_departures(1);
         s.step(1);
         assert_eq!(s.departures_count(), 0);
+    }
+
+    /// Contrat d'armement avec le client : objectifs de fabrication lisibles,
+    /// arme équipée et compétences de combat hors des tampons existants.
+    #[test]
+    fn les_accesseurs_d_armement_repondent() {
+        let mut s = fresh();
+        assert_eq!(
+            s.craft_targets().len(),
+            ItemKind::COUNT,
+            "un objectif par genre"
+        );
+        assert!(s.craft_targets().iter().all(|&t| t == 0), "0 au départ");
+
+        s.set_craft_target(ItemKind::Club as u8, 3);
+        // Un genre sans recette est ignoré par le sim.
+        s.set_craft_target(ItemKind::Stone as u8, 9);
+        s.step(1);
+        assert_eq!(s.craft_targets()[ItemKind::Club as usize], 3);
+        assert_eq!(s.craft_targets()[ItemKind::Stone as usize], 0);
+
+        let id = s.inner.pawns()[0].id;
+        assert_eq!(s.pawn_weapon(id), -1, "un colon démarre à mains nues");
+        s.inner.pawn_mut(id).expect("le colon existe").weapon = Some(ItemKind::Spear);
+        assert_eq!(s.pawn_weapon(id), ItemKind::Spear as i32);
+        assert_eq!(s.pawn_weapon(9999), -1, "id inconnu");
+
+        let skills = s.pawn_combat_skills(id);
+        assert_eq!(skills.len(), 4, "[niveau mêlée, xp, niveau tir, xp]");
+        assert!(
+            skills[0] <= 8 && skills[2] <= 8,
+            "niveaux de départ : {skills:?}"
+        );
+        assert!(s.pawn_combat_skills(9999).is_empty());
     }
 
     #[test]

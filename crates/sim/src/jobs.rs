@@ -5,7 +5,10 @@
 //! Ordre de priorité d'un colon libre : dormir > manger > les travaux dans
 //! l'ordre réglé par le joueur (`Pawn::priorities`) > flâner.
 
+use core::cmp::Reverse;
+
 use crate::build;
+use crate::craft::{self, CraftStage};
 use crate::farm::{self, Crop};
 use crate::health::{TEND_STEP, TEND_TICKS};
 use crate::items::{ItemKind, ItemStack, STACK_MAX};
@@ -122,6 +125,12 @@ impl Sim {
             Job::Break { until } => self.do_break(i, until),
             Job::Rescue { target, picked } => self.do_rescue(i, target, picked),
             Job::Tend { target, progress } => self.do_tend(i, target, progress),
+            Job::Craft {
+                spot,
+                recipe,
+                stage,
+            } => self.do_craft(i, spot, recipe, stage),
+            Job::Equip { item } => self.do_equip(i, item),
             // Traité plus haut : un pawn à terre ne passe jamais par ici.
             Job::Downed => {}
         }
@@ -270,6 +279,11 @@ impl Sim {
         if self.try_start_tend(i) {
             return;
         }
+        // S'armer passe avant le travail : un colon désarmé qui part couper du
+        // bois pendant qu'un arc l'attend en stockage n'a aucun sens.
+        if self.try_start_equip(i) {
+            return;
+        }
         // Priorité 1 d'abord, et à priorité égale l'ordre de `WorkType::ALL`.
         for prio in 1..=4 {
             for work in WorkType::ALL {
@@ -284,7 +298,9 @@ impl Sim {
     /// Tente de démarrer un travail de la famille demandée.
     fn try_start(&mut self, work: WorkType, i: usize) -> bool {
         match work {
-            WorkType::Build => self.try_start_build(i),
+            // La fabrication est du travail de constructeur : elle suit la même
+            // priorité et la même compétence, après les chantiers en cours.
+            WorkType::Build => self.try_start_build(i) || self.try_start_craft(i),
             WorkType::Deliver => self.try_start_deliver(i),
             WorkType::Cook => self.try_start_cook(i),
             WorkType::Designated => self.try_start_work(i),
@@ -1272,6 +1288,344 @@ impl Sim {
         self.spawn_item(ItemKind::Meal, 1, here.0, here.1);
         let id = self.pawns[i].id;
         self.reservations.retain(|r| r.pawn != id);
+        self.pawns[i].job = Job::Idle;
+    }
+
+    // ------------------------------------------------------------------
+    // Fabrication d'armes et équipement
+    // ------------------------------------------------------------------
+
+    /// Exemplaires d'un genre que possède la colonie : piles au sol ou rangées,
+    /// charges en main, armes équipées. Les pillards ne comptent pas, leur
+    /// gourdin n'appartient pas à la colonie tant qu'ils le tiennent.
+    pub fn colony_total(&self, kind: ItemKind) -> u32 {
+        let mut total: u32 = self
+            .items
+            .iter()
+            .filter(|s| s.kind == kind)
+            .map(|s| s.count)
+            .sum();
+        for p in &self.pawns {
+            if p.faction != Faction::Colony {
+                continue;
+            }
+            if let Some((k, n)) = p.carrying
+                && k == kind
+            {
+                total += n;
+            }
+            if p.weapon == Some(kind) {
+                total += 1;
+            }
+        }
+        total
+    }
+
+    /// Première recette dont l'objectif n'est pas atteint, dans l'ordre de
+    /// `craft::RECIPES`.
+    fn wanted_recipe(&self) -> Option<&'static craft::Recipe> {
+        craft::RECIPES
+            .iter()
+            .find(|r| self.colony_total(r.output) < self.craft_targets[r.output as usize])
+    }
+
+    /// Fabrique s'il y a un poste libre, un objectif non atteint et de quoi
+    /// tenir la recette. Les piles nécessaires sont réservées d'un coup : un
+    /// colon ne part pas chercher du bois pour un épieu sans pierre.
+    fn try_start_craft(&mut self, i: usize) -> bool {
+        // Trois court-circuits avant tout balayage : pas de poste, aucun
+        // objectif posé, ou tous atteints.
+        if self.map.crafting_spot_count() == 0 || self.craft_targets.iter().all(|&t| t == 0) {
+            return false;
+        }
+        let Some(recipe) = self.wanted_recipe() else {
+            return false;
+        };
+        let from = self.pawns[i].tile();
+        let mut spots: Vec<(u32, u32, u32)> = Vec::new();
+        for y in 0..self.map.height() {
+            for x in 0..self.map.width() {
+                if self.map.feature(x, y) == Feature::CraftingSpot && !self.is_reserved(x, y) {
+                    spots.push((chebyshev(from, (x, y)), x, y));
+                }
+            }
+        }
+        spots.sort_unstable();
+        let Some(&(_, fx, fy)) = spots.first() else {
+            return false;
+        };
+        // Une pile par ingrédient, la plus proche du colon, assez fournie pour
+        // couvrir la recette d'un seul voyage.
+        let mut picks: Vec<usize> = Vec::with_capacity(recipe.inputs.len());
+        for &(kind, need) in recipe.inputs {
+            let mut stacks: Vec<(u32, u32, u32, usize)> = self
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(k, s)| {
+                    s.kind == kind
+                        && s.reserved_by.is_none()
+                        && s.count >= need
+                        && !picks.contains(k)
+                })
+                .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
+                .collect();
+            stacks.sort_unstable();
+            let Some(&(_, _, _, k)) = stacks.first() else {
+                return false;
+            };
+            picks.push(k);
+        }
+        let first = picks[0];
+        let target = (self.items[first].x, self.items[first].y);
+        let Some(p) = path::find_path(&self.map, from, target) else {
+            return false;
+        };
+        let pawn = self.pawns[i].id;
+        for &k in &picks {
+            self.items[k].reserved_by = Some(pawn);
+        }
+        self.reservations.push(Reservation { x: fx, y: fy, pawn });
+        let item = self.items[first].id;
+        self.pawns[i].set_path(p);
+        self.pawns[i].job = Job::Craft {
+            spot: (fx, fy),
+            recipe: recipe.output,
+            stage: CraftStage::Fetch {
+                index: 0,
+                item,
+                carried: false,
+            },
+        };
+        true
+    }
+
+    fn do_craft(&mut self, i: usize, spot: (u32, u32), recipe: ItemKind, stage: CraftStage) {
+        let Some(r) = craft::recipe_for(recipe) else {
+            self.abandon_job(i);
+            return;
+        };
+        if self.map.feature(spot.0, spot.1) != Feature::CraftingSpot {
+            self.abandon_job(i);
+            return;
+        }
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        let here = self.pawns[i].tile();
+        match stage {
+            CraftStage::Fetch {
+                index,
+                item,
+                carried,
+            } => {
+                let Some(&(kind, need)) = r.inputs.get(usize::from(index)) else {
+                    self.abandon_job(i);
+                    return;
+                };
+                if !carried {
+                    self.pick_ingredient(i, spot, recipe, index, item, kind, need);
+                    return;
+                }
+                // Arrivé au poste, la charge y reste : elle est consommée par
+                // la fabrication, qu'on la termine ou non.
+                if chebyshev(here, spot) > 1 || self.pawns[i].carrying.is_none() {
+                    self.abandon_job(i);
+                    return;
+                }
+                self.pawns[i].carrying = None;
+                self.next_ingredient(i, spot, recipe, usize::from(index) + 1);
+            }
+            CraftStage::Work { progress } => {
+                if chebyshev(here, spot) > 1 {
+                    self.abandon_job(i);
+                    return;
+                }
+                let progress = progress + self.pawns[i].work_step(WorkType::Build);
+                self.gain_xp(i, WorkType::Build);
+                if progress < r.work_ticks * 100 {
+                    self.pawns[i].job = Job::Craft {
+                        spot,
+                        recipe,
+                        stage: CraftStage::Work { progress },
+                    };
+                    return;
+                }
+                // L'arme tombe au pied du poste : un rangeur la mettra en
+                // stockage, où un colon viendra la prendre.
+                self.spawn_item(recipe, 1, here.0, here.1);
+                let id = self.pawns[i].id;
+                self.reservations.retain(|r| r.pawn != id);
+                self.pawns[i].job = Job::Idle;
+                self.push_event(EventKind::WeaponCrafted, recipe as u32);
+            }
+        }
+    }
+
+    /// Ramasse la part de la pile réservée qu'exige la recette, puis met le cap
+    /// sur le poste.
+    #[allow(clippy::too_many_arguments)]
+    fn pick_ingredient(
+        &mut self,
+        i: usize,
+        spot: (u32, u32),
+        recipe: ItemKind,
+        index: u8,
+        item: u32,
+        kind: ItemKind,
+        need: u32,
+    ) {
+        let here = self.pawns[i].tile();
+        let Some(j) = self.items.iter().position(|s| s.id == item) else {
+            self.abandon_job(i);
+            return;
+        };
+        if (self.items[j].x, self.items[j].y) != here || self.items[j].count < need {
+            self.abandon_job(i);
+            return;
+        }
+        self.items[j].count -= need;
+        self.items[j].reserved_by = None;
+        if self.items[j].count == 0 {
+            self.items.remove(j);
+        }
+        self.pawns[i].carrying = Some((kind, need));
+        match self.path_adjacent(here, spot) {
+            Some(p) => {
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Craft {
+                    spot,
+                    recipe,
+                    stage: CraftStage::Fetch {
+                        index,
+                        item,
+                        carried: true,
+                    },
+                };
+            }
+            None => self.abandon_job(i),
+        }
+    }
+
+    /// Enchaîne sur l'ingrédient suivant (sa pile est déjà réservée) ou passe
+    /// au travail quand la recette est complète.
+    fn next_ingredient(&mut self, i: usize, spot: (u32, u32), recipe: ItemKind, index: usize) {
+        let Some(r) = craft::recipe_for(recipe) else {
+            self.abandon_job(i);
+            return;
+        };
+        let Some(&(kind, need)) = r.inputs.get(index) else {
+            self.pawns[i].job = Job::Craft {
+                spot,
+                recipe,
+                stage: CraftStage::Work { progress: 0 },
+            };
+            return;
+        };
+        let id = self.pawns[i].id;
+        let here = self.pawns[i].tile();
+        let found = self
+            .items
+            .iter()
+            .position(|s| s.kind == kind && s.reserved_by == Some(id) && s.count >= need);
+        let Some(j) = found else {
+            self.abandon_job(i);
+            return;
+        };
+        let target = (self.items[j].x, self.items[j].y);
+        let item = self.items[j].id;
+        match path::find_path(&self.map, here, target) {
+            Some(p) => {
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Craft {
+                    spot,
+                    recipe,
+                    stage: CraftStage::Fetch {
+                        index: index as u8,
+                        item,
+                        carried: false,
+                    },
+                };
+            }
+            None => self.abandon_job(i),
+        }
+    }
+
+    /// Va chercher en stockage la meilleure arme disponible, si elle vaut mieux
+    /// que celle qu'on a déjà (`Bow > Spear > Club`).
+    fn try_start_equip(&mut self, i: usize) -> bool {
+        if self.map.stockpile_count() == 0 {
+            return false;
+        }
+        let current = self.pawns[i].weapon.map_or(0, |w| w.weapon_rank());
+        // Test sans allocation : le cas courant est « aucune arme rangée ».
+        let usable = |s: &ItemStack| {
+            s.kind.weapon_rank() > current
+                && s.reserved_by.is_none()
+                && s.count > 0
+                && self.map.zone(s.x, s.y) == Zone::Stockpile
+        };
+        if !self.items.iter().any(usable) {
+            return false;
+        }
+        let from = self.pawns[i].tile();
+        // Meilleure arme d'abord, puis la plus proche : `Reverse` renverse le
+        // seul critère décroissant sans casser l'ordre total du tri.
+        let mut candidates: Vec<(Reverse<u32>, u32, u32, u32, usize)> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| usable(s))
+            .map(|(k, s)| {
+                (
+                    Reverse(s.kind.weapon_rank()),
+                    chebyshev(from, (s.x, s.y)),
+                    s.x,
+                    s.y,
+                    k,
+                )
+            })
+            .collect();
+        candidates.sort_unstable();
+        for &(_, _, x, y, k) in candidates.iter().take(PATH_ATTEMPTS) {
+            if let Some(p) = path::find_path(&self.map, from, (x, y)) {
+                let id = self.pawns[i].id;
+                self.items[k].reserved_by = Some(id);
+                let item = self.items[k].id;
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Equip { item };
+                return true;
+            }
+        }
+        false
+    }
+
+    fn do_equip(&mut self, i: usize, item: u32) {
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        let Some(k) = self.items.iter().position(|s| s.id == item) else {
+            self.abandon_job(i);
+            return;
+        };
+        let here = self.pawns[i].tile();
+        let kind = self.items[k].kind;
+        let current = self.pawns[i].weapon.map_or(0, |w| w.weapon_rank());
+        if (self.items[k].x, self.items[k].y) != here || kind.weapon_rank() <= current {
+            self.abandon_job(i);
+            return;
+        }
+        // Une arme se porte à l'unité : la pile en perd une, pas plus.
+        self.items[k].count -= 1;
+        self.items[k].reserved_by = None;
+        if self.items[k].count == 0 {
+            self.items.remove(k);
+        }
+        if let Some(old) = self.pawns[i].weapon.replace(kind) {
+            self.spawn_item(old, 1, here.0, here.1);
+        }
         self.pawns[i].job = Job::Idle;
     }
 

@@ -1367,6 +1367,267 @@ fn first_raid_is_dangerous_but_survivable() {
 }
 
 // ----------------------------------------------------------------------
+// Armes : fabrication, équipement, tir
+// ----------------------------------------------------------------------
+
+/// Le « bill » de fabrication : on pose un objectif, les colons taillent
+/// jusqu'à l'atteindre, puis s'arrêtent d'eux-mêmes.
+#[test]
+fn craft_target_produces_weapons() {
+    let mut s = clearing();
+    // Poste posé à la main : le chantier est déjà couvert par les tests de
+    // construction, ce qui compte ici est ce qui s'y fabrique.
+    s.map_mut().set_feature(8, 3, Feature::CraftingSpot);
+    assert_eq!(s.map().crafting_spot_count(), 1);
+    s.spawn_item(ItemKind::Wood, 40, 6, 6);
+    // De quoi ne pas mourir de faim pendant deux jours de taille.
+    s.spawn_item(ItemKind::Berries, 200, 5, 6);
+
+    // Sans ordre, rien ne se fabrique.
+    for _ in 0..600 {
+        s.step(&[]);
+    }
+    assert_eq!(s.colony_total(ItemKind::Club), 0, "gourdin sans ordre");
+
+    s.step(&[Command::SetCraftTarget {
+        kind: ItemKind::Club,
+        target: 2,
+    }]);
+    assert_eq!(s.craft_targets()[ItemKind::Club as usize], 2);
+    assert!(
+        run_until(&mut s, 2 * DAY, |s| s.colony_total(ItemKind::Club) >= 2),
+        "gourdins fabriqués : {}, bois restant : {}",
+        s.colony_total(ItemKind::Club),
+        s.colony_total(ItemKind::Wood)
+    );
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::WeaponCrafted && e.arg == ItemKind::Club as u32),
+        "aucun événement de fabrication : {:?}",
+        s.events()
+    );
+    // 8 bois par gourdin, pas un de plus.
+    assert_eq!(s.colony_total(ItemKind::Wood), 40 - 16);
+
+    // L'objectif est atteint : on arrête, même avec du bois plein les bras.
+    for _ in 0..DAY {
+        s.step(&[]);
+        assert_eq!(
+            s.colony_total(ItemKind::Club),
+            2,
+            "fabrication en trop au tick {}",
+            s.tick()
+        );
+    }
+    assert!(
+        s.pawns()
+            .iter()
+            .all(|p| !matches!(p.job, Job::Craft { .. }))
+    );
+}
+
+/// Un colon prend la meilleure arme rangée : l'arc avant le gourdin, et il ne
+/// redescend jamais en gamme.
+#[test]
+fn colonists_equip_best_weapon() {
+    let mut s = clearing();
+    s.step(&[Command::SetZone {
+        zone: Zone::Stockpile,
+        x0: 8,
+        y0: 5,
+        x1: 9,
+        y1: 6,
+    }]);
+    s.spawn_item(ItemKind::Club, 1, 8, 5);
+    s.spawn_item(ItemKind::Bow, 1, 9, 5);
+
+    assert!(
+        run_until(&mut s, DAY, |s| s
+            .pawns()
+            .iter()
+            .any(|p| p.weapon.is_some())),
+        "personne ne s'est armé"
+    );
+    assert!(
+        s.pawns().iter().any(|p| p.weapon == Some(ItemKind::Bow)),
+        "le gourdin est parti avant l'arc : {:?}",
+        s.pawns().iter().map(|p| p.weapon).collect::<Vec<_>>()
+    );
+    assert!(
+        run_until(&mut s, DAY, |s| s
+            .pawns()
+            .iter()
+            .filter(|p| p.weapon.is_some())
+            .count()
+            == 2),
+        "le gourdin est resté en rayon"
+    );
+    let armed: Vec<Option<ItemKind>> = s.pawns().iter().map(|p| p.weapon).collect();
+    assert_eq!(
+        armed.iter().filter(|w| **w == Some(ItemKind::Bow)).count(),
+        1
+    );
+    assert_eq!(
+        armed.iter().filter(|w| **w == Some(ItemKind::Club)).count(),
+        1
+    );
+    assert!(
+        !s.items().iter().any(|i| i.kind.is_weapon()),
+        "une arme traîne encore : {:?}",
+        s.items()
+    );
+
+    // Un archer ne troque pas son arc contre un gourdin.
+    let archer = s
+        .pawns()
+        .iter()
+        .find(|p| p.weapon == Some(ItemKind::Bow))
+        .expect("un colon a l'arc")
+        .id;
+    s.spawn_item(ItemKind::Club, 1, 8, 5);
+    for _ in 0..600 {
+        s.step(&[]);
+        assert_eq!(
+            find_pawn(&s, archer).and_then(|p| p.weapon),
+            Some(ItemKind::Bow),
+            "l'archer a lâché son arc"
+        );
+    }
+
+    // Le colon aux mains nues, lui, monte en gamme : il prend le gourdin.
+    assert!(
+        s.pawns()
+            .iter()
+            .filter(|p| p.weapon == Some(ItemKind::Club))
+            .count()
+            >= 2
+    );
+}
+
+/// Un arc a besoin d'une ligne de vue dégagée : le mur de rochers protège
+/// autant qu'un bouclier, et une fois abattu la cible saigne sans contact.
+#[test]
+fn bow_needs_line_of_sight_and_range() {
+    // Colonne de rochers en x = 4 : la carte est coupée en deux.
+    let map = map_from(&[
+        "....#...............",
+        "....#...............",
+        "....#...............",
+        "....#...............",
+        "....#...............",
+        "....#...............",
+        "....#...............",
+    ]);
+    let mut s = Sim::from_map(1, map);
+    let archer = s.spawn_pawn(1, 3, Faction::Colony);
+    let raider = s.spawn_pawn(7, 3, Faction::Raider);
+    {
+        let p = s.pawn_mut(archer).expect("l'archer existe");
+        p.weapon = Some(ItemKind::Bow);
+        p.ranged.level = 20;
+    }
+    {
+        // Cible à terre : elle ne bouge pas, ne riposte pas, et les autres
+        // colons l'ignorent (ils n'achèvent que ce qu'ils ont déjà pris pour
+        // cible). Seul l'archer la vise, sur ordre du joueur. `Downed` est posé
+        // à la main : sinon les colons du centre la verraient debout le temps
+        // d'un tick et lui tomberaient dessus.
+        let p = s.pawn_mut(raider).expect("le pillard existe");
+        p.blood = 200;
+        p.job = Job::Downed;
+    }
+    s.step(&[]);
+    assert!(
+        find_pawn(&s, raider).is_some_and(|p| p.is_downed()),
+        "la cible devrait être à terre"
+    );
+
+    // Derrière le mur : pas une flèche.
+    s.step(&[Command::Attack {
+        pawn: archer,
+        target: raider,
+    }]);
+    for _ in 0..600 {
+        s.step(&[]);
+    }
+    assert_eq!(
+        find_pawn(&s, archer).map(|p| p.ranged.xp),
+        Some(0),
+        "l'archer a tiré à travers le mur"
+    );
+    assert_eq!(
+        find_pawn(&s, raider).map(|p| p.total_severity()),
+        Some(0),
+        "la cible a pris des dégâts derrière le mur"
+    );
+
+    // Le mur tombe : la vue est dégagée, les flèches partent.
+    for y in 0..7 {
+        s.map_mut().set_feature(4, y, Feature::None);
+    }
+    assert!(sim::combat::line_of_sight(s.map(), (1, 3), (7, 3)));
+    s.step(&[Command::Attack {
+        pawn: archer,
+        target: raider,
+    }]);
+    let mut contact = false;
+    let hurt = run_until(&mut s, 4 * u64::from(sim::combat::RANGED_COOLDOWN), |s| {
+        let (Some(a), Some(r)) = (find_pawn(s, archer), find_pawn(s, raider)) else {
+            return true;
+        };
+        contact |= sim::map::chebyshev(a.tile(), r.tile()) <= 1;
+        r.total_severity() > 0
+    });
+    assert!(hurt, "aucune flèche n'a porté à découvert");
+    assert!(!contact, "l'archer est allé au corps à corps");
+    assert!(
+        find_pawn(&s, archer).is_some_and(|p| p.ranged.xp > 0),
+        "les tirs ne forment pas au tir"
+    );
+}
+
+/// Les pillards arrivent armés, et ce qu'ils portent finit sur le sol de la
+/// colonie quand ils y laissent leur peau.
+#[test]
+fn armed_raiders_drop_weapons() {
+    // Carte pleine taille : sur la clairière de douze cases de large, un
+    // pillard qui décroche atteint le bord avant de succomber à ses plaies.
+    let mut s = Sim::new(1, 32, 32);
+    let (bx, by) = s
+        .map()
+        .nearest_passable(16, 16)
+        .expect("carte 32x32 sans centre franchissable");
+    s.spawn_item(ItemKind::Berries, 200, bx, by);
+    s.step(&[Command::TriggerRaid]);
+    let armed: Vec<ItemKind> = s
+        .pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Raider)
+        .filter_map(|p| p.weapon)
+        .collect();
+    assert_eq!(
+        armed,
+        vec![ItemKind::Club, ItemKind::Spear],
+        "les deux premiers pillards portent gourdin puis épieu"
+    );
+
+    assert!(
+        run_until(&mut s, 3 * DAY, |s| raiders(s) == 0),
+        "pillards encore là : {:?}",
+        s.pawns()
+    );
+    let looted = s.items().iter().any(|i| i.kind.is_weapon())
+        || s.pawns().iter().any(|p| p.weapon.is_some());
+    assert!(
+        looted,
+        "aucune arme récupérée après le raid : objets {:?}, morts {:?}",
+        s.items(),
+        s.events()
+    );
+}
+
+// ----------------------------------------------------------------------
 // Caravanes : sortir d'une carte, entrer sur une autre
 // ----------------------------------------------------------------------
 

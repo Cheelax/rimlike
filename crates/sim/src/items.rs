@@ -12,10 +12,16 @@ pub enum ItemKind {
     Meal = 4,
     /// Dépouille d'un pawn mort. Ne se transporte pas, se décompose.
     Corpse = 5,
+    /// Gourdin : du bois taillé. Arme de mêlée d'entrée de gamme.
+    Club = 6,
+    /// Épieu : bois et pierre. Frappe plus fort qu'un gourdin.
+    Spear = 7,
+    /// Arc : tire à distance (voir `combat::BOW_RANGE`), médiocre en mêlée.
+    Bow = 8,
 }
 
 impl ItemKind {
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 9;
 
     pub fn from_u8(v: u8) -> ItemKind {
         match v {
@@ -24,6 +30,9 @@ impl ItemKind {
             2 => ItemKind::Berries,
             3 => ItemKind::Vegetables,
             4 => ItemKind::Meal,
+            6 => ItemKind::Club,
+            7 => ItemKind::Spear,
+            8 => ItemKind::Bow,
             _ => ItemKind::Corpse,
         }
     }
@@ -34,7 +43,12 @@ impl ItemKind {
             ItemKind::Berries => Some(200_000),
             ItemKind::Vegetables => Some(150_000),
             ItemKind::Meal => Some(900_000),
-            ItemKind::Wood | ItemKind::Stone | ItemKind::Corpse => None,
+            ItemKind::Wood
+            | ItemKind::Stone
+            | ItemKind::Corpse
+            | ItemKind::Club
+            | ItemKind::Spear
+            | ItemKind::Bow => None,
         }
     }
 
@@ -58,7 +72,40 @@ impl ItemKind {
             ItemKind::Meal => 0,
             ItemKind::Berries => 1,
             ItemKind::Vegetables => 2,
-            ItemKind::Wood | ItemKind::Stone | ItemKind::Corpse => u32::MAX,
+            ItemKind::Wood
+            | ItemKind::Stone
+            | ItemKind::Corpse
+            | ItemKind::Club
+            | ItemKind::Spear
+            | ItemKind::Bow => u32::MAX,
+        }
+    }
+
+    /// Une arme se fabrique, se range, s'équipe — et se porte à l'unité, même
+    /// si une pile posée au sol en empile plusieurs comme n'importe quoi d'autre.
+    pub fn is_weapon(self) -> bool {
+        matches!(self, ItemKind::Club | ItemKind::Spear | ItemKind::Bow)
+    }
+
+    /// Qualité d'une arme : plus grand = meilleur. C'est l'ordre dans lequel un
+    /// colon s'équipe (`Bow > Spear > Club`) ; 0 pour ce qui n'est pas une arme.
+    pub fn weapon_rank(self) -> u32 {
+        match self {
+            ItemKind::Club => 1,
+            ItemKind::Spear => 2,
+            ItemKind::Bow => 3,
+            _ => 0,
+        }
+    }
+
+    /// Dégâts de mêlée en pourcentage de ceux des poings nus. L'arc est une
+    /// mauvaise massue : on ne se bat pas au corps à corps avec un arc.
+    pub fn melee_percent(self) -> u32 {
+        match self {
+            ItemKind::Club => 130,
+            ItemKind::Spear => 160,
+            ItemKind::Bow => 80,
+            _ => 100,
         }
     }
 
@@ -86,7 +133,9 @@ impl ItemKind {
             ItemKind::Vegetables => Some(TICKS_PER_DAY * 4),
             ItemKind::Meal => Some(TICKS_PER_DAY * 2),
             ItemKind::Corpse => Some(TICKS_PER_DAY * 3),
-            ItemKind::Wood | ItemKind::Stone => None,
+            ItemKind::Wood | ItemKind::Stone | ItemKind::Club | ItemKind::Spear | ItemKind::Bow => {
+                None
+            }
         }
     }
 }

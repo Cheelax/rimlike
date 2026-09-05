@@ -70,6 +70,9 @@ pub enum Feature {
     /// Plant mûr, à récolter.
     CropRipe = 11,
     Campfire = 12,
+    /// Poste de fabrication : on y taille les armes (voir `craft`).
+    /// Infranchissable comme le feu de camp : on travaille à côté.
+    CraftingSpot = 13,
 }
 
 impl Feature {
@@ -87,6 +90,7 @@ impl Feature {
             10 => Feature::Crop,
             11 => Feature::CropRipe,
             12 => Feature::Campfire,
+            13 => Feature::CraftingSpot,
             _ => Feature::None,
         }
     }
@@ -99,6 +103,7 @@ impl Feature {
                 | Feature::WallWood
                 | Feature::WallStone
                 | Feature::Campfire
+                | Feature::CraftingSpot
         )
     }
 
@@ -215,6 +220,7 @@ pub struct Map {
     /// balayages de carte quand il n'y a rien à trouver.
     bed_count: u32,
     campfire_count: u32,
+    crafting_spot_count: u32,
 }
 
 impl Map {
@@ -294,6 +300,10 @@ impl Map {
             .iter()
             .filter(|&&f| f == Feature::Campfire as u8)
             .count() as u32;
+        let crafting_spot_count = features
+            .iter()
+            .filter(|&&f| f == Feature::CraftingSpot as u8)
+            .count() as u32;
         Map {
             width,
             height,
@@ -308,6 +318,7 @@ impl Map {
             growing_count: 0,
             bed_count,
             campfire_count,
+            crafting_spot_count,
         }
     }
 
@@ -359,11 +370,13 @@ impl Map {
             match old {
                 Feature::Bed => self.bed_count -= 1,
                 Feature::Campfire => self.campfire_count -= 1,
+                Feature::CraftingSpot => self.crafting_spot_count -= 1,
                 _ => {}
             }
             match f {
                 Feature::Bed => self.bed_count += 1,
                 Feature::Campfire => self.campfire_count += 1,
+                Feature::CraftingSpot => self.crafting_spot_count += 1,
                 _ => {}
             }
             self.features[i] = f as u8;
@@ -460,6 +473,10 @@ impl Map {
 
     pub fn campfire_count(&self) -> u32 {
         self.campfire_count
+    }
+
+    pub fn crafting_spot_count(&self) -> u32 {
+        self.crafting_spot_count
     }
 
     /// Sol cultivable.

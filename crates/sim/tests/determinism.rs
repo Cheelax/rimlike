@@ -89,6 +89,14 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             x1: w / 2 - 2,
             y1: h / 2 + 6,
         });
+        cmds.push(Command::Build {
+            kind: BuildKind::CraftingSpot,
+            material: Material::Wood,
+            x0: w / 2 - 4,
+            y0: h / 2 + 6,
+            x1: w / 2 - 4,
+            y1: h / 2 + 6,
+        });
     }
     if t == 90 {
         // Les priorités de travail changent l'ordre des recherches de job.
@@ -138,6 +146,18 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
         // comme les autres, appliquée au même tick chez tout le monde.
         cmds.push(Command::FastForward {
             ticks: FAST_FORWARD_TICKS,
+        });
+    }
+    if t == 9000 {
+        // Un ordre de fabrication après le dégel : les objectifs font partie
+        // de l'état, et la fabrication consomme du stock comme un chantier.
+        cmds.push(Command::SetCraftTarget {
+            kind: ItemKind::Club,
+            target: 2,
+        });
+        cmds.push(Command::SetCraftTarget {
+            kind: ItemKind::Spear,
+            target: 1,
         });
     }
     if t % 900 == 0 {

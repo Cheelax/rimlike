@@ -9,17 +9,83 @@ use crate::health::{
     UP_BLOOD, UP_CONSCIOUSNESS,
 };
 use crate::items::ItemKind;
-use crate::map::{Feature, chebyshev};
+use crate::map::{Feature, Map, chebyshev};
 use crate::path;
 use crate::pawn::{Faction, Job, NEED_MAX};
+use crate::work;
 use crate::{EventKind, Sim, TICKS_PER_DAY};
 
 /// Ticks entre deux coups d'un même pawn.
 pub const ATTACK_COOLDOWN: u32 = 60;
-/// Dégâts d'un colon, bornes de `range_i32`.
+/// Dégâts d'un colon à mains nues, bornes de `range_i32`. L'arme et la
+/// compétence viennent ensuite en pourcentage (`strike_percent`).
 pub const COLONIST_DAMAGE: (i32, i32) = (80, 121);
-/// Dégâts d'un pillard, bornes de `range_i32`.
+/// Dégâts d'un pillard à mains nues, bornes de `range_i32`.
 pub const RAIDER_DAMAGE: (i32, i32) = (70, 111);
+/// Portée d'un arc, en cases (distance de Tchebychev).
+pub const BOW_RANGE: u32 = 8;
+/// Ticks entre deux flèches. Un arc frappe moins souvent qu'un gourdin.
+pub const RANGED_COOLDOWN: u32 = 90;
+/// Dégâts d'une flèche, bornes de `range_i32`.
+pub const RANGED_DAMAGE: (i32, i32) = (50, 81);
+/// Précision d'un tireur débutant, en pourcentage, plus 3 par niveau.
+pub const RANGED_BASE_ACCURACY: u32 = 40;
+/// Jusqu'à cette distance, on tire sans malus.
+pub const RANGED_SWEET_SPOT: u32 = 3;
+/// Précision perdue par case au-delà de `RANGED_SWEET_SPOT`, en points.
+pub const RANGED_FALLOFF: u32 = 4;
+/// Un tir garde toujours cette chance de toucher.
+pub const RANGED_MIN_ACCURACY: u32 = 10;
+
+/// Efficacité au corps à corps apportée par le niveau, en pourcentage :
+/// 70 % au niveau 0, 100 % au niveau 10, 130 % au niveau 20.
+pub fn melee_skill_percent(level: u8) -> u32 {
+    70 + 3 * u32::from(level)
+}
+
+/// Chance de toucher d'une flèche, en pourcentage : le niveau ouvre la mire,
+/// la distance la referme au-delà de `RANGED_SWEET_SPOT`.
+pub fn ranged_accuracy_percent(level: u8, distance: u32) -> u32 {
+    let base = RANGED_BASE_ACCURACY + 3 * u32::from(level);
+    let malus = RANGED_FALLOFF * distance.saturating_sub(RANGED_SWEET_SPOT);
+    base.saturating_sub(malus).max(RANGED_MIN_ACCURACY)
+}
+
+/// Ligne de vue entre deux cases, tracée en Bresenham entier. Toute case
+/// infranchissable coupe la vue (mur, rocher, arbre, feu, eau profonde), et
+/// toute porte aussi : la v1 ne sait pas si elle est ouverte. Ni la case de
+/// départ ni celle de la cible ne bloquent — on se voit de mur à mur.
+pub fn line_of_sight(map: &Map, from: (u32, u32), to: (u32, u32)) -> bool {
+    let (mut x, mut y) = (from.0 as i32, from.1 as i32);
+    let (tx, ty) = (to.0 as i32, to.1 as i32);
+    let dx = (tx - x).abs();
+    let dy = -(ty - y).abs();
+    let sx = if x < tx { 1 } else { -1 };
+    let sy = if y < ty { 1 } else { -1 };
+    let mut err = dx + dy;
+    while (x, y) != (tx, ty) {
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += sy;
+        }
+        if (x, y) == (tx, ty) {
+            return true;
+        }
+        if !map.in_bounds(x, y) {
+            return false;
+        }
+        let (ux, uy) = (x as u32, y as u32);
+        if !map.passable(ux, uy) || map.feature(ux, uy).is_door() {
+            return false;
+        }
+    }
+    true
+}
 /// Un colon attaque de lui-même un ennemi jusqu'à cette distance.
 pub const DEFEND_RADIUS: u32 = 8;
 /// En dessous de ces PV, un pillard décroche et quitte la carte. Assez haut
@@ -33,7 +99,21 @@ pub const DEFEND_RADIUS: u32 = 8;
 /// hors suite de tests) qui a servi de vraie jauge — à 300, ce scénario
 /// dispersé perdait souvent deux colons sur 200 graines ; à 600, plus aucun
 /// double mort, pour une baisse de moitié seulement du total des morts.
-pub const FLEE_HP: u32 = 600;
+///
+/// Remonté de 600 à 650 le 2026-09-05, quand les pillards sont arrivés armés
+/// (gourdin puis épieu) et les colons pénalisés par le facteur de compétence
+/// de mêlée. Mesuré sur 60 graines, premier raid joué jusqu'au bout :
+///
+/// | scénario  | avant les armes | armé, 600 | armé, **650** | armé, 700 |
+/// |---|---|---|---|---|
+/// | groupés : morts    |  5 | 15 | 10 |  6 |
+/// | dispersés : morts  | 29 | 57 | 41 | 21 |
+/// | dispersés : doubles morts | 0 | 4 | **0** | 0 |
+///
+/// 650 est le premier palier qui rend au scénario dispersé sa propriété
+/// « jamais deux morts d'un coup » sans annuler l'effet des armes : à 700 un
+/// raid armé tuerait moins qu'un raid à mains nues, ce qui n'aurait aucun sens.
+pub const FLEE_HP: u32 = 650;
 /// Un pawn à jeun perd 1 PV tous ces ticks.
 pub const STARVE_DAMAGE_INTERVAL: u64 = 28;
 /// Un pawn nourri regagne 1 PV tous ces ticks.
@@ -298,6 +378,7 @@ impl Sim {
                     let k = self.pawns.len() - 1;
                     self.pawns[k].hunger = NEED_MAX;
                     self.pawns[k].rest = NEED_MAX;
+                    self.pawns[k].weapon = Some(self.raider_weapon(spawned));
                     spawned += 1;
                 }
             }
@@ -307,6 +388,23 @@ impl Sim {
             self.push_event(EventKind::Raid, spawned);
         }
         spawned
+    }
+
+    /// Arme du `rank`-ième pillard d'un raid. Un petit raid arrive au gourdin,
+    /// un raid moyen ajoute l'épieu, un gros amène l'arc ; au-delà du
+    /// troisième, la bande est panachée au hasard. Les armes tombent au sol à
+    /// leur mort : plus le raid est gros, plus le butin est beau.
+    fn raider_weapon(&mut self, rank: u32) -> ItemKind {
+        match rank {
+            0 => ItemKind::Club,
+            1 => ItemKind::Spear,
+            2 => ItemKind::Bow,
+            _ => match self.rng.below(3) {
+                0 => ItemKind::Club,
+                1 => ItemKind::Spear,
+                _ => ItemKind::Bow,
+            },
+        }
     }
 
     /// Cases des pawns vivants d'un camp, dans l'ordre des indices.
@@ -461,20 +559,23 @@ impl Sim {
         }
         let me = self.pawns[i].tile();
         let them = self.pawns[k].tile();
-        if chebyshev(me, them) <= 1 {
+        let distance = chebyshev(me, them);
+        if distance <= 1 {
             self.pawns[i].path.clear();
             if self.pawns[i].attack_cooldown == 0 {
-                let (lo, hi) = if self.pawns[i].faction == Faction::Colony {
-                    COLONIST_DAMAGE
-                } else {
-                    RAIDER_DAMAGE
-                };
-                // Deux tirages dans un ordre fixe : les dégâts, puis la partie
-                // du corps touchée. Le coup laisse une plaie qui saigne.
-                let damage = self.rng.range_i32(lo, hi) as u32;
-                let part = health::part_for_roll(self.rng.below(health::HIT_WEIGHT_TOTAL));
-                self.pawns[k].add_injury(part, damage, damage / health::BLEED_FRACTION);
-                self.pawns[i].attack_cooldown = ATTACK_COOLDOWN;
+                self.melee_strike(i, k);
+            }
+            return;
+        }
+        // Un tireur garde ses distances : cible en vue et à portée, il s'arrête
+        // là où il est et décoche.
+        if self.pawns[i].weapon == Some(ItemKind::Bow)
+            && distance <= BOW_RANGE
+            && line_of_sight(&self.map, me, them)
+        {
+            self.pawns[i].path.clear();
+            if self.pawns[i].attack_cooldown == 0 {
+                self.shoot(i, k, distance);
             }
             return;
         }
@@ -494,6 +595,60 @@ impl Sim {
             }
         }
         self.pawns[i].advance(&self.map);
+    }
+
+    /// Un coup au corps à corps : deux tirages dans un ordre fixe, les dégâts
+    /// puis la partie du corps touchée. Le coup laisse une plaie qui saigne.
+    fn melee_strike(&mut self, i: usize, k: usize) {
+        let (lo, hi) = if self.pawns[i].faction == Faction::Colony {
+            COLONIST_DAMAGE
+        } else {
+            RAIDER_DAMAGE
+        };
+        let roll = self.rng.range_i32(lo, hi) as u32;
+        let percent = self.pawns[i].weapon.map_or(100, |w| w.melee_percent())
+            * melee_skill_percent(self.pawns[i].melee.level)
+            / 100;
+        let damage = (roll * percent / 100).max(1);
+        let part = health::part_for_roll(self.rng.below(health::HIT_WEIGHT_TOTAL));
+        self.pawns[k].add_injury(part, damage, damage / health::BLEED_FRACTION);
+        self.pawns[i].attack_cooldown = ATTACK_COOLDOWN;
+        self.gain_combat_xp(i, false);
+    }
+
+    /// Une flèche : la précision est tirée d'abord (elle ne dépend que de
+    /// l'état, donc l'ordre du RNG reste identique partout), puis les dégâts et
+    /// la partie touchée si le tir porte. Un tir manqué forme quand même.
+    fn shoot(&mut self, i: usize, k: usize, distance: u32) {
+        let accuracy = ranged_accuracy_percent(self.pawns[i].ranged.level, distance);
+        if self.rng.below(100) < accuracy {
+            let damage = self.rng.range_i32(RANGED_DAMAGE.0, RANGED_DAMAGE.1) as u32;
+            let part = health::part_for_roll(self.rng.below(health::HIT_WEIGHT_TOTAL));
+            self.pawns[k].add_injury(part, damage, damage / health::BLEED_FRACTION);
+        }
+        self.pawns[i].attack_cooldown = RANGED_COOLDOWN;
+        self.gain_combat_xp(i, true);
+    }
+
+    /// Fait progresser une compétence de combat : +1 par coup porté, +1 par
+    /// flèche tirée. Mêmes seuils que les compétences de travail, mais hors du
+    /// tableau `skills` — et seuls les colons montent en grade au journal.
+    fn gain_combat_xp(&mut self, i: usize, ranged: bool) {
+        let colonist = self.pawns[i].faction == Faction::Colony;
+        let id = self.pawns[i].id;
+        let skill = if ranged {
+            &mut self.pawns[i].ranged
+        } else {
+            &mut self.pawns[i].melee
+        };
+        skill.xp += 1;
+        if skill.xp >= work::xp_to_next(skill.level) && skill.level < work::SKILL_MAX {
+            skill.level += 1;
+            skill.xp = 0;
+            if colonist {
+                self.push_event(EventKind::LevelUp, id);
+            }
+        }
     }
 
     pub(crate) fn do_flee(&mut self, i: usize) {
@@ -563,6 +718,12 @@ impl Sim {
                 self.spawn_item(kind, count, x, y);
             }
             if p.hp == 0 {
+                // L'arme du mort tombe là : butin pour la colonie quand c'est
+                // un pillard, arme à ramasser quand c'est un des siens. Un
+                // fuyard, lui, repart avec la sienne.
+                if let Some(weapon) = p.weapon {
+                    self.spawn_item(weapon, 1, x, y);
+                }
                 self.spawn_item(ItemKind::Corpse, 1, x, y);
                 match p.faction {
                     Faction::Colony => {
@@ -579,5 +740,68 @@ impl Sim {
                 self.push_event(EventKind::RaiderLeft, p.id);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::map::Terrain;
+    use crate::testmap::map_from;
+
+    #[test]
+    fn la_vue_porte_a_travers_le_vide_et_bute_sur_les_obstacles() {
+        let m = map_from(&["......", "..#...", "......"]);
+        assert!(line_of_sight(&m, (0, 0), (0, 0)), "on se voit soi-même");
+        assert!(line_of_sight(&m, (0, 0), (5, 0)), "ligne droite dégagée");
+        assert!(line_of_sight(&m, (0, 2), (5, 2)), "sous l'obstacle");
+        assert!(!line_of_sight(&m, (0, 1), (5, 1)), "rocher en (2, 1)");
+        // La case de la cible ne bloque jamais : on vise ce qui est dessus.
+        assert!(
+            line_of_sight(&m, (0, 1), (2, 1)),
+            "tir sur la case du rocher"
+        );
+        assert!(line_of_sight(&m, (2, 0), (2, 1)), "cible juste à côté");
+    }
+
+    #[test]
+    fn une_porte_coupe_la_vue_mais_pas_l_eau_peu_profonde() {
+        let mut m = map_from(&["....."]);
+        assert!(line_of_sight(&m, (0, 0), (4, 0)));
+        m.set_terrain(2, 0, Terrain::ShallowWater);
+        assert!(
+            line_of_sight(&m, (0, 0), (4, 0)),
+            "un gué se traverse du regard"
+        );
+        m.set_terrain(2, 0, Terrain::DeepWater);
+        assert!(
+            !line_of_sight(&m, (0, 0), (4, 0)),
+            "l'eau profonde est un trou"
+        );
+        m.set_terrain(2, 0, Terrain::Grass);
+        m.set_feature(2, 0, Feature::DoorWood);
+        assert!(
+            !line_of_sight(&m, (0, 0), (4, 0)),
+            "une porte est franchissable mais opaque en v1"
+        );
+    }
+
+    #[test]
+    fn la_precision_baisse_avec_la_distance_et_monte_avec_le_niveau() {
+        // Sous `RANGED_SWEET_SPOT`, seul le niveau compte.
+        assert_eq!(ranged_accuracy_percent(0, 1), RANGED_BASE_ACCURACY);
+        assert_eq!(ranged_accuracy_percent(0, 3), RANGED_BASE_ACCURACY);
+        assert_eq!(ranged_accuracy_percent(10, 3), RANGED_BASE_ACCURACY + 30);
+        // Au-delà, chaque case coûte `RANGED_FALLOFF` points.
+        assert_eq!(
+            ranged_accuracy_percent(0, 8),
+            RANGED_BASE_ACCURACY - 5 * RANGED_FALLOFF
+        );
+        // Un débutant qui tire au bout de sa portée garde sa chance minimale.
+        assert_eq!(ranged_accuracy_percent(0, 100), RANGED_MIN_ACCURACY);
+        assert!(ranged_accuracy_percent(20, BOW_RANGE) <= 100);
+        // La compétence de mêlée va de 70 % à 130 %.
+        assert_eq!(melee_skill_percent(0), 70);
+        assert_eq!(melee_skill_percent(crate::work::SKILL_MAX), 130);
     }
 }

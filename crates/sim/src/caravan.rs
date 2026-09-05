@@ -101,6 +101,14 @@ fn sanitize(p: &mut Pawn) {
         skill.level = skill.level.min(work::SKILL_MAX);
         skill.xp = skill.xp.min(work::xp_to_next(skill.level));
     }
+    for skill in [&mut p.melee, &mut p.ranged] {
+        skill.level = skill.level.min(work::SKILL_MAX);
+        skill.xp = skill.xp.min(work::xp_to_next(skill.level));
+    }
+    // Le voyageur garde son arme, à condition que ce soit une arme.
+    if p.weapon.is_some_and(|w| !w.is_weapon()) {
+        p.weapon = None;
+    }
     for prio in &mut p.priorities {
         *prio = (*prio).min(4);
     }
