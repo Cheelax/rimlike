@@ -53,6 +53,8 @@ function worldProxy(): Plugin {
 }
 
 export default defineConfig({
+  // Sous-chemin de publication (GitHub Pages : "/rimlike/"), racine par défaut.
+  base: process.env.VITE_BASE ?? "/",
   plugins: [react(), worldProxy()],
   build: { target: "es2022" },
   // Le Worker de simulation charge le WASM via `new URL(..., import.meta.url)`
