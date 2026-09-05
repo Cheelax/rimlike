@@ -250,14 +250,16 @@ Resynchronisation côté client complétée le 2026-09-05 (Sonnet) : la restaura
 partie et le bouton existaient déjà ; ajoutés le cas de l'hôte déviant (message sans bouton), les
 noms des déviants dans le bandeau, la pastille verte/rouge sur le hash, et un test contre le vrai
 serveur à trois clients dont un qui ment sur son hash (option de test `testHashOverride`,
-jamais exposée au Worker) : désync détectée, snapshot de l'hôte, reconvergence. Reste : essai
-d'une heure.
+jamais exposée au Worker) : désync détectée, snapshot de l'hôte, reconvergence. Essai d'une heure
+réussi le 2026-09-05 (voir le jalon ci-dessous).
 - Serveur relais : lobby, ordonnancement des commandes par tick, redistribution.
 - Lockstep 2-4 joueurs sur la même carte, hash de désync, resync par snapshot.
 - Rejoindre en cours de partie.
 **Jalon** : deux navigateurs gèrent la même colonie sans désync pendant 1 h.
-Partiellement atteint le 2026-09-05 : convergence vérifiée sur quelques minutes ; l'heure
-complète attend le Worker.
+**Atteint le 2026-09-05** : deux onglets (l'un masqué, rendu à 0 fps) sur le build de production
+servi statiquement, serveur rapide, 61 minutes, tick 211 539 (quinze jours de jeu) identique des
+deux côtés, retard 0, 58-59 ticks/s, aucune salle « desynced » côté serveur (contrôle des hashes
+tous les 300 ticks, soit ~700 contrôles concordants).
 
 ### Phase 4 — Couche monde (1-2 mois) — fondations livrées le 2026-09-05
 
