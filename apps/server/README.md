@@ -32,9 +32,24 @@ explicites).
 | `WORLD_PERSIST` | (non défini) | `0` désactive la persistance, quel que soit `WORLD_STATE_FILE`. |
 | `WORLD_HOUR_MS` | `30000` | Durée réelle d'une heure de jeu du monde, en ms (30 000 = un jour de monde en 12 min réelles). |
 | `CARAVAN_TICK_MS` | `5000` | Période du tick du monde : avancement des caravanes en route et diffusion aux joueurs connectés. |
+| `MAX_MESSAGE_BYTES` | `262144` | Taille maximale d'un message texte (octets UTF-8), sauf `snapshot` (voir `MAX_SNAPSHOT_BYTES`). Dépassement : `error { code: "message_too_large" }` puis fermeture (code WebSocket 1009). |
+| `MAX_SNAPSHOT_BYTES` | `8388608` | Taille maximale d'un message `snapshot` : plus généreuse, il transporte l'état d'une carte entière en base64. |
+| `MAX_MESSAGES_PER_SECOND` | `120` | Messages tolérés par connexion sur une fenêtre glissante d'une seconde (le `pong` ne compte pas). Au-delà : `error { code: "rate_limited" }` ; si le dépassement persiste sans interruption pendant 3 s, la connexion est fermée. |
+| `MAX_CONNECTIONS_PER_IP` | `16` | Connexions simultanées tolérées pour une même adresse IP. Au-delà, refus à l'upgrade WebSocket (HTTP 429). |
+| `MAX_ROOMS` | `500` | Salles simultanées tolérées sur ce serveur (salles ordinaires et salles « case » confondues). Un `join`/`settle` qui en créerait une de plus est refusé (`error { code: "server_full" }`). |
+| `MAX_PLAYERS_PER_ROOM` | `4` | Joueurs simultanés tolérés dans une même salle. |
+| `TRUST_PROXY` | (non défini) | `1` : fait confiance à l'en-tête `X-Forwarded-For` pour l'adresse d'un client (uniquement derrière un reverse proxy de confiance qui pose lui-même cet en-tête). |
 
 Une valeur absurde (hors bornes, non entière) fait échouer le démarrage avec
 un message d'erreur explicite plutôt que de partir sur un défaut silencieux.
+
+Les valeurs effectives de ces garde-fous, ainsi que le nombre de connexions
+ouvertes, sont exposées par `GET /health` (`limits`, `connections`) — utile
+pour vérifier ce qui tourne réellement sans avoir à relire l'environnement du
+processus. Un nom de joueur (`join.name`, `world_join.name`) est en outre
+toujours limité à 32 caractères, sans caractère de contrôle, quelle que soit
+la configuration (`error { code: "bad_name" }` sinon) : ce n'est pas une
+variable d'environnement, juste une borne fixe.
 
 Changer `WORLD_SEED`/`WORLD_SUBDIVISIONS` sur un serveur qui a déjà un
 fichier d'état régénère un **globe différent** : les colonies existantes ne

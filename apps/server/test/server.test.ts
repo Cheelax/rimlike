@@ -40,15 +40,25 @@ describe("santé", () => {
     // Persistance non précisée à `startServer` : mode mémoire, comme dans
     // tous les tests qui ne le demandent pas explicitement (persistence.test.ts).
     const persistence = { enabled: false, file: null, lastSavedAt: null };
+    // Valeurs par défaut des garde-fous (`docs/protocol.md` §2, « Limites »),
+    // aucune n'est précisée à `startServer` dans ce test.
+    const limits = {
+      maxMessageBytes: 262_144,
+      maxSnapshotBytes: 8_388_608,
+      maxMessagesPerSecond: 120,
+      maxConnectionsPerIp: 16,
+      maxRooms: 500,
+      maxPlayersPerRoom: 4,
+    };
     const response = await fetch(`http://127.0.0.1:${server.port}/health`);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, rooms: 0, world, persistence });
+    expect(await response.json()).toEqual({ ok: true, rooms: 0, connections: 0, world, limits, persistence });
 
     const alice = await connect();
     alice.send({ type: "join", room: "demo", name: "alice" });
     await alice.next("welcome");
     const second = await fetch(`http://127.0.0.1:${server.port}/health`);
-    expect(await second.json()).toEqual({ ok: true, rooms: 1, world, persistence });
+    expect(await second.json()).toEqual({ ok: true, rooms: 1, connections: 1, world, limits, persistence });
   });
 
   it("renvoie 404 ailleurs", async () => {
@@ -226,6 +236,18 @@ describe("erreurs", () => {
     const error = await client.next("error");
     expect(error.code).toBe("already_joined");
   });
+
+  it("refuse un nom trop long ou avec des caractères de contrôle", async () => {
+    const tooLong = await connect();
+    tooLong.send({ type: "join", room: "demo", name: "x".repeat(33) });
+    const error = await tooLong.next("error");
+    expect(error.code).toBe("bad_name");
+
+    const control = await connect();
+    control.send({ type: "join", room: "demo", name: `ali${String.fromCharCode(7)}ce` });
+    const controlError = await control.next("error");
+    expect(controlError.code).toBe("bad_name");
+  });
 });
 
 describe("heartbeat", () => {
@@ -249,6 +271,125 @@ describe("heartbeat", () => {
       answering.close();
     } finally {
       await fast.close();
+    }
+  });
+});
+
+describe("garde-fous avant hébergement public", () => {
+  it("refuse un message trop gros (message_too_large, fermeture 1009), mais accepte un snapshot sous son propre plafond", async () => {
+    const guarded = await startServer({ port: 0, log: () => {}, maxMessageBytes: 100, maxSnapshotBytes: 2000 });
+    try {
+      const alice = await TestClient.connect(guarded.url);
+      alice.send({ type: "join", room: "demo", name: "alice" });
+      await alice.next("welcome");
+
+      // Une commande dont la trame dépasse `maxMessageBytes` (100) mais reste
+      // sous `maxSnapshotBytes` (2000) : ce n'est pas un `snapshot`, la limite
+      // générale s'applique.
+      alice.sendRaw(JSON.stringify({ type: "command", payload: "A".repeat(300) }));
+      const error = await alice.next("error");
+      expect(error.code).toBe("message_too_large");
+      await alice.waitUntil("fermeture après dépassement de taille", () => alice.closed);
+
+      // Un `snapshot` de même ordre de grandeur, lui, passe : c'est
+      // `maxSnapshotBytes` qui s'applique, pas `maxMessageBytes`.
+      const bob = await TestClient.connect(guarded.url);
+      bob.send({ type: "join", room: "demo2", name: "bob" });
+      await bob.next("welcome");
+      bob.sendRaw(JSON.stringify({ type: "snapshot", tick: 0, data: "A".repeat(300) }));
+      // Laisse le temps à un éventuel refus d'arriver avant de conclure.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(bob.ofType("error").some((entry) => entry.code === "message_too_large")).toBe(false);
+      expect(bob.closed).toBe(false);
+    } finally {
+      await guarded.close();
+    }
+  });
+
+  it("signale un dépassement de débit sans fermer sur une simple rafale", async () => {
+    const guarded = await startServer({ port: 0, log: () => {}, maxMessagesPerSecond: 10 });
+    try {
+      const alice = await TestClient.connect(guarded.url);
+      for (let i = 0; i < 30; i += 1) {
+        alice.send({ type: "ping" });
+      }
+      await alice.waitUntil("rate_limited signalé", () => alice.ofType("error").some((entry) => entry.code === "rate_limited"));
+      // Une rafale ponctuelle ne fait pas fermer la connexion.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(alice.closed).toBe(false);
+    } finally {
+      await guarded.close();
+    }
+  });
+
+  it("ferme la connexion après un dépassement de débit soutenu 3 s", async () => {
+    const guarded = await startServer({ port: 0, log: () => {}, maxMessagesPerSecond: 10 });
+    try {
+      const alice = await TestClient.connect(guarded.url);
+      // 50 msg/s, très au-dessus de la limite, en continu.
+      const interval = setInterval(() => {
+        if (!alice.closed) {
+          alice.send({ type: "ping" });
+        }
+      }, 20);
+      try {
+        await alice.waitUntil("fermeture pour dépassement soutenu", () => alice.closed, 6000);
+      } finally {
+        clearInterval(interval);
+      }
+      expect(alice.ofType("error").some((entry) => entry.code === "rate_limited")).toBe(true);
+    } finally {
+      await guarded.close();
+    }
+  }, 8000);
+
+  it("refuse la (N+1)-ième connexion d'une même IP, laisse les autres ouvertes", async () => {
+    const guarded = await startServer({ port: 0, log: () => {}, maxConnectionsPerIp: 2 });
+    try {
+      const first = await TestClient.connect(guarded.url);
+      const second = await TestClient.connect(guarded.url);
+
+      // La troisième est refusée dès l'upgrade (HTTP 429), avant tout message.
+      const rejected = new WebSocket(guarded.url);
+      const status = await new Promise<number>((resolve, reject) => {
+        rejected.once("unexpected-response", (_request, response) => resolve(response.statusCode ?? 0));
+        rejected.once("open", () => reject(new Error("la connexion aurait dû être refusée")));
+        setTimeout(() => reject(new Error("délai dépassé en attendant le refus")), 2000);
+      });
+      expect(status).toBe(429);
+
+      // Les deux premières connexions restent pleinement utilisables.
+      first.send({ type: "join", room: "demo", name: "alice" });
+      await first.next("welcome");
+      second.send({ type: "join", room: "demo", name: "bob" });
+      await second.next("welcome");
+      expect(first.closed).toBe(false);
+      expect(second.closed).toBe(false);
+    } finally {
+      await guarded.close();
+    }
+  });
+
+  it("refuse une deuxième salle au-delà de MAX_ROOMS (server_full)", async () => {
+    const guarded = await startServer({ port: 0, log: () => {}, maxRooms: 1 });
+    try {
+      const alice = await TestClient.connect(guarded.url);
+      alice.send({ type: "join", room: "un", name: "alice" });
+      await alice.next("welcome");
+
+      const bob = await TestClient.connect(guarded.url);
+      bob.send({ type: "join", room: "deux", name: "bob" });
+      const error = await bob.next("error");
+      expect(error.code).toBe("server_full");
+      expect(bob.closed).toBe(false);
+
+      // La salle déjà ouverte, elle, continue d'accepter des joueurs.
+      const carol = await TestClient.connect(guarded.url);
+      carol.send({ type: "join", room: "un", name: "carol" });
+      const welcome = await carol.next("welcome");
+      expect(welcome.isHost).toBe(false);
+    } finally {
+      await guarded.close();
     }
   });
 });

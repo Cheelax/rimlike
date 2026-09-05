@@ -63,6 +63,28 @@ socket.send(encodeMessage({ type: "command", payload: bytes })); // Uint8Array �
 const message = decodeClientMessage(text); // null si invalide
 ```
 
+### Limites
+
+Avant tout hébergement public, le relais (`apps/server`) applique des
+garde-fous de ressources — indépendants du lockstep lui-même, aucun nouveau
+message : ils se signalent avec `error`/`world_error` et des codes en plus de
+ceux déjà listés (§3.2), la liste étant ouverte. Tous configurables par
+variable d'environnement (`apps/server/README.md`), avec des défauts
+raisonnables :
+
+| Garde-fou | Défaut | Comportement au dépassement |
+|---|---|---|
+| Taille d'un message texte | 262 144 octets (`MAX_MESSAGE_BYTES`), 8 388 608 pour un `snapshot` (`MAX_SNAPSHOT_BYTES`) | `error { code: "message_too_large" }` puis fermeture (code WebSocket 1009) |
+| Débit par connexion | 120 messages/s (`MAX_MESSAGES_PER_SECOND`), fenêtre glissante d'une seconde ; le `pong` ne compte pas | `error { code: "rate_limited" }` ; fermeture si le dépassement persiste sans interruption pendant 3 s |
+| Connexions par adresse IP | 16 (`MAX_CONNECTIONS_PER_IP`) | Refus à l'upgrade WebSocket (HTTP 429) |
+| Salles simultanées sur le serveur | 500 (`MAX_ROOMS`) | `error`/`world_error { code: "server_full" }` sur un `join`/`settle` qui en créerait une de plus |
+| Joueurs par salle | 4 (`MAX_PLAYERS_PER_ROOM`) | `error { code: "room_full" }`, comme avant (§4) |
+| Nom affiché (`join.name`, `world_join.name`) | 32 caractères, sans caractère de contrôle | `error`/`world_error { code: "bad_name" }` |
+
+`GET /health` expose les valeurs effectives de ces garde-fous (`limits`) ainsi
+que le nombre de connexions ouvertes (`connections`), en plus des champs déjà
+documentés ci-dessus.
+
 ## 3. Messages
 
 ### 3.1 Client → serveur

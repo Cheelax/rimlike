@@ -178,7 +178,17 @@ describe("GET /world", () => {
     expect(await response.json()).toEqual({
       ok: true,
       rooms: 0,
+      connections: 0,
       world: { seed: DEFAULT_WORLD_SEED, subdivisions: SUBDIVISIONS, tiles: 162, settlements: 0 },
+      // Valeurs par défaut des garde-fous : aucune n'est précisée à `startServer` ici.
+      limits: {
+        maxMessageBytes: 262_144,
+        maxSnapshotBytes: 8_388_608,
+        maxMessagesPerSecond: 120,
+        maxConnectionsPerIp: 16,
+        maxRooms: 500,
+        maxPlayersPerRoom: 4,
+      },
       // Persistance non précisée à `startServer` : mode mémoire (persistence.test.ts la teste).
       persistence: { enabled: false, file: null, lastSavedAt: null },
     });
@@ -373,6 +383,34 @@ describe("salle d'une case", () => {
     const start = await alice.nth("start");
     // Hors monde, la graine reste celle du host.
     expect(start.seed).toBe(12_345);
+  });
+});
+
+describe("garde-fous avant hébergement public", () => {
+  it("refuse une fondation au-delà de MAX_ROOMS (server_full)", async () => {
+    const guarded = await startServer({ port: 0, log: () => {}, worldSubdivisions: SUBDIVISIONS, maxRooms: 1 });
+    try {
+      // Une salle ordinaire occupe déjà le seul emplacement disponible : la
+      // fondation d'une colonie, qui ouvrirait tôt ou tard sa propre salle
+      // « case », est donc refusée avant même de toucher le globe.
+      const occupant = await connect(guarded);
+      occupant.send({ type: "join", room: "salle-quelconque", name: "occupant" });
+      await occupant.next("welcome");
+
+      const alice = await joinWorld("alice", guarded);
+      alice.send({ type: "settle", tile: landTile });
+      const error = await alice.next("world_error");
+      expect(error.code).toBe("server_full");
+    } finally {
+      await guarded.close();
+    }
+  });
+
+  it("refuse un nom trop long pour world_join (bad_name)", async () => {
+    const client = await connect();
+    client.send({ type: "world_join", name: "x".repeat(33) });
+    const error = await client.next("world_error");
+    expect(error.code).toBe("bad_name");
   });
 });
 

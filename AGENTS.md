@@ -45,7 +45,9 @@ pnpm dev:server       # relais + serveur monde sur :8787 (GET /health, GET /worl
                       # env : PORT, WORLD_SEED (1), WORLD_SUBDIVISIONS (4),
                       # WORLD_STATE_FILE (apps/server/data/world-state.json ; vide = mémoire),
                       # WORLD_PERSIST=0 pour désactiver la persistance,
-                      # WORLD_HOUR_MS (30000 : une heure de jeu = 30 s), CARAVAN_TICK_MS (5000)
+                      # WORLD_HOUR_MS (30000 : une heure de jeu = 30 s), CARAVAN_TICK_MS (5000),
+                      # limites : MAX_MESSAGE_BYTES, MAX_SNAPSHOT_BYTES, MAX_MESSAGES_PER_SECOND,
+                      # MAX_CONNECTIONS_PER_IP, MAX_ROOMS, MAX_PLAYERS_PER_ROOM, TRUST_PROXY
 cargo fmt --all       # la CI vérifie le formatage
 cargo run -p sim-cli --release -- bench --size 128 --ticks 20000   # référence de perf du sim
 cargo run -p sim-cli --release -- verify --seed 1 --size 64 --ticks 10000 --scenario demo

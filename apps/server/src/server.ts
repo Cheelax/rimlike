@@ -20,6 +20,7 @@ import {
   CARAVAN_TICK_MS,
   HEARTBEAT_MS,
   HEARTBEAT_TIMEOUT_MS,
+  MAX_PLAYERS,
   decodeClientMessage,
   encodeMessage,
   isCompatibleProtocol,
@@ -93,6 +94,49 @@ export interface ServerOptions {
   readonly worldStateFile?: string | null;
   /** Délai de débounce des sauvegardes, injectable pour les tests. Défaut : `SAVE_DEBOUNCE_MS`. */
   readonly saveDebounceMs?: number;
+
+  // --- Garde-fous avant hébergement public (`docs/protocol.md` §2, « Limites ») ---
+
+  /**
+   * Taille maximale d'un message texte, en octets UTF-8, sauf `snapshot` (voir
+   * `maxSnapshotBytes`). Dépassement : `error { code: "message_too_large" }`
+   * puis fermeture (code WebSocket 1009). Défaut : 262 144 (256 Kio).
+   */
+  readonly maxMessageBytes?: number;
+  /**
+   * Taille maximale d'un message `snapshot`, en octets UTF-8 — plus généreuse
+   * que `maxMessageBytes` car elle transporte l'état d'une carte entière en
+   * base64. `maxPayload` du `WebSocketServer` est réglé au plus grand des deux
+   * pour ne jamais couper un snapshot légitime avant que ce garde-fou ne le
+   * voie. Défaut : 8 388 608 (8 Mio).
+   */
+  readonly maxSnapshotBytes?: number;
+  /**
+   * Messages tolérés par connexion sur une fenêtre glissante d'une seconde
+   * (le `pong` ne compte pas). Au-delà : `error { code: "rate_limited" }` ; si
+   * le dépassement persiste sans interruption pendant 3 s, la connexion est
+   * fermée. Défaut : 120.
+   */
+  readonly maxMessagesPerSecond?: number;
+  /**
+   * Connexions simultanées tolérées pour une même adresse IP. Au-delà, la
+   * connexion est refusée dès l'upgrade WebSocket (HTTP 429). Défaut : 16.
+   */
+  readonly maxConnectionsPerIp?: number;
+  /**
+   * Salles simultanées tolérées sur ce serveur (salles ordinaires et salles
+   * « case » confondues). Un `join`/`settle` qui en créerait une de plus est
+   * refusé avec `error { code: "server_full" }`. Défaut : 500.
+   */
+  readonly maxRooms?: number;
+  /**
+   * Fait confiance à l'en-tête `X-Forwarded-For` pour identifier l'adresse
+   * d'un client (derrière un reverse proxy) plutôt qu'à
+   * `req.socket.remoteAddress`. Défaut : faux — à n'activer que si le serveur
+   * est bien derrière un proxy de confiance qui pose cet en-tête lui-même,
+   * sans quoi un client peut usurper l'adresse d'un autre.
+   */
+  readonly trustProxy?: boolean;
 }
 
 export interface RunningServer {
@@ -129,6 +173,12 @@ interface Connection {
   /** Identifiant de monde, sans rapport avec les identifiants de salle. */
   worldPlayerId: PlayerId | null;
   lastSeen: number;
+  /** Adresse résolue à l'upgrade (`resolveClientIp`), pour le compteur par IP. */
+  readonly ip: string;
+  /** Horodatages des derniers messages comptés pour le débit (`pong` exclu). */
+  messageTimestamps: number[];
+  /** Depuis quand le débit est dépassé sans interruption, `null` sinon. */
+  overLimitSince: number | null;
 }
 
 /** Messages traités au niveau de la connexion, avant toute salle. */
@@ -164,6 +214,86 @@ const DEFAULT_PORT = 8787;
 
 /** Durée de cache de `GET /world`, en secondes. Le globe ne change pas. */
 const WORLD_MAX_AGE_SECONDS = 3600;
+
+// --- Garde-fous avant hébergement public (`docs/protocol.md` §2, « Limites ») ---
+
+// Exportées : `index.ts` en a besoin comme défauts de `readInteger`, seule
+// source de vérité plutôt que des nombres recopiés à la main.
+export const DEFAULT_MAX_MESSAGE_BYTES = 262_144;
+export const DEFAULT_MAX_SNAPSHOT_BYTES = 8_388_608;
+export const DEFAULT_MAX_MESSAGES_PER_SECOND = 120;
+export const DEFAULT_MAX_CONNECTIONS_PER_IP = 16;
+export const DEFAULT_MAX_ROOMS = 500;
+
+/** Fenêtre glissante du limiteur de débit. */
+const RATE_WINDOW_MS = 1000;
+/** Dépassement soutenu sans interruption avant fermeture de la connexion. */
+const RATE_CLOSE_AFTER_MS = 3000;
+/** Longueur maximale d'un nom affiché (plus stricte que `isName` du codec, qui autorise 64). */
+const MAX_DISPLAY_NAME_LENGTH = 32;
+/** Caractères de contrôle C0 et DEL : interdits dans un nom affiché. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+/** Codes de fermeture WebSocket utilisés par les garde-fous (RFC 6455). */
+const CLOSE_MESSAGE_TOO_LARGE = 1009;
+/** 1008 : violation de politique — utilisé pour un dépassement de débit soutenu. */
+const CLOSE_RATE_LIMITED = 1008;
+
+/**
+ * Codes d'erreur ajoutés par les garde-fous, en plus de ceux de
+ * `@rimlike/protocol` (`ErrorCode`/`WorldErrorCode`) : la liste de codes est
+ * ouverte (`ErrorMessage.code`/`WorldErrorMessage.code` sont de simples
+ * chaînes), ajouter ceux-ci n'est donc pas un changement de protocole.
+ */
+type GuardErrorCode = "message_too_large" | "rate_limited" | "server_full" | "bad_name";
+// `fail` sert aussi à refuser un `join` sur une salle « case » non colonisée
+// (`not_settled`, un `WorldErrorCode`) : le code hérite donc des deux unions,
+// comme avant l'ajout des garde-fous.
+type ServerErrorCode = ErrorCode | WorldErrorCode | GuardErrorCode;
+type WorldServerErrorCode = WorldErrorCode | GuardErrorCode;
+
+/** Vrai si `name` respecte la longueur et l'absence de caractères de contrôle exigées. */
+function isValidDisplayName(name: string): boolean {
+  return name.length > 0 && name.length <= MAX_DISPLAY_NAME_LENGTH && !CONTROL_CHARS.test(name);
+}
+
+/**
+ * Adresse d'une connexion entrante : `req.socket.remoteAddress`, ou le premier
+ * élément de `X-Forwarded-For` si `trustProxy` est vrai (un serveur qui n'est
+ * pas derrière un reverse proxy de confiance ne doit jamais lire cet en-tête,
+ * un client pourrait y mettre n'importe quoi).
+ */
+function resolveClientIp(request: IncomingMessage, trustProxy: boolean): string {
+  if (trustProxy) {
+    const forwarded = request.headers["x-forwarded-for"];
+    const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    if (raw !== undefined) {
+      const first = raw.split(",")[0]!.trim();
+      if (first.length > 0) {
+        return first;
+      }
+    }
+  }
+  return request.socket.remoteAddress ?? "inconnue";
+}
+
+/**
+ * Lit juste le champ `type` d'une trame, sans validation complète : sert à
+ * choisir la bonne limite de taille (`snapshot` a droit à plus) avant même de
+ * savoir si le message est par ailleurs valide.
+ */
+function sniffMessageType(text: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed !== null && typeof parsed === "object" && typeof (parsed as Record<string, unknown>).type === "string") {
+      return (parsed as Record<string, unknown>).type as string;
+    }
+  } catch {
+    // Trame illisible : `decodeClientMessage` la refusera de toute façon
+    // (`bad_message`), la limite générale s'applique ici.
+  }
+  return null;
+}
 
 /** Diagnostic d'un `settle` refusé (français, non destiné à l'affichage brut). */
 function settleErrorText(code: "bad_tile" | "not_land" | "occupied", tile: number): string {
@@ -218,6 +348,17 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   /** Connexions présentes dans le monde, dans leur ordre d'arrivée. */
   const worldMembers = new Set<Connection>();
   let nextWorldPlayerId: PlayerId = 1;
+
+  // --- Garde-fous avant hébergement public (`docs/protocol.md` §2, « Limites ») ---
+  const maxMessageBytes = options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
+  const maxSnapshotBytes = options.maxSnapshotBytes ?? DEFAULT_MAX_SNAPSHOT_BYTES;
+  const maxMessagesPerSecond = options.maxMessagesPerSecond ?? DEFAULT_MAX_MESSAGES_PER_SECOND;
+  const maxConnectionsPerIp = options.maxConnectionsPerIp ?? DEFAULT_MAX_CONNECTIONS_PER_IP;
+  const maxRooms = options.maxRooms ?? DEFAULT_MAX_ROOMS;
+  const trustProxy = options.trustProxy ?? false;
+  const maxPlayersPerRoom = options.roomOptions?.maxPlayers ?? MAX_PLAYERS;
+  /** Connexions ouvertes par adresse IP, pour `maxConnectionsPerIp`. */
+  const ipConnectionCounts = new Map<string, number>();
 
   const worldSeed = options.worldSeed ?? DEFAULT_WORLD_SEED;
   const worldSubdivisions = options.worldSubdivisions ?? DEFAULT_WORLD_SUBDIVISIONS;
@@ -332,11 +473,23 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       const body = JSON.stringify({
         ok: true,
         rooms: rooms.size,
+        connections: connections.size,
         world: {
           seed: worldState.seed,
           subdivisions: worldState.subdivisions,
           tiles: worldState.tileCount,
           settlements: worldState.settlementCount,
+        },
+        // Valeurs effectives des garde-fous (`docs/protocol.md` §2, « Limites ») :
+        // ce qu'un opérateur voit ici est ce qui s'applique réellement, options
+        // injectées par les tests comprises.
+        limits: {
+          maxMessageBytes,
+          maxSnapshotBytes,
+          maxMessagesPerSecond,
+          maxConnectionsPerIp,
+          maxRooms,
+          maxPlayersPerRoom,
         },
         persistence: {
           enabled: persistenceEnabled,
@@ -356,7 +509,23 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     response.end(JSON.stringify({ ok: false }));
   });
 
-  const wss = new WebSocketServer({ server: httpServer });
+  const wss = new WebSocketServer({
+    server: httpServer,
+    // Au plus grand des deux : un `snapshot` légitime, sous `maxSnapshotBytes`,
+    // ne doit jamais être coupé par `ws` avant que notre propre garde-fou de
+    // taille (plus fin, il distingue `snapshot` du reste) ne le voie.
+    maxPayload: Math.max(maxMessageBytes, maxSnapshotBytes),
+    verifyClient: (info: { req: IncomingMessage }, callback: (verified: boolean, code?: number, message?: string) => void) => {
+      const ip = resolveClientIp(info.req, trustProxy);
+      const count = ipConnectionCounts.get(ip) ?? 0;
+      if (count >= maxConnectionsPerIp) {
+        log(`[connexions] upgrade refusé (429) pour ${ip} — ${count} déjà ouverte(s), limite ${maxConnectionsPerIp}`);
+        callback(false, 429, "too_many_connections");
+        return;
+      }
+      callback(true);
+    },
+  });
 
   const send = (socket: WebSocket, text: string): void => {
     if (socket.readyState === socket.OPEN) {
@@ -364,11 +533,11 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     }
   };
 
-  const fail = (socket: WebSocket, code: ErrorCode | WorldErrorCode, message: string): void => {
+  const fail = (socket: WebSocket, code: ServerErrorCode, message: string): void => {
     send(socket, encodeMessage({ type: "error", code, message }));
   };
 
-  const worldFail = (socket: WebSocket, code: WorldErrorCode, message: string): void => {
+  const worldFail = (socket: WebSocket, code: WorldServerErrorCode, message: string): void => {
     send(socket, encodeMessage({ type: "world_error", code, message }));
   };
 
@@ -609,6 +778,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
         socket.close();
         return;
       }
+      if (!isValidDisplayName(message.name)) {
+        worldFail(socket, "bad_name", `nom invalide (${MAX_DISPLAY_NAME_LENGTH} caractères maximum, sans caractère de contrôle)`);
+        return;
+      }
 
       // L'identité d'un joueur est son jeton, pas son nom (docs/protocol.md
       // §11.2). Sans jeton : nouveau joueur, clé et jeton neufs, à persister
@@ -716,6 +889,14 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
         leaveWorld(connection);
         return;
       case "settle": {
+        // Une colonie fondée aura tôt ou tard sa salle « case » (au premier
+        // `join` sur `tile-<id>`) : la refuser au-delà de `maxRooms` évite de
+        // simplement déplacer le dépassement au moment de cette ouverture.
+        if (rooms.size >= maxRooms) {
+          log(`[monde] fondation refusée (server_full) sur la case ${message.tile} — ${rooms.size} salle(s) active(s)`);
+          worldFail(socket, "server_full", `nombre maximal de salles atteint (${maxRooms})`);
+          return;
+        }
         // `key`, pas `name` : l'appartenance d'une colonie se prouve par
         // jeton, jamais par un nom qu'un autre joueur pourrait aussi taper.
         const result = worldState.settle(message.tile, key);
@@ -867,7 +1048,9 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     });
   };
 
-  wss.on("connection", (socket: WebSocket) => {
+  wss.on("connection", (socket: WebSocket, request: IncomingMessage) => {
+    const ip = resolveClientIp(request, trustProxy);
+    ipConnectionCounts.set(ip, (ipConnectionCounts.get(ip) ?? 0) + 1);
     const connection: Connection = {
       socket,
       room: null,
@@ -877,12 +1060,68 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       worldPlayerKey: null,
       worldPlayerId: null,
       lastSeen: Date.now(),
+      ip,
+      messageTimestamps: [],
+      overLimitSince: null,
     };
     connections.add(connection);
 
+    /**
+     * Débit d'une connexion, fenêtre glissante d'une seconde. `now` est déjà
+     * comptée dans `connection.messageTimestamps` avant l'appel : à appeler une
+     * fois par message qui compte (pas les `pong`).
+     */
+    const checkRate = (now: number): "ok" | "limited" | "close" => {
+      const timestamps = connection.messageTimestamps;
+      timestamps.push(now);
+      const cutoff = now - RATE_WINDOW_MS;
+      let firstFresh = 0;
+      while (firstFresh < timestamps.length && timestamps[firstFresh]! < cutoff) {
+        firstFresh += 1;
+      }
+      if (firstFresh > 0) {
+        timestamps.splice(0, firstFresh);
+      }
+      if (timestamps.length <= maxMessagesPerSecond) {
+        connection.overLimitSince = null;
+        return "ok";
+      }
+      connection.overLimitSince ??= now;
+      return now - connection.overLimitSince >= RATE_CLOSE_AFTER_MS ? "close" : "limited";
+    };
+
     socket.on("message", (data: unknown) => {
-      connection.lastSeen = Date.now();
-      const message = decodeClientMessage(String(data));
+      const now = Date.now();
+      connection.lastSeen = now;
+      const rawText = String(data);
+      const byteLength = Buffer.byteLength(rawText, "utf8");
+
+      // --- Taille (`docs/protocol.md` §2, « Limites ») ---
+      const tooLarge =
+        byteLength > maxSnapshotBytes || (byteLength > maxMessageBytes && sniffMessageType(rawText) !== "snapshot");
+      if (tooLarge) {
+        log(`[taille] connexion ${ip} fermée — message de ${byteLength} octets au-delà du maximum autorisé`);
+        fail(socket, "message_too_large", `message de ${byteLength} octets, au-delà du maximum autorisé`);
+        socket.close(CLOSE_MESSAGE_TOO_LARGE, "message_too_large");
+        return;
+      }
+
+      const message = decodeClientMessage(rawText);
+
+      // --- Débit (`docs/protocol.md` §2, « Limites »). Le `pong` ne compte pas. ---
+      if (message === null || message.type !== "pong") {
+        const verdict = checkRate(now);
+        if (verdict === "close") {
+          log(`[débit] connexion ${ip} fermée — dépassement soutenu depuis 3 s (limite ${maxMessagesPerSecond}/s)`);
+          socket.close(CLOSE_RATE_LIMITED, "rate_limited");
+          return;
+        }
+        if (verdict === "limited") {
+          fail(socket, "rate_limited", `plus de ${maxMessagesPerSecond} messages par seconde`);
+          return;
+        }
+      }
+
       if (message === null) {
         fail(socket, "bad_message", "trame illisible ou champ invalide");
         return;
@@ -908,8 +1147,17 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
           socket.close();
           return;
         }
+        if (!isValidDisplayName(message.name)) {
+          fail(socket, "bad_name", `nom invalide (${MAX_DISPLAY_NAME_LENGTH} caractères maximum, sans caractère de contrôle)`);
+          return;
+        }
         let room = rooms.get(message.room);
         if (room === undefined) {
+          if (rooms.size >= maxRooms) {
+            log(`[serveur] salle ${message.room} refusée (server_full) — ${rooms.size} salle(s) active(s)`);
+            fail(socket, "server_full", `nombre maximal de salles atteint (${maxRooms})`);
+            return;
+          }
           const created = createRoom(message.room);
           if (created === null) {
             fail(socket, "not_settled", `la salle ${message.room} n'est pas une case colonisée`);
@@ -941,6 +1189,12 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     const disconnect = (): void => {
       if (!connections.delete(connection)) {
         return;
+      }
+      const ipCount = ipConnectionCounts.get(connection.ip) ?? 0;
+      if (ipCount <= 1) {
+        ipConnectionCounts.delete(connection.ip);
+      } else {
+        ipConnectionCounts.set(connection.ip, ipCount - 1);
       }
       leaveWorld(connection);
       const { room, playerId } = connection;

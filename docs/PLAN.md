@@ -386,6 +386,9 @@ mods de contenu, événements monde.
 - 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
   par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
   libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
+- 2026-09-05 : garde-fous serveur (Sonnet) : tailles, débit, connexions par IP (refus à
+  l'upgrade en 429), salles, noms ; tout configurable, exposé dans `/health`. Préalable à
+  tout hébergement public.
 - 2026-09-05 : resync (serveur) : la majorité est recalculée à chaque hash reçu, pas
   seulement au premier écart, sinon ni réparation ni retour à la normale ne seraient
   détectables. Un seul cooldown par joueur, partagé entre réparation automatique et demande
