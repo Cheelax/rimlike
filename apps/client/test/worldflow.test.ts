@@ -152,6 +152,10 @@ async function enterWorld(world: World, name: string, identityKey = `device-${de
   const transport = await WsTransport.connect(server.url);
   const settled: SettledMessage[] = [];
   const errors: WorldError[] = [];
+  // Les arrivées de caravane se reçoivent désormais ici, sur la connexion
+  // monde (docs/protocol.md §12.7) : collectées comme `settled`/`errors`,
+  // même quand aucun test de caravane ne les regarde.
+  const arrivals: CaravanArriveMessage[] = [];
   const client = new WorldClient({
     transport,
     name,
@@ -159,36 +163,33 @@ async function enterWorld(world: World, name: string, identityKey = `device-${de
     expected: { seed: world.seed, subdivisions: world.subdivisions, tiles: world.tiles.length },
     onSettled: (message) => settled.push(message),
     onError: (error) => errors.push(error),
+    onCaravanArrive: (arrival) => arrivals.push(arrival),
   });
   closers.push(() => client.close());
   client.join();
   await waitFor(`${name} dans le monde`, () => client.state.phase === "connected");
-  return { client, settled, errors };
+  return { client, settled, errors, arrivals };
 }
 
 /**
- * Une connexion de salle, avec son sim factice.
- *
- * `worldToken` est le jeton de la connexion monde, à passer quand cette salle
- * doit expédier une caravane (`sendCaravanDepart`) : sans lui, le `world_join`
- * paresseux créerait un second joueur, et la caravane n'appartiendrait pas à
- * celui qui joue (`docs/protocol.md` §11.2, §12.7).
+ * Une connexion de salle, avec son sim factice. Ne porte plus aucun ordre de
+ * caravane : ils partent désormais de la connexion monde (`enterWorld`,
+ * `docs/protocol.md` §12.7). Le serveur reconnaît la présence de cette salle
+ * pour la connexion monde du même nom par repli (`isPresentInRoom`, §12.3),
+ * sans qu'un jeton partagé soit nécessaire.
  */
-async function enterRoom(room: string, name: string, worldToken?: string) {
+async function enterRoom(room: string, name: string) {
   const transport = await WsTransport.connect(server.url);
   const errors: LockstepError[] = [];
-  const arrivals: CaravanArriveMessage[] = [];
   const client = new LockstepClient({
     transport,
     createSim: (seed) => Promise.resolve(FakeSim.fresh(seed)),
     restoreSim: (data) => Promise.resolve(FakeSim.fromSnapshot(data)),
-    onCaravanArrive: (arrival) => arrivals.push(arrival),
     onError: (error) => errors.push(error),
-    worldToken,
   });
   closers.push(() => client.close());
   client.join(room, name);
-  return { client, errors, arrivals, sim: () => client.sim as FakeSim | null };
+  return { client, errors, sim: () => client.sim as FakeSim | null };
 }
 
 /** Pompe comme le ferait la boucle du Worker jusqu'à ce que `done` soit vrai. */
@@ -412,10 +413,10 @@ describe("caravanes contre le vrai serveur", () => {
    * toute seule, l'ouvrir, recevoir le manifeste et le livrer.
    *
    * C'est ici que se vérifie le point qu'aucun transport factice ne dit : les
-   * ordres de caravane partent de la connexion **de salle** (celle du Worker),
-   * pas de la connexion monde — le serveur exige d'être dans la salle de
-   * `fromTile`, et un `world_join` sur la même connexion (`docs/protocol.md`
-   * §12.5).
+   * ordres de caravane partent désormais de la connexion **monde** (`alice`),
+   * et le serveur reconnaît sa présence dans la salle de `fromTile` par repli
+   * sur le nom — la connexion de salle (`departure`, `arrival`) n'a plus
+   * besoin de jeton ni de `world_join` (`docs/protocol.md` §12.3, §12.7).
    */
   it("expédie une caravane, fonde la colonie d'arrivée, puis la livre", async () => {
     const { world } = await fetchWorld(server.url);
@@ -425,15 +426,14 @@ describe("caravanes contre le vrai serveur", () => {
     const alice = await enterWorld(world, "alice");
     alice.client.settle(from);
     await waitFor("settled", () => alice.settled.length === 1);
-    // Même jeton que la connexion monde : sans lui, le `world_join` paresseux
-    // de `sendCaravanDepart` créerait un second joueur, et la caravane
-    // n'appartiendrait pas à alice (`docs/protocol.md` §11.2, §12.7).
-    const departure = await enterRoom(alice.settled[0].room, "alice", alice.client.state.token ?? undefined);
+    const departure = await enterRoom(alice.settled[0].room, "alice");
     await waitFor("lobby", () => departure.client.state.phase === "lobby");
     departure.client.startGame(1, 16, 16);
     await waitFor("sim créé", () => departure.sim() !== null);
 
-    departure.client.sendCaravanDepart({
+    // Départ depuis la connexion monde : la présence dans la salle se prouve
+    // par le nom de `departure`, qui n'a pas fait de `world_join` (§12.3).
+    alice.client.sendDepart({
       fromTile: from,
       toTile: to,
       manifest,
@@ -443,8 +443,8 @@ describe("caravanes contre le vrai serveur", () => {
     // Le globe apprend la caravane par la connexion monde, elle.
     await waitFor("caravane diffusée", () => alice.client.state.caravans.length === 1);
     const caravan = alice.client.state.caravans[0];
-    // `owner` est la clé du joueur (§11.2) : celle de la connexion monde
-    // d'alice, grâce au jeton partagé. `ownerName` porte le libellé.
+    // `owner` est la clé du joueur (§11.2) : directement celle de la
+    // connexion monde qui a expédié. `ownerName` porte le libellé.
     expect(caravan.owner).toBe(alice.client.state.playerKey);
     expect(caravan.ownerName).toBe("alice");
     expect(caravan.fromTile).toBe(from);
@@ -459,23 +459,26 @@ describe("caravanes contre le vrai serveur", () => {
     expect(alice.client.settlementAt(to)?.owner).toBe(alice.client.state.playerKey);
 
     // « La colonie naît quand quelqu'un l'ouvre » : le manifeste attend le
-    // premier hôte en jeu, pas le `join`.
+    // premier hôte en jeu, pas le `join`. L'arrivée, elle, se lit sur la
+    // connexion monde d'alice — inchangée depuis le début du test.
     const arrival = await enterRoom(`tile-${to}`, "alice");
     await waitFor("lobby de la case d'arrivée", () => arrival.client.state.phase === "lobby");
-    expect(arrival.arrivals).toEqual([]);
+    expect(alice.arrivals).toEqual([]);
     arrival.client.startGame(1, 16, 16);
-    await waitFor("arrivée proposée à l'hôte", () => arrival.arrivals.length === 1);
-    expect(arrival.arrivals[0].tile).toBe(to);
-    expect(arrival.arrivals[0].manifest).toEqual(manifest);
+    await waitFor("arrivée proposée à l'hôte", () => alice.arrivals.length === 1);
+    expect(alice.arrivals[0].tile).toBe(to);
+    expect(alice.arrivals[0].manifest).toEqual(manifest);
 
-    // On injecte en lockstep, **puis** on confirme : c'est l'ordre du protocole.
+    // On injecte en lockstep (connexion de salle, qui possède le sim), **puis**
+    // on confirme (connexion monde) : c'est l'ordre du protocole.
     arrival.client.issue(new Uint8Array([0x0c, ...manifest]));
-    arrival.client.sendCaravanDelivered(arrival.arrivals[0].id);
+    alice.client.deliverCaravan(alice.arrivals[0].id);
     await waitFor(
       "caravane livrée",
       () => alice.client.caravanById(caravan.id)?.status === "delivered",
     );
     expect(arrival.errors).toEqual([]);
+    expect(alice.errors).toEqual([]);
   });
 
   it("rappelle une caravane avant la moitié du trajet", async () => {
@@ -486,15 +489,14 @@ describe("caravanes contre le vrai serveur", () => {
     const alice = await enterWorld(world, "alice");
     alice.client.settle(from);
     await waitFor("settled", () => alice.settled.length === 1);
-    // Même jeton que la connexion monde : sinon la caravane appartiendrait à
-    // un second joueur créé par le `world_join` paresseux, et `cancelCaravan`
-    // depuis la connexion monde d'alice serait refusé (`not_owner`, §11.2).
-    const room = await enterRoom(alice.settled[0].room, "alice", alice.client.state.token ?? undefined);
+    const room = await enterRoom(alice.settled[0].room, "alice");
     await waitFor("lobby", () => room.client.state.phase === "lobby");
     room.client.startGame(1, 16, 16);
     await waitFor("sim créé", () => room.sim() !== null);
 
-    room.client.sendCaravanDepart({
+    // Départ depuis la connexion monde : `owner` est directement sa clé, donc
+    // `cancelCaravan` plus bas (même connexion) est bien celui du propriétaire.
+    alice.client.sendDepart({
       fromTile: from,
       toTile: to,
       manifest: new Uint8Array([7]),

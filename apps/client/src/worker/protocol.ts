@@ -15,8 +15,7 @@
  * `ArrayBuffer` sont transférés, jamais clonés.
  */
 
-import type { CaravanArriveMessage } from "@rimlike/protocol";
-import type { LockstepState, RoomCaravanDeparture } from "../net/LockstepClient";
+import type { LockstepState } from "../net/LockstepClient";
 
 /** Un `frame` sur `HASH_EVERY_FRAMES` porte le hash : il coûte une sérialisation complète. */
 export const HASH_EVERY_FRAMES = 30;
@@ -41,15 +40,6 @@ export type InitMessage =
       readonly server: string;
       readonly room: string;
       readonly name: string;
-      /**
-       * Jeton de la connexion **monde** du thread principal (`docs/protocol.md`
-       * §11.2), pour que le `world_join` paresseux du `LockstepClient` d'ici
-       * (voir `sendCaravanDepart`) désigne le même joueur — sinon le serveur en
-       * crée un second, et les caravanes expédiées depuis cette salle
-       * n'appartiendraient pas à celui qui joue. Absent en salle nommée
-       * ordinaire (pas de monde) ou tant que l'identité n'est pas encore connue.
-       */
-      readonly token?: string;
     };
 
 export type MainToWorker =
@@ -60,15 +50,6 @@ export type MainToWorker =
   | { readonly type: "setSpeed"; readonly speed: number }
   /** Réservé à l'hôte, en lobby. */
   | { readonly type: "startGame"; readonly seed: number; readonly width: number; readonly height: number }
-  /**
-   * Expédie un manifeste de caravane. Il part par la connexion **de salle**,
-   * qui vit ici : le serveur exige que l'auteur d'un `caravan_depart` soit
-   * dans la salle de `fromTile` (`docs/protocol.md` §12.5), et la connexion
-   * monde du thread principal n'y est pas.
-   */
-  | { readonly type: "caravanDepart"; readonly departure: RoomCaravanDeparture }
-  /** Confirme une arrivée injectée, sur la même connexion, pour la même raison. */
-  | { readonly type: "caravanDelivered"; readonly id: string }
   /** Demande un snapshot : `localStorage` n'existe pas dans un Worker. */
   | { readonly type: "save" }
   | { readonly type: "load"; readonly bytes: Uint8Array }
@@ -123,6 +104,14 @@ export interface FrameMessage {
    */
   readonly names: Record<number, string>;
   readonly stored: Uint32Array;
+  /** Objectifs de fabrication courants, indexés par `ItemKind` (9 entrées, `sim-wasm::craft_targets`). */
+  readonly craftTargets: Uint32Array;
+  /**
+   * Arme équipée de chaque pawn armé, aplatie : `[id, genre]×n` (`sim::ItemKind`
+   * 6 gourdin, 7 épieu, 8 arc). Absent des mains nues. Recalculé chaque frame
+   * depuis le tampon `pawns` (`SimHandle.weapons`) : petit, pas besoin de RPC.
+   */
+  readonly weapons: Int32Array;
   /**
    * Manifestes de caravane en attente d'expédition (`Sim::departures`). C'est
    * le déclencheur de l'hôte : tant qu'il est non nul, il reste des départs à
@@ -143,12 +132,6 @@ export type WorkerToMain =
   | FrameMessage
   /** À chaque changement d'état du `LockstepClient` (lobby, joueurs, désync…). */
   | { readonly type: "net"; readonly state: LockstepState }
-  /**
-   * Une caravane est arrivée sur la case de notre salle et nous en sommes
-   * l'hôte. Le thread principal émet `ArriveCaravan` puis renvoie un
-   * `caravanDelivered` : c'est lui qui possède le WASM d'encodage.
-   */
-  | { readonly type: "caravanArrive"; readonly arrival: CaravanArriveMessage }
   | { readonly type: "saved"; readonly bytes: Uint8Array }
   /** Fin d'un `load`. `error` non vide si la sauvegarde était illisible. */
   | { readonly type: "loaded"; readonly error?: string }
@@ -179,12 +162,13 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
         message.skills.buffer as ArrayBuffer,
         message.health.buffer as ArrayBuffer,
         message.stored.buffer as ArrayBuffer,
+        message.craftTargets.buffer as ArrayBuffer,
+        message.weapons.buffer as ArrayBuffer,
       ];
     case "saved":
       return [message.bytes.buffer as ArrayBuffer];
     default:
-      // `net`, `caravanArrive`, `loaded`, `error`, `debugResult` : rien de gros
-      // à transférer (un manifeste pèse quelques centaines d'octets).
+      // `net`, `loaded`, `error`, `debugResult` : rien de gros à transférer.
       // Un `debugResult` porte des copies, clonées comme n'importe quelle valeur.
       return [];
   }

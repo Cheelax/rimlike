@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { eventLabel, formatInjury } from "../src/render/terrain";
+import { clampCraftTarget, eventLabel, formatInjury, WEAPON_NAMES } from "../src/render/terrain";
 
 describe("eventLabel", () => {
   it("nomme le colon quand son nom est connu", () => {
@@ -43,6 +43,40 @@ describe("eventLabel", () => {
     expect(eventLabel(13, 0)).toBe("Moins d'un jour a passé pendant votre absence");
     expect(eventLabel(13, 1)).toBe("1 jour a passé pendant votre absence");
     expect(eventLabel(13, 12)).toBe("12 jours ont passé pendant votre absence");
+  });
+
+  it("nomme l'arme fabriquée, `arg` étant son genre et non un id", () => {
+    // Contrat avec `sim::EventKind::WeaponCrafted` (14) : `arg` suit `ItemKind`.
+    expect(eventLabel(14, 6)).toBe("Un gourdin a été fabriqué");
+    expect(eventLabel(14, 7)).toBe("Un épieu a été fabriqué");
+    expect(eventLabel(14, 8)).toBe("Un arc a été fabriqué");
+    // Un nom connu ne doit pas s'y glisser : ce n'est pas un id de pawn.
+    expect(eventLabel(14, 6, { 6: "Alice" })).toBe("Un gourdin a été fabriqué");
+  });
+});
+
+describe("WEAPON_NAMES", () => {
+  it("donne le nom singulier des trois armes, indexé par `ItemKind`", () => {
+    expect(WEAPON_NAMES[6]).toBe("gourdin");
+    expect(WEAPON_NAMES[7]).toBe("épieu");
+    expect(WEAPON_NAMES[8]).toBe("arc");
+  });
+});
+
+describe("clampCraftTarget", () => {
+  it("borne un objectif de fabrication à 0..20", () => {
+    expect(clampCraftTarget(-5)).toBe(0);
+    expect(clampCraftTarget(0)).toBe(0);
+    expect(clampCraftTarget(7)).toBe(7);
+    expect(clampCraftTarget(20)).toBe(20);
+    expect(clampCraftTarget(21)).toBe(20);
+    expect(clampCraftTarget(1000)).toBe(20);
+  });
+
+  it("tronque les décimales et rejette les valeurs non finies", () => {
+    expect(clampCraftTarget(3.9)).toBe(3);
+    expect(clampCraftTarget(Number.NaN)).toBe(0);
+    expect(clampCraftTarget(Number.POSITIVE_INFINITY)).toBe(0);
   });
 });
 

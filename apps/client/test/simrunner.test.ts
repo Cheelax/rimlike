@@ -122,6 +122,14 @@ class FakeSim implements RunnerSim {
     return new Uint32Array([1, 2, 3, 4, 5, 6]);
   }
 
+  craftTargets(): Uint32Array {
+    return new Uint32Array([0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  }
+
+  weapons(): Int32Array {
+    return new Int32Array(0);
+  }
+
   /** Manifestes de caravane en attente : pilotable, le `frame` les porte. */
   departures = 0;
 

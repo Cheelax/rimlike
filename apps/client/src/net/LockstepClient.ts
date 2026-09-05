@@ -18,8 +18,6 @@ import {
   decodeServerMessage,
   encodeMessage,
   type Bundle,
-  type CaravanArriveMessage,
-  type CaravanSummary,
   type ClientMessage,
   type PlayerId,
   type PlayerInfo,
@@ -84,32 +82,8 @@ export interface LockstepOptions {
   readonly onState?: (state: LockstepState) => void;
   /** Appelé quand un sim devient utilisable (démarrage ou snapshot). */
   readonly onSim?: (sim: SimLike) => void;
-  /**
-   * Une caravane est arrivée sur la case de cette salle, et nous en sommes
-   * l'hôte. À l'appelant d'émettre `ArriveCaravan` par `issue`, **puis** de
-   * confirmer par `caravanDelivered` (`docs/protocol.md` §12.7).
-   */
-  readonly onCaravanArrive?: (arrival: CaravanArriveMessage) => void;
   /** Erreurs serveur et trous de bundles. Jamais avalées en silence. */
   readonly onError?: (error: LockstepError) => void;
-  /**
-   * Jeton de la connexion **monde** (`docs/protocol.md` §11.2), pour que le
-   * `world_join` paresseux de `sendCaravanDepart` désigne le même joueur que
-   * celle-ci — sinon le serveur crée un second joueur, et la caravane
-   * expédiée d'ici n'est pas « à nous » sur le globe. Absent : comportement
-   * d'avant (nouveau joueur sous le même nom), celui des clients à connexion
-   * unique des tests, qui n'ont pas de connexion monde séparée.
-   */
-  readonly worldToken?: string;
-}
-
-/** Ce qu'il faut pour expédier un manifeste depuis la case de cette salle. */
-export interface RoomCaravanDeparture {
-  readonly fromTile: number;
-  readonly toTile: number;
-  /** Octets postcard du sim, opaques pour le serveur. */
-  readonly manifest: Uint8Array;
-  readonly summary: CaravanSummary;
 }
 
 export class LockstepClient {
@@ -118,7 +92,6 @@ export class LockstepClient {
   private readonly restoreSim: RestoreSim;
   private readonly onState: ((state: LockstepState) => void) | null;
   private readonly onSim: ((sim: SimLike) => void) | null;
-  private readonly onCaravanArrive: ((arrival: CaravanArriveMessage) => void) | null;
   private readonly onError: ((error: LockstepError) => void) | null;
 
   private simInstance: SimLike | null = null;
@@ -147,12 +120,6 @@ export class LockstepClient {
   private lastError: LockstepError | null = null;
   /** Voir `LockstepState.frozenTicks` et `consumeFrozenTicks`. */
   private frozenTicksValue = 0;
-  /** Nom donné au `join` : le `world_join` tardif des caravanes en a besoin. */
-  private playerName = "";
-  /** Vrai une fois cette connexion entrée dans le monde (voir `sendCaravanDepart`). */
-  private worldJoined = false;
-  /** Voir `LockstepOptions.worldToken`. */
-  private readonly worldToken: string | null;
 
   constructor(options: LockstepOptions) {
     this.transport = options.transport;
@@ -160,9 +127,7 @@ export class LockstepClient {
     this.restoreSim = options.restoreSim;
     this.onState = options.onState ?? null;
     this.onSim = options.onSim ?? null;
-    this.onCaravanArrive = options.onCaravanArrive ?? null;
     this.onError = options.onError ?? null;
-    this.worldToken = options.worldToken ?? null;
     this.transport.onMessage((text) => this.receive(text));
     this.transport.onClose(() => {
       this.phase = "closed";
@@ -196,7 +161,6 @@ export class LockstepClient {
   /** Premier message de la connexion. Crée la salle si elle n'existe pas. */
   join(room: string, name: string): void {
     this.roomName = room;
-    this.playerName = name;
     this.send({ type: "join", room, name, protocol: PROTOCOL_VERSION });
     this.emit();
   }
@@ -224,52 +188,6 @@ export class LockstepClient {
     const value = this.frozenTicksValue;
     this.frozenTicksValue = 0;
     return value;
-  }
-
-  /**
-   * Expédie un manifeste de caravane depuis la case de cette salle.
-   *
-   * Pourquoi **ici** et pas sur la connexion monde : le serveur exige que
-   * l'auteur d'un `caravan_depart` soit dans la salle de `fromTile`
-   * (`caravan_not_in_room`, `docs/protocol.md` §12.5). Notre client ouvre deux
-   * connexions — le monde sur le thread principal, la salle dans le Worker —
-   * et c'est celle-ci qui est dans la salle.
-   *
-   * Le serveur exige **aussi** un `world_join` sur la connexion qui expédie
-   * (c'est de là que vient le `owner` de la caravane). On l'émet au premier
-   * départ seulement, avec le **même jeton** que la connexion monde du thread
-   * principal (`worldToken`, §11.2) : sans ça le serveur créerait un second
-   * joueur, et la caravane n'appartiendrait pas à celui qui joue. Sans jeton
-   * connu — clients à connexion unique des tests, ou identité pas encore
-   * reçue — on repart sans, comme avant : un nouveau joueur sous le même nom.
-   */
-  sendCaravanDepart(departure: RoomCaravanDeparture): void {
-    if (!this.worldJoined) {
-      this.worldJoined = true;
-      this.send({
-        type: "world_join",
-        name: this.playerName,
-        protocol: PROTOCOL_VERSION,
-        ...(this.worldToken !== null ? { token: this.worldToken } : {}),
-      });
-    }
-    this.send({
-      type: "caravan_depart",
-      fromTile: departure.fromTile,
-      toTile: departure.toTile,
-      manifest: departure.manifest,
-      summary: departure.summary,
-    });
-  }
-
-  /**
-   * Confirme l'injection d'une arrivée, **après** avoir émis la commande. Même
-   * raison que ci-dessus : il faut être dans la salle de la case d'arrivée, et
-   * `caravan_delivered` est justement le seul message de caravane qui n'exige
-   * pas d'être entré dans le monde (§12.5).
-   */
-  sendCaravanDelivered(id: string): void {
-    this.send({ type: "caravan_delivered", id });
   }
 
   close(): void {
@@ -387,13 +305,15 @@ export class LockstepClient {
         this.emit();
         return;
       case "caravan_arrive":
-        // Adressé au seul hôte de cette salle, sur cette connexion : c'est
-        // elle qui est dans la salle de la case d'arrivée (§12.4).
-        this.onCaravanArrive?.(message);
+        // Le serveur l'envoie aussi ici (§12.4), mais le client ne s'en sert
+        // plus : `caravan_depart`/`caravan_delivered` partent désormais de la
+        // connexion **monde** (`WorldClient`, voir `docs/protocol.md` §12.7),
+        // qui reçoit le même message par la même règle de présence (clé, ou
+        // nom en repli) et suffit à piloter tout le flux d'arrivée.
         return;
       case "world_error":
-        // Refus d'un ordre de caravane parti d'ici. Ce n'est pas une erreur de
-        // salle, mais elle arrive sur cette connexion : à ne pas avaler.
+        // Un refus de caravane ne peut plus arriver ici : ces ordres ne
+        // partent plus de cette connexion. Gardé par exhaustivité du type.
         this.fail(message.code, message.message);
         return;
       case "error":

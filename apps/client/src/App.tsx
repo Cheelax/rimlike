@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { TICKS_PER_DAY, type SettledMessage } from "@rimlike/protocol";
 import { BIOME_NAMES, findRoute, type World } from "@rimlike/world";
 import { CaravanPanel, type CaravanColonist, type CaravanDestination } from "./CaravanPanel";
+import { CraftingPanel } from "./CraftingPanel";
 import {
   CaravanDispatcher,
   manifestSummary,
@@ -17,9 +18,11 @@ import { PAWN_FLAGS, PAWN_STRIDE, Renderer, type TilePos, type TileRect } from "
 import {
   BLUEPRINT_STRIDE,
   BUILD_KIND,
+  clampCraftTarget,
   DESIGNATION,
   EVENT_STRIDE,
   eventLabel,
+  FEATURE,
   formatInjury,
   HEALTH_STRIDE,
   ITEM_NAMES,
@@ -27,6 +30,7 @@ import {
   MATERIAL_NAMES,
   PRIORITY_STRIDE,
   SKILL_STRIDE,
+  WEAPON_NAMES,
   WEATHER_LABELS,
   WORK_LABELS,
   xpToNext,
@@ -41,6 +45,7 @@ import {
   encodeDesignate,
   encodeFormCaravan,
   encodeMoveTo,
+  encodeSetCraftTarget,
   encodeSetPriority,
   encodeSetZone,
   encodeTriggerRaid,
@@ -92,6 +97,7 @@ type Tool =
   | "floor"
   | "bed"
   | "campfire"
+  | "craftingSpot"
   | "cancel";
 
 const TOOLS: { id: Tool; label: string; key: string; color: number; group: "orders" | "build" }[] = [
@@ -106,6 +112,7 @@ const TOOLS: { id: Tool; label: string; key: string; color: number; group: "orde
   { id: "floor", label: "Sol", key: "O", color: 0x4ad9ff, group: "build" },
   { id: "bed", label: "Lit", key: "L", color: 0x4ad9ff, group: "build" },
   { id: "campfire", label: "Feu", key: "F", color: 0x4ad9ff, group: "build" },
+  { id: "craftingSpot", label: "Poste", key: "A", color: 0x4ad9ff, group: "build" },
   { id: "cancel", label: "Annuler", key: "X", color: 0xff4040, group: "orders" },
 ];
 
@@ -115,8 +122,11 @@ const BUILD_TOOL_KIND: Partial<Record<Tool, number>> = {
   floor: BUILD_KIND.Floor,
   bed: BUILD_KIND.Bed,
   campfire: BUILD_KIND.Campfire,
+  craftingSpot: BUILD_KIND.CraftingSpot,
 };
-const WOOD_ONLY: ReadonlySet<Tool> = new Set<Tool>(["bed", "campfire"]);
+const WOOD_ONLY: ReadonlySet<Tool> = new Set<Tool>(["bed", "campfire", "craftingSpot"]);
+/** HUD stock : comme les cadavres, les armes n'apparaissent que si on en a. */
+const HIDE_STOCK_WHEN_EMPTY: ReadonlySet<string> = new Set(["cadavres", "gourdins", "épieux", "arcs"]);
 
 /** Une ligne de blessure du panneau Santé, depuis `pawn_injuries` (voir `pawnInjuries`). */
 interface InjuryInfo {
@@ -157,6 +167,13 @@ interface PawnInfo {
   injuries: InjuryInfo[];
   /** Vide pour un pillard : le tampon `skills` ne les concerne pas. */
   skills: SkillInfo[];
+  /** Genre d'arme équipée (`sim::ItemKind`), -1 à mains nues. Lu dans `frame.weapons`. */
+  weapon: number;
+  /** Niveaux de combat, rafraîchis à part par `rpc("pawnCombatSkills", id)`, même rythme que les blessures. */
+  meleeLevel: number;
+  meleeXp: number;
+  rangedLevel: number;
+  rangedXp: number;
 }
 
 interface Stats {
@@ -184,6 +201,10 @@ interface Stats {
   departures: number;
   /** Retard du lockstep, en ticks. Toujours 0 en solo. */
   lag: number;
+  /** Objectifs de fabrication courants, indexés par `ItemKind` (`frame.craftTargets`). */
+  craftTargets: number[];
+  /** Un `Feature::CraftingSpot` existe sur la carte (compté dans `features`). */
+  hasCraftingSpot: boolean;
 }
 
 const INITIAL: Stats = {
@@ -196,7 +217,7 @@ const INITIAL: Stats = {
   speed: 1,
   paused: false,
   weather: 0,
-  stored: [0, 0, 0, 0, 0, 0],
+  stored: [0, 0, 0, 0, 0, 0, 0, 0, 0],
   blueprints: 0,
   colonists: 0,
   hostiles: 0,
@@ -206,6 +227,8 @@ const INITIAL: Stats = {
   colonistList: [],
   departures: 0,
   lag: 0,
+  craftTargets: [0, 0, 0, 0, 0, 0, 0, 0, 0],
+  hasCraftingSpot: false,
 };
 
 interface Actions {
@@ -299,6 +322,7 @@ export function App() {
   const [material, setMaterialState] = useState<number>(0);
   const [stats, setStats] = useState<Stats>(INITIAL);
   const [showWork, setShowWork] = useState(false);
+  const [showCraft, setShowCraft] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -380,6 +404,14 @@ export function App() {
       setToasts((prev) => [...prev, { id, text }]);
       timers.push(window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_MS));
     };
+    /**
+     * Arrivées déjà injectées depuis cette connexion monde. Le serveur réémet
+     * une arrivée tant qu'il n'a pas la confirmation et assume le doublon
+     * (§12.5) : mieux vaut un convoi confirmé deux fois que des colons
+     * débarqués deux fois. Vivent ici (pas dans l'effet de la partie) : cette
+     * connexion survit aux allers-retours entre colonies.
+     */
+    const deliveredCaravans = new Set<string>();
 
     void (async () => {
       try {
@@ -408,6 +440,34 @@ export function App() {
           },
           onError: (error) => {
             if (!cancelled) toast(`Monde : ${error.message}`);
+          },
+          onCaravanArrive: (arrival) => {
+            // Le serveur l'envoie aussi sur la connexion de salle (le Worker),
+            // qui l'ignore désormais (docs/protocol.md §12.4, §12.7) : c'est
+            // ici, sur la connexion monde, que le flux d'arrivée se joue.
+            //
+            // Il faut être en train de jouer précisément cette colonie, sinon
+            // il n'y a pas de sim où injecter le convoi : la garde ci-dessous
+            // couvre le cas (rare) où cette connexion reste associée à une
+            // colonie qu'on ne joue plus dans cet onglet — l'arrivée attend,
+            // le serveur la réémettra à la réouverture (§12.5).
+            if (roomTileRef.current !== arrival.tile || !isHostRef.current) return;
+            if (!deliveredCaravans.has(arrival.id)) {
+              const bridge = bridgeRef.current;
+              if (bridge === null) return;
+              try {
+                // Commande lockstep comme un clic du joueur : l'effet arrive
+                // avec le bundle, on n'applique rien localement.
+                bridge.issue(encodeArriveCaravan(arrival.manifest));
+              } catch (e) {
+                toast(`Caravane : arrivée impossible (${e instanceof Error ? e.message : String(e)})`);
+                return;
+              }
+              deliveredCaravans.add(arrival.id);
+            }
+            // Confirmer **après** avoir émis la commande : tant que le
+            // serveur n'a pas ce message, il garde l'arrivée.
+            client?.deliverCaravan(arrival.id);
           },
         });
         worldRef.current = client;
@@ -478,6 +538,13 @@ export function App() {
      */
     let selectedInjuries: InjuryInfo[] = [];
     let selectedInjuriesId: number | null = null;
+    /**
+     * Compétences de combat du colon sélectionné, rafraîchies par
+     * `rpc("pawnCombatSkills", id)` au même rythme que les blessures : elles ne
+     * sont pas dans le tampon `skills`, qui suit `WorkType` (`sim-wasm::pawn_combat_skills`).
+     */
+    let selectedCombat = { meleeLevel: 0, meleeXp: 0, rangedLevel: 0, rangedXp: 0 };
+    let selectedCombatId: number | null = null;
     let lastRenderAt = performance.now();
     let framesInWindow = 0;
     let windowStart = lastRenderAt;
@@ -531,16 +598,17 @@ export function App() {
      * départs par RPC). Déclaré avant lui parce que `onFrame` s'en sert.
      */
     let dispatcher: CaravanDispatcher | null = null;
-    /**
-     * Arrivées déjà injectées dans cette session. Le serveur réémet une
-     * arrivée tant qu'il n'a pas la confirmation et assume le doublon (§12.5) :
-     * mieux vaut un convoi confirmé deux fois que des colons débarqués deux fois.
-     */
-    const deliveredCaravans = new Set<string>();
+    /** Nombre de `Feature::CraftingSpot` sur la carte, recompté à chaque `map`. */
+    let craftingSpotCount = 0;
 
     // --- Le Worker de simulation ---
     const bridge = new SimBridge({
-      onMap: (m) => renderer.setMap(m.width, m.height, m.tiles, m.features),
+      onMap: (m) => {
+        renderer.setMap(m.width, m.height, m.tiles, m.features);
+        let spots = 0;
+        for (const f of m.features) if (f === FEATURE.CraftingSpot) spots++;
+        craftingSpotCount = spots;
+      },
       onOverlays: (m) => renderer.setOverlays(m.zones, m.designations),
       onFrame: (f) => {
         const now = performance.now();
@@ -567,6 +635,7 @@ export function App() {
         renderer.setWeather(f.weather);
         renderer.setTimeOfDay(f.timeOfDay / f.ticksPerDay);
         renderer.setNames(f.names);
+        renderer.setWeapons(f.weapons);
         confirmPriorities(f.priorities);
         notifyEvents(f.events, f.names, freshSim);
         freshSim = false;
@@ -599,26 +668,6 @@ export function App() {
           pushToast(`Colonie rouverte : ${days} jour${days > 1 ? "s" : ""} ont passé`);
         }
       },
-      onCaravanArrive: (arrival) => {
-        // Reçue sur la connexion de salle : le serveur ne l'envoie qu'à l'hôte
-        // de la case d'arrivée, il n'y a donc rien à vérifier de plus. Elle est
-        // réémise tant qu'elle n'est pas confirmée, doublon compris (§12.5) :
-        // le journal évite de débarquer deux fois les mêmes colons.
-        if (!deliveredCaravans.has(arrival.id)) {
-          try {
-            // Commande lockstep comme un clic du joueur : l'effet arrive avec
-            // le bundle, on n'applique rien localement.
-            issue(encodeArriveCaravan(arrival.manifest));
-          } catch (e) {
-            pushToast(`Caravane : arrivée impossible (${e instanceof Error ? e.message : String(e)})`);
-            return;
-          }
-          deliveredCaravans.add(arrival.id);
-        }
-        // Confirmer **après** avoir émis la commande : tant que le serveur n'a
-        // pas ce message, il garde l'arrivée.
-        bridge.caravanDelivered(arrival.id);
-      },
       onSaved: (bytes) => {
         try {
           localStorage.setItem(SAVE_KEY, bytesToBase64(bytes));
@@ -643,17 +692,7 @@ export function App() {
     bridge.start(
       session.mode === "solo"
         ? { mode: "solo", seed: DEFAULT_SEED, width: MAP_SIZE, height: MAP_SIZE }
-        : {
-            mode: "multi",
-            server: session.server,
-            room: session.room,
-            name: session.name,
-            // Même jeton que la connexion monde du thread principal (si on en
-            // a une) : le `world_join` paresseux du départ d'une caravane
-            // désignera le même joueur (docs/protocol.md §11.2, §12.7).
-            // `undefined` en salle nommée ordinaire, ou avant `world_welcome`.
-            token: worldRef.current?.state.token ?? undefined,
-          },
+        : { mode: "multi", server: session.server, room: session.room, name: session.name },
     );
     // Les `encode*` sont des fonctions du WASM : le thread principal en garde
     // une instance rien que pour encoder. Le sim, lui, n'existe que côté Worker.
@@ -673,10 +712,13 @@ export function App() {
       sendDepart: (departure) => {
         const fromTile = roomTileRef.current;
         if (fromTile === null) return;
-        // Par la connexion **de salle** (le Worker) : le serveur refuse un
-        // `caravan_depart` venu d'une connexion qui n'est pas dans la salle de
-        // `fromTile`, et notre connexion monde n'y est pas.
-        bridge.caravanDepart({ fromTile, ...departure });
+        // Par la connexion **monde** (thread principal) : le serveur accepte
+        // désormais `caravan_depart` de n'importe quelle connexion d'un joueur
+        // présent dans la salle de `fromTile` (docs/protocol.md §12.3, §12.7).
+        // Suppose une connexion monde ouverte (toujours le cas pour une salle
+        // `tile-N`, atteinte par le globe) ; sans elle, silencieusement rien
+        // ne part — cas hors du flux monde, non pris en charge ici.
+        worldRef.current?.sendDepart({ fromTile, ...departure });
       },
       issue: (bytes) => bridge.issue(bytes),
       encodeClear: encodeClearDepartures,
@@ -900,6 +942,10 @@ export function App() {
         setShowWork((v) => !v);
         return;
       }
+      if (k === "K") {
+        setShowCraft((v) => !v);
+        return;
+      }
       switch (k) {
         case "Q":
           renderer.rotate(-1);
@@ -1002,6 +1048,11 @@ export function App() {
       for (let h = 0; h + HEALTH_STRIDE <= f.health.length; h += HEALTH_STRIDE) {
         bloodById.set(f.health[h], f.health[h + 1] / 10);
       }
+      // Arme équipée par id, depuis `frame.weapons` : pas de RPC, c'est déjà là.
+      const weaponById = new Map<number, number>();
+      for (let w = 0; w + 2 <= f.weapons.length; w += 2) {
+        weaponById.set(f.weapons[w], f.weapons[w + 1]);
+      }
       const colonistList: CaravanColonist[] = [];
       for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
         const hostile = curPawns[o + 10] === FACTION_RAIDER;
@@ -1059,14 +1110,23 @@ export function App() {
           consciousness,
           injuries: selectedInjuriesId === id ? selectedInjuries : [],
           skills,
+          weapon: weaponById.get(id) ?? -1,
+          ...(selectedCombatId === id
+            ? selectedCombat
+            : { meleeLevel: 0, meleeXp: 0, rangedLevel: 0, rangedXp: 0 }),
         };
       }
-      // Blessures du colon sélectionné : rafraîchies ici (2 fois par seconde),
-      // affichées à la prochaine passe pour ne pas attendre l'aller-retour.
+      // Blessures et compétences de combat du colon sélectionné : rafraîchies
+      // ici (2 fois par seconde), affichées à la prochaine passe pour ne pas
+      // attendre l'aller-retour.
       if (info !== null) {
         if (selectedInjuriesId !== info.id) {
           selectedInjuriesId = info.id;
           selectedInjuries = [];
+        }
+        if (selectedCombatId !== info.id) {
+          selectedCombatId = info.id;
+          selectedCombat = { meleeLevel: 0, meleeXp: 0, rangedLevel: 0, rangedXp: 0 };
         }
         const id = info.id;
         void bridge
@@ -1083,9 +1143,21 @@ export function App() {
           .catch(() => {
             /* colon disparu entre-temps : rien à afficher au prochain tour */
           });
+        void bridge
+          .rpc("pawnCombatSkills", id)
+          .then((raw) => {
+            if (selectedCombatId !== id) return; // sélection changée entre-temps
+            const buf = raw as Int32Array;
+            if (buf.length < 4) return; // id disparu entre-temps
+            selectedCombat = { meleeLevel: buf[0], meleeXp: buf[1], rangedLevel: buf[2], rangedXp: buf[3] };
+          })
+          .catch(() => {
+            /* colon disparu entre-temps : rien à afficher au prochain tour */
+          });
       } else {
         selectedInjuriesId = null;
         selectedInjuries = [];
+        selectedCombatId = null;
       }
       setStats({
         tick: f.tick,
@@ -1108,6 +1180,8 @@ export function App() {
         colonistList,
         departures: f.departures,
         lag: f.lag,
+        craftTargets: Array.from(f.craftTargets),
+        hasCraftingSpot: craftingSpotCount > 0,
       });
     }, 500);
 
@@ -1154,6 +1228,15 @@ export function App() {
    * **avant** la commande, l'ordre des deux files devant coïncider (le serveur
    * garantit l'ordre des commandes, `docs/protocol.md` §5).
    */
+  /**
+   * Règle l'objectif de fabrication d'une arme (`render/terrain.ts::WEAPON_NAMES`).
+   * Borné à 0..20 par le panneau (`clampCraftTarget`) : le sim, lui, accepte
+   * n'importe quel entier.
+   */
+  const setCraftTarget = (kind: number, target: number) => {
+    bridgeRef.current?.issue(encodeSetCraftTarget(kind, clampCraftTarget(target)));
+  };
+
   const formCaravan = (
     pawnIds: readonly number[],
     items: readonly (readonly [number, number])[],
@@ -1357,7 +1440,7 @@ export function App() {
             <div>
               stock :{" "}
               {ITEM_NAMES.map((n, i) => [n, stats.stored[i] ?? 0] as const)
-                .filter(([n, v]) => n !== "cadavres" || v > 0)
+                .filter(([n, v]) => !HIDE_STOCK_WHEN_EMPTY.has(n) || v > 0)
                 .map(([n, v]) => `${v} ${n}`)
                 .join(" · ")}
               {stats.blueprints > 0 ? ` · ${stats.blueprints} chantier${stats.blueprints > 1 ? "s" : ""}` : ""}
@@ -1379,6 +1462,7 @@ export function App() {
                   : `${sel.name || "Colon " + sel.id} · (${sel.tile.x}, ${sel.tile.y})`}
               </div>
               <div className="panel-job">{sel.job}{sel.carrying ? ` · porte ${sel.carrying}` : ""}</div>
+              <div className="panel-weapon">Arme : {sel.weapon >= 0 ? WEAPON_NAMES[sel.weapon] ?? "?" : "à mains nues"}</div>
 
               {!sel.hostile && (
                 <>
@@ -1406,23 +1490,40 @@ export function App() {
                 </ul>
               )}
 
-              {!sel.hostile && sel.skills.length > 0 && (
-                <>
-                  <div className="panel-section">Compétences</div>
-                  {sel.skills.map((s) => (
-                    <div className="skill-row" key={s.work}>
-                      <span className="skill-label">{WORK_LABELS[s.work]}</span>
-                      <span className="skill-level">niv. {s.level}</span>
-                      <span className="bar-track">
-                        <span
-                          className="bar-fill"
-                          style={{ width: `${Math.min(100, (s.xp / s.xpToNext) * 100)}%` }}
-                        />
-                      </span>
-                    </div>
-                  ))}
-                </>
-              )}
+              <div className="panel-section">Compétences</div>
+              <div className="skill-row">
+                <span className="skill-label">Mêlée</span>
+                <span className="skill-level">niv. {sel.meleeLevel}</span>
+                <span className="bar-track">
+                  <span
+                    className="bar-fill"
+                    style={{ width: `${Math.min(100, (sel.meleeXp / xpToNext(sel.meleeLevel)) * 100)}%` }}
+                  />
+                </span>
+              </div>
+              <div className="skill-row">
+                <span className="skill-label">Tir</span>
+                <span className="skill-level">niv. {sel.rangedLevel}</span>
+                <span className="bar-track">
+                  <span
+                    className="bar-fill"
+                    style={{ width: `${Math.min(100, (sel.rangedXp / xpToNext(sel.rangedLevel)) * 100)}%` }}
+                  />
+                </span>
+              </div>
+              {!sel.hostile &&
+                sel.skills.map((s) => (
+                  <div className="skill-row" key={s.work}>
+                    <span className="skill-label">{WORK_LABELS[s.work]}</span>
+                    <span className="skill-level">niv. {s.level}</span>
+                    <span className="bar-track">
+                      <span
+                        className="bar-fill"
+                        style={{ width: `${Math.min(100, (s.xp / s.xpToNext) * 100)}%` }}
+                      />
+                    </span>
+                  </div>
+                ))}
 
               <div className="help">clic droit : y aller, ou attaquer un ennemi</div>
             </div>
@@ -1454,6 +1555,13 @@ export function App() {
               title="Touche J : priorités de travail"
             >
               Travail <span className="key">J</span>
+            </button>
+            <button
+              className={showCraft ? "active" : ""}
+              onClick={() => setShowCraft((v) => !v)}
+              title="Touche K : fabrication d'armes"
+            >
+              Fabrication <span className="key">K</span>
             </button>
             <button
               className={caravanOpen ? "active" : ""}
@@ -1539,6 +1647,15 @@ export function App() {
               </table>
               <div className="help">1 = urgent, 4 = quand il n'y a rien d'autre, — = jamais</div>
             </div>
+          )}
+          {showCraft && (
+            <CraftingPanel
+              stored={stats.stored}
+              targets={stats.craftTargets}
+              hasCraftingSpot={stats.hasCraftingSpot}
+              onSetTarget={setCraftTarget}
+              onClose={() => setShowCraft(false)}
+            />
           )}
           {caravanOpen && roomTile !== null && !caravanPicking && (
             <CaravanPanel

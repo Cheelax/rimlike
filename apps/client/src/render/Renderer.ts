@@ -13,6 +13,11 @@ import {
   ZONE,
 } from "./terrain";
 
+/** Contrat avec `items::ItemKind` (armes seulement) : gourdin, épieu, arc. */
+const WEAPON_KIND = { Club: 6, Spear: 7, Bow: 8 } as const;
+/** Position de l'arme tenue, dans le repère local du pawn (main droite). */
+const WEAPON_HAND = new THREE.Vector3(0.2, 0.42, 0.06);
+
 const FX_ONE = 256;
 export const PAWN_STRIDE = 12;
 export const ITEM_STRIDE = 5;
@@ -68,6 +73,10 @@ interface PawnView {
   nameMat: THREE.SpriteMaterial;
   /** Dernier nom peint sur la texture de l'étiquette, pour ne la refaire que si besoin. */
   nameShown: string | null;
+  /** Armes tenues en main : une seule visible à la fois, selon `weaponByPawn`. */
+  club: THREE.Mesh;
+  spear: THREE.Group;
+  bow: THREE.Mesh;
 }
 
 export interface TilePos {
@@ -108,6 +117,8 @@ export class Renderer {
   private overlayMeshes: THREE.Object3D[] = [];
   /** Nom de chaque pawn vivant, par id (voir `worker/protocol.ts::FrameMessage.names`). */
   private names: Record<number, string> = {};
+  /** Arme équipée par id (`frame.weapons`), absent des mains nues. */
+  private weaponByPawn = new Map<number, number>();
   /** Textures d'étiquette de nom, mises en cache par nom : jamais recréées par frame. */
   private readonly nameTextures = new Map<string, THREE.CanvasTexture>();
   private mapW = 0;
@@ -222,6 +233,7 @@ export class Renderer {
     let crops = 0;
     let ripe = 0;
     let fires = 0;
+    let benches = 0;
     for (let i = 0; i < features.length; i++) {
       const f = features[i];
       if (f === FEATURE.Rock) rocks++;
@@ -233,6 +245,7 @@ export class Renderer {
       else if (f === FEATURE.Crop) crops++;
       else if (f === FEATURE.CropRipe) ripe++;
       else if (f === FEATURE.Campfire) fires++;
+      else if (f === FEATURE.CraftingSpot) benches++;
     }
     const isWall = (x: number, y: number) => {
       if (x < 0 || y < 0 || x >= width || y >= height) return false;
@@ -304,8 +317,23 @@ export class Renderer {
       new THREE.MeshBasicMaterial({ color: 0xff8a2a }),
       Math.max(fires, 1),
     );
+    // Poste de fabrication : un établi bas (caisson brun) et un plateau clair
+    // dessus. Infranchissable côté sim, comme le feu de camp.
+    const benchBase = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.9, 0.5, 0.6),
+      new THREE.MeshLambertMaterial({ color: 0x6b4a2b }),
+      Math.max(benches, 1),
+    );
+    const benchTop = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.7, 0.06, 0.45),
+      new THREE.MeshLambertMaterial({ color: 0xd9c9a8 }),
+      Math.max(benches, 1),
+    );
     const lights: THREE.Object3D[] = [];
-    for (const m of [rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow, cropMesh, ripeMesh, fireRing]) {
+    for (const m of [
+      rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow,
+      cropMesh, ripeMesh, fireRing, benchBase, benchTop,
+    ]) {
       m.castShadow = m.receiveShadow = true;
     }
 
@@ -323,6 +351,7 @@ export class Renderer {
     let ci = 0;
     let pi = 0;
     let fi = 0;
+    let gi = 0;
     const yRot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
@@ -371,6 +400,9 @@ export class Renderer {
             light.position.set(x + 0.5, 1.1, y + 0.5);
             lights.push(light);
           }
+        } else if (f === FEATURE.CraftingSpot) {
+          benchBase.setMatrixAt(gi, mat.makeTranslation(x + 0.5, 0.25, y + 0.5));
+          benchTop.setMatrixAt(gi++, mat.makeTranslation(x + 0.5, 0.53, y + 0.5));
         }
       }
     }
@@ -387,10 +419,15 @@ export class Renderer {
     ripeMesh.count = ripe;
     fireRing.count = fires;
     flame.count = fires;
+    benchBase.count = benches;
+    benchTop.count = benches;
     floor.instanceMatrix.needsUpdate = true;
     if (floor.instanceColor) floor.instanceColor.needsUpdate = true;
     for (const m of [bushMesh, wallMesh, doorMesh]) if (m.instanceColor) m.instanceColor.needsUpdate = true;
-    const featureMeshes = [rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow, cropMesh, ripeMesh, fireRing, flame];
+    const featureMeshes = [
+      rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow,
+      cropMesh, ripeMesh, fireRing, flame, benchBase, benchTop,
+    ];
     for (const m of featureMeshes) m.instanceMatrix.needsUpdate = true;
 
     this.mapMeshes = [floor, ...featureMeshes, ...lights];
@@ -496,6 +533,14 @@ export class Renderer {
   /** Nom de chaque pawn vivant, par id. Recopié tel quel : `syncPawns` s'en sert au prochain rendu. */
   setNames(names: Record<number, string>): void {
     this.names = names;
+  }
+
+  /** Arme de chaque pawn armé, `[id, genre]×n` (`frame.weapons`). `syncPawns` s'en sert au prochain rendu. */
+  setWeapons(buf: Int32Array): void {
+    this.weaponByPawn.clear();
+    for (let o = 0; o + 2 <= buf.length; o += 2) {
+      this.weaponByPawn.set(buf[o], buf[o + 1]);
+    }
   }
 
   /**
@@ -676,6 +721,11 @@ export class Renderer {
       const carrying = (flags & PAWN_FLAGS.CARRYING) !== 0;
       view.carry.visible = carrying;
       if (carrying) view.carryMat.color.setHex(ITEM_COLORS[cur[o + 8]] ?? 0xffffff);
+      // Arme équipée : un seul mesh visible à la fois, selon le genre porté.
+      const weapon = this.weaponByPawn.get(id) ?? -1;
+      view.club.visible = weapon === WEAPON_KIND.Club;
+      view.spear.visible = weapon === WEAPON_KIND.Spear;
+      view.bow.visible = weapon === WEAPON_KIND.Bow;
       // Étiquette de nom : cachée de loin, sinon rafraîchie seulement si le nom a changé.
       const name = this.names[id];
       view.nameSprite.visible = showNames && !!name;
@@ -758,11 +808,47 @@ export class Renderer {
     nameSprite.scale.set(1.4, 0.35, 1);
     nameSprite.position.set(0, 1.24, 0);
     nameSprite.visible = false;
-    for (const m of [body, head, nose, carry]) {
+
+    // Armes tenues en main : un mesh par genre, un seul visible à la fois
+    // (`syncPawns`). Gourdin : un bâton fin. Épieu : un bâton plus long, avec
+    // une pointe. Arc : un tore aplati, tenu de profil.
+    const club = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.025, 0.035, 0.42, 6),
+      new THREE.MeshLambertMaterial({ color: ITEM_COLORS[WEAPON_KIND.Club] }),
+    );
+    club.position.copy(WEAPON_HAND);
+    club.rotation.z = Math.PI / 9;
+    club.visible = false;
+
+    const spear = new THREE.Group();
+    const spearShaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.018, 0.022, 0.62, 6),
+      new THREE.MeshLambertMaterial({ color: ITEM_COLORS[WEAPON_KIND.Club] }),
+    );
+    const spearTip = new THREE.Mesh(
+      new THREE.ConeGeometry(0.045, 0.14, 6),
+      new THREE.MeshLambertMaterial({ color: ITEM_COLORS[WEAPON_KIND.Spear] }),
+    );
+    spearTip.position.y = 0.38;
+    spear.add(spearShaft, spearTip);
+    spear.position.copy(WEAPON_HAND);
+    spear.rotation.z = Math.PI / 11;
+    spear.visible = false;
+
+    const bow = new THREE.Mesh(
+      new THREE.TorusGeometry(0.16, 0.02, 6, 12, Math.PI * 1.4),
+      new THREE.MeshLambertMaterial({ color: ITEM_COLORS[WEAPON_KIND.Bow] }),
+    );
+    bow.scale.z = 0.3;
+    bow.position.copy(WEAPON_HAND);
+    bow.rotation.y = Math.PI / 2;
+    bow.visible = false;
+
+    for (const m of [body, head, nose, carry, club, spearShaft, spearTip, bow]) {
       m.castShadow = true;
       m.userData.pawnId = id;
     }
-    group.add(body, head, nose, carry, zz, hpBack, hpFill, nameSprite);
+    group.add(body, head, nose, carry, zz, hpBack, hpFill, nameSprite, club, spear, bow);
     this.pawnRoot.add(group);
     return {
       group,
@@ -778,6 +864,9 @@ export class Renderer {
       nameSprite,
       nameMat,
       nameShown: null,
+      club,
+      spear,
+      bow,
     };
   }
 

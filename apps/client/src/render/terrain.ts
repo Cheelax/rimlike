@@ -35,9 +35,11 @@ export const FEATURE = {
   Crop: 10,
   CropRipe: 11,
   Campfire: 12,
+  /** Poste de fabrication d'armes (`crates/sim/src/craft.rs`) : infranchissable, comme le feu. */
+  CraftingSpot: 13,
 } as const;
 
-export const BUILD_KIND = { Wall: 0, Door: 1, Floor: 2, Bed: 3, Campfire: 4 } as const;
+export const BUILD_KIND = { Wall: 0, Door: 1, Floor: 2, Bed: 3, Campfire: 4, CraftingSpot: 5 } as const;
 export const MATERIAL = { Wood: 0, Stone: 1 } as const;
 export const MATERIAL_NAMES = ["bois", "pierre"] as const;
 /** Couleurs des matériaux construits : [bois, pierre]. */
@@ -48,8 +50,34 @@ export const BLUEPRINT_STRIDE = 8;
 export const ZONE = { None: 0, Stockpile: 1, Growing: 2 } as const;
 export const DESIGNATION = { None: 0, Chop: 1, Mine: 2, Harvest: 3 } as const;
 
-export const ITEM_NAMES = ["bois", "pierre", "baies", "légumes", "repas", "cadavres"] as const;
-export const ITEM_COLORS: readonly number[] = [0x9c6b3c, 0x8d8d8d, 0xc9304a, 0x5aa02c, 0xf0c070, 0x5c4a3a];
+export const ITEM_NAMES = [
+  "bois",
+  "pierre",
+  "baies",
+  "légumes",
+  "repas",
+  "cadavres",
+  "gourdins",
+  "épieux",
+  "arcs",
+] as const;
+export const ITEM_COLORS: readonly number[] = [
+  0x9c6b3c, 0x8d8d8d, 0xc9304a, 0x5aa02c, 0xf0c070, 0x5c4a3a,
+  0x5a3d22 /* gourdin : bois sombre */, 0x8a8f94 /* épieu : gris acier */, 0xd9b273 /* arc : bois clair */,
+];
+
+/**
+ * Contrat avec `items::ItemKind` (armes seulement, 6 gourdin, 7 épieu, 8 arc) :
+ * noms au singulier, pour l'arme équipée d'un colon (panneau) et l'événement 14
+ * (`WeaponCrafted`). Les trois sont masculins : pas d'accord à porter.
+ */
+export const WEAPON_NAMES: Readonly<Record<number, string>> = { 6: "gourdin", 7: "épieu", 8: "arc" };
+
+/** Borne d'affichage d'un objectif de fabrication (le sim, lui, accepte n'importe quel entier). */
+export function clampCraftTarget(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(20, Math.trunc(n)));
+}
 
 /** Contrat avec `sim::WorkType` : index = valeur de l'enum. */
 export const WORK_LABELS = ["Construire", "Livrer", "Cuisiner", "Désignations", "Cultiver", "Ranger"] as const;
@@ -101,6 +129,8 @@ export const JOB_LABELS = [
   "à terre",
   "secourt",
   "soigne",
+  "fabrique",
+  "s'équipe",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
@@ -144,6 +174,11 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
       // docs/protocol.md), jamais un id de pawn : pas de `names` ici.
       if (arg <= 0) return "Moins d'un jour a passé pendant votre absence";
       return `${arg} jour${arg > 1 ? "s" : ""} ${arg > 1 ? "ont" : "a"} passé pendant votre absence`;
+    case 14: {
+      // `arg` = le genre d'arme fabriquée (`sim::ItemKind`), pas un id de pawn.
+      const name = WEAPON_NAMES[arg] ?? "objet";
+      return `Un ${name} a été fabriqué`;
+    }
     default:
       return "";
   }

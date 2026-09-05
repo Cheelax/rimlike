@@ -1,6 +1,9 @@
 import type { SimLike } from "../net/SimLike";
 import init, { WasmSim, type InitOutput } from "../wasm/sim.js";
 
+/** Entiers par pawn dans le tampon `pawns()` ; seul l'id (offset 0) sert ici (`sim-wasm::PAWN_STRIDE`). */
+const PAWN_STRIDE = 12;
+
 /**
  * L'init wasm-bindgen n'est pas idempotente si elle est appelée deux fois en
  * parallèle (deux instances, deux mémoires, la seconde écrase la globale).
@@ -105,6 +108,45 @@ export class SimHandle implements SimLike {
 
   triggerRaid(): void {
     this.inner.trigger_raid();
+  }
+
+  /**
+   * Objectif de fabrication d'un genre (`sim::ItemKind` 6 gourdin, 7 épieu,
+   * 8 arc). Un genre sans recette est ignoré par le sim.
+   */
+  setCraftTarget(kind: number, target: number): void {
+    this.inner.set_craft_target(kind, target);
+  }
+
+  /** Objectifs de fabrication courants, indexés par `ItemKind` (9 entrées). */
+  craftTargets(): Uint32Array {
+    return this.inner.craft_targets();
+  }
+
+  /** Arme équipée d'un pawn, suivant `sim::ItemKind`. -1 : à mains nues, ou id inconnu. */
+  pawnWeapon(id: number): number {
+    return this.inner.pawn_weapon(id);
+  }
+
+  /** Compétences de combat d'un pawn : `[niveau mêlée, xp, niveau tir, xp]`. Vide si l'id est inconnu. */
+  pawnCombatSkills(id: number): Int32Array {
+    return this.inner.pawn_combat_skills(id);
+  }
+
+  /**
+   * Arme équipée de chaque pawn armé, aplatie : `[id, genre]` par pawn qui en
+   * porte une. Pas de méthode dédiée côté sim-wasm : le nombre de pawns reste
+   * petit (`AGENTS.md`), une recherche par id suffit à chaque frame.
+   */
+  weapons(): Int32Array {
+    const pawns = this.pawns();
+    const out: number[] = [];
+    for (let o = 0; o + PAWN_STRIDE <= pawns.length; o += PAWN_STRIDE) {
+      const id = pawns[o];
+      const weapon = this.inner.pawn_weapon(id);
+      if (weapon >= 0) out.push(id, weapon);
+    }
+    return Int32Array.from(out);
   }
 
   /**

@@ -175,10 +175,10 @@ export function WorldScreen({
    */
   const myKey = net?.playerKey ?? null;
   /**
-   * Tous les joueurs déjà vus par le monde, une entrée par clé — la connexion
-   * de salle qui entre aussi dans le monde pour expédier une caravane (voir
-   * `LockstepClient.sendCaravanDepart`) porte désormais le même jeton, donc la
-   * même clé : plus besoin de dédoublonner par nom comme en v1.
+   * Tous les joueurs déjà vus par le monde, une entrée par clé — les
+   * caravanes partent désormais de la connexion **monde** elle-même
+   * (`WorldClient.sendDepart`, voir `docs/protocol.md` §12.7), qui porte déjà
+   * la bonne clé : plus besoin de dédoublonner par nom comme en v1.
    */
   const players = net?.players ?? [];
   const onlinePlayers = players.filter((p) => p.online);

@@ -6,8 +6,7 @@
  * réglages, il reçoit des `frame` : c'est toute la relation.
  */
 
-import type { CaravanArriveMessage } from "@rimlike/protocol";
-import type { LockstepState, RoomCaravanDeparture } from "../net/LockstepClient";
+import type { LockstepState } from "../net/LockstepClient";
 import type {
   FrameMessage,
   InitMessage,
@@ -22,8 +21,6 @@ export interface SimBridgeHandlers {
   readonly onOverlays: (message: OverlaysMessage) => void;
   readonly onFrame: (message: FrameMessage) => void;
   readonly onNet: (state: LockstepState) => void;
-  /** Une caravane arrive sur la case de notre salle et nous en sommes l'hôte. */
-  readonly onCaravanArrive: (arrival: CaravanArriveMessage) => void;
   readonly onSaved: (bytes: Uint8Array) => void;
   /** `error` non vide si la sauvegarde était illisible : le sim en cours continue. */
   readonly onLoaded: (error?: string) => void;
@@ -38,8 +35,6 @@ export type SimSession =
       readonly server: string;
       readonly room: string;
       readonly name: string;
-      /** Jeton de la connexion monde en cours, voir `InitMessage.token`. */
-      readonly token?: string;
     };
 
 export class SimBridge {
@@ -63,14 +58,7 @@ export class SimBridge {
     const message: InitMessage =
       session.mode === "solo"
         ? { type: "init", mode: "solo", seed: session.seed, width: session.width, height: session.height }
-        : {
-            type: "init",
-            mode: "multi",
-            server: session.server,
-            room: session.room,
-            name: session.name,
-            token: session.token,
-          };
+        : { type: "init", mode: "multi", server: session.server, room: session.room, name: session.name };
     this.post(message);
   }
 
@@ -93,21 +81,6 @@ export class SimBridge {
 
   startGame(seed: number, width: number, height: number): void {
     this.post({ type: "startGame", seed, width, height });
-  }
-
-  /**
-   * Expédie un manifeste de caravane par la connexion **de salle**. C'est la
-   * seule qui soit dans la salle de `fromTile`, ce que le serveur exige
-   * (`docs/protocol.md` §12.5) — la connexion monde du thread principal ne
-   * sert donc qu'à `caravan_cancel` et à lire `world_caravans`.
-   */
-  caravanDepart(departure: RoomCaravanDeparture): void {
-    this.post({ type: "caravanDepart", departure });
-  }
-
-  /** Confirme une arrivée injectée, sur la même connexion, pour la même raison. */
-  caravanDelivered(id: string): void {
-    this.post({ type: "caravanDelivered", id });
   }
 
   /** Réclame un snapshot : `localStorage` n'existe pas dans un Worker. */
@@ -155,9 +128,6 @@ export class SimBridge {
         return;
       case "net":
         this.handlers.onNet(message.state);
-        return;
-      case "caravanArrive":
-        this.handlers.onCaravanArrive(message.arrival);
         return;
       case "saved":
         this.handlers.onSaved(message.bytes);

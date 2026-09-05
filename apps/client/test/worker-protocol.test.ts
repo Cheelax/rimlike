@@ -53,7 +53,9 @@ function frame(): FrameMessage {
     skills: new Int32Array([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
     health: new Int32Array([1, 1000, 100, 0]),
     names: { 1: "Alice" },
-    stored: new Uint32Array([9, 8, 7, 6, 5, 4]),
+    stored: new Uint32Array([9, 8, 7, 6, 5, 4, 0, 0, 0]),
+    craftTargets: new Uint32Array([0, 0, 0, 0, 0, 0, 3, 0, 1]),
+    weapons: new Int32Array([1, 6]),
     departures: 1,
     lag: 3,
     tps: 60,
@@ -87,16 +89,6 @@ const fromMain: MainToWorker[] = [
   { type: "setPaused", paused: true },
   { type: "setSpeed", speed: 3 },
   { type: "startGame", seed: 7, width: 32, height: 32 },
-  {
-    type: "caravanDepart",
-    departure: {
-      fromTile: 1732,
-      toTile: 1810,
-      manifest: new Uint8Array([5, 0, 3]),
-      summary: { pawns: 3, items: [[0, 40]] },
-    },
-  },
-  { type: "caravanDelivered", id: "c7" },
   { type: "save" },
   { type: "load", bytes: new Uint8Array([9]) },
   { type: "debug", id: 1, method: "step", args: [5] },
@@ -107,16 +99,6 @@ const toMain: WorkerToMain[] = [
   overlays(),
   frame(),
   { type: "net", state: netState },
-  {
-    type: "caravanArrive",
-    arrival: {
-      type: "caravan_arrive",
-      id: "c7",
-      tile: 1810,
-      manifest: new Uint8Array([5, 0, 3]),
-      summary: { pawns: 3, items: [[0, 40]] },
-    },
-  },
   { type: "saved", bytes: new Uint8Array([4, 5, 6]) },
   { type: "loaded" },
   { type: "error", message: "boum" },
@@ -129,28 +111,20 @@ describe("protocole du Worker de simulation", () => {
       expect(typeof message.type).toBe("string");
     }
     expect(new Set(fromMain.map((m) => m.type))).toEqual(
-      new Set([
-        "init",
-        "issue",
-        "setPaused",
-        "setSpeed",
-        "startGame",
-        "caravanDepart",
-        "caravanDelivered",
-        "save",
-        "load",
-        "debug",
-      ]),
+      new Set(["init", "issue", "setPaused", "setSpeed", "startGame", "save", "load", "debug"]),
     );
     expect(new Set(toMain.map((m) => m.type))).toEqual(
-      new Set(["map", "overlays", "frame", "net", "caravanArrive", "saved", "loaded", "error", "debugResult"]),
+      new Set(["map", "overlays", "frame", "net", "saved", "loaded", "error", "debugResult"]),
     );
   });
 
   it("fait arriver les tampons d'un `frame` copiés, jamais partagés", () => {
     const original = frame();
     const clone = structuredClone(original);
-    for (const key of ["pawns", "items", "blueprints", "events", "priorities", "skills", "health", "stored"] as const) {
+    for (const key of [
+      "pawns", "items", "blueprints", "events", "priorities", "skills", "health", "stored",
+      "craftTargets", "weapons",
+    ] as const) {
       expect(clone[key]).toEqual(original[key]);
       expect(clone[key]).not.toBe(original[key]);
       expect(clone[key].buffer).not.toBe(original[key].buffer);
@@ -184,12 +158,12 @@ describe("protocole du Worker de simulation", () => {
   it("annonce des tampons distincts, transférables sans copie", () => {
     const original = frame();
     const transfer = transferablesOf(original);
-    // Huit tampons, tous différents : un tampon transféré deux fois lèverait.
-    expect(transfer.length).toBe(8);
-    expect(new Set(transfer).size).toBe(8);
+    // Dix tampons, tous différents : un tampon transféré deux fois lèverait.
+    expect(transfer.length).toBe(10);
+    expect(new Set(transfer).size).toBe(10);
 
     const clone = structuredClone(original, { transfer });
-    expect(Array.from(clone.stored)).toEqual([9, 8, 7, 6, 5, 4]);
+    expect(Array.from(clone.stored)).toEqual([9, 8, 7, 6, 5, 4, 0, 0, 0]);
     expect(clone.pawns[11]).toBe(1000);
     // Détachés côté émetteur : c'est le prix du transfert, et il est sans
     // conséquence puisque le Worker rebâtit ses tampons à chaque frame.

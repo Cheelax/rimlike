@@ -89,10 +89,8 @@ export interface WorldClientState {
   readonly world: WorldInfo | null;
   readonly lastError: WorldError | null;
   /**
-   * Le jeton courant, à passer au `LockstepClient` d'une salle (le `world_join`
-   * paresseux de `sendCaravanDepart` doit désigner le même joueur, sinon le
-   * serveur en crée un second — `docs/protocol.md` §11.2 et §12.7). `null`
-   * tant qu'aucune identité n'est connue (avant `world_welcome`, ou stockage
+   * Le jeton courant de cette identité (`docs/protocol.md` §11.2). `null` tant
+   * qu'aucune identité n'est connue (avant `world_welcome`, ou stockage
    * indisponible). Jamais affiché : le crochet de dev n'en montre que
    * `identitySummary` (longueur du jeton, pas sa valeur).
    */
@@ -129,13 +127,14 @@ export interface WorldClientOptions {
   readonly onSettled?: (settled: SettledMessage) => void;
   /**
    * Une caravane est arrivée sur la case d'une salle dont nous sommes l'hôte.
-   * À charge de l'appelant d'émettre `ArriveCaravan` en lockstep **puis** de
-   * confirmer par `deliverCaravan` (§12.7). Le message est réémis tant qu'il
-   * n'est pas confirmé : recevoir deux fois la même arrivée est possible.
+   * À charge de l'appelant d'émettre `ArriveCaravan` en lockstep (par le
+   * Worker) **puis** de confirmer par `deliverCaravan`, ici (§12.7). Le
+   * message est réémis tant qu'il n'est pas confirmé : recevoir deux fois la
+   * même arrivée est possible, à dédoublonner par `id`.
    *
-   * Le serveur l'adresse à l'hôte **par la connexion de la salle** : dans
-   * notre client c'est celle du Worker, et ce rappel-ci ne sert donc qu'à un
-   * client à connexion unique (voir `LockstepClient.onCaravanArrive`).
+   * Le serveur l'adresse à l'hôte à la fois sur la connexion de salle (le
+   * Worker, qui l'ignore désormais) et sur cette connexion monde (même clé,
+   * ou même nom en repli) : c'est elle que le client écoute.
    */
   readonly onCaravanArrive?: (arrival: CaravanArriveMessage) => void;
   /** Refus du serveur. Un message à l'écran, jamais une déconnexion (§11.7). */
@@ -256,14 +255,14 @@ export class WorldClient {
   }
 
   /**
-   * Expédier un manifeste. L'émetteur doit être **dans la salle** de
+   * Expédier un manifeste. L'émetteur doit être **présent dans la salle** de
    * `fromTile` : le serveur le vérifie et refuse par `caravan_not_in_room`
-   * sinon (`docs/protocol.md` §12.5).
-   *
-   * Notre client ouvre deux connexions — le monde ici, la salle dans le Worker
-   * — et c'est celle du Worker qui est dans la salle : `App.tsx` passe donc
-   * par `SimBridge.caravanDepart`. Cette méthode reste le chemin d'un client à
-   * connexion unique, tel que le protocole le décrit.
+   * sinon (`docs/protocol.md` §12.5). Notre client ouvre deux connexions — le
+   * monde ici, la salle dans le Worker — mais le serveur accepte ce message
+   * aussi bien depuis la connexion monde d'un joueur présent dans la salle
+   * (par sa clé, ou son nom en repli) que depuis la connexion de salle
+   * elle-même (§12.3) : `App.tsx` (`CaravanDispatcher`) passe donc par ici,
+   * sans détour par le Worker (§12.7).
    */
   sendDepart(departure: CaravanDeparture): void {
     this.send({
@@ -283,10 +282,9 @@ export class WorldClient {
   /**
    * Confirmer l'injection d'une arrivée. À envoyer **après** avoir émis la
    * commande `ArriveCaravan` : tant que le serveur n'a pas ce message, il
-   * garde l'arrivée et la réémettra (§12.5).
-   *
-   * Même remarque que `sendDepart` : il faut être dans la salle de la case
-   * d'arrivée, donc `App.tsx` passe par `SimBridge.caravanDelivered`.
+   * garde l'arrivée et la réémettra (§12.5). Même remarque que `sendDepart` :
+   * accepté ici tant qu'on est l'hôte de la salle d'arrivée (clé, ou nom en
+   * repli), sans passer par le Worker.
    */
   deliverCaravan(id: string): void {
     this.send({ type: "caravan_delivered", id });

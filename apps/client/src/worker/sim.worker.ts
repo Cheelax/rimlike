@@ -94,6 +94,12 @@ const SIM_API: ReadonlySet<string> = new Set([
   "arriveCaravan",
   "departuresCount",
   "departure",
+  // Armes et fabrication (voir `crates/sim/src/craft.rs`).
+  "setCraftTarget",
+  "craftTargets",
+  "pawnWeapon",
+  "pawnCombatSkills",
+  "weapons",
 ]);
 
 /** Idem pour le `LockstepClient`, préfixé `lockstep.` côté appelant. */
@@ -156,13 +162,6 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
       createSim: (seed, width, height) => SimHandle.create({ seed: BigInt(seed), width, height }),
       restoreSim: (bytes) => SimHandle.restore(bytes),
       onState: (state) => post({ type: "net", state }),
-      // L'arrivée d'une caravane vient sur la connexion de salle, donc ici :
-      // le thread principal l'encodera puis confirmera (docs/protocol.md §12.7).
-      onCaravanArrive: (arrival) => post({ type: "caravanArrive", arrival }),
-      // Même jeton que la connexion monde du thread principal, pour que le
-      // `world_join` paresseux du départ d'une caravane désigne le même joueur
-      // (docs/protocol.md §11.2, §12.7).
-      worldToken: message.token,
       // La fabrique ne produit que des `SimHandle` : le runner a besoin de ses
       // tampons, que `SimLike` n'expose pas.
       onSim: (sim) => {
@@ -203,14 +202,6 @@ function handle(message: MainToWorker): void {
       return;
     case "startGame":
       lockstep?.startGame(message.seed, message.width, message.height);
-      return;
-    case "caravanDepart":
-      // Sans lockstep il n'y a pas de salle, donc pas de case de départ : en
-      // solo une caravane ne va nulle part.
-      lockstep?.sendCaravanDepart(message.departure);
-      return;
-    case "caravanDelivered":
-      lockstep?.sendCaravanDelivered(message.id);
       return;
     case "save": {
       const sim = runner?.sim;

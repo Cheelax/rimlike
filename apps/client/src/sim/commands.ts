@@ -106,3 +106,13 @@ export function encodeArriveCaravan(manifest: Uint8Array): Uint8Array {
 export function encodeFastForward(ticks: number): Uint8Array {
   return WasmSim.encode_fast_forward(ticks);
 }
+
+/**
+ * Objectif de fabrication d'une arme. `kind` suit `sim::ItemKind` (6 gourdin,
+ * 7 épieu, 8 arc) ; un genre sans recette est ignoré par le sim. `target` n'a
+ * pas de borne côté sim, mais le panneau Fabrication le contient à 0..20
+ * (`render/terrain.ts::clampCraftTarget`).
+ */
+export function encodeSetCraftTarget(kind: number, target: number): Uint8Array {
+  return WasmSim.encode_set_craft_target(kind, target);
+}
