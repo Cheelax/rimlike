@@ -5,15 +5,15 @@ import {
   BLUEPRINT_STRIDE,
   BUILD_KIND,
   DESIGNATION,
-  DOOR_COLORS,
   FACTION,
   FEATURE,
   ITEM_COLORS,
   TERRAIN,
   TERRAIN_COLORS,
-  WALL_COLORS,
   ZONE,
 } from "./terrain";
+
+import { PropBatch, PropLibrary, blueprintKey, doorRotation, surfaceTexture, placementTexture, visualSeed, type PropInstance } from "./props";
 
 /** Contrat avec `items::ItemKind` (armes seulement) : gourdin, épieu, arc. */
 const WEAPON_KIND = { Club: 6, Spear: 7, Bow: 8 } as const;
@@ -26,13 +26,6 @@ export const ITEM_STRIDE = 5;
 export const PAWN_FLAGS = { MOVING: 1, SLEEPING: 2, WORKING: 4, STARVING: 8, CARRYING: 16, DOWNED: 32 } as const;
 /** Caméra à ce niveau de zoom ou plus : les étiquettes de nom deviennent visibles. */
 const NAME_LABEL_MIN_ZOOM = 1.6;
-const MAX_ITEMS = 2048;
-/** `ItemKind::Corpse` côté sim. */
-const ITEM_CORPSE = 5;
-/** Dépouilles de bêtes (`ItemKind` 9 cerf, 10 lapin, 11 sanglier) : rendues allongées comme un cadavre. */
-const ANIMAL_CORPSE_KINDS: ReadonlySet<number> = new Set([9, 10, 11]);
-const MAX_BLUEPRINTS = 2048;
-
 /** Contrat avec `sim::Weather` (3 : la pluie qui gèle). */
 const WEATHER = { Clear: 0, Rain: 1, Storm: 2, Snow: 3 } as const;
 /** Gouttes de pluie instanciées. Purement décoratif : `Math.random` est permis ici. */
@@ -68,7 +61,7 @@ const SNOW_GROUND_MIX = 0.6;
 export const HEAT_COLD = -300;
 export const HEAT_HOT = 400;
 
-const PAWN_COLORS = [0xd94f4f, 0x4f8fd9, 0xe0b040, 0x8f4fd9, 0x3fb08f, 0xd97f2f];
+const PAWN_COLORS = [0xa85340, 0x527f98, 0xb59a4e, 0x8c718b, 0x6f8557, 0xb07845];
 const SKIN = 0xf1c9a5;
 /** Contrat avec `pawn::HP_MAX` (colons et pillards ; les bêtes ont leur propre plafond, hors rendu). */
 const PAWN_HP_MAX = 1000;
@@ -143,10 +136,23 @@ export class Renderer {
   private readonly hover: THREE.Mesh;
   private readonly selection: THREE.Mesh;
   private readonly dragRect: THREE.Mesh;
+  private readonly placementTexture = placementTexture();
+  private readonly placementGrid = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ map: this.placementTexture, transparent: true, depthWrite: false }),
+  );
+  private placementActive = false;
+  private hoveredTile: TilePos | null = null;
   private readonly pawnRoot = new THREE.Group();
   private readonly pawns = new Map<number, PawnView>();
-  private readonly items: THREE.InstancedMesh;
-  private readonly blueprints: THREE.InstancedMesh;
+  private readonly props = new PropLibrary();
+  private readonly featureProps = new PropBatch(this.props);
+  private readonly floorProps = new PropBatch(this.props);
+  private readonly itemProps = new PropBatch(this.props);
+  private readonly blueprintProps = new PropBatch(this.props, true);
+  private readonly groundTexture = surfaceTexture(true);
+  private tileFeatures: Uint8Array = new Uint8Array(0);
+  private readonly floorDetails: PropInstance[] = [];
   private readonly rain: THREE.InstancedMesh;
   private readonly rainPos = new Float32Array(RAIN_DROPS * 3);
   private mapMeshes: THREE.Object3D[] = [];
@@ -189,7 +195,7 @@ export class Renderer {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.scene.background = new THREE.Color(0x0b0f14);
 
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 2000);
@@ -226,24 +232,10 @@ export class Renderer {
       new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthWrite: false }),
     );
     this.dragRect.visible = false;
-    this.scene.add(this.hover, this.selection, this.dragRect);
+    this.placementGrid.visible = false;
+    this.scene.add(this.hover, this.selection, this.dragRect, this.placementGrid);
 
-    this.items = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshLambertMaterial(),
-      MAX_ITEMS,
-    );
-    this.items.count = 0;
-    this.items.castShadow = true;
-    this.scene.add(this.items);
-
-    this.blueprints = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.42, depthWrite: false }),
-      MAX_BLUEPRINTS,
-    );
-    this.blueprints.count = 0;
-    this.scene.add(this.blueprints);
+    this.scene.add(this.featureProps.group, this.floorProps.group, this.itemProps.group, this.blueprintProps.group);
 
     this.rain = new THREE.InstancedMesh(
       new THREE.BoxGeometry(0.02, 0.5, 0.02),
@@ -261,251 +253,72 @@ export class Renderer {
     this.resize();
   }
 
-  /** (Re)construit sol et éléments. Instancié : une draw call par type d'objet. */
+  /** (Re)construit les instances uniquement quand la carte change. */
   setMap(width: number, height: number, tiles: Uint8Array, features: Uint8Array): void {
-    for (const m of this.mapMeshes) this.scene.remove(m);
-    this.mapMeshes = [];
-    // Une nouvelle carte invalide la couche intérieure et la grille de chaleur
-    // affichées : elles seront reconstruites par le prochain `setIndoor` /
-    // `setHeatData`, à la bonne taille.
-    for (const m of this.indoorMeshes) this.scene.remove(m);
-    this.indoorMeshes = [];
-    for (const m of this.heatMeshes) this.scene.remove(m);
-    this.heatMeshes = [];
+    this.clearMeshes(this.mapMeshes);
+    this.clearMeshes(this.indoorMeshes);
+    this.clearMeshes(this.heatMeshes);
     this.mapW = width;
     this.mapH = height;
     this.tileTerrain = tiles;
-
+    this.tileFeatures = features;
+    this.floorDetails.length = 0;
     const floor = new THREE.InstancedMesh(
       new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
-      new THREE.MeshLambertMaterial(),
-      width * height,
+      new THREE.MeshLambertMaterial({ map: this.groundTexture }), width * height,
     );
     floor.receiveShadow = true;
     this.floorMesh = floor;
-
-    let rocks = 0;
-    let trees = 0;
-    let bushes = 0;
-    let walls = 0;
-    let doors = 0;
-    let beds = 0;
-    let crops = 0;
-    let ripe = 0;
-    let fires = 0;
-    let benches = 0;
-    for (let i = 0; i < features.length; i++) {
-      const f = features[i];
-      if (f === FEATURE.Rock) rocks++;
-      else if (f === FEATURE.Tree) trees++;
-      else if (f === FEATURE.Bush || f === FEATURE.BushUnripe) bushes++;
-      else if (f === FEATURE.WallWood || f === FEATURE.WallStone) walls++;
-      else if (f === FEATURE.DoorWood || f === FEATURE.DoorStone) doors++;
-      else if (f === FEATURE.Bed) beds++;
-      else if (f === FEATURE.Crop) crops++;
-      else if (f === FEATURE.CropRipe) ripe++;
-      else if (f === FEATURE.Campfire) fires++;
-      else if (f === FEATURE.CraftingSpot) benches++;
-    }
-    const isWall = (x: number, y: number) => {
-      if (x < 0 || y < 0 || x >= width || y >= height) return false;
-      const f = features[y * width + x];
-      return f === FEATURE.WallWood || f === FEATURE.WallStone;
-    };
-    const rockMesh = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(1, 0.7, 1),
-      new THREE.MeshLambertMaterial({ color: 0x7a7a7a }),
-      Math.max(rocks, 1),
-    );
-    const trunkMesh = new THREE.InstancedMesh(
-      new THREE.CylinderGeometry(0.08, 0.1, 0.5, 6),
-      new THREE.MeshLambertMaterial({ color: 0x6b4a2b }),
-      Math.max(trees, 1),
-    );
-    const canopyMesh = new THREE.InstancedMesh(
-      new THREE.ConeGeometry(0.38, 1.0, 7),
-      new THREE.MeshLambertMaterial({ color: 0x2f7a2f }),
-      Math.max(trees, 1),
-    );
-    const bushMesh = new THREE.InstancedMesh(
-      new THREE.SphereGeometry(0.32, 8, 6),
-      new THREE.MeshLambertMaterial(),
-      Math.max(bushes, 1),
-    );
-    const wallMesh = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshLambertMaterial(),
-      Math.max(walls, 1),
-    );
-    const doorMesh = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(1, 0.95, 0.3),
-      new THREE.MeshLambertMaterial(),
-      Math.max(doors, 1),
-    );
-    const bedFrame = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(0.9, 0.22, 0.9),
-      new THREE.MeshLambertMaterial({ color: 0x6b4a2b }),
-      Math.max(beds, 1),
-    );
-    const bedMattress = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(0.78, 0.12, 0.7),
-      new THREE.MeshLambertMaterial({ color: 0xe6dcc8 }),
-      Math.max(beds, 1),
-    );
-    const bedPillow = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(0.5, 0.1, 0.18),
-      new THREE.MeshLambertMaterial({ color: 0xf6f6f6 }),
-      Math.max(beds, 1),
-    );
-    const cropMesh = new THREE.InstancedMesh(
-      new THREE.ConeGeometry(0.16, 0.36, 5),
-      new THREE.MeshLambertMaterial({ color: 0x3f9a3f }),
-      Math.max(crops, 1),
-    );
-    const ripeMesh = new THREE.InstancedMesh(
-      new THREE.SphereGeometry(0.27, 8, 6),
-      new THREE.MeshLambertMaterial({ color: 0x9acd32 }),
-      Math.max(ripe, 1),
-    );
-    const fireRing = new THREE.InstancedMesh(
-      new THREE.CylinderGeometry(0.42, 0.46, 0.16, 8),
-      new THREE.MeshLambertMaterial({ color: 0x4a4a4a }),
-      Math.max(fires, 1),
-    );
-    const flame = new THREE.InstancedMesh(
-      new THREE.ConeGeometry(0.17, 0.45, 6),
-      new THREE.MeshBasicMaterial({ color: 0xff8a2a }),
-      Math.max(fires, 1),
-    );
-    // Poste de fabrication : un établi bas (caisson brun) et un plateau clair
-    // dessus. Infranchissable côté sim, comme le feu de camp.
-    const benchBase = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(0.9, 0.5, 0.6),
-      new THREE.MeshLambertMaterial({ color: 0x6b4a2b }),
-      Math.max(benches, 1),
-    );
-    const benchTop = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(0.7, 0.06, 0.45),
-      new THREE.MeshLambertMaterial({ color: 0xd9c9a8 }),
-      Math.max(benches, 1),
-    );
-    const lights: THREE.Object3D[] = [];
-    for (const m of [
-      rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow,
-      cropMesh, ripeMesh, fireRing, benchBase, benchTop,
-    ]) {
-      m.castShadow = m.receiveShadow = true;
-    }
-
-    const mat = new THREE.Matrix4();
-    const pos = new THREE.Vector3();
-    const q = new THREE.Quaternion();
-    const scl = new THREE.Vector3();
-    const color = new THREE.Color();
-    let ri = 0;
-    let ti = 0;
-    let bi = 0;
-    let wi = 0;
-    let di = 0;
-    let li = 0;
-    let ci = 0;
-    let pi = 0;
-    let fi = 0;
-    let gi = 0;
-    const yRot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const i = y * width + x;
-        const t = tiles[i];
-        const f = features[i];
-        const floorY = t === TERRAIN.DeepWater ? -0.12 : t === TERRAIN.ShallowWater ? -0.06 : 0;
-        floor.setMatrixAt(i, mat.makeTranslation(x + 0.5, floorY, y + 0.5));
-        floor.setColorAt(i, color.setHex(TERRAIN_COLORS[t] ?? 0xff00ff));
-        const j = ((x * 73856093) ^ (y * 19349663)) >>> 0;
-        const ox = ((j % 100) / 100 - 0.5) * 0.3;
-        const oz = (((j >>> 8) % 100) / 100 - 0.5) * 0.3;
-        const s = 0.85 + ((j >>> 16) % 100) / 300;
-        if (f === FEATURE.Rock) {
-          rockMesh.setMatrixAt(ri++, mat.makeTranslation(x + 0.5, 0.35, y + 0.5));
-        } else if (f === FEATURE.Tree) {
-          trunkMesh.setMatrixAt(ti, mat.makeTranslation(x + 0.5 + ox, 0.25 * s, y + 0.5 + oz));
-          mat.compose(pos.set(x + 0.5 + ox, s, y + 0.5 + oz), q, scl.set(s, s, s));
-          canopyMesh.setMatrixAt(ti++, mat);
-        } else if (f === FEATURE.Bush || f === FEATURE.BushUnripe) {
-          mat.compose(pos.set(x + 0.5 + ox, 0.2 * s, y + 0.5 + oz), q, scl.set(s, 0.7 * s, s));
-          bushMesh.setMatrixAt(bi, mat);
-          bushMesh.setColorAt(bi++, color.setHex(f === FEATURE.Bush ? 0x3a7d2a : 0x7c8a55));
-        } else if (f === FEATURE.WallWood || f === FEATURE.WallStone) {
-          wallMesh.setMatrixAt(wi, mat.makeTranslation(x + 0.5, 0.5, y + 0.5));
-          wallMesh.setColorAt(wi++, color.setHex(WALL_COLORS[f === FEATURE.WallWood ? 0 : 1]));
-        } else if (f === FEATURE.DoorWood || f === FEATURE.DoorStone) {
-          // La porte s'aligne sur les murs voisins : fine dans l'axe du passage.
-          const alongX = isWall(x - 1, y) || isWall(x + 1, y);
-          mat.compose(pos.set(x + 0.5, 0.475, y + 0.5), alongX ? q : yRot, scl.set(1, 1, 1));
-          doorMesh.setMatrixAt(di, mat);
-          doorMesh.setColorAt(di++, color.setHex(DOOR_COLORS[f === FEATURE.DoorWood ? 0 : 1]));
-        } else if (f === FEATURE.Bed) {
-          bedFrame.setMatrixAt(li, mat.makeTranslation(x + 0.5, 0.11, y + 0.5));
-          bedMattress.setMatrixAt(li, mat.makeTranslation(x + 0.5, 0.28, y + 0.55));
-          bedPillow.setMatrixAt(li++, mat.makeTranslation(x + 0.5, 0.36, y + 0.2));
-        } else if (f === FEATURE.Crop) {
-          cropMesh.setMatrixAt(ci++, mat.makeTranslation(x + 0.5 + ox * 0.5, 0.18, y + 0.5 + oz * 0.5));
-        } else if (f === FEATURE.CropRipe) {
-          ripeMesh.setMatrixAt(pi++, mat.makeTranslation(x + 0.5 + ox * 0.5, 0.27, y + 0.5 + oz * 0.5));
-        } else if (f === FEATURE.Campfire) {
-          fireRing.setMatrixAt(fi, mat.makeTranslation(x + 0.5, 0.08, y + 0.5));
-          flame.setMatrixAt(fi++, mat.makeTranslation(x + 0.5, 0.38, y + 0.5));
-          if (lights.length < 8) {
-            const light = new THREE.PointLight(0xff9a40, 6, 9, 2);
-            light.position.set(x + 0.5, 1.1, y + 0.5);
-            lights.push(light);
-          }
-        } else if (f === FEATURE.CraftingSpot) {
-          benchBase.setMatrixAt(gi, mat.makeTranslation(x + 0.5, 0.25, y + 0.5));
-          benchTop.setMatrixAt(gi++, mat.makeTranslation(x + 0.5, 0.53, y + 0.5));
-        }
+    const entries: PropInstance[] = [];
+    const lights: THREE.PointLight[] = [];
+    const matrix = new THREE.Matrix4();
+    const isWall = (i: number) => features[i] === FEATURE.WallWood || features[i] === FEATURE.WallStone;
+    for (let z = 0; z < height; z++) for (let x = 0; x < width; x++) {
+      const i = z * width + x, t = tiles[i], f = features[i];
+      const y = t === TERRAIN.DeepWater ? -0.12 : t === TERRAIN.ShallowWater ? -0.06 : 0;
+      floor.setMatrixAt(i, matrix.makeTranslation(x + 0.5, y, z + 0.5));
+      if (t === TERRAIN.WoodFloor || t === TERRAIN.StoneFloor) this.floorDetails.push({ key: `floor:${t}`, x: x + 0.5, z: z + 0.5 });
+      if (f === FEATURE.None) continue;
+      const seed = visualSeed(x, z);
+      const natural = f <= FEATURE.BushUnripe;
+      const isDoor = f === FEATURE.DoorWood || f === FEATURE.DoorStone;
+      entries.push({
+        key: `feature:${f}`, x: x + 0.5, z: z + 0.5,
+        rotation: isDoor ? doorRotation(x, z, width, height, isWall) : natural ? seed % 4 * Math.PI / 2 : 0,
+        scale: natural ? 0.9 + seed % 10 / 100 : 1,
+        tint: natural ? new THREE.Color().setScalar(0.94 + seed % 7 / 100).getHex() : 0xffffff,
+      });
+      if (f === FEATURE.Campfire && lights.length < 8) {
+        const light = new THREE.PointLight(0xff9a40, 6, 9, 2);
+        light.position.set(x + 0.5, 1.1, z + 0.5);
+        lights.push(light);
       }
     }
-    rockMesh.count = rocks;
-    trunkMesh.count = trees;
-    canopyMesh.count = trees;
-    bushMesh.count = bushes;
-    wallMesh.count = walls;
-    doorMesh.count = doors;
-    bedFrame.count = beds;
-    bedMattress.count = beds;
-    bedPillow.count = beds;
-    cropMesh.count = crops;
-    ripeMesh.count = ripe;
-    fireRing.count = fires;
-    flame.count = fires;
-    benchBase.count = benches;
-    benchTop.count = benches;
     floor.instanceMatrix.needsUpdate = true;
-    if (floor.instanceColor) floor.instanceColor.needsUpdate = true;
-    for (const m of [bushMesh, wallMesh, doorMesh]) if (m.instanceColor) m.instanceColor.needsUpdate = true;
-    const featureMeshes = [
-      rockMesh, trunkMesh, canopyMesh, bushMesh, wallMesh, doorMesh, bedFrame, bedMattress, bedPillow,
-      cropMesh, ripeMesh, fireRing, flame, benchBase, benchTop,
-    ];
-    for (const m of featureMeshes) m.instanceMatrix.needsUpdate = true;
-
-    this.mapMeshes = [floor, ...featureMeshes, ...lights];
+    this.featureProps.sync(entries);
+    this.mapMeshes = [floor, ...lights];
     this.scene.add(...this.mapMeshes);
-    // Une carte neuve arrive avec les couleurs de base : si on est en pleine
-    // neige (reconnexion, rejeu), blanchit tout de suite sans attendre le
-    // prochain changement de météo.
     this.updateSnowCover();
-    if (!this.framed) {
-      this.frame();
-      this.framed = true;
+    if (!this.framed) { this.frame(); this.framed = true; }
+  }
+
+  /** Les géométries de catalogue appartiennent à PropLibrary, les overlays à leur couche. */
+  private clearMeshes(meshes: THREE.Object3D[]): void {
+    for (const object of meshes) {
+      this.scene.remove(object);
+      if (object instanceof THREE.Mesh) {
+        object.geometry.dispose();
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        for (const material of materials) material.dispose();
+        if (object instanceof THREE.InstancedMesh) object.dispose();
+      } else if (object instanceof THREE.Light) object.dispose();
     }
+    meshes.length = 0;
   }
 
   /** Zones de stockage et désignations, en quads translucides. */
   setOverlays(zones: Uint8Array, designations: Uint8Array): void {
-    for (const m of this.overlayMeshes) this.scene.remove(m);
-    this.overlayMeshes = [];
+    this.clearMeshes(this.overlayMeshes);
     const build = (pick: (i: number) => boolean, color: number, opacity: number, y: number) => {
       let n = 0;
       for (let i = 0; i < zones.length; i++) if (pick(i)) n++;
@@ -526,8 +339,8 @@ export class Renderer {
       mesh.instanceMatrix.needsUpdate = true;
       this.overlayMeshes.push(mesh);
     };
-    build((i) => zones[i] === ZONE.Stockpile, 0x4a90d9, 0.3, 0.012);
-    build((i) => zones[i] === ZONE.Growing, 0x5cc25c, 0.3, 0.012);
+    build((i) => zones[i] === ZONE.Stockpile, 0x9cacb5, 0.18, 0.012);
+    build((i) => zones[i] === ZONE.Growing, 0x57402d, 0.5, 0.012);
     build((i) => designations[i] !== DESIGNATION.None, 0xff9a2e, 0.45, 0.014);
     if (this.overlayMeshes.length) this.scene.add(...this.overlayMeshes);
   }
@@ -540,8 +353,7 @@ export class Renderer {
    */
   setIndoor(indoor: Uint8Array): void {
     this.indoorCells = indoor;
-    for (const m of this.indoorMeshes) this.scene.remove(m);
-    this.indoorMeshes = [];
+    this.clearMeshes(this.indoorMeshes);
     let n = 0;
     for (let i = 0; i < indoor.length; i++) if (indoor[i] !== 0) n++;
     if (n > 0) {
@@ -582,12 +394,15 @@ export class Renderer {
     const color = new THREE.Color();
     for (let i = 0; i < this.tileTerrain.length; i++) {
       color.setHex(TERRAIN_COLORS[this.tileTerrain[i]] ?? 0xff00ff);
+      const seed = visualSeed(i % this.mapW, Math.floor(i / this.mapW));
+      color.multiplyScalar(0.985 + seed % 4 / 100);
       if (this.snowing && !this.isIndoorAt(i)) {
         color.lerp(WHITE, SNOW_GROUND_MIX);
       }
       floor.setColorAt(i, color);
     }
     if (floor.instanceColor) floor.instanceColor.needsUpdate = true;
+    this.floorProps.sync(this.floorDetails.filter((entry) => !this.snowing || this.isIndoorAt(Math.floor(entry.z) * this.mapW + Math.floor(entry.x))));
   }
 
   /**
@@ -599,8 +414,7 @@ export class Renderer {
   setHeatMode(active: boolean): void {
     this.heatActive = active;
     if (!active) {
-      for (const m of this.heatMeshes) this.scene.remove(m);
-      this.heatMeshes = [];
+      this.clearMeshes(this.heatMeshes);
     }
   }
 
@@ -612,8 +426,7 @@ export class Renderer {
    */
   setHeatData(temperatures: Int32Array): void {
     if (!this.heatActive) return;
-    for (const m of this.heatMeshes) this.scene.remove(m);
-    this.heatMeshes = [];
+    this.clearMeshes(this.heatMeshes);
     const n = Math.min(temperatures.length, this.mapW * this.mapH);
     if (n === 0) return;
     const mesh = new THREE.InstancedMesh(
@@ -637,66 +450,47 @@ export class Renderer {
     this.scene.add(mesh);
   }
 
-  /** Piles d'objets au sol : cubes colorés par genre, taille selon la quantité. */
+  /** Piles reconnaissables ; la quantité module la taille dans une seule case. */
   syncItems(buf: Int32Array): void {
-    const n = Math.min(Math.floor(buf.length / ITEM_STRIDE), MAX_ITEMS);
-    const mat = new THREE.Matrix4();
-    const pos = new THREE.Vector3();
-    const q = new THREE.Quaternion();
-    const scl = new THREE.Vector3();
-    const color = new THREE.Color();
-    for (let i = 0; i < n; i++) {
-      const o = i * ITEM_STRIDE;
-      const kind = buf[o + 1];
-      const count = buf[o + 2];
-      if (kind === ITEM_CORPSE || ANIMAL_CORPSE_KINDS.has(kind)) {
-        // Un corps allongé, pas une caisse (dépouille de bête comme cadavre humain).
-        mat.compose(pos.set(buf[o + 3] + 0.5, 0.09, buf[o + 4] + 0.5), q, scl.set(0.85, 0.18, 0.42));
-      } else {
-        const s = 0.22 + 0.3 * Math.min(count, 75) / 75;
-        mat.compose(pos.set(buf[o + 3] + 0.5, s * 0.35 + 0.01, buf[o + 4] + 0.5), q, scl.set(s, s * 0.7, s));
-      }
-      this.items.setMatrixAt(i, mat);
-      this.items.setColorAt(i, color.setHex(ITEM_COLORS[kind] ?? 0xff00ff));
+    const entries: PropInstance[] = [];
+    // Plusieurs genres peuvent cohabiter sur une case : les répartir sans les masquer.
+    const counts = new Map<string, number>();
+    for (let o = 0; o + ITEM_STRIDE <= buf.length; o += ITEM_STRIDE) {
+      const cell = `${buf[o + 3]},${buf[o + 4]}`;
+      counts.set(cell, (counts.get(cell) ?? 0) + 1);
     }
-    this.items.count = n;
-    this.items.instanceMatrix.needsUpdate = true;
-    if (this.items.instanceColor) this.items.instanceColor.needsUpdate = true;
+    const slots = new Map<string, number>();
+    for (let o = 0; o + ITEM_STRIDE <= buf.length; o += ITEM_STRIDE) {
+      const kind = buf[o + 1], count = buf[o + 2];
+      const cell = `${buf[o + 3]},${buf[o + 4]}`;
+      const side = Math.ceil(Math.sqrt(counts.get(cell)!));
+      const slot = slots.get(cell) ?? 0;
+      slots.set(cell, slot + 1);
+      entries.push({ key: `item:${kind}`,
+        x: buf[o + 3] + (slot % side + 0.5) / side,
+        z: buf[o + 4] + (Math.floor(slot / side) + 0.5) / side,
+        y: 0.018, scale: (0.66 + 0.34 * Math.min(count, 75) / 75) / side,
+      });
+    }
+    this.itemProps.sync(entries);
   }
 
-  /** Chantiers en fantômes translucides : bleu en attente de matériaux, jaune prêt à bâtir. */
+  /** Même modèle et orientation que l'objet fini ; bleu livré plus tard, ocre prêt. */
   syncBlueprints(buf: Int32Array): void {
-    const n = Math.min(Math.floor(buf.length / BLUEPRINT_STRIDE), MAX_BLUEPRINTS);
-    const mat = new THREE.Matrix4();
-    const pos = new THREE.Vector3();
-    const q = new THREE.Quaternion();
-    const scl = new THREE.Vector3();
-    const color = new THREE.Color();
-    for (let i = 0; i < n; i++) {
-      const o = i * BLUEPRINT_STRIDE;
-      const kind = buf[o + 1];
-      const x = buf[o + 3] + 0.5;
-      const z = buf[o + 4] + 0.5;
-      const ready = buf[o + 5] >= buf[o + 6];
-      switch (kind) {
-        case BUILD_KIND.Wall:
-          mat.compose(pos.set(x, 0.5, z), q, scl.set(0.96, 1, 0.96));
-          break;
-        case BUILD_KIND.Door:
-          mat.compose(pos.set(x, 0.475, z), q, scl.set(0.96, 0.95, 0.3));
-          break;
-        case BUILD_KIND.Bed:
-          mat.compose(pos.set(x, 0.15, z), q, scl.set(0.9, 0.3, 0.9));
-          break;
-        default:
-          mat.compose(pos.set(x, 0.03, z), q, scl.set(0.96, 0.06, 0.96));
-      }
-      this.blueprints.setMatrixAt(i, mat);
-      this.blueprints.setColorAt(i, color.setHex(ready ? 0xffe066 : 0x4ad9ff));
+    const entries: PropInstance[] = [];
+    const plannedWalls = new Set<number>();
+    for (let o = 0; o + BLUEPRINT_STRIDE <= buf.length; o += BLUEPRINT_STRIDE) {
+      if (buf[o + 1] === BUILD_KIND.Wall) plannedWalls.add(buf[o + 4] * this.mapW + buf[o + 3]);
     }
-    this.blueprints.count = n;
-    this.blueprints.instanceMatrix.needsUpdate = true;
-    if (this.blueprints.instanceColor) this.blueprints.instanceColor.needsUpdate = true;
+    const wallAt = (i: number) => plannedWalls.has(i) || this.tileFeatures[i] === FEATURE.WallWood || this.tileFeatures[i] === FEATURE.WallStone;
+    for (let o = 0; o + BLUEPRINT_STRIDE <= buf.length; o += BLUEPRINT_STRIDE) {
+      const kind = buf[o + 1], x = buf[o + 3], z = buf[o + 4];
+      entries.push({ key: blueprintKey(kind, buf[o + 2]), x: x + 0.5, z: z + 0.5, y: 0.025,
+        rotation: kind === BUILD_KIND.Door ? doorRotation(x, z, this.mapW, this.mapH, wallAt) : 0,
+        tint: buf[o + 5] >= buf[o + 6] ? 0xe2bf73 : 0x93bfd0,
+      });
+    }
+    this.blueprintProps.sync(entries);
   }
 
   /** Nom de chaque pawn vivant, par id. Recopié tel quel : `syncPawns` s'en sert au prochain rendu. */
@@ -861,6 +655,8 @@ export class Renderer {
    * rectangle quand un outil est actif. Le glisser droit déplace toujours.
    */
   setLeftDragPans(pans: boolean): void {
+    this.placementActive = !pans;
+    this.updatePlacementGrid();
     this.controls.mouseButtons = {
       LEFT: pans ? THREE.MOUSE.PAN : (null as unknown as THREE.MOUSE),
       MIDDLE: THREE.MOUSE.DOLLY,
@@ -916,7 +712,11 @@ export class Renderer {
       view.bodyMat.color.copy(view.baseColor).lerp(WHITE, downed ? 0.55 : 0);
       const carrying = (flags & PAWN_FLAGS.CARRYING) !== 0;
       view.carry.visible = carrying;
-      if (carrying) view.carryMat.color.setHex(ITEM_COLORS[cur[o + 8]] ?? 0xffffff);
+      if (carrying) {
+        view.carry.geometry = this.props.geometry(`item:${cur[o + 8]}`);
+        view.carry.material = this.props.material;
+        view.carry.scale.setScalar(0.5);
+      }
       // Arme équipée : un seul mesh visible à la fois, selon le genre porté.
       const weapon = this.weaponByPawn.get(id) ?? -1;
       view.club.visible = weapon === WEAPON_KIND.Club;
@@ -980,10 +780,24 @@ export class Renderer {
     const hostile = faction === FACTION.Raider;
     const color = hostile ? RAIDER_COLOR : PAWN_COLORS[id % PAWN_COLORS.length];
     const bodyMat = new THREE.MeshLambertMaterial({ color });
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.32, 4, 10), bodyMat);
-    body.position.y = 0.4;
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.145, 0.19, 0.34, 8), bodyMat);
+    body.position.y = 0.48;
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), new THREE.MeshLambertMaterial({ color: SKIN }));
     head.position.y = 0.78;
+    const hair = new THREE.Mesh(new THREE.SphereGeometry(0.153, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.55), new THREE.MeshLambertMaterial({ color: 0x514331 }));
+    hair.position.y = 0.8;
+    const limbs: THREE.Mesh[] = [];
+    for (const x of [-0.085, 0.085]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.3, 0.13), new THREE.MeshLambertMaterial({ color: 0x575447 }));
+      leg.position.set(x, 0.15, 0);
+      limbs.push(leg);
+    }
+    for (const x of [-0.2, 0.2]) {
+      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.045, 0.28, 6), bodyMat);
+      arm.position.set(x, 0.45, 0.03);
+      arm.rotation.z = x > 0 ? 0.12 : -0.12;
+      limbs.push(arm);
+    }
     const nose = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.08), new THREE.MeshLambertMaterial({ color: SKIN }));
     nose.position.set(0, 0.76, 0.16);
     const carryMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
@@ -1049,7 +863,7 @@ export class Renderer {
     bow.rotation.y = Math.PI / 2;
     bow.visible = false;
 
-    for (const m of [body, head, nose, carry, club, spearShaft, spearTip, bow]) {
+    for (const m of [body, head, nose, hair, ...limbs, carry, club, spearShaft, spearTip, bow]) {
       m.castShadow = true;
       m.userData.pawnId = id;
     }
@@ -1058,7 +872,7 @@ export class Renderer {
     // ajouté au groupe — juste un objet détaché pour garder `PawnView` uniforme.
     const huntMarker = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.16, 6), new THREE.MeshBasicMaterial());
     huntMarker.visible = false;
-    group.add(body, head, nose, carry, zz, hpBack, hpFill, nameSprite, club, spear, bow);
+    group.add(body, head, nose, hair, ...limbs, carry, zz, hpBack, hpFill, nameSprite, club, spear, bow);
     this.pawnRoot.add(group);
     return {
       group,
@@ -1201,6 +1015,8 @@ export class Renderer {
   }
 
   setHover(tile: TilePos | null): void {
+    this.hoveredTile = tile;
+    this.updatePlacementGrid();
     if (!tile) {
       this.hover.visible = false;
       return;
@@ -1209,8 +1025,23 @@ export class Renderer {
     this.hover.position.set(tile.x + 0.5, 0.02, tile.y + 0.5);
   }
 
+  private updatePlacementGrid(rect?: TileRect): void {
+    const tile = this.hoveredTile;
+    this.placementGrid.visible = this.placementActive && (tile !== null || rect !== undefined);
+    if (!this.placementGrid.visible) return;
+    const x0 = Math.max(0, rect ? Math.min(rect.x0, rect.x1) : tile!.x - 3);
+    const z0 = Math.max(0, rect ? Math.min(rect.y0, rect.y1) : tile!.y - 3);
+    const x1 = Math.min(this.mapW - 1, rect ? Math.max(rect.x0, rect.x1) : tile!.x + 3);
+    const z1 = Math.min(this.mapH - 1, rect ? Math.max(rect.y0, rect.y1) : tile!.y + 3);
+    const w = x1 - x0 + 1, h = z1 - z0 + 1;
+    this.placementGrid.scale.set(w, 1, h);
+    this.placementGrid.position.set((x0 + x1 + 1) / 2, 0.021, (z0 + z1 + 1) / 2);
+    this.placementTexture.repeat.set(w, h);
+  }
+
   /** Rectangle de sélection en cours de tracé, ou `null`. */
   setDragRect(rect: TileRect | null, color = 0xffffff): void {
+    this.updatePlacementGrid(rect ?? undefined);
     if (!rect) {
       this.dragRect.visible = false;
       return;
@@ -1266,13 +1097,13 @@ export class Renderer {
     // la scène reste lisible et garde ses ombres.
     const lightEl = THREE.MathUtils.lerp(0.6, Math.max(el, 0.03), day);
     this.sun.position.set(cx - Math.cos(phi) * R, lightEl * R, cz + 0.45 * R);
-    this.sun.intensity = 0.55 + 2.05 * day;
+    this.sun.intensity = 0.8 + 1.8 * day;
     this.sun.color
       .setHex(0x7f93c9)
       .lerp(new THREE.Color(0xffa860), day)
       .lerp(new THREE.Color(0xfff4e6), high);
 
-    this.sky.intensity = 0.42 + 0.35 * day;
+    this.sky.intensity = 0.62 + 0.15 * day;
     this.sky.color.setHex(0x55679a).lerp(new THREE.Color(0xbfd4ff), day);
     this.sky.groundColor.setHex(0x2b3140).lerp(new THREE.Color(0x6b5a3a), day);
     (this.scene.background as THREE.Color).setHex(0x06080e).lerp(new THREE.Color(0x0b0f14), day);
@@ -1315,6 +1146,19 @@ export class Renderer {
   dispose(): void {
     window.removeEventListener("resize", this.onResize);
     this.controls.dispose();
+    this.clearMeshes(this.mapMeshes);
+    this.clearMeshes(this.overlayMeshes);
+    this.clearMeshes(this.indoorMeshes);
+    this.clearMeshes(this.heatMeshes);
+    this.featureProps.dispose();
+    this.floorProps.dispose();
+    this.itemProps.dispose();
+    this.blueprintProps.dispose();
+    this.props.dispose();
+    this.groundTexture.dispose();
+    this.placementTexture.dispose();
+    this.placementGrid.geometry.dispose();
+    (this.placementGrid.material as THREE.Material).dispose();
     this.renderer.dispose();
     for (const texture of this.nameTextures.values()) texture.dispose();
     this.nameTextures.clear();

@@ -385,6 +385,14 @@ mods de contenu, événements monde.
 
 ## 8. Journal des décisions
 
+- 2026-09-05 : props naturalistes modulaires (client). Catalogue procédural fusionné
+  et instancié : tous les éléments et les seize genres d'objets, sols joints,
+  silhouettes et portage harmonisés. Murs coupés à 0,56 case, plans issus des modèles
+  finis, portes orientées selon murs construits/planifiés et grille locale des outils.
+  Le lit et l'établi restent dans une case pour respecter le sim. Aucune règle ni
+  frontière WASM changée. Revue de développement `/props-review.html`, détails dans
+  `docs/props.md` ; tests d'empreinte, plans, bords et capacité d'instances.
+
 - 2026-09-04 : multi type RimWorld (globe, une carte par case, caravanes) plutôt que
   coop sur carte unique. Impose la séparation serveur-monde / sim-carte.
 - 2026-09-04 : rendu Three.js vue du dessus pseudo-3D, style low-poly/voxel.

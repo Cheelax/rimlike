@@ -17,14 +17,14 @@ export const TERRAIN = {
 } as const;
 
 export const TERRAIN_COLORS: readonly number[] = [
-  0x1f4f8f, // eau profonde
-  0x3d7fc0, // eau peu profonde
-  0xd8c88a, // sable
-  0x6aa84f, // herbe
-  0x9a7b4f, // terre
-  0x9b9b93, // gravier
-  0xb08a55, // plancher
-  0x8f8a80, // dallage
+  0x365761, // eau profonde
+  0x688581, // eau peu profonde
+  0xbaac7e, // sable
+  0x78834d, // herbe
+  0x887254, // terre
+  0x8b8c7c, // gravier
+  0x66543e, // plancher
+  0x6b6e64, // dallage
 ];
 
 export const FEATURE = {
@@ -71,6 +71,8 @@ export const ITEM_NAMES = [
   "dépouilles de sanglier",
   "viande",
   "cuir",
+  "tuniques",
+  "manteaux",
 ] as const;
 export const ITEM_COLORS: readonly number[] = [
   0x9c6b3c, 0x8d8d8d, 0xc9304a, 0x5aa02c, 0xf0c070, 0x5c4a3a,
@@ -80,6 +82,8 @@ export const ITEM_COLORS: readonly number[] = [
   0x4a3a2a /* dépouille de sanglier : brun sombre */,
   0x8a2020 /* viande : rouge sombre */,
   0xc9a06a /* cuir : brun clair */,
+  0x99917a /* tunique : lin */,
+  0x6c7461 /* manteau : laine */,
 ];
 
 /**
