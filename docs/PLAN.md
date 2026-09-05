@@ -343,8 +343,10 @@ l'armement. Armes et combat à distance livrés le 2026-09-05 (Opus, sim) : post
 tir hors tableau de travail, tir à l'arc à 8 cases avec ligne de vue entière (murs, portes,
 rochers bloquent), pillards armés selon la taille du raid, butin à leur mort ; seuil de fuite
 des pillards 600 → 650 mesuré sur 60 graines pour garder « jamais deux morts d'un coup ».
-Interface à faire (noms et couleurs des armes, poste, ordres de fabrication, arme équipée).
-Saisons et température livrées le 2026-09-05 (Opus, sim) : année de 60 jours en quatre
+Interface des armes livrée le 2026-09-05 (Sonnet) : outil Poste, panneau Fabrication avec
+cibles par arme, établi et armes dessinés, arme et compétences de combat dans le panneau du
+colon ; au passage, les caravanes passent par la connexion monde et le relais par le Worker a
+disparu. Saisons et température livrées le 2026-09-05 (Opus, sim) : année de 60 jours en quatre
 saisons, courbe annuelle en table entière plus variation journalière, météo et bruit lent ;
 climat réglable par carte (`SetClimate`, pour que chaque case du globe ait le sien) ; pièces
 détectées par remplissage paresseux (murs, portes, rochers ; le bord de carte est ouvert),
@@ -393,8 +395,9 @@ mods de contenu, événements monde.
   invalidé ; une seule lecture de la température extérieure par tick partagée par tous les
   systèmes (10 % de perf en jeu). Champs ajoutés en fin de `Pawn`, commande en fin d'enum.
 - 2026-09-05 : déploiement (Sonnet) : image Docker qui n'embarque que du JavaScript compilé
-  et `ws`, compose avec volume ; vérifié hors conteneur faute de démon Docker sur la machine
-  (serveur compilé démarré, `/health` et `/world` répondent).
+  et `ws`, compose avec volume. La CI construit et démarre l'image : elle a révélé que le
+  `node_modules` du paquet n'était fait que de liens vers un dépôt `.pnpm` absent de l'image
+  (`ws` introuvable) ; corrigé en installant la production en mode hoisted.
 - 2026-09-05 : portée de l'identité = serveur + nom. Découvert à l'essai : deux onglets
   partageant `localStorage` devenaient un seul joueur renommé au dernier `world_join`. Le nom
   reste un libellé côté serveur, mais côté navigateur il choisit le profil.
