@@ -225,8 +225,14 @@ export class GlobeRenderer {
     this.applyFan(this.selectionMesh, tile);
   }
 
-  /** Recolore les cases colonisées et repositionne leurs marqueurs. */
-  setSettlements(settlements: readonly Settlement[], me: string): void {
+  /**
+   * Recolore les cases colonisées et repositionne leurs marqueurs.
+   *
+   * `myKey` est notre clé publique et stable (`docs/protocol.md` §11.2),
+   * `null` tant qu'on ne la connaît pas encore : `Settlement.owner` est
+   * toujours une clé, jamais un nom, l'appartenance ne se compare qu'à elle.
+   */
+  setSettlements(settlements: readonly Settlement[], myKey: string | null): void {
     const positions: number[] = [];
     const colors: number[] = [];
     for (const marker of this.markerRoot.children.slice()) {
@@ -235,7 +241,7 @@ export class GlobeRenderer {
     for (const settlement of settlements) {
       if (!this.hasTile(settlement.tile)) continue;
       const tile = this.world.tiles[settlement.tile];
-      const own = settlement.owner === me;
+      const own = settlement.owner === myKey;
       const hex = own ? OWN_COLONY : OTHER_COLONY;
       const rgb = new THREE.Color(hex).convertSRGBToLinear();
       const fan = buildTileFan(tile, GLOBE_RADIUS * OVERLAY_LIFT);
@@ -261,10 +267,12 @@ export class GlobeRenderer {
    * dessinées — elles ne sont plus nulle part sur le globe, seulement dans
    * l'historique du panneau.
    *
-   * `me` n'entre pas dans la couleur (le statut suffit à lire la scène) mais
-   * les nôtres sont un peu plus grosses : c'est ce qu'on cherche des yeux.
+   * `myKey` (notre clé publique et stable, `docs/protocol.md` §11.2) n'entre
+   * pas dans la couleur (le statut suffit à lire la scène) mais les nôtres
+   * sont un peu plus grosses : c'est ce qu'on cherche des yeux. `null` tant
+   * qu'on ne connaît pas encore notre clé.
    */
-  setCaravans(caravans: readonly Caravan[], me: string): void {
+  setCaravans(caravans: readonly Caravan[], myKey: string | null): void {
     for (const marker of this.caravanRoot.children.slice()) {
       this.caravanRoot.remove(marker);
     }
@@ -284,7 +292,7 @@ export class GlobeRenderer {
       // Le cône pointe vers le ciel de sa case : sinon il coucherait dans
       // l'axe Y de la scène, qui n'a aucun sens sur une sphère.
       marker.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
-      if (caravan.owner === me) marker.scale.setScalar(1.35);
+      if (caravan.owner === myKey) marker.scale.setScalar(1.35);
       marker.userData.caravanId = caravan.id;
       this.caravanRoot.add(marker);
     }

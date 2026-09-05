@@ -25,6 +25,7 @@ import {
   type TickCommand,
   type TickCommands,
   type WorldInfo,
+  type WorldPlayerInfo,
 } from "./messages.js";
 
 const B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -171,6 +172,23 @@ function isName(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 64;
 }
 
+/**
+ * Clé publique de joueur (`WorldPlayerInfo.key`) : un identifiant opaque, pas
+ * un nom affiché — juste borné en longueur pour rester une valeur raisonnable.
+ */
+function isKey(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+
+/**
+ * Jeton secret de joueur (`WorldJoinMessage.token`). Opaque pour le codec :
+ * c'est le serveur qui le compare en temps constant (`crypto.timingSafeEqual`,
+ * `docs/protocol.md` §11.2), le codec ne fait que borner sa longueur.
+ */
+function isToken(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 256;
+}
+
 function isHash(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 128;
 }
@@ -213,15 +231,16 @@ function asSettlements(value: unknown): Settlement[] | null {
   }
   const settlements: Settlement[] = [];
   for (const entry of value) {
-    if (!isRecord(entry) || !isTileId(entry.tile) || !isName(entry.owner) || !isName(entry.room)) {
+    if (!isRecord(entry) || !isTileId(entry.tile) || !isKey(entry.owner) || !isName(entry.ownerName)) {
       return null;
     }
-    if (!isSeed(entry.seed) || !isTimestamp(entry.createdAt)) {
+    if (!isName(entry.room) || !isSeed(entry.seed) || !isTimestamp(entry.createdAt)) {
       return null;
     }
     settlements.push({
       tile: entry.tile,
       owner: entry.owner,
+      ownerName: entry.ownerName,
       room: entry.room,
       seed: entry.seed,
       createdAt: entry.createdAt,
@@ -294,7 +313,7 @@ function asCaravans(value: unknown): Caravan[] | null {
   }
   const caravans: Caravan[] = [];
   for (const entry of value) {
-    if (!isRecord(entry) || !isName(entry.id) || !isName(entry.owner)) {
+    if (!isRecord(entry) || !isName(entry.id) || !isKey(entry.owner) || !isName(entry.ownerName)) {
       return null;
     }
     if (!isTileId(entry.fromTile) || !isTileId(entry.toTile) || !isTileId(entry.currentTile)) {
@@ -312,6 +331,7 @@ function asCaravans(value: unknown): Caravan[] | null {
     caravans.push({
       id: entry.id,
       owner: entry.owner,
+      ownerName: entry.ownerName,
       fromTile: entry.fromTile,
       toTile: entry.toTile,
       route,
@@ -326,19 +346,19 @@ function asCaravans(value: unknown): Caravan[] | null {
   return caravans;
 }
 
-/** Noms de joueurs du monde : l'identité v1 est le nom, pas un identifiant. */
-function asNames(value: unknown): string[] | null {
+/** Table des joueurs connus du monde (`world_welcome`, `world_players`). */
+function asWorldPlayers(value: unknown): WorldPlayerInfo[] | null {
   if (!Array.isArray(value)) {
     return null;
   }
-  const names: string[] = [];
+  const players: WorldPlayerInfo[] = [];
   for (const entry of value) {
-    if (!isName(entry)) {
+    if (!isRecord(entry) || !isKey(entry.key) || !isName(entry.name) || typeof entry.online !== "boolean") {
       return null;
     }
-    names.push(entry);
+    players.push({ key: entry.key, name: entry.name, online: entry.online });
   }
-  return names;
+  return players;
 }
 
 function asWorldInfo(value: unknown): WorldInfo | null {
@@ -476,9 +496,19 @@ export function validateClientMessage(value: unknown): ClientMessage | null {
       if (value.protocol !== undefined && !isTick(value.protocol)) {
         return null;
       }
-      return value.protocol === undefined
-        ? { type: "world_join", name: value.name }
-        : { type: "world_join", name: value.name, protocol: value.protocol };
+      if (value.token !== undefined && !isToken(value.token)) {
+        return null;
+      }
+      if (value.protocol === undefined && value.token === undefined) {
+        return { type: "world_join", name: value.name };
+      }
+      if (value.token === undefined) {
+        return { type: "world_join", name: value.name, protocol: value.protocol };
+      }
+      if (value.protocol === undefined) {
+        return { type: "world_join", name: value.name, token: value.token };
+      }
+      return { type: "world_join", name: value.name, protocol: value.protocol, token: value.token };
     }
     case "settle":
       return isTileId(value.tile) ? { type: "settle", tile: value.tile } : null;
@@ -630,29 +660,34 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       return { type: "pong" };
     case "world_welcome": {
       const settlements = asSettlements(value.settlements);
-      const players = asNames(value.players);
+      const players = asWorldPlayers(value.players);
       const world = asWorldInfo(value.world);
       if (settlements === null || players === null || world === null) {
         return null;
       }
-      if (!isPlayerId(value.playerId) || !isName(value.name)) {
+      if (!isPlayerId(value.playerId) || !isKey(value.playerKey) || !isName(value.name)) {
         return null;
       }
-      return {
+      if (value.token !== undefined && !isToken(value.token)) {
+        return null;
+      }
+      const base: ServerMessage = {
         type: "world_welcome",
         playerId: value.playerId,
+        playerKey: value.playerKey,
         name: value.name,
         settlements,
         players,
         world,
       };
+      return value.token === undefined ? base : { ...base, token: value.token };
     }
     case "world_settlements": {
       const settlements = asSettlements(value.settlements);
       return settlements === null ? null : { type: "world_settlements", settlements };
     }
     case "world_players": {
-      const players = asNames(value.players);
+      const players = asWorldPlayers(value.players);
       return players === null ? null : { type: "world_players", players };
     }
     case "settled": {

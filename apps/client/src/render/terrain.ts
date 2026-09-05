@@ -139,6 +139,11 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
       return `Une caravane est partie (${arg} colon${arg > 1 ? "s" : ""})`;
     case 12:
       return `Une caravane est arrivée (${arg} colon${arg > 1 ? "s" : ""})`;
+    case 13:
+      // `arg` = jours entiers écoulés pendant la colonie gelée (§11.6 de
+      // docs/protocol.md), jamais un id de pawn : pas de `names` ici.
+      if (arg <= 0) return "Moins d'un jour a passé pendant votre absence";
+      return `${arg} jour${arg > 1 ? "s" : ""} ${arg > 1 ? "ont" : "a"} passé pendant votre absence`;
     default:
       return "";
   }

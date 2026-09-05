@@ -107,6 +107,15 @@ export class SimHandle implements SimLike {
     this.inner.trigger_raid();
   }
 
+  /**
+   * Avance rapide abstraite d'une colonie gelée (`docs/protocol.md` §11.6).
+   * Réservée au solo et au crochet de dev : en multi la commande passe par
+   * `encodeFastForward` puis `issue`, jamais appliquée localement.
+   */
+  fastForward(ticks: number): void {
+    this.inner.fast_forward(ticks);
+  }
+
   // --- Caravanes (docs/protocol.md §12) ---
 
   /**

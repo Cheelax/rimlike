@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { SettledMessage } from "@rimlike/protocol";
+import { TICKS_PER_DAY, type SettledMessage } from "@rimlike/protocol";
 import { BIOME_NAMES, findRoute, type World } from "@rimlike/world";
 import { CaravanPanel, type CaravanColonist, type CaravanDestination } from "./CaravanPanel";
 import {
@@ -392,6 +392,7 @@ export function App() {
         client = new WorldClient({
           transport: new WebSocketTransport(worldSession.server),
           name: worldSession.name,
+          serverUrl: worldSession.server,
           // Vérification de cohérence : le `world_welcome` doit annoncer le
           // globe qu'on vient de télécharger, sinon les cases ne désignent rien.
           expected: { seed: world.seed, subdivisions: world.subdivisions, tiles: world.tiles.length },
@@ -461,6 +462,8 @@ export function App() {
     let netReady = false;
     let netError: LockstepError | null = null;
     let lastEventSeq = -1;
+    /** Dernier `frozenTicks` déjà annoncé par toast, pour ne le dire qu'une fois. */
+    let lastFrozenTicksNotified = 0;
     /**
      * Vrai jusqu'au premier `frame` d'un sim neuf, chargé ou restauré : rien à
      * interpoler depuis l'état d'avant, et ses événements sont du passé.
@@ -587,6 +590,14 @@ export function App() {
           netError = state.lastError;
           pushToast(`Serveur : ${state.lastError.message}`);
         }
+        // Réouverture d'une colonie gelée (§11.6) : annoncé dès reçu, avant
+        // même que l'hôte n'ait émis l'avance rapide. L'événement 13 du sim
+        // confirmera ensuite le compte exact de jours depuis le tampon d'events.
+        if (state.frozenTicks > 0 && state.frozenTicks !== lastFrozenTicksNotified) {
+          lastFrozenTicksNotified = state.frozenTicks;
+          const days = Math.floor(state.frozenTicks / TICKS_PER_DAY);
+          pushToast(`Colonie rouverte : ${days} jour${days > 1 ? "s" : ""} ont passé`);
+        }
       },
       onCaravanArrive: (arrival) => {
         // Reçue sur la connexion de salle : le serveur ne l'envoie qu'à l'hôte
@@ -632,7 +643,17 @@ export function App() {
     bridge.start(
       session.mode === "solo"
         ? { mode: "solo", seed: DEFAULT_SEED, width: MAP_SIZE, height: MAP_SIZE }
-        : { mode: "multi", server: session.server, room: session.room, name: session.name },
+        : {
+            mode: "multi",
+            server: session.server,
+            room: session.room,
+            name: session.name,
+            // Même jeton que la connexion monde du thread principal (si on en
+            // a une) : le `world_join` paresseux du départ d'une caravane
+            // désignera le même joueur (docs/protocol.md §11.2, §12.7).
+            // `undefined` en salle nommée ordinaire, ou avant `world_welcome`.
+            token: worldRef.current?.state.token ?? undefined,
+          },
     );
     // Les `encode*` sont des fonctions du WASM : le thread principal en garde
     // une instance rien que pour encoder. Le sim, lui, n'existe que côté Worker.
@@ -1125,7 +1146,7 @@ export function App() {
           biome: BIOME_NAMES[globe.tiles[caravanTo].biome],
           hours: caravanRoute?.hours ?? null,
           steps: caravanRoute?.tiles.length ?? 0,
-          owner: worldNet?.settlements.find((s) => s.tile === caravanTo)?.owner ?? null,
+          ownerName: worldNet?.settlements.find((s) => s.tile === caravanTo)?.ownerName ?? null,
         };
 
   /**
@@ -1265,6 +1286,8 @@ export function App() {
           onAbandon={(tile) => worldRef.current?.abandon(tile)}
           onBack={backToWorld}
           onQuit={quitWorld}
+          describeIdentity={() => worldRef.current?.identitySummary ?? null}
+          onForgetIdentity={() => worldRef.current?.forgetIdentity()}
           pickingFrom={caravanPicking ? roomTile : null}
           onPickTile={(tile) => {
             setCaravanTo(tile);

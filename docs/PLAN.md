@@ -297,19 +297,25 @@ Identité par jeton livrée côté serveur le 2026-09-05 (Sonnet) : `world_join`
 crée un joueur (clé publique + jeton secret rendu une fois), avec jeton le reconnaît ;
 colonies et caravanes appartiennent à une clé, le nom n'est qu'un libellé résolu à la
 diffusion (`ownerName`) ; comparaison en temps constant ; migration du fichier de
-persistance v1 → v2 ; protocole version 2 ; 106 tests serveur. Client : avance rapide à la
-réouverture (Sonnet) et adaptation à l'identité (Sonnet, en cours). Reste : accepter les
-messages de caravane depuis la connexion monde côté serveur (en cours), un seul contexte
-WebGL par onglet.
+persistance v1 → v2 ; protocole version 2 ; 106 tests serveur. Client livré le 2026-09-05 (Sonnet ×2) :
+avance rapide émise une seule fois par l'hôte à la réouverture (`frozenTicks`), identité
+stockée par serveur **et par nom** (le nom saisi sert de profil local : deux onglets d'un même
+navigateur avec deux noms sont deux joueurs), appartenance comparée par clé, liste des joueurs
+avec présence, `bad_token` géré. Serveur : les messages de caravane sont acceptés depuis la
+connexion monde d'un joueur présent dans la salle et l'arrivée est envoyée sur ses deux
+connexions (Sonnet, 109 tests). Essai réel à deux onglets : alice et bob installés sur deux
+cases, un colon d'alice parti en caravane est arrivé chez bob en huit heures de jeu. Reste :
+simplifier le chemin des caravanes côté client (envoi direct depuis la connexion monde), un
+seul contexte WebGL par onglet.
 - Globe hexagonal, rendu du globe, biomes, choix de case de départ.
 - Serveur autoritaire persistant : cases, propriétaires, horloge globale.
 - Cartes gelées + avance rapide abstraite.
 - Caravanes : formation, chemin sur le globe, arrivée sur une case, retour.
 - Visite d'une case occupée par un autre joueur.
 **Jalon** : deux joueurs s'installent sur des cases distinctes, l'un envoie une
-caravane chez l'autre. **Atteint le 2026-09-05** en tests d'intégration contre le vrai
-serveur (voyage complet, colonie fondée par caravane) ; essai manuel à deux onglets à refaire
-une fois le serveur stabilisé (chantier identité en cours).
+caravane chez l'autre. **Atteint le 2026-09-05**, en tests d'intégration contre le vrai
+serveur et en essai réel à deux onglets (alice sur la case 5, bob sur la 199, un colon
+d'alice arrivé chez bob).
 
 ### Phase 5 — Profondeur (ouvert) — entamée le 2026-09-05
 Fait : noms de colons (tirés au sort par faction, déterministes) et compétences (six
@@ -366,6 +372,9 @@ mods de contenu, événements monde.
 - 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
   par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
   libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
+- 2026-09-05 : portée de l'identité = serveur + nom. Découvert à l'essai : deux onglets
+  partageant `localStorage` devenaient un seul joueur renommé au dernier `world_join`. Le nom
+  reste un libellé côté serveur, mais côté navigateur il choisit le profil.
 - 2026-09-05 : armes (sim). La fabrication s'appuie sur la compétence Construire plutôt
   qu'un septième type de travail : `WORK_TYPES` et les tampons de priorités ne bougent pas.
   Les compteurs du bill incluent les armes équipées par les colons, pas celles des pillards.

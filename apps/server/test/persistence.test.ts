@@ -249,7 +249,7 @@ describe("cycle complet à travers un vrai serveur", () => {
 
     const alice = await connect(first);
     alice.send({ type: "world_join", name: "alice" });
-    await alice.next("world_welcome");
+    const aliceWelcome = await alice.next("world_welcome");
     alice.send({ type: "settle", tile: landTile });
     const settled = await alice.next("settled");
 
@@ -257,7 +257,11 @@ describe("cycle complet à travers un vrai serveur", () => {
     await until("sauvegarde de la fondation", () => first.persistence.lastSavedAt !== null);
     const onDiskAfterSettle = JSON.parse(await readFile(file, "utf8")) as WorldStateFile;
     expect(onDiskAfterSettle.state.settlements).toEqual([
-      expect.objectContaining({ tile: landTile, owner: "alice", room: settled.room }) as unknown,
+      expect.objectContaining({ tile: landTile, owner: aliceWelcome.playerKey, room: settled.room }) as unknown,
+    ]);
+    // Le joueur lui-même est persisté, jeton compris (`docs/protocol.md` §11.8).
+    expect(onDiskAfterSettle.state.players).toEqual([
+      expect.objectContaining({ key: aliceWelcome.playerKey, name: "alice", token: aliceWelcome.token }) as unknown,
     ]);
 
     // L'hôte joue, produit un snapshot de conservation.
@@ -369,6 +373,92 @@ describe("cycle complet à travers un vrai serveur", () => {
     await bob.next("world_welcome");
     const caravans = (await bob.nth("world_caravans")).caravans;
     expect(caravans.map((c) => c.id)).toEqual([before.id]);
+  });
+
+  it("le jeton d'un joueur reste valide après un redémarrage", async () => {
+    const file = join(dir, "world-state.json");
+    const first = await boot(file);
+
+    const alice = await connect(first);
+    alice.send({ type: "world_join", name: "alice" });
+    const welcome = await alice.next("world_welcome");
+    const token = welcome.token!;
+    expect(typeof token).toBe("string");
+    expect(token.length).toBeGreaterThan(0);
+
+    alice.send({ type: "settle", tile: landTile });
+    await alice.next("settled");
+    await until("sauvegarde de la fondation", () => first.persistence.lastSavedAt !== null);
+    await first.close();
+
+    // Redémarrage sur le même fichier, puis reconnexion avec le jeton connu :
+    // même clé, colonies retrouvées, sans avoir à retaper le même nom.
+    const second = await boot(file);
+    const reconnected = await connect(second);
+    reconnected.send({ type: "world_join", name: "alice (autre appareil)", token });
+    const back = await reconnected.next("world_welcome");
+    expect(back.playerKey).toBe(welcome.playerKey);
+    // Reconnu par jeton : le secret n'est pas rejoué.
+    expect(back.token).toBeUndefined();
+    expect(back.name).toBe("alice (autre appareil)");
+    expect(back.settlements.map((s) => s.tile)).toEqual([landTile]);
+    expect(back.settlements[0]!.owner).toBe(welcome.playerKey);
+    expect(back.settlements[0]!.ownerName).toBe("alice (autre appareil)");
+  });
+});
+
+describe("migration v1 → v2 : identité par jeton", () => {
+  it("recharge un fichier v1 (owner = nom) : un joueur neuf par nom, jeton lisible dans le fichier", async () => {
+    const file = join(dir, "world-state.json");
+    // Un fichier tel qu'écrit avant la tranche « jeton » : pas de `players`,
+    // `owner` est un nom en clair.
+    const v1 = {
+      version: 1,
+      worldSeed: DEFAULT_WORLD_SEED,
+      subdivisions: SUBDIVISIONS,
+      savedAt: 1_700_000_000_000,
+      state: {
+        seed: DEFAULT_WORLD_SEED,
+        subdivisions: SUBDIVISIONS,
+        settlements: [
+          { tile: landTile, owner: "alice", room: `tile-${landTile}`, seed: 42, createdAt: 1_700_000_000_000 },
+        ],
+        snapshots: [],
+      },
+    };
+    await writeFile(file, JSON.stringify(v1), "utf8");
+
+    const messages: string[] = [];
+    const store = new WorldStore({
+      file,
+      worldSeed: DEFAULT_WORLD_SEED,
+      subdivisions: SUBDIVISIONS,
+      log: (line) => messages.push(line),
+    });
+    const result = await store.load(globe);
+    expect(result.kind).toBe("loaded");
+    if (result.kind !== "loaded") {
+      return;
+    }
+    const settlement = result.state.settlementAt(landTile)!;
+    // "alice" n'est plus la clé : un joueur neuf en porte une, avec un jeton.
+    expect(settlement.owner).not.toBe("alice");
+    expect(settlement.ownerName).toBe("alice");
+    const players = result.state.listPlayers();
+    expect(players).toHaveLength(1);
+    expect(players[0]!.name).toBe("alice");
+    expect(players[0]!.key).toBe(settlement.owner);
+    expect(players[0]!.token.length).toBeGreaterThan(0);
+    expect(messages.some((line) => line.includes("migré"))).toBe(true);
+
+    // La prochaine sauvegarde écrit le fichier en v2, jetons compris — c'est
+    // là que l'exploitant peut lire celui d'alice pour le lui communiquer.
+    await store.save(result.state);
+    const onDisk = JSON.parse(await readFile(file, "utf8")) as WorldStateFile;
+    expect(onDisk.version).toBe(2);
+    expect(onDisk.state.players).toEqual([
+      expect.objectContaining({ name: "alice", key: settlement.owner, token: players[0]!.token }) as unknown,
+    ]);
   });
 });
 

@@ -8,8 +8,14 @@
  * (`start`, `snapshot`) avec une forme différente : ils ont donc deux types.
  */
 
-/** Incrémenté à chaque changement incompatible de forme des messages. */
-export const PROTOCOL_VERSION = 1;
+/**
+ * Incrémenté à chaque changement incompatible de forme des messages.
+ * Passé à 2 quand l'identité d'un joueur du monde a cessé d'être son nom pour
+ * devenir un jeton (`WorldJoinMessage.token`, `docs/protocol.md` §11.2) : la
+ * forme de `world_welcome`, `world_players`, `Settlement` et `Caravan` a
+ * changé (clé de joueur en plus du nom, ou à sa place).
+ */
+export const PROTOCOL_VERSION = 2;
 
 /** Ticks de simulation par seconde. Contrat partagé par tous les clients. */
 export const TICK_RATE = 60;
@@ -134,12 +140,27 @@ export interface PlayerInfo {
 // --- Monde (phase 4) ---
 
 /**
+ * Un joueur connu du monde : sa clé publique et stable (`playerKey`), son nom
+ * d'affichage courant, et s'il est présentement connecté au monde. C'est la
+ * table de résolution clé → nom diffusée par `world_welcome` et
+ * `world_players` (`docs/protocol.md` §11.2) — un joueur qui s'est déjà
+ * connecté au moins une fois y reste, `online` distingue qui est là.
+ */
+export interface WorldPlayerInfo {
+  readonly key: string;
+  readonly name: string;
+  readonly online: boolean;
+}
+
+/**
  * Une colonie posée sur une case du globe. Une case en porte au plus une.
  *
- * `owner` est un **nom de joueur** : l'identité v1 n'a pas de compte, donc
- * quiconque se connecte sous ce nom est reconnu comme propriétaire. C'est une
- * limite assumée, à remplacer par de vrais comptes avant toute mise en ligne
- * publique (voir `docs/protocol.md` §11).
+ * `owner` est la **clé** du joueur propriétaire (`WorldPlayerInfo.key`), pas
+ * un nom : l'identité d'un joueur est son jeton, pas son libellé (voir
+ * `docs/protocol.md` §11.2). `ownerName` est le nom d'affichage courant de ce
+ * joueur, résolu par le serveur au moment de la diffusion — il peut changer
+ * d'un message à l'autre si le joueur s'est reconnecté sous un autre nom,
+ * `owner` jamais.
  *
  * `room` est la salle lockstep de la case (`tile-<id>`) et `seed` la graine de
  * carte imposée par le serveur : deux visites de la même case donnent la même
@@ -149,6 +170,7 @@ export interface Settlement {
   /** Identifiant de case du globe (`Tile.id` de `@rimlike/world`). */
   readonly tile: number;
   readonly owner: string;
+  readonly ownerName: string;
   readonly room: string;
   readonly seed: number;
   /** Date de fondation, en millisecondes epoch. */
@@ -200,8 +222,10 @@ export type CaravanStatus = "travelling" | "returning" | "arrived" | "delivered"
 export interface Caravan {
   /** Identifiant attribué par le serveur, unique et stable pour la vie du monde. */
   readonly id: string;
-  /** Nom du joueur qui l'a expédiée (l'identité v1 est le nom). */
+  /** Clé du joueur qui l'a expédiée (`WorldPlayerInfo.key`), pas un nom. */
   readonly owner: string;
+  /** Nom d'affichage courant de l'expéditeur, résolu à la diffusion. */
+  readonly ownerName: string;
   readonly fromTile: number;
   readonly toTile: number;
   /** Cases traversées, `[fromTile, …, toTile]` (le `Route.tiles` du globe). */
@@ -299,12 +323,27 @@ export interface PongMessage {
  * liste des colonies et peut ensuite s'installer, visiter ou repartir. Une
  * connexion peut faire `world_join` puis `join` : le monde et la salle
  * cohabitent sur la même WebSocket.
+ *
+ * L'identité d'un joueur est son `token`, pas son `name` (`docs/protocol.md`
+ * §11.2) :
+ *
+ * - **absent** : le serveur crée un nouveau joueur (clé et jeton neufs) et les
+ *   renvoie dans `world_welcome` — c'est la seule fois où le jeton est
+ *   transmis ;
+ * - **connu** : le joueur est reconnu, quel que soit le `name` envoyé — qui
+ *   peut différer de la dernière fois, `name` n'est qu'un libellé et se met à
+ *   jour ;
+ * - **inconnu** (jeton perdu, effacé, ou d'un autre serveur) : le serveur
+ *   répond `world_error { code: "bad_token" }` et ferme la connexion — il n'y
+ *   a pas de compte de secours, un jeton perdu est une identité perdue.
  */
 export interface WorldJoinMessage {
   readonly type: "world_join";
   readonly name: string;
   /** Facultatif ; si présent et différent, le serveur répond `version_mismatch`. */
   readonly protocol?: number;
+  /** Jeton reçu d'un précédent `world_welcome`. Absent : nouveau joueur. */
+  readonly token?: string;
 }
 
 /** Fonder une colonie sur une case libre et terrestre. */
@@ -472,14 +511,30 @@ export interface ErrorMessage {
  * Réponse à `world_join`. Le globe lui-même n'est pas dans ce message : il se
  * télécharge une fois par `GET /world` (plusieurs centaines de kilo-octets).
  * `world` sert à vérifier qu'on parle bien du même globe.
+ *
+ * `playerKey` est l'identité **publique** et stable du joueur (à conserver
+ * pour retrouver ses colonies dans `settlements`/`world_settlements`).
+ * `token` est le secret correspondant : présent **uniquement** à la création
+ * d'un nouveau joueur (`WorldJoinMessage.token` absent ou inconnu du serveur —
+ * dans ce dernier cas c'est `world_error { code: "bad_token" }` qui répond,
+ * pas ce message). Le client doit le garder (`localStorage`, par serveur) et
+ * le renvoyer dans son prochain `world_join` : c'est la seule fois où le
+ * serveur l'envoie, il n'est jamais rejoué à une reconnexion reconnue.
+ *
+ * `playerId`, lui, n'a rien d'une identité : c'est un simple compteur de
+ * connexion, remis à zéro à chaque redémarrage, qui ne sert qu'à
+ * `request_snapshot.forPlayer` (§8). Ne pas le confondre avec `playerKey`.
  */
 export interface WorldWelcomeMessage {
   readonly type: "world_welcome";
   readonly playerId: PlayerId;
+  readonly playerKey: string;
   readonly name: string;
+  /** Présent uniquement à la création d'un nouveau joueur. Jamais rejoué. */
+  readonly token?: string;
   readonly settlements: readonly Settlement[];
-  /** Noms des joueurs connectés au monde (l'identité v1 est le nom). */
-  readonly players: readonly string[];
+  /** Tous les joueurs déjà vus par le monde, connectés ou non. */
+  readonly players: readonly WorldPlayerInfo[];
   readonly world: WorldInfo;
 }
 
@@ -489,10 +544,10 @@ export interface WorldSettlementsMessage {
   readonly settlements: readonly Settlement[];
 }
 
-/** Diffusé à chaque arrivée ou départ dans le monde. */
+/** Diffusé à chaque connexion ou déconnexion du monde, et à chaque renommage. */
 export interface WorldPlayersMessage {
   readonly type: "world_players";
-  readonly players: readonly string[];
+  readonly players: readonly WorldPlayerInfo[];
 }
 
 /**
@@ -614,6 +669,8 @@ export const WORLD_ERROR_CODES = [
   "not_owner",
   /** Action de monde reçue avant `world_join`. */
   "not_in_world",
+  /** `world_join.token` ne correspond à aucun joueur connu. */
+  "bad_token",
   /** Caravane inconnue, ou dans un état qui ne se prête pas à l'action. */
   "caravan_not_found",
   /** Aucun itinéraire terrestre entre les deux cases (`findRoute` rend `null`). */

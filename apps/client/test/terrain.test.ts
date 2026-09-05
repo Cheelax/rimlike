@@ -37,6 +37,13 @@ describe("eventLabel", () => {
     // Un convoi de marchandises seules débarque zéro colon.
     expect(eventLabel(12, 0)).toBe("Une caravane est arrivée (0 colon)");
   });
+
+  it("annonce le temps rattrapé par l'avance rapide d'une colonie gelée", () => {
+    // Contrat avec `sim::EventKind::FastForwarded` : `arg` = jours entiers.
+    expect(eventLabel(13, 0)).toBe("Moins d'un jour a passé pendant votre absence");
+    expect(eventLabel(13, 1)).toBe("1 jour a passé pendant votre absence");
+    expect(eventLabel(13, 12)).toBe("12 jours ont passé pendant votre absence");
+  });
 });
 
 describe("formatInjury", () => {

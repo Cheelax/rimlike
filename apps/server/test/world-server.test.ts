@@ -95,12 +95,17 @@ async function connect(target: RunningServer = server): Promise<TestClient> {
   return client;
 }
 
-/** Un client déjà entré dans le monde. */
-async function joinWorld(name: string, target: RunningServer = server): Promise<TestClient> {
+/** Un client déjà entré dans le monde. `token` : reconnexion sous un jeton connu. */
+async function joinWorld(name: string, target: RunningServer = server, token?: string): Promise<TestClient> {
   const client = await connect(target);
-  client.send({ type: "world_join", name });
+  client.send(token === undefined ? { type: "world_join", name } : { type: "world_join", name, token });
   await client.next("world_welcome");
   return client;
+}
+
+/** La clé de joueur reçue dans le premier `world_welcome` d'un client. */
+function keyOf(client: TestClient): string {
+  return client.ofType("world_welcome")[0]!.playerKey;
 }
 
 beforeEach(async () => {
@@ -189,8 +194,13 @@ describe("s'installer sur le globe", () => {
     expect(welcome.settlements).toEqual([]);
     expect(welcome.world).toEqual({ seed: DEFAULT_WORLD_SEED, subdivisions: SUBDIVISIONS, tiles: 162 });
     expect(welcome.name).toBe("bob");
+    // Un jeton neuf, jamais rejoué : ce message-ci est le seul qui le porte.
+    expect(typeof welcome.token).toBe("string");
+    expect(welcome.token!.length).toBeGreaterThan(0);
+    expect(typeof welcome.playerKey).toBe("string");
+    const aliceKey = alice.ofType("world_welcome")[0]!.playerKey;
     await alice.waitUntil("bob visible", () =>
-      (alice.ofType("world_players").at(-1)?.players ?? []).includes("bob"),
+      (alice.ofType("world_players").at(-1)?.players ?? []).some((p) => p.name === "bob" && p.online),
     );
 
     alice.send({ type: "settle", tile: landTile });
@@ -204,7 +214,8 @@ describe("s'installer sur le globe", () => {
       expect(list).toEqual([
         {
           tile: landTile,
-          owner: "alice",
+          owner: aliceKey,
+          ownerName: "alice",
           room: `tile-${landTile}`,
           seed: settled.seed,
           createdAt: expect.any(Number) as unknown as number,
@@ -255,14 +266,65 @@ describe("s'installer sur le globe", () => {
   it("retire un joueur du monde sur world_leave", async () => {
     const alice = await joinWorld("alice");
     const bob = await joinWorld("bob");
-    await alice.waitUntil("deux joueurs", () => (alice.ofType("world_players").at(-1)?.players.length ?? 0) === 2);
+    await alice.waitUntil(
+      "deux joueurs en ligne",
+      () => (alice.ofType("world_players").at(-1)?.players ?? []).filter((p) => p.online).length === 2,
+    );
 
     bob.send({ type: "world_leave" });
-    await alice.waitUntil("bob parti", () => (alice.ofType("world_players").at(-1)?.players ?? []).length === 1);
-    expect(alice.ofType("world_players").at(-1)!.players).toEqual(["alice"]);
+    // bob quitte le monde, mais reste un joueur **connu** (`docs/protocol.md`
+    // §11.2) : la table garde son nom, seul `online` change.
+    await alice.waitUntil(
+      "bob hors ligne",
+      () => alice.ofType("world_players").at(-1)?.players.find((p) => p.name === "bob")?.online === false,
+    );
+    const last = alice.ofType("world_players").at(-1)!.players;
+    expect(last.find((p) => p.name === "alice")?.online).toBe(true);
+    expect(last).toHaveLength(2);
 
     bob.send({ type: "settle", tile: landTile });
     expect((await bob.next("world_error")).code).toBe("not_in_world");
+  });
+});
+
+describe("identité par jeton", () => {
+  it("reconnexion par jeton : même playerKey, colonies retrouvées ; sans jeton, un tout autre joueur", async () => {
+    const alice = await joinWorld("alice");
+    const welcome = alice.ofType("world_welcome")[0]!;
+    const token = welcome.token!;
+    expect(typeof token).toBe("string");
+    alice.send({ type: "settle", tile: landTile });
+    await alice.next("settled");
+
+    // Même nom, mais aucun jeton : un joueur neuf, sans aucun droit sur la
+    // colonie d'alice — l'identité est le jeton, jamais le nom (§11.2).
+    const impostor = await joinWorld("alice");
+    expect(impostor.ofType("world_welcome")[0]!.playerKey).not.toBe(welcome.playerKey);
+    impostor.send({ type: "settle", tile: landTile });
+    expect((await impostor.next("world_error")).code).toBe("occupied");
+    impostor.send({ type: "abandon", tile: landTile });
+    expect((await impostor.next("world_error")).code).toBe("not_owner");
+
+    // Alice, elle, reconnue par son jeton (un autre onglet, un autre nom
+    // affiché) : sa colonie est bien retrouvée, et elle peut l'abandonner.
+    const reconnected = await joinWorld("alice sur mobile", server, token);
+    const backWelcome = reconnected.ofType("world_welcome")[0]!;
+    expect(backWelcome.playerKey).toBe(welcome.playerKey);
+    // Reconnue : le jeton n'est pas rejoué, il n'a été envoyé qu'une fois.
+    expect(backWelcome.token).toBeUndefined();
+    expect(backWelcome.settlements.map((s) => s.tile)).toEqual([landTile]);
+    expect(backWelcome.settlements[0]!.ownerName).toBe("alice sur mobile");
+
+    reconnected.send({ type: "abandon", tile: landTile });
+    const afterAbandon = await reconnected.next("world_settlements");
+    expect(afterAbandon.settlements).toEqual([]);
+  });
+
+  it("refuse un jeton inconnu et ferme la connexion", async () => {
+    const client = await connect();
+    client.send({ type: "world_join", name: "alice", token: "jeton-invente" });
+    expect((await client.next("world_error")).code).toBe("bad_token");
+    await client.waitUntil("connexion fermée", () => client.closed);
   });
 });
 
@@ -372,10 +434,12 @@ describe("caravanes", () => {
     // Le monde annonce ses caravanes dès l'entrée, même vides.
     expect(bob.ofType("world_caravans")[0]!.caravans).toEqual([]);
 
+    const aliceKey = keyOf(alice);
     const id = await depart(alice, nearTile);
     for (const client of [alice, bob]) {
       const caravan = await waitCaravan(client, id, "travelling");
-      expect(caravan.owner).toBe("alice");
+      expect(caravan.owner).toBe(aliceKey);
+      expect(caravan.ownerName).toBe("alice");
       expect(caravan.fromTile).toBe(landTile);
       expect(caravan.toTile).toBe(nearTile);
       expect(caravan.route[0]).toBe(landTile);
@@ -436,7 +500,8 @@ describe("caravanes", () => {
       (alice.ofType("world_settlements").at(-1)?.settlements ?? []).some((s) => s.tile === emptyTile),
     );
     const settlements = alice.ofType("world_settlements").at(-1)!.settlements;
-    expect(settlements.find((s) => s.tile === emptyTile)!.owner).toBe("alice");
+    expect(settlements.find((s) => s.tile === emptyTile)!.owner).toBe(keyOf(alice));
+    expect(settlements.find((s) => s.tile === emptyTile)!.ownerName).toBe("alice");
     expect(fast.world.settlementCount).toBe(2);
     expect(fast.roomCount).toBe(1);
     await waitCaravan(alice, id, "arrived");
@@ -525,6 +590,88 @@ describe("caravanes", () => {
     const dave = await connect(fast);
     dave.send({ type: "caravan_depart", fromTile: landTile, toTile: nearTile, manifest, summary });
     expect((await dave.next("world_error")).code).toBe("not_in_world");
+  });
+
+  describe("depuis la connexion monde", () => {
+    it("accepte le départ et la livraison depuis la connexion monde, et livre l'arrivée sur les deux connexions de l'hôte", async () => {
+      // alice : une connexion de salle (jeu normal) et une connexion monde
+      // distincte, reconnue par le même jeton — ce que fera `WorldClient` une
+      // fois le relais paresseux du Worker retiré.
+      const aliceRoom = await joinWorld("alice", fast);
+      const token = aliceRoom.ofType("world_welcome")[0]!.token!;
+      const aliceKey = keyOf(aliceRoom);
+      aliceRoom.send({ type: "settle", tile: landTile });
+      await aliceRoom.next("settled");
+      aliceRoom.send({ type: "join", room: `tile-${landTile}`, name: "alice" });
+      await aliceRoom.nth("welcome");
+      aliceRoom.send({ type: "start", seed: 1, width: 64, height: 64 });
+      await aliceRoom.nth("start");
+
+      const aliceWorld = await joinWorld("alice (autre onglet)", fast, token);
+      expect(keyOf(aliceWorld)).toBe(aliceKey);
+
+      // Départ envoyé depuis la connexion MONDE, pas la connexion de salle.
+      const id = await depart(aliceWorld, farTile);
+      for (const client of [aliceRoom, aliceWorld]) {
+        const caravan = await waitCaravan(client, id, "travelling");
+        expect(caravan.owner).toBe(aliceKey);
+        expect(caravan.fromTile).toBe(landTile);
+      }
+
+      // Elle rentre avant la moitié : l'arrivée revient sur la case de départ,
+      // dont alice est déjà l'hôte sur ses deux connexions.
+      await aliceWorld.waitUntil("caravane en chemin", () => {
+        const caravan = caravansOf(aliceWorld).find((c) => c.id === id);
+        return caravan !== undefined && caravan.currentTile !== landTile;
+      });
+      aliceWorld.send({ type: "caravan_cancel", id });
+      await waitCaravan(aliceWorld, id, "returning");
+      await waitCaravan(aliceWorld, id, "arrived");
+
+      // Reçue sur les deux connexions de l'hôte, le client ignorant le doublon.
+      expect((await aliceRoom.nth("caravan_arrive")).id).toBe(id);
+      expect((await aliceWorld.nth("caravan_arrive")).id).toBe(id);
+
+      // Confirmation depuis la connexion monde : acceptée puisqu'elle est
+      // reconnue comme l'hôte de la salle d'arrivée (même clé).
+      aliceWorld.send({ type: "caravan_delivered", id });
+      for (const client of [aliceRoom, aliceWorld]) {
+        expect((await waitCaravan(client, id, "delivered")).currentTile).toBe(landTile);
+      }
+    });
+
+    it("refuse caravan_depart depuis la connexion monde d'un joueur absent de la salle", async () => {
+      await openColony("alice", landTile);
+      const outsider = await joinWorld("outsider", fast);
+      outsider.send({ type: "caravan_depart", fromTile: landTile, toTile: nearTile, manifest, summary });
+      expect((await outsider.next("world_error")).code).toBe("caravan_not_in_room");
+    });
+
+    it("accepte caravan_depart par repli sur le nom quand la connexion de salle n'a pas fait world_join", async () => {
+      // La salle n'existe que si la case est colonisée : un fondateur
+      // distinct s'en charge, sans jamais entrer dans la salle lui-même.
+      const founder = await joinWorld("fondateur", fast);
+      founder.send({ type: "settle", tile: landTile });
+      await founder.next("settled");
+
+      // Connexion de salle « brute » : `join` direct, sans `world_join` sur
+      // cette connexion précise — le relais de salle n'a jamais exigé de
+      // jeton (docs/protocol.md §11.2).
+      const roomOnly = await connect(fast);
+      roomOnly.send({ type: "join", room: `tile-${landTile}`, name: "alice" });
+      await roomOnly.nth("welcome");
+
+      // Connexion monde d'« alice » : aucun jeton, donc une identité neuve —
+      // seul le nom la relie à la connexion de salle, en repli v1.
+      const aliceWorld = await joinWorld("alice", fast);
+
+      const known = new Set(caravansOf(aliceWorld).map((c) => c.id));
+      aliceWorld.send({ type: "caravan_depart", fromTile: landTile, toTile: nearTile, manifest, summary });
+      await aliceWorld.waitUntil("caravane annoncée", () => caravansOf(aliceWorld).some((c) => !known.has(c.id)));
+      const caravan = caravansOf(aliceWorld).find((c) => !known.has(c.id))!;
+      expect(caravan.fromTile).toBe(landTile);
+      expect(caravan.owner).toBe(keyOf(aliceWorld));
+    });
   });
 });
 

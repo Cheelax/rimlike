@@ -66,6 +66,12 @@ export interface LockstepState {
   readonly height: number | null;
   readonly desync: DesyncInfo | null;
   readonly lastError: LockstepError | null;
+  /**
+   * Temps gelé à rattraper, reçu par `snapshot.frozenTicks` à la réouverture
+   * d'une colonie (`docs/protocol.md` §11.6). 0 hors de ce cas. Affiché tel
+   * quel ; `consumeFrozenTicks` est le seul chemin qui le met à profit.
+   */
+  readonly frozenTicks: number;
 }
 
 export interface LockstepOptions {
@@ -86,6 +92,15 @@ export interface LockstepOptions {
   readonly onCaravanArrive?: (arrival: CaravanArriveMessage) => void;
   /** Erreurs serveur et trous de bundles. Jamais avalées en silence. */
   readonly onError?: (error: LockstepError) => void;
+  /**
+   * Jeton de la connexion **monde** (`docs/protocol.md` §11.2), pour que le
+   * `world_join` paresseux de `sendCaravanDepart` désigne le même joueur que
+   * celle-ci — sinon le serveur crée un second joueur, et la caravane
+   * expédiée d'ici n'est pas « à nous » sur le globe. Absent : comportement
+   * d'avant (nouveau joueur sous le même nom), celui des clients à connexion
+   * unique des tests, qui n'ont pas de connexion monde séparée.
+   */
+  readonly worldToken?: string;
 }
 
 /** Ce qu'il faut pour expédier un manifeste depuis la case de cette salle. */
@@ -130,10 +145,14 @@ export class LockstepClient {
   private height: number | null = null;
   private desyncInfo: DesyncInfo | null = null;
   private lastError: LockstepError | null = null;
+  /** Voir `LockstepState.frozenTicks` et `consumeFrozenTicks`. */
+  private frozenTicksValue = 0;
   /** Nom donné au `join` : le `world_join` tardif des caravanes en a besoin. */
   private playerName = "";
   /** Vrai une fois cette connexion entrée dans le monde (voir `sendCaravanDepart`). */
   private worldJoined = false;
+  /** Voir `LockstepOptions.worldToken`. */
+  private readonly worldToken: string | null;
 
   constructor(options: LockstepOptions) {
     this.transport = options.transport;
@@ -143,6 +162,7 @@ export class LockstepClient {
     this.onSim = options.onSim ?? null;
     this.onCaravanArrive = options.onCaravanArrive ?? null;
     this.onError = options.onError ?? null;
+    this.worldToken = options.worldToken ?? null;
     this.transport.onMessage((text) => this.receive(text));
     this.transport.onClose(() => {
       this.phase = "closed";
@@ -195,6 +215,18 @@ export class LockstepClient {
   }
 
   /**
+   * Lit le temps gelé à rattraper et le remet à 0 : deux appels ne le
+   * renvoient qu'une fois. C'est ce qui garantit qu'un seul `FastForward`
+   * part par réouverture, même si l'appelant se trompe et appelle deux fois
+   * (`docs/protocol.md` §11.6).
+   */
+  consumeFrozenTicks(): number {
+    const value = this.frozenTicksValue;
+    this.frozenTicksValue = 0;
+    return value;
+  }
+
+  /**
    * Expédie un manifeste de caravane depuis la case de cette salle.
    *
    * Pourquoi **ici** et pas sur la connexion monde : le serveur exige que
@@ -205,14 +237,21 @@ export class LockstepClient {
    *
    * Le serveur exige **aussi** un `world_join` sur la connexion qui expédie
    * (c'est de là que vient le `owner` de la caravane). On l'émet au premier
-   * départ seulement : entrer dans le monde deux fois sous le même nom fait
-   * apparaître le joueur en double dans `world_players`, autant ne le faire
-   * que quand c'est nécessaire — l'interface, elle, dédoublonne par nom.
+   * départ seulement, avec le **même jeton** que la connexion monde du thread
+   * principal (`worldToken`, §11.2) : sans ça le serveur créerait un second
+   * joueur, et la caravane n'appartiendrait pas à celui qui joue. Sans jeton
+   * connu — clients à connexion unique des tests, ou identité pas encore
+   * reçue — on repart sans, comme avant : un nouveau joueur sous le même nom.
    */
   sendCaravanDepart(departure: RoomCaravanDeparture): void {
     if (!this.worldJoined) {
       this.worldJoined = true;
-      this.send({ type: "world_join", name: this.playerName, protocol: PROTOCOL_VERSION });
+      this.send({
+        type: "world_join",
+        name: this.playerName,
+        protocol: PROTOCOL_VERSION,
+        ...(this.worldToken !== null ? { token: this.worldToken } : {}),
+      });
     }
     this.send({
       type: "caravan_depart",
@@ -330,6 +369,10 @@ export class LockstepClient {
       case "snapshot":
         this.phase = "running";
         this.resetTo(message.tick);
+        // Réouverture d'une colonie gelée (§11.6) : stocké, jamais appliqué
+        // ici. `consumeFrozenTicks` est le seul chemin qui le consomme, dès
+        // que le sim restauré est adopté (voir le Worker).
+        this.frozenTicksValue = message.frozenTicks ?? 0;
         this.adopt(this.restoreSim(message.data));
         this.emit();
         return;
@@ -471,6 +514,7 @@ export class LockstepClient {
       height: this.height,
       desync: this.desyncInfo,
       lastError: this.lastError,
+      frozenTicks: this.frozenTicksValue,
     });
   }
 }

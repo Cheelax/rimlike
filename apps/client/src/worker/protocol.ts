@@ -41,6 +41,15 @@ export type InitMessage =
       readonly server: string;
       readonly room: string;
       readonly name: string;
+      /**
+       * Jeton de la connexion **monde** du thread principal (`docs/protocol.md`
+       * §11.2), pour que le `world_join` paresseux du `LockstepClient` d'ici
+       * (voir `sendCaravanDepart`) désigne le même joueur — sinon le serveur en
+       * crée un second, et les caravanes expédiées depuis cette salle
+       * n'appartiendraient pas à celui qui joue. Absent en salle nommée
+       * ordinaire (pas de monde) ou tant que l'identité n'est pas encore connue.
+       */
+      readonly token?: string;
     };
 
 export type MainToWorker =

@@ -26,9 +26,22 @@ import {
   type Settlement,
   type SettledMessage,
   type WorldInfo,
+  type WorldPlayerInfo,
 } from "@rimlike/protocol";
 
+import {
+  forgetIdentity as forgetStoredIdentity,
+  loadIdentity,
+  saveIdentity,
+  type StoredIdentity, identityScope } from "./identity";
 import type { Transport } from "./Transport";
+
+/** Ce que le crochet de dev montre d'une identité stockée : jamais le jeton en clair. */
+export interface IdentitySummary {
+  readonly playerKey: string;
+  /** Longueur du jeton, pas sa valeur : de quoi vérifier qu'il existe, rien de plus. */
+  readonly tokenLength: number;
+}
 
 /**
  * `connecting` : `world_join` envoyé, pas encore de `world_welcome`.
@@ -49,11 +62,22 @@ export interface WorldClientState {
   readonly phase: WorldPhase;
   /** Notre identifiant de joueur **du monde**, sans rapport avec celui d'une salle. */
   readonly playerId: PlayerId | null;
+  /**
+   * Notre clé publique et stable (`docs/protocol.md` §11.2) : c'est elle qui
+   * apparaît dans `Settlement.owner` et `Caravan.owner`, à comparer pour
+   * savoir si une colonie ou une caravane nous appartient. `null` avant le
+   * premier `world_welcome`.
+   */
+  readonly playerKey: string | null;
   readonly name: string;
   /** Liste complète, telle que diffusée : le serveur ne fait pas de delta. */
   readonly settlements: readonly Settlement[];
-  /** Noms des joueurs présents dans le monde (l'identité v1 est le nom). */
-  readonly players: readonly string[];
+  /**
+   * Tous les joueurs déjà vus par le monde, connectés ou non (`online` le
+   * distingue) — pas seulement ceux présents à l'instant, contrairement à la
+   * v1 par nom.
+   */
+  readonly players: readonly WorldPlayerInfo[];
   /**
    * Caravanes en vol, telles que diffusées par `world_caravans`. Liste
    * complète elle aussi : le client remplace la sienne (`docs/protocol.md`
@@ -64,6 +88,15 @@ export interface WorldClientState {
   /** Le globe annoncé par le serveur, `null` avant `world_welcome`. */
   readonly world: WorldInfo | null;
   readonly lastError: WorldError | null;
+  /**
+   * Le jeton courant, à passer au `LockstepClient` d'une salle (le `world_join`
+   * paresseux de `sendCaravanDepart` doit désigner le même joueur, sinon le
+   * serveur en crée un second — `docs/protocol.md` §11.2 et §12.7). `null`
+   * tant qu'aucune identité n'est connue (avant `world_welcome`, ou stockage
+   * indisponible). Jamais affiché : le crochet de dev n'en montre que
+   * `identitySummary` (longueur du jeton, pas sa valeur).
+   */
+  readonly token: string | null;
 }
 
 /** Ce qu'il faut pour expédier un manifeste vers une autre case. */
@@ -77,8 +110,14 @@ export interface CaravanDeparture {
 
 export interface WorldClientOptions {
   readonly transport: Transport;
-  /** Nom du joueur : c'est l'identité, faute de comptes (`docs/protocol.md` §11.2). */
+  /** Nom du joueur : un simple libellé d'affichage, l'identité est le jeton (`docs/protocol.md` §11.2). */
   readonly name: string;
+  /**
+   * URL du serveur, telle que passée à `Transport` : sert de clé de
+   * stockage à l'identité (`net/identity.ts`), une par serveur. Deux serveurs
+   * différents ne doivent jamais se voir proposer le jeton l'un de l'autre.
+   */
+  readonly serverUrl: string;
   /**
    * Le globe déjà téléchargé par `GET /world`. Le `world_welcome` doit
    * l'annoncer à l'identique, sinon on ne regarde pas la même carte et un clic
@@ -105,6 +144,7 @@ export interface WorldClientOptions {
 
 export class WorldClient {
   private readonly transport: Transport;
+  private readonly serverUrl: string;
   private readonly expected: WorldInfo;
   private readonly onState: ((state: WorldClientState) => void) | null;
   private readonly onSettled: ((settled: SettledMessage) => void) | null;
@@ -114,14 +154,20 @@ export class WorldClient {
   private phase: WorldPhase = "connecting";
   private readonly playerName: string;
   private playerId: PlayerId | null = null;
+  private playerKey: string | null = null;
   private settlements: readonly Settlement[] = [];
-  private players: readonly string[] = [];
+  private players: readonly WorldPlayerInfo[] = Object.freeze([]);
   private caravans: readonly Caravan[] = Object.freeze([]);
   private worldInfo: WorldInfo | null = null;
   private lastError: WorldError | null = null;
+  /** Jeton et clé connus pour ce serveur, `null` si on n'en a aucun. */
+  private identity: StoredIdentity | null = null;
+  /** Un seul essai après `bad_token` : le second `world_join` n'a pas de jeton à refuser. */
+  private badTokenRetried = false;
 
   constructor(options: WorldClientOptions) {
     this.transport = options.transport;
+    this.serverUrl = options.serverUrl;
     this.expected = options.expected;
     this.playerName = options.name;
     this.onState = options.onState ?? null;
@@ -141,6 +187,16 @@ export class WorldClient {
     return this.snapshotState();
   }
 
+  /**
+   * Résumé sans risque de l'identité stockée, pour le crochet de dev : la clé
+   * publique, et la longueur du jeton (jamais sa valeur). `null` si on n'a
+   * encore aucune identité pour ce serveur.
+   */
+  get identitySummary(): IdentitySummary | null {
+    if (this.identity === null) return null;
+    return { playerKey: this.identity.playerKey, tokenLength: this.identity.token.length };
+  }
+
   /** La colonie posée sur une case, ou `undefined` si la case est libre. */
   settlementAt(tile: number): Settlement | undefined {
     return this.settlements.find((settlement) => settlement.tile === tile);
@@ -153,10 +209,30 @@ export class WorldClient {
 
   // --- Actions ---
 
-  /** Premier message de la connexion monde. */
+  /**
+   * Premier message de la connexion monde : relit l'identité stockée pour ce
+   * serveur et joint son jeton s'il y en a une (`docs/protocol.md` §11.2). Sans
+   * jeton connu, le serveur crée un nouveau joueur.
+   */
   join(): void {
-    this.send({ type: "world_join", name: this.playerName, protocol: PROTOCOL_VERSION });
+    this.identity = loadIdentity(identityScope(this.serverUrl, this.playerName));
+    this.send({
+      type: "world_join",
+      name: this.playerName,
+      protocol: PROTOCOL_VERSION,
+      ...(this.identity !== null ? { token: this.identity.token } : {}),
+    });
     this.emit();
+  }
+
+  /**
+   * Oublie l'identité stockée pour ce serveur (crochet de dev, pour tester
+   * `bad_token` sans éditer `localStorage` à la main). N'affecte que le
+   * **prochain** `join()` : la connexion en cours garde son jeton actuel.
+   */
+  forgetIdentity(): void {
+    forgetStoredIdentity(identityScope(this.serverUrl, this.playerName));
+    this.identity = null;
   }
 
   /** Fonder une colonie sur une case libre et terrestre. */
@@ -245,9 +321,20 @@ export class WorldClient {
           return;
         }
         this.playerId = message.playerId;
+        this.playerKey = message.playerKey;
         this.settlements = Object.freeze([...message.settlements]);
         this.players = Object.freeze([...message.players]);
         this.worldInfo = message.world;
+        // `token` n'apparaît qu'à la création d'un nouveau joueur (§11.2) : à
+        // conserver tout de suite. Reconnu, on garde le jeton qu'on avait déjà
+        // et on se contente d'aligner la clé (elle ne change pas, mais autant
+        // ne pas dépendre de l'ordre des champs du serveur).
+        if (message.token !== undefined) {
+          this.identity = { token: message.token, playerKey: message.playerKey };
+          saveIdentity(identityScope(this.serverUrl, this.playerName), this.identity);
+        } else if (this.identity !== null) {
+          this.identity = { ...this.identity, playerKey: message.playerKey };
+        }
         this.phase = "connected";
         this.emit();
         return;
@@ -275,6 +362,19 @@ export class WorldClient {
         this.onSettled?.(message);
         return;
       case "world_error":
+        if (message.code === "bad_token" && !this.badTokenRetried) {
+          // Le jeton stocké ne correspond à aucun joueur connu (§11.2) : on
+          // l'oublie et on redevient un nouveau joueur. Un seul essai — le
+          // second `world_join` ne porte aucun jeton, il ne peut donc pas être
+          // refusé pour la même raison.
+          this.badTokenRetried = true;
+          this.forgetIdentity();
+          this.fail("bad_token", "Identité inconnue de ce serveur : nouvelle identité créée");
+          this.phase = "connecting";
+          this.send({ type: "world_join", name: this.playerName, protocol: PROTOCOL_VERSION });
+          this.emit();
+          return;
+        }
         // Un refus de monde ne déconnecte pas : la case reste choisissable.
         this.fail(message.code, message.message);
         return;
@@ -310,12 +410,14 @@ export class WorldClient {
     return Object.freeze({
       phase: this.phase,
       playerId: this.playerId,
+      playerKey: this.playerKey,
       name: this.playerName,
       settlements: this.settlements,
       players: this.players,
       caravans: this.caravans,
       world: this.worldInfo,
       lastError: this.lastError,
+      token: this.identity?.token ?? null,
     });
   }
 }

@@ -5,9 +5,13 @@
  * qui entre passe par `Transport.onMessage`, tout ce qui sort par
  * `Transport.send`. Un faux transport suffit donc à éprouver le protocole du
  * monde (`docs/protocol.md` §11) sans serveur, sans WebSocket et sans DOM.
+ *
+ * L'identité (jeton + clé, `net/identity.ts`) passe par `localStorage` : on
+ * pose un faux `Storage` sur `globalThis` avant chaque test (l'environnement
+ * de test est Node, sans DOM), ce que `identity.ts` lit par défaut.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   PROTOCOL_VERSION,
   decodeClientMessage,
@@ -18,10 +22,57 @@ import {
   type ServerMessage,
   type Settlement,
   type WorldInfo,
+  type WorldPlayerInfo,
 } from "@rimlike/protocol";
 
+import { loadIdentity, saveIdentity, identityScope } from "../src/net/identity";
 import type { Transport } from "../src/net/Transport";
 import { WorldClient, type WorldClientState, type WorldError } from "../src/net/WorldClient";
+
+/**
+ * Un `Storage` en mémoire, posé sur `globalThis.localStorage` pour la durée
+ * d'un test. Pas de `implements Storage` : l'interface DOM porte un index de
+ * signature (`[name: string]: any`) qu'une classe ordinaire ne satisfait pas ;
+ * la forme suffit, castée au moment de l'assigner à `globalThis`.
+ */
+class FakeStorage {
+  private readonly map = new Map<string, string>();
+
+  get length(): number {
+    return this.map.size;
+  }
+
+  clear(): void {
+    this.map.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.map.has(key) ? this.map.get(key)! : null;
+  }
+
+  key(index: number): string | null {
+    return [...this.map.keys()][index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.map.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.map.set(key, value);
+  }
+}
+
+let fakeStorage: FakeStorage;
+
+beforeEach(() => {
+  fakeStorage = new FakeStorage();
+  (globalThis as { localStorage?: Storage }).localStorage = fakeStorage as unknown as Storage;
+});
+
+afterEach(() => {
+  delete (globalThis as { localStorage?: Storage }).localStorage;
+});
 
 class FakeTransport implements Transport {
   readonly sent: string[] = [];
@@ -65,19 +116,32 @@ class FakeTransport implements Transport {
   }
 }
 
+/** Le serveur de test : sert aussi de clé de stockage à l'identité. */
+const SERVER_URL = "ws://localhost:9999";
+
 const GLOBE: WorldInfo = { seed: 1, subdivisions: 4, tiles: 2562 };
+
+const ALICE_KEY = "alice-key";
+const BOB_KEY = "bob-key";
 
 const ALICE: Settlement = {
   tile: 1732,
-  owner: "alice",
+  owner: ALICE_KEY,
+  ownerName: "alice",
   room: "tile-1732",
   seed: 2007225770,
   createdAt: 1757000000000,
 };
 
+const PLAYERS: WorldPlayerInfo[] = [
+  { key: ALICE_KEY, name: "alice", online: true },
+  { key: BOB_KEY, name: "bob", online: true },
+];
+
 const CONVOY: Caravan = {
   id: "c7",
-  owner: "alice",
+  owner: ALICE_KEY,
+  ownerName: "alice",
   fromTile: 1732,
   toTile: 1810,
   route: [1732, 1745, 1799, 1810],
@@ -113,6 +177,7 @@ function harness(expected: WorldInfo = GLOBE): Harness {
   const client = new WorldClient({
     transport,
     name: "bob",
+    serverUrl: SERVER_URL,
     expected,
     onState: (state) => states.push(state),
     onSettled: (message) => settled.push({ tile: message.tile, room: message.room, seed: message.seed }),
@@ -129,16 +194,17 @@ function joined(): Harness {
   h.transport.deliver({
     type: "world_welcome",
     playerId: 2,
+    playerKey: BOB_KEY,
     name: "bob",
     settlements: [ALICE],
-    players: ["alice", "bob"],
+    players: PLAYERS,
     world: GLOBE,
   });
   return h;
 }
 
 describe("WorldClient", () => {
-  it("envoie `world_join` avec son nom et la version du protocole", () => {
+  it("envoie `world_join` avec son nom et la version du protocole, sans jeton la première fois", () => {
     const { transport, client } = harness();
     expect(client.state.phase).toBe("connecting");
 
@@ -148,24 +214,100 @@ describe("WorldClient", () => {
     expect(client.state.phase).toBe("connecting");
   });
 
-  it("passe à `connected` sur `world_welcome`, avec colonies et joueurs", () => {
+  it("envoie `world_join` avec le jeton stocké pour ce serveur, s'il y en a un", () => {
+    saveIdentity(identityScope(SERVER_URL, "bob"), { token: "s3cr3t-token", playerKey: BOB_KEY });
+    const { transport, client } = harness();
+
+    client.join();
+
+    expect(transport.messages()).toEqual([
+      { type: "world_join", name: "bob", protocol: PROTOCOL_VERSION, token: "s3cr3t-token" },
+    ]);
+  });
+
+  it("passe à `connected` sur `world_welcome`, avec notre clé, les colonies et les joueurs", () => {
     const { client } = joined();
     const state = client.state;
 
     expect(state.phase).toBe("connected");
     expect(state.playerId).toBe(2);
+    expect(state.playerKey).toBe(BOB_KEY);
     expect(state.name).toBe("bob");
     expect(state.settlements).toEqual([ALICE]);
-    expect(state.players).toEqual(["alice", "bob"]);
+    expect(state.players).toEqual(PLAYERS);
     expect(state.world).toEqual(GLOBE);
     expect(state.lastError).toBeNull();
     expect(client.settlementAt(1732)).toEqual(ALICE);
     expect(client.settlementAt(7)).toBeUndefined();
   });
 
+  it("mémorise le jeton reçu à la création d'un nouveau joueur, et le range dans le stockage", () => {
+    const { transport, client } = harness();
+    client.join();
+
+    transport.deliver({
+      type: "world_welcome",
+      playerId: 3,
+      playerKey: "carol-key",
+      name: "bob",
+      token: "brand-new-token",
+      settlements: [],
+      players: [{ key: "carol-key", name: "bob", online: true }],
+      world: GLOBE,
+    });
+
+    expect(client.state.token).toBe("brand-new-token");
+    expect(client.state.playerKey).toBe("carol-key");
+    // Rangé pour ce serveur : une prochaine connexion (donc un nouveau
+    // `WorldClient`) le relira via `join()`.
+    expect(loadIdentity(identityScope(SERVER_URL, "bob"))).toEqual({ token: "brand-new-token", playerKey: "carol-key" });
+    // Jamais affiché en clair : seule la longueur transparaît.
+    expect(client.identitySummary).toEqual({ playerKey: "carol-key", tokenLength: "brand-new-token".length });
+  });
+
+  it("ne range rien de nouveau à la reconnexion d'un joueur déjà connu (pas de `token` dans `world_welcome`)", () => {
+    saveIdentity(identityScope(SERVER_URL, "bob"), { token: "old-token", playerKey: ALICE_KEY });
+    const { client } = harness();
+    client.join();
+
+    expect(loadIdentity(identityScope(SERVER_URL, "bob"))).toEqual({ token: "old-token", playerKey: ALICE_KEY });
+  });
+
+  it("`bad_token` : oublie le jeton stocké, prévient et refait un `world_join` sans jeton, une seule fois", () => {
+    saveIdentity(identityScope(SERVER_URL, "bob"), { token: "stale-token", playerKey: ALICE_KEY });
+    const { transport, client, errors } = harness();
+    client.join();
+    expect(transport.messages().at(-1)).toEqual({
+      type: "world_join",
+      name: "bob",
+      protocol: PROTOCOL_VERSION,
+      token: "stale-token",
+    });
+
+    transport.deliver({ type: "world_error", code: "bad_token", message: "jeton de joueur inconnu" });
+
+    // Le jeton périmé a disparu du stockage : un nouveau `WorldClient` sur ce
+    // serveur ne le reproposera pas.
+    expect(loadIdentity(identityScope(SERVER_URL, "bob"))).toBeNull();
+    expect(client.identitySummary).toBeNull();
+    // Prévenu par un message clair, pas le texte brut du serveur.
+    expect(errors.at(-1)).toEqual({
+      code: "bad_token",
+      message: "Identité inconnue de ce serveur : nouvelle identité créée",
+    });
+    // Un second `world_join` est bien reparti, sans jeton cette fois.
+    expect(transport.messages().at(-1)).toEqual({ type: "world_join", name: "bob", protocol: PROTOCOL_VERSION });
+    expect(transport.messages()).toHaveLength(2);
+
+    // Un second refus (improbable : le second `world_join` n'a pas de jeton à
+    // refuser) ne redéclenche pas de troisième tentative : pas de boucle.
+    transport.deliver({ type: "world_error", code: "bad_token", message: "jeton de joueur inconnu" });
+    expect(transport.messages()).toHaveLength(2);
+  });
+
   it("remplace la liste entière à chaque `world_settlements`", () => {
     const { transport, client } = joined();
-    const carol: Settlement = { tile: 40, owner: "carol", room: "tile-40", seed: 9, createdAt: 2 };
+    const carol: Settlement = { tile: 40, owner: "carol-key", ownerName: "carol", room: "tile-40", seed: 9, createdAt: 2 };
 
     transport.deliver({ type: "world_settlements", settlements: [carol] });
 
@@ -177,12 +319,18 @@ describe("WorldClient", () => {
     expect(client.state.settlements).toEqual([]);
   });
 
-  it("met à jour les joueurs présents sur `world_players`", () => {
+  it("met à jour les joueurs présents sur `world_players`, avec leur présence", () => {
     const { transport, client } = joined();
 
-    transport.deliver({ type: "world_players", players: ["bob"] });
+    transport.deliver({
+      type: "world_players",
+      players: [{ key: BOB_KEY, name: "bob", online: true }, { key: ALICE_KEY, name: "alice", online: false }],
+    });
 
-    expect(client.state.players).toEqual(["bob"]);
+    expect(client.state.players).toEqual([
+      { key: BOB_KEY, name: "bob", online: true },
+      { key: ALICE_KEY, name: "alice", online: false },
+    ]);
   });
 
   it("envoie `settle` et rend la salle et la graine du `settled` reçu", () => {
@@ -320,9 +468,10 @@ describe("WorldClient", () => {
     transport.deliver({
       type: "world_welcome",
       playerId: 1,
+      playerKey: BOB_KEY,
       name: "bob",
       settlements: [],
-      players: ["bob"],
+      players: [{ key: BOB_KEY, name: "bob", online: true }],
       world: { seed: 99, subdivisions: 4, tiles: 2562 },
     });
 
@@ -342,9 +491,10 @@ describe("WorldClient", () => {
     transport.deliver({
       type: "world_welcome",
       playerId: 1,
+      playerKey: BOB_KEY,
       name: "bob",
       settlements: [],
-      players: ["bob"],
+      players: [{ key: BOB_KEY, name: "bob", online: true }],
       world: { seed: 1, subdivisions: 5, tiles: 10242 },
     });
 
@@ -383,5 +533,16 @@ describe("WorldClient", () => {
     expect(() => {
       (state as { phase: string }).phase = "closed";
     }).toThrow();
+  });
+
+  it("expose une identité stockée absente comme `null`, sans stockage disponible", () => {
+    delete (globalThis as { localStorage?: Storage }).localStorage;
+    const { transport, client } = harness();
+
+    // Le prochain accès lève dans certains environnements : `join()` doit
+    // rester silencieux (mode sans mémoire) plutôt que de faire planter le client.
+    expect(() => client.join()).not.toThrow();
+    expect(transport.messages()).toEqual([{ type: "world_join", name: "bob", protocol: PROTOCOL_VERSION }]);
+    expect(client.identitySummary).toBeNull();
   });
 });

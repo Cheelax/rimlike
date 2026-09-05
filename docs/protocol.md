@@ -26,7 +26,7 @@ Constantes partagées (`packages/protocol/src/messages.ts`) :
 
 | Constante | Valeur | Rôle |
 |---|---|---|
-| `PROTOCOL_VERSION` | 1 | Incrémentée à chaque changement incompatible |
+| `PROTOCOL_VERSION` | 2 | Incrémentée à chaque changement incompatible (2 : identité par jeton, §11.2) |
 | `TICK_RATE` | 60 | Ticks de sim par seconde |
 | `BUNDLE_TICKS` | 3 | Ticks par bundle, donc 20 bundles/s |
 | `BUNDLE_INTERVAL_MS` | 50 | Période d'émission d'un bundle |
@@ -511,10 +511,36 @@ GET /world
 
 ### 11.2 Identité, cases et salles
 
-- **L'identité d'un joueur est son nom.** Il n'y a pas de compte : quiconque se
-  connecte sous le nom du propriétaire d'une colonie est reconnu comme tel.
-  C'est une limite assumée de cette tranche, à remplacer par de vrais comptes
-  avant toute mise en ligne publique.
+- **L'identité d'un joueur est un jeton**, pas son nom. Il n'y a toujours pas
+  de compte ni de mot de passe, mais on ne se fait plus reconnaître en tapant
+  simplement le bon nom :
+  - `world_join` sans `token` : le serveur crée un nouveau joueur — une clé
+    publique et stable (`playerKey`, un uuid) et un jeton secret (32 octets
+    aléatoires, encodés en base64url) — et renvoie les deux dans
+    `world_welcome`, **une seule fois** : c'est au client de les conserver
+    (`localStorage`, par serveur) et de renvoyer le jeton dans son prochain
+    `world_join`.
+  - `world_join` avec un `token` connu : le joueur est reconnu, quel que soit
+    le `name` envoyé — qui n'est plus qu'un **libellé**, mis à jour librement à
+    chaque connexion (deux appareils du même joueur peuvent afficher des noms
+    différents sans se marcher dessus).
+  - `world_join` avec un `token` inconnu (perdu, effacé, ou d'un autre
+    serveur) : `world_error { code: "bad_token" }` puis fermeture de la
+    connexion. Il n'y a pas de compte de secours — un jeton perdu est une
+    identité perdue, et donc les colonies qui allaient avec.
+  - Le jeton n'est **jamais** journalisé, jamais renvoyé à un autre joueur, et
+    comparé côté serveur en **temps constant** (`crypto.timingSafeEqual`) :
+    une tentative de deviner un jeton ne doit rien apprendre de la durée de la
+    comparaison.
+  - Les colonies (`Settlement.owner`) et les caravanes (`Caravan.owner`)
+    réfèrent désormais la **clé** du joueur, jamais son nom. `ownerName` porte
+    le nom d'affichage courant, résolu par le serveur à chaque diffusion — il
+    peut changer d'un message à l'autre (le joueur s'est reconnecté sous un
+    autre nom), `owner` jamais. La table complète des joueurs déjà vus par le
+    monde, avec qui est en ligne, est diffusée par `world_welcome` et
+    `world_players` (`WorldPlayerInfo`, §11.5).
+  - Cette identité ne couvre que le **monde** : la salle (`join { room, name }`,
+    §3) n'en sait rien et n'a pas changé — voir la fin de cette section.
 - **Une colonie par case**, au plus. Un joueur peut en fonder plusieurs.
 - Une colonie ne se pose que sur une case **terrestre**, au sens de
   `movementCost(biome) !== null` : tout sauf l'océan, la banquise comprise.
@@ -528,6 +554,12 @@ GET /world
   retrouver. Dans une salle « case », le `seed` du `start` de l'hôte est
   **ignoré** et c'est la graine de la case qui est diffusée ; `width` et
   `height` restent au choix de l'hôte.
+- Le relais de salle (`join { room, name }`, §3) **ne change pas** : `name` y
+  reste un simple libellé, sans jeton ni vérification — deux joueurs de la
+  même salle peuvent toujours porter le même nom, ça n'a jamais eu
+  d'importance à ce niveau. L'**autorité d'appartenance** (qui possède quelle
+  colonie ou quelle caravane) est entièrement côté monde, avant même d'entrer
+  dans une salle ; la salle elle-même n'a jamais eu la notion de propriétaire.
 
 ### 11.3 Cycle de vie
 
@@ -555,15 +587,25 @@ sont **indépendants**.
 ### 11.4 Messages, client → serveur
 
 **`world_join`** — entrer dans le monde, sans salle. `protocol` se comporte
-comme celui de `join`.
+comme celui de `join`. `token`, absent au premier contact, est ce qui
+identifie un joueur reconnu (§11.2) ; `name` est toujours envoyé, mais n'est
+qu'un libellé une fois un jeton en jeu.
 
 ```json
-{ "type": "world_join", "name": "alice", "protocol": 1 }
+{ "type": "world_join", "name": "alice", "protocol": 2 }
+```
+
+Reconnexion, jeton en poche — le nom peut différer, ça n'a pas d'importance :
+
+```json
+{ "type": "world_join", "name": "alice (mobile)", "protocol": 2, "token": "8f2e…c1" }
 ```
 
 Un second `world_join` sur la même connexion répond `error already_joined`, et
 une version incompatible `error version_mismatch` suivi d'une fermeture —
-comme pour `join`. Toutes les autres actions de monde refusées répondent
+comme pour `join`. Un `token` qui ne correspond à aucun joueur connu répond
+`world_error { code: "bad_token" }` puis ferme la connexion — pas de compte de
+secours (§11.2). Toutes les autres actions de monde refusées répondent
 `world_error`.
 
 **`settle`** — fonder une colonie sur une case libre et terrestre.
@@ -597,37 +639,79 @@ salle encore peuplée n'est pas fermée pour autant.
 **`world_welcome`** — réponse à `world_join`. Le globe n'est **pas** dedans :
 il se télécharge par `GET /world`. `world` sert à vérifier qu'on parle du même.
 
+`playerKey` est l'identité **publique** et stable du joueur : c'est elle qui
+apparaît dans `settlements[].owner` et `caravans[].owner`, à conserver pour se
+retrouver dans ses propres colonies. `token` n'apparaît **qu'à la création**
+d'un nouveau joueur (`world_join.token` absent, ou inconnu — dans ce dernier
+cas c'est `world_error { code: "bad_token" }` qui répond, pas ce message) : à
+conserver côté client (`localStorage`, par serveur), jamais rejoué à une
+reconnexion reconnue. `playerId`, lui, n'a rien d'une identité : un simple
+compteur de connexion remis à zéro à chaque redémarrage, qui ne sert qu'à
+`request_snapshot.forPlayer` (§8) — à ne pas confondre avec `playerKey`.
+
 ```json
 {
   "type": "world_welcome",
   "playerId": 2,
+  "playerKey": "3f9c1a2e-...-b2",
   "name": "bob",
   "settlements": [
     {
       "tile": 1732,
-      "owner": "alice",
+      "owner": "8a1b2c3d-...-e4",
+      "ownerName": "alice",
       "room": "tile-1732",
       "seed": 2007225770,
       "createdAt": 1757000000000
     }
   ],
-  "players": ["alice", "bob"],
+  "players": [
+    { "key": "8a1b2c3d-...-e4", "name": "alice", "online": true },
+    { "key": "3f9c1a2e-...-b2", "name": "bob", "online": true }
+  ],
+  "world": { "seed": 1, "subdivisions": 4, "tiles": 2562 }
+}
+```
+
+Réponse à un **nouveau** joueur (pas de `token` connu) — le seul cas où
+`token` est présent :
+
+```json
+{
+  "type": "world_welcome",
+  "playerId": 3,
+  "playerKey": "9d4e5f60-...-a1",
+  "name": "carol",
+  "token": "6UZ0y9F1qk…3aXw",
+  "settlements": [],
+  "players": [ … ],
   "world": { "seed": 1, "subdivisions": 4, "tiles": 2562 }
 }
 ```
 
 **`world_settlements`** — diffusé à tous les joueurs du monde à chaque
 fondation et à chaque abandon. Liste complète, triée par case : le client
-remplace la sienne, il n'y a pas de delta.
+remplace la sienne, il n'y a pas de delta. `owner` est la clé du joueur,
+`ownerName` son nom d'affichage résolu à l'instant de la diffusion — il peut
+changer d'un message à l'autre, `owner` jamais.
 
 ```json
 { "type": "world_settlements", "settlements": [ … ] }
 ```
 
-**`world_players`** — diffusé à chaque arrivée et à chaque départ du monde.
+**`world_players`** — diffusé à chaque arrivée, à chaque départ et à chaque
+renommage. Contrairement à `world_settlements`, ce n'est **pas** limité aux
+joueurs présentement connectés : tout joueur déjà vu par le monde y figure,
+`online` distingue qui est là.
 
 ```json
-{ "type": "world_players", "players": ["alice", "bob"] }
+{
+  "type": "world_players",
+  "players": [
+    { "key": "8a1b2c3d-...-e4", "name": "alice", "online": true },
+    { "key": "3f9c1a2e-...-b2", "name": "bob", "online": false }
+  ]
+}
 ```
 
 **`settled`** — où aller pour jouer une case. Envoyé à l'auteur d'un `settle`
@@ -656,6 +740,7 @@ Codes (`WORLD_ERROR_CODES`, liste ouverte comme `ERROR_CODES`) :
 | `not_settled` | case libre alors qu'il fallait une colonie (`visit`, `abandon`) |
 | `not_owner` | colonie fondée par quelqu'un d'autre (`abandon`) |
 | `not_in_world` | action de monde avant `world_join` |
+| `bad_token` | `world_join.token` ne correspond à aucun joueur connu (§11.2) |
 
 ### 11.6 Snapshots de conservation
 
@@ -744,9 +829,15 @@ temps.
 const { wire } = await (await fetch(`${http}/world`)).json();
 const world = deserializeWorld(wire);
 
-// 2. Le monde, sur la WebSocket.
-socket.send(encodeMessage({ type: "world_join", name, protocol: PROTOCOL_VERSION }));
-// ← world_welcome { settlements, players, world }  puis world_settlements/world_players
+// 2. Le monde, sur la WebSocket. `token` : lu dans localStorage (par serveur),
+//    absent la toute première fois.
+const token = localStorage.getItem(`rimlike:token:${serverUrl}`) ?? undefined;
+socket.send(encodeMessage({ type: "world_join", name, protocol: PROTOCOL_VERSION, token }));
+// ← world_welcome { playerKey, token?, settlements, players, world }
+//   `token` n'est présent qu'à la création : le conserver tout de suite.
+//   puis world_settlements/world_players
+//   ← world_error { code: "bad_token" } si le jeton stocké n'est plus reconnu :
+//     l'oublier et proposer de repartir de zéro (nouveau world_join sans token).
 
 // 3. S'installer (ou visiter) : la case cliquée sur le globe.
 socket.send(encodeMessage({ type: "settle", tile: tileId }));
@@ -767,8 +858,14 @@ Ce que le client doit gérer en plus du mode salle :
   `frozenTicks > 0` (§11.6). Deux clients qui l'émettraient chacun feraient
   vieillir la colonie deux fois — c'est une commande, pas une opération
   locale ;
-- `world_settlements` → remplacer la liste et recolorer les cases possédées ;
-- `world_error` → un message à l'écran, pas une déconnexion.
+- `world_settlements` → remplacer la liste et recolorer les cases possédées,
+  en comparant `owner` (la clé) à son propre `playerKey` — jamais `ownerName`
+  à son propre nom, deux joueurs peuvent le partager ;
+- `world_error { code: "bad_token" }` → le jeton stocké n'est plus reconnu du
+  serveur (fichier de persistance perdu ou remplacé) : l'oublier et proposer
+  de repartir de zéro, pas une simple erreur à afficher ;
+- `world_error` (les autres codes) → un message à l'écran, pas une
+  déconnexion.
 
 ### 11.8 Persistance
 
@@ -783,7 +880,7 @@ pour l'horloge et les caravanes) :
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "worldSeed": 1,
   "subdivisions": 4,
   "savedAt": 1757000000000,
@@ -793,22 +890,51 @@ pour l'horloge et les caravanes) :
     "clock": { "worldStartedAt": 1756900000000, "hoursOffset": 412.5 },
     "caravans": { "nextId": 8, "caravans": [ … ] },
     "settlements": [
-      { "tile": 1732, "owner": "alice", "room": "tile-1732", "seed": 2007225770, "createdAt": 1757000000000 }
+      { "tile": 1732, "owner": "8a1b2c3d-...-e4", "room": "tile-1732", "seed": 2007225770, "createdAt": 1757000000000 }
     ],
     "snapshots": [
       { "room": "tile-1732", "tick": 1800, "data": "AQIDBA==", "width": 64, "height": 64, "savedAt": 1757000000000, "savedAtHours": 412.5 }
+    ],
+    "players": [
+      { "key": "8a1b2c3d-...-e4", "name": "alice", "token": "6UZ0y9F1qk…3aXw", "createdAt": 1757000000000 }
     ]
   }
 }
 ```
 
+Notez l'absence d'`ownerName` dans `settlements` : c'est un nom d'affichage
+**résolu à la diffusion**, pas quelque chose qui se fige sur disque — figé, il
+mentirait dès qu'un joueur se reconnecte sous un autre nom. Seul `players`
+porte les noms, en face de la clé qui leur correspond ; `state.ts` la résout à
+la volée (`WorldState.nameOf`) chaque fois qu'une colonie ou une caravane part
+sur le fil.
+
 `clock`, `caravans` et le `savedAtHours` d'un snapshot sont **facultatifs à la
 lecture** : un fichier écrit avant les caravanes se relit tel quel, le monde
 repart d'une horloge neuve et sans convoi en vol ; un snapshot sans
-`savedAtHours` rouvre sa colonie sans avance rapide (§11.6). C'est pour cela
-que la version du fichier reste à 1 — ajouter des champs optionnels ne casse
-rien, et une migration ne se justifie que le jour où un champ existant change
-de sens.
+`savedAtHours` rouvre sa colonie sans avance rapide (§11.6). Ajouter des
+champs optionnels ne casse rien — c'est pour cela que la version du fichier
+n'a pas bougé de ces tranches-là.
+
+**Migration v1 → v2 (identité par jeton).** `players` change les choses : dans
+un fichier v1, `owner` (colonies et caravanes) est un **nom** ; à partir de v2
+c'est une **clé**, résolue via `players`. L'absence de `players` est le signal
+qu'un fichier est en v1 — `WorldState.fromJSON` migre alors chaque nom
+rencontré en un joueur créé à la volée (clé et jeton **neufs**, un seul par
+nom) :
+
+- l'ancien propriétaire ne peut évidemment pas être reconnu sans jeton connu —
+  ce n'est pas récupérable autrement, il n'y a pas de compte à côté ;
+- mais rien n'est perdu : la colonie garde sa case, sa salle, sa graine, et son
+  nom d'affichage (`ownerName`) reste celui d'avant ;
+- l'exploitant du serveur peut lire le jeton fraîchement attribué dans le
+  fichier une fois la migration écrite (`WORLD_STATE_FILE_VERSION` monte à 2 à
+  la prochaine sauvegarde) et le communiquer hors bande à l'ancien joueur, s'il
+  le souhaite — c'est un geste manuel, le protocole n'automatise rien de ce
+  côté.
+
+Un rechargement de fichier v1 est testé (`apps/server/test/persistence.test.ts`,
+`apps/server/test/world.test.ts`).
 
 **Configuration**, lue une fois par `index.ts` (`startServer` lui-même ne lit
 jamais l'environnement, il reçoit des options explicites) :
@@ -839,14 +965,21 @@ précisent pas.
   JSON illisible/incohérent (`WorldState.fromJSON` qui échoue) → le fichier
   est **ignoré**, renommé `<fichier>.ignored-<horodatage>.json` plutôt que
   supprimé, avec un avertissement clair sur stderr : les colonies ne peuvent
-  pas survivre à un changement de globe.
+  pas survivre à un changement de globe. Un fichier `version: 1` n'est **pas**
+  de ce cas-là : il est chargé et migré (voir plus haut), pas mis en
+  quarantaine.
 - `GET /health` expose l'état de la persistance :
   `persistence: { enabled, file, lastSavedAt }` (`lastSavedAt` : `null` tant
   qu'aucune écriture n'a encore eu lieu).
 
 ### 11.9 Ce qui n'est pas encore fait
 
-- **Comptes** : l'identité est le nom, sans mot de passe ni jeton.
+- **Comptes** : le jeton remplace le nom comme identité (§11.2), mais il n'y a
+  toujours ni compte ni mot de passe, et donc pas de recouvrement : un jeton
+  perdu (`localStorage` effacé, autre navigateur, autre appareil sans y avoir
+  pensé) est une identité perdue, sans recours — seul l'exploitant du serveur
+  peut, à la main, lire un jeton dans le fichier de persistance et le
+  communiquer hors bande.
 - **Bateaux** : l'océan reste infranchissable, une caravane ne quitte pas son
   continent (`docs/world.md` §4).
 - **Interception** : une caravane en vol ne peut être ni attaquée ni pillée.
@@ -936,13 +1069,34 @@ qu'un seul chemin d'arrivée à écrire côté client.
 
 ### 12.3 Messages, client → serveur
 
-Ces trois messages voyagent sur la connexion **monde** (après `world_join`),
-à une exception documentée en 12.5 : `caravan_delivered`.
+Un client a en pratique **deux connexions** (§11.3) : la connexion **monde**
+(thread principal) et la connexion de **salle** (Worker, lockstep). Ces trois
+messages voyagent normalement sur la connexion monde (après `world_join`),
+mais `caravan_depart` et `caravan_delivered` sont acceptés indifféremment
+depuis l'une ou l'autre — un client n'a pas à choisir laquelle porte l'ordre,
+ni à relayer artificiellement par l'autre. `caravan_cancel`, lui, ne voyage
+que sur la connexion monde : c'est un ordre du **propriétaire** de la
+caravane, identifié par sa clé, sans rapport avec une salle.
 
-**`caravan_depart`** — expédier. Envoyé par un joueur **présent dans la salle
-de `fromTile`**. `manifest` est l'encodage postcard du convoi produit par le
-sim, opaque ; `summary` est ce que le client en sait, pour l'affichage sur le
-globe.
+**`caravan_depart`** — expédier. Accepté depuis :
+
+1. la connexion de **salle** `tile-<fromTile>` — l'auteur y est identifié par
+   le `world_join` fait sur cette même connexion (schéma historique : une
+   connexion qui porte à la fois le monde et la salle) ;
+2. **ou** la connexion **monde** d'un joueur **présent dans la salle**
+   `tile-<fromTile>` par n'importe laquelle de ses connexions. La présence se
+   vérifie par la **clé** de joueur : une connexion de salle qui a fait
+   `world_join` (avec le jeton) porte cette clé, comparée directement ; une
+   connexion de salle qui ne l'a pas fait ne porte pas de clé, et le serveur
+   compare alors son nom de salle (`join.name`) au nom d'affichage du joueur
+   monde — un **repli v1**, moins sûr (deux joueurs peuvent partager un nom),
+   mais nécessaire tant qu'une connexion de salle peut rester anonyme.
+
+Dans les deux cas il faut être **dans la salle** : le propriétaire de la
+colonie de départ n'a aucun privilège à distance, les colons partent d'une
+carte ouverte (§12.5). `manifest` est l'encodage postcard du convoi produit
+par le sim, opaque ; `summary` est ce que le client en sait, pour l'affichage
+sur le globe.
 
 ```json
 {
@@ -967,7 +1121,16 @@ dépendre.
 ```
 
 **`caravan_delivered`** — l'hôte de la case d'arrivée confirme avoir émis la
-commande d'entrée du convoi en lockstep.
+commande d'entrée du convoi en lockstep. Accepté depuis :
+
+1. la connexion de **salle** de la case d'arrivée — le chemin historique, qui
+   n'exige même pas `world_join` (§12.5) : n'importe quel membre de cette
+   salle peut confirmer, pas seulement l'hôte, une confirmation tardive après
+   un changement d'hôte restant vraie ;
+2. **ou** la connexion **monde** d'un joueur qui est **l'hôte** de cette
+   salle — vérifié par la même règle de présence que `caravan_depart` (clé,
+   ou nom en repli). Ce chemin-là, à la différence du précédent, exige d'être
+   l'hôte : une connexion monde seule ne prouve rien d'autre sur son auteur.
 
 ```json
 { "type": "caravan_delivered", "id": "c7" }
@@ -981,13 +1144,17 @@ Envoyé à chaque changement et **au plus une fois par `CARAVAN_TICK_MS`** ; tan
 qu'une caravane bouge, il repart à chaque tick du monde pour porter
 l'avancement.
 
+`owner` est la clé du joueur qui l'a expédiée (§11.2), `ownerName` son nom
+d'affichage résolu à la diffusion.
+
 ```json
 {
   "type": "world_caravans",
   "caravans": [
     {
       "id": "c7",
-      "owner": "alice",
+      "owner": "8a1b2c3d-...-e4",
+      "ownerName": "alice",
       "fromTile": 1732,
       "toTile": 1810,
       "route": [1732, 1745, 1799, 1810],
@@ -1014,7 +1181,12 @@ l'avancement.
   un client peut les interpoler entre deux messages, le serveur a le dernier mot.
 
 **`caravan_arrive`** — envoyé à **l'hôte** de la salle de la case d'arrivée,
-et à lui seul.
+sur sa connexion de salle **et**, si elle existe, sur sa connexion monde
+séparée (même clé, ou même nom en repli — la règle de présence de
+`caravan_depart`) : les deux connexions d'un même client reçoivent alors
+chacune leur exemplaire. Ce n'est pas un second destinataire, c'est le même
+hôte joignable par deux fils ; le client **ignore les doublons par `id`**
+(§12.5), une seule confirmation suffisant.
 
 ```json
 {
@@ -1043,13 +1215,13 @@ Les codes déjà en place servent aussi : `bad_tile` (case hors du globe),
 ### 12.5 Les règles
 
 **Qui peut expédier.** Il faut être dans le monde **et** dans la salle de
-`fromTile`. En v1, le propriétaire de la colonie n'a aucun privilège : un
-visiteur présent dans la salle peut expédier une caravane en son propre nom
-(`owner` est le nom de l'expéditeur, pas celui du propriétaire de la case).
-C'est cohérent avec le reste de la tranche — l'identité n'est qu'un nom, il n'y
-a pas de droits — et ce sera à revoir en même temps que les comptes.
-Être dans la salle `tile-<id>` suffit à prouver que la case est colonisée : le
-serveur n'ouvre pas la salle d'une case libre (§11.2).
+`fromTile`. Le propriétaire de la colonie n'a toujours aucun privilège
+particulier : un visiteur présent dans la salle peut expédier une caravane en
+son propre nom (`owner` est la **clé** de l'expéditeur, pas celle du
+propriétaire de la case). C'est un choix délibéré, indépendant de l'identité
+par jeton (§11.2) — être dans la salle `tile-<id>` suffit à prouver que la
+case est colonisée, le serveur n'ouvre pas la salle d'une case libre — et ce
+sera à revoir le jour où des droits de colonie existeront.
 
 **Annulation.** Seule une caravane `travelling` s'annule, et seulement tant que
 `progress < 0.5` : au-delà, elle est plus près de sa destination que de chez
@@ -1112,6 +1284,16 @@ persisté avec le reste.
 
 ### 12.7 Ce dont le client aura besoin
 
+Les exemples ci-dessous envoient `caravan_depart` et `caravan_delivered` sur
+`socket`, la connexion de **salle** (Worker) : c'est le chemin historique, et
+il continue de fonctionner tel quel. Mais le serveur accepte maintenant ces
+deux messages aussi bien depuis la connexion **monde** que depuis la
+connexion de salle (§12.3) — un client peut donc les envoyer directement
+depuis `WorldClient` (thread principal), là où vit déjà `world_join`, sans
+détour par le Worker ni `world_join` paresseux sur la connexion de salle pour
+se faire reconnaître : la présence dans la salle suffit, prouvée par la clé ou,
+à défaut, par le nom (§12.3).
+
 **Côté hôte de la case de départ** — vider la file de départs du sim à chaque
 tour de boucle :
 
@@ -1154,19 +1336,31 @@ voulu si le client meurt entre les deux. Et comme toute commande de lockstep,
 l'effet n'arrive pas au clic mais avec le bundle (§5) : ne pas appliquer le
 manifeste localement.
 
+Si le client a ses deux connexions ouvertes, ce `caravan_arrive` peut arriver
+**deux fois** — une fois sur chacune (§12.4) : le code ci-dessus s'exécuterait
+alors deux fois avec le même `id`, poussant deux fois le même
+`ArriveCaravan` dans la file du sim. Un journal des `id` déjà traités, tenu
+par le client, évite ça : n'injecter et ne confirmer qu'au premier exemplaire,
+ignorer le second. Une confirmation envoyée deux fois n'est pas gratuite côté
+serveur — la seconde répond `world_error { code: "caravan_not_found" }`,
+la caravane n'étant plus `arrived` — mais rien d'autre n'en dépend : un
+client qui l'ignore ne perd rien.
+
 **Sur le globe**, à la réception de `world_caravans` :
 
 - tracer la ligne de `route` (les centres des cases, `world.tiles[id].center`) ;
 - poser la caravane sur `currentTile`, ou interpoler entre
   `route[i]` et `route[i + 1]` avec `progress` pour un déplacement continu ;
-- afficher `summary` (« 3 colons, 40 bois ») et le temps restant :
-  `(arrivesAt − now) × WORLD_HOUR_MS` millisecondes réelles, `now` étant
-  l'heure de jeu estimée depuis le dernier message ;
+- afficher `ownerName` (« caravane de bob ») et `summary` (« 3 colons,
+  40 bois ») et le temps restant : `(arrivesAt − now) × WORLD_HOUR_MS`
+  millisecondes réelles, `now` étant l'heure de jeu estimée depuis le dernier
+  message ;
 - distinguer les statuts : `returning` rentre, `arrived` attend qu'on ouvre la
   colonie d'arrivée — c'est une notification à afficher, pas une erreur ;
-- proposer `caravan_cancel` tant que `progress < 0.5` et que la caravane
-  appartient au joueur, griser le bouton au-delà plutôt que d'encaisser un
-  `caravan_too_late`.
+- proposer `caravan_cancel` tant que `progress < 0.5` et que `caravan.owner`
+  vaut son propre `playerKey` (jamais `ownerName` contre son propre nom : deux
+  joueurs peuvent le partager), griser le bouton au-delà plutôt que
+  d'encaisser un `caravan_too_late`.
 
 Le client peut appeler `findRoute` **en prévisualisation** avant d'envoyer
 l'ordre (durée estimée, tracé), en acceptant que le serveur ait le dernier mot :

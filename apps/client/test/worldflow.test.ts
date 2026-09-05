@@ -87,8 +87,45 @@ class FakeSim implements SimLike {
   }
 }
 
+/**
+ * Un `Storage` en mémoire, posé sur `globalThis.localStorage` pour la durée
+ * d'un test : c'est là que `net/identity.ts` range le jeton d'un `WorldClient`
+ * (l'environnement de test est Node, sans DOM ni vrai `localStorage`). Pas de
+ * `implements Storage` : l'interface DOM porte un index de signature que ce
+ * type ordinaire ne satisfait pas ; la forme suffit, castée à l'assignation.
+ */
+class FakeStorage {
+  private readonly map = new Map<string, string>();
+
+  get length(): number {
+    return this.map.size;
+  }
+
+  clear(): void {
+    this.map.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.map.has(key) ? this.map.get(key)! : null;
+  }
+
+  key(index: number): string | null {
+    return [...this.map.keys()][index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.map.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.map.set(key, value);
+  }
+}
+
 let server: RunningServer;
 const closers: Array<() => void> = [];
+/** Un `identityKey` frais par appel par défaut : chaque connexion de test reste un nouveau joueur. */
+let deviceCounter = 0;
 
 async function waitFor(label: string, done: () => boolean, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -98,14 +135,27 @@ async function waitFor(label: string, done: () => boolean, timeoutMs = 5000): Pr
   }
 }
 
-/** Une connexion monde branchée sur le vrai serveur. */
-async function enterWorld(world: World, name: string) {
+/**
+ * Une connexion monde branchée sur le vrai serveur.
+ *
+ * `identityKey` simule l'« appareil » qui se connecte : c'est la clé de
+ * stockage de l'identité (`WorldClientOptions.serverUrl`, réutilisée ici comme
+ * un simple identifiant d'appareil plutôt que l'URL réelle du serveur — le
+ * jeton et la clé n'en dépendent que par son contenu). Deux appels avec la
+ * **même** valeur partagent le jeton stocké : c'est une reconnexion depuis le
+ * même appareil (§11.2). Par défaut, une valeur fraîche à chaque appel : sans
+ * jeton partagé, le serveur crée un nouveau joueur à chaque connexion, comme
+ * avant l'identité par jeton — le comportement qu'attendent les tests qui ne
+ * précisent rien.
+ */
+async function enterWorld(world: World, name: string, identityKey = `device-${deviceCounter++}`) {
   const transport = await WsTransport.connect(server.url);
   const settled: SettledMessage[] = [];
   const errors: WorldError[] = [];
   const client = new WorldClient({
     transport,
     name,
+    serverUrl: identityKey,
     expected: { seed: world.seed, subdivisions: world.subdivisions, tiles: world.tiles.length },
     onSettled: (message) => settled.push(message),
     onError: (error) => errors.push(error),
@@ -116,8 +166,15 @@ async function enterWorld(world: World, name: string) {
   return { client, settled, errors };
 }
 
-/** Une connexion de salle, avec son sim factice. */
-async function enterRoom(room: string, name: string) {
+/**
+ * Une connexion de salle, avec son sim factice.
+ *
+ * `worldToken` est le jeton de la connexion monde, à passer quand cette salle
+ * doit expédier une caravane (`sendCaravanDepart`) : sans lui, le `world_join`
+ * paresseux créerait un second joueur, et la caravane n'appartiendrait pas à
+ * celui qui joue (`docs/protocol.md` §11.2, §12.7).
+ */
+async function enterRoom(room: string, name: string, worldToken?: string) {
   const transport = await WsTransport.connect(server.url);
   const errors: LockstepError[] = [];
   const arrivals: CaravanArriveMessage[] = [];
@@ -127,6 +184,7 @@ async function enterRoom(room: string, name: string) {
     restoreSim: (data) => Promise.resolve(FakeSim.fromSnapshot(data)),
     onCaravanArrive: (arrival) => arrivals.push(arrival),
     onError: (error) => errors.push(error),
+    worldToken,
   });
   closers.push(() => client.close());
   client.join(room, name);
@@ -143,6 +201,14 @@ async function pumpUntil(client: LockstepClient, label: string, done: () => bool
     await sleep(2);
   }
 }
+
+beforeEach(() => {
+  (globalThis as { localStorage?: Storage }).localStorage = new FakeStorage() as unknown as Storage;
+});
+
+afterEach(() => {
+  delete (globalThis as { localStorage?: Storage }).localStorage;
+});
 
 beforeEach(async () => {
   server = await startServer({
@@ -194,7 +260,10 @@ describe("écran Monde contre le vrai serveur", () => {
 
     // Le monde diffuse la colonie à tout le monde, y compris à son auteur.
     await waitFor("colonie diffusée", () => alice.client.settlementAt(land.id) !== undefined);
-    expect(alice.client.settlementAt(land.id)?.owner).toBe("alice");
+    // `owner` est la clé du joueur, jamais son nom (§11.2) : c'est `ownerName`
+    // qui porte le libellé d'affichage.
+    expect(alice.client.settlementAt(land.id)?.owner).toBe(alice.client.state.playerKey);
+    expect(alice.client.settlementAt(land.id)?.ownerName).toBe("alice");
 
     const room = await enterRoom(settled.room, "alice");
     await waitFor("lobby", () => room.client.state.phase === "lobby");
@@ -279,6 +348,45 @@ describe("écran Monde contre le vrai serveur", () => {
     await pumpUntil(second.client, "reprise des bundles", () => second.client.tick >= target);
     expect(second.errors).toEqual([]);
   });
+
+  it("une reconnexion avec le même jeton retrouve la même clé et ses colonies", async () => {
+    const { world } = await fetchWorld(server.url);
+    const land = world.tiles.find((tile) => movementCost(tile.biome) !== null)!;
+
+    const first = await enterWorld(world, "alice", "device-alice");
+    first.client.settle(land.id);
+    await waitFor("settled", () => first.settled.length === 1);
+    const key = first.client.state.playerKey;
+    expect(key).not.toBeNull();
+    first.client.close();
+
+    // Même appareil et même nom (la portée de l'identité est serveur + nom : le
+    // nom saisi sert de profil local, pour que deux onglets d'un même navigateur
+    // avec deux noms soient deux joueurs) : le jeton rangé par la première
+    // connexion revient dans le `world_join` de la seconde.
+    const second = await enterWorld(world, "alice", "device-alice");
+    expect(second.client.state.playerKey).toBe(key);
+    expect(second.client.settlementAt(land.id)?.owner).toBe(key);
+  });
+
+  it("un autre appareil, même nom mais sans jeton, ne possède pas la colonie", async () => {
+    const { world } = await fetchWorld(server.url);
+    const land = world.tiles.find((tile) => movementCost(tile.biome) !== null)!;
+
+    const alice = await enterWorld(world, "alice", "device-alice-original");
+    alice.client.settle(land.id);
+    await waitFor("settled", () => alice.settled.length === 1);
+    const aliceKey = alice.client.state.playerKey;
+
+    // Un appareil différent (aucun jeton connu sous cette clé de stockage),
+    // même nom : le serveur ne le reconnaît pas, il crée un nouveau joueur
+    // avec sa propre clé — le nom ne prouve jamais l'appartenance (§11.2).
+    const impostor = await enterWorld(world, "alice", "device-impostor");
+    expect(impostor.client.state.playerKey).not.toBe(aliceKey);
+    const settlement = impostor.client.settlementAt(land.id);
+    expect(settlement?.owner).toBe(aliceKey);
+    expect(settlement?.owner).not.toBe(impostor.client.state.playerKey);
+  });
 });
 
 /**
@@ -317,7 +425,10 @@ describe("caravanes contre le vrai serveur", () => {
     const alice = await enterWorld(world, "alice");
     alice.client.settle(from);
     await waitFor("settled", () => alice.settled.length === 1);
-    const departure = await enterRoom(alice.settled[0].room, "alice");
+    // Même jeton que la connexion monde : sans lui, le `world_join` paresseux
+    // de `sendCaravanDepart` créerait un second joueur, et la caravane
+    // n'appartiendrait pas à alice (`docs/protocol.md` §11.2, §12.7).
+    const departure = await enterRoom(alice.settled[0].room, "alice", alice.client.state.token ?? undefined);
     await waitFor("lobby", () => departure.client.state.phase === "lobby");
     departure.client.startGame(1, 16, 16);
     await waitFor("sim créé", () => departure.sim() !== null);
@@ -332,7 +443,10 @@ describe("caravanes contre le vrai serveur", () => {
     // Le globe apprend la caravane par la connexion monde, elle.
     await waitFor("caravane diffusée", () => alice.client.state.caravans.length === 1);
     const caravan = alice.client.state.caravans[0];
-    expect(caravan.owner).toBe("alice");
+    // `owner` est la clé du joueur (§11.2) : celle de la connexion monde
+    // d'alice, grâce au jeton partagé. `ownerName` porte le libellé.
+    expect(caravan.owner).toBe(alice.client.state.playerKey);
+    expect(caravan.ownerName).toBe("alice");
     expect(caravan.fromTile).toBe(from);
     expect(caravan.route[0]).toBe(from);
     expect(caravan.route.at(-1)).toBe(to);
@@ -342,7 +456,7 @@ describe("caravanes contre le vrai serveur", () => {
     // Arrivée sur une case libre : le serveur fonde la colonie au nom de son
     // propriétaire, et l'annonce à tout le monde (§12.5).
     await waitFor("colonie fondée à l'arrivée", () => alice.client.settlementAt(to) !== undefined);
-    expect(alice.client.settlementAt(to)?.owner).toBe("alice");
+    expect(alice.client.settlementAt(to)?.owner).toBe(alice.client.state.playerKey);
 
     // « La colonie naît quand quelqu'un l'ouvre » : le manifeste attend le
     // premier hôte en jeu, pas le `join`.
@@ -372,7 +486,10 @@ describe("caravanes contre le vrai serveur", () => {
     const alice = await enterWorld(world, "alice");
     alice.client.settle(from);
     await waitFor("settled", () => alice.settled.length === 1);
-    const room = await enterRoom(alice.settled[0].room, "alice");
+    // Même jeton que la connexion monde : sinon la caravane appartiendrait à
+    // un second joueur créé par le `world_join` paresseux, et `cancelCaravan`
+    // depuis la connexion monde d'alice serait refusé (`not_owner`, §11.2).
+    const room = await enterRoom(alice.settled[0].room, "alice", alice.client.state.token ?? undefined);
     await waitFor("lobby", () => room.client.state.phase === "lobby");
     room.client.startGame(1, 16, 16);
     await waitFor("sim créé", () => room.sim() !== null);

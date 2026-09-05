@@ -154,11 +154,21 @@ chantiers les émet divisés par 100. Le client rebâtit ses meshes quand `map_v
 onglets, retard proche de 0, et une action faite dans l'un visible dans l'autre, y compris
 onglet masqué (le Worker tient la cadence).
 
+## Identité des joueurs
+
+Pas de compte : le serveur remet un jeton secret au premier `world_join` et une clé publique
+(`playerKey`) qui porte l'appartenance des colonies et des caravanes. Le client range le
+jeton dans `localStorage` sous une clé **serveur + nom** (`identityScope`) : le nom saisi
+sert de profil local. Ne jamais journaliser un jeton ; `__rimlike.world.forget()` l'oublie
+pour tester `bad_token`. Détails : `docs/protocol.md` §11.2.
+
 ## Essayer le monde partagé
 
 Même serveur que le multi. URL : `http://localhost:5173/?server=ws://localhost:8787&name=alice&world=1`
 (ou l'accueil, bouton « Monde partagé »). Le globe se charge depuis `GET /world`, jamais
-regénéré côté client. Séquence console sans souris :
+regénéré côté client. Pour les caravanes, lancer le serveur avec une horloge rapide :
+`WORLD_HOUR_MS=1000 CARAVAN_TICK_MS=500 WORLD_PERSIST=0 pnpm dev:server`. Séquence console
+sans souris (deux onglets, deux noms = deux joueurs) :
 
 ```js
 const w = window.__rimlike.world;      // state, select(tile), tile(id), freeLand(n), settle(), visit(), abandon(), back()
@@ -166,7 +176,15 @@ const [tile] = w.freeLand(1); w.select(tile); w.settle();          // → salle 
 await window.__rimlike.rpc("lockstep.startGame", 0, 128, 128);    // l'hôte démarre
 window.__rimlike.frame.tick;                                       // progresse
 window.__rimlike.world.back(); window.__rimlike.world.state.settlements;
+// caravane vers la colonie de l'autre onglet (case B) : un colon, sans marchandises
+const p = await window.__rimlike.rpc("pawns");
+await window.__rimlike.world.sendCaravan({ pawnIds: [p[0]], items: [], toTile: B });
+window.__rimlike.world.caravans;           // status travelling → arrived → delivered
+// chez l'autre : frame.pawns.length / 12 augmente de 1, événement kind 12
 ```
+
+Le crochet `window.__rimlike` est **recréé** au passage globe → salle : relire
+`window.__rimlike` après `settle()` plutôt que garder une référence.
 
 ## Vérifier dans le navigateur
 

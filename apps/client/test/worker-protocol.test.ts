@@ -34,6 +34,7 @@ const netState: LockstepState = Object.freeze({
   height: 32,
   desync: null,
   lastError: null,
+  frozenTicks: 0,
 });
 
 function frame(): FrameMessage {

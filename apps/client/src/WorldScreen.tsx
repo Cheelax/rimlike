@@ -17,7 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Caravan, Settlement } from "@rimlike/protocol";
 import { BIOME_NAMES, findRoute, movementCost, type Tile, type World } from "@rimlike/world";
 import { formatHours } from "./CaravanPanel";
-import type { WorldClientState } from "./net/WorldClient";
+import type { IdentitySummary, WorldClientState } from "./net/WorldClient";
 import { GlobeRenderer } from "./render/GlobeRenderer";
 import { ITEM_NAMES } from "./render/terrain";
 
@@ -78,7 +78,7 @@ export function remainingHours(caravan: Caravan): number {
 export interface WorldScreenProps {
   readonly world: World;
   readonly net: WorldClientState | null;
-  /** Notre nom : sert à distinguer nos colonies de celles des autres. */
+  /** Notre nom : un simple libellé d'affichage (`net.playerKey` fait autorité, §11.2). */
   readonly name: string;
   /** Faux pendant qu'on joue une colonie : le globe reste monté mais caché. */
   readonly visible: boolean;
@@ -107,6 +107,13 @@ export interface WorldScreenProps {
    * panneau Caravane de la colonie.
    */
   readonly onSendCaravan?: (order: CaravanOrder) => Promise<unknown>;
+  /**
+   * Résumé sans risque de l'identité stockée (crochet de dev) : jamais le
+   * jeton en clair, seulement sa longueur (`net/identity.ts`).
+   */
+  readonly describeIdentity?: () => IdentitySummary | null;
+  /** Oublie l'identité stockée pour ce serveur (crochet de dev, pour tester `bad_token`). */
+  readonly onForgetIdentity?: () => void;
 }
 
 /** Latitude et longitude d'une case, écrites comme sur une carte. */
@@ -137,6 +144,8 @@ export function WorldScreen({
   routePreview = null,
   onCancelCaravan,
   onSendCaravan,
+  describeIdentity,
+  onForgetIdentity,
 }: WorldScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<GlobeRenderer | null>(null);
@@ -160,12 +169,19 @@ export function WorldScreen({
   const caravans = net?.caravans ?? NO_CARAVANS;
   const byTile = new Map<number, Settlement>(settlements.map((s) => [s.tile, s]));
   /**
-   * Dédoublonné par nom : la connexion de salle entre elle aussi dans le monde
-   * pour pouvoir expédier une caravane (voir `LockstepClient.sendCaravanDepart`),
-   * ce qui compte le joueur deux fois côté serveur. L'identité v1 étant le nom,
-   * dédoublonner par nom est exactement la bonne mesure.
+   * Notre clé publique et stable (`docs/protocol.md` §11.2) : c'est elle qui
+   * fait autorité pour l'appartenance, jamais notre nom (qu'un autre joueur
+   * pourrait tout aussi bien porter).
    */
-  const players = [...new Set(net?.players ?? [])];
+  const myKey = net?.playerKey ?? null;
+  /**
+   * Tous les joueurs déjà vus par le monde, une entrée par clé — la connexion
+   * de salle qui entre aussi dans le monde pour expédier une caravane (voir
+   * `LockstepClient.sendCaravanDepart`) porte désormais le même jeton, donc la
+   * même clé : plus besoin de dédoublonner par nom comme en v1.
+   */
+  const players = net?.players ?? [];
+  const onlinePlayers = players.filter((p) => p.online);
 
   const select = (tile: number | null) => {
     selectedRef.current = tile;
@@ -252,14 +268,14 @@ export function WorldScreen({
   }, [selected]);
 
   useEffect(() => {
-    rendererRef.current?.setSettlements(settlements, name);
+    rendererRef.current?.setSettlements(settlements, myKey);
     // `settlements` est remplacé en entier à chaque diffusion du serveur.
-  }, [settlements, name]);
+  }, [settlements, myKey]);
 
   useEffect(() => {
-    rendererRef.current?.setCaravans(caravans, name);
+    rendererRef.current?.setCaravans(caravans, myKey);
     // Idem : `world_caravans` porte la liste complète, à chaque tick du monde.
-  }, [caravans, name]);
+  }, [caravans, myKey]);
 
   /**
    * Itinéraire prévisualisé. En mode sélection il suit le survol — le joueur
@@ -286,6 +302,8 @@ export function WorldScreen({
         return {
           phase: net?.phase ?? "connecting",
           name,
+          /** Notre clé publique et stable (`docs/protocol.md` §11.2), `null` avant `world_welcome`. */
+          playerKey: net?.playerKey ?? null,
           players: net?.players ?? [],
           settlements: net?.settlements ?? [],
           caravans: net?.caravans ?? [],
@@ -296,6 +314,22 @@ export function WorldScreen({
           tiles: world.tiles.length,
           lastError: net?.lastError ?? null,
         };
+      },
+      /**
+       * Résumé sans risque de l'identité stockée pour ce serveur : la clé
+       * publique et la longueur du jeton, jamais sa valeur (`net/identity.ts`).
+       */
+      get identity() {
+        return describeIdentity?.() ?? null;
+      },
+      /**
+       * Oublie l'identité stockée pour ce serveur : le prochain `world_join`
+       * (typiquement après un rechargement de page) repart sans jeton et crée
+       * un nouveau joueur — de quoi éprouver `bad_token` sans toucher à
+       * `localStorage` à la main.
+       */
+      forget() {
+        onForgetIdentity?.();
       },
       /** Les caravanes connues, telles que le serveur les diffuse. */
       get caravans() {
@@ -389,7 +423,20 @@ export function WorldScreen({
       // retirer ici évite qu'une API morte survive à l'écran Monde.
       if (hook.__rimlike?.world === api) delete hook.__rimlike.world;
     };
-  }, [net, name, visible, world, onSettle, onVisit, onAbandon, onBack, onSendCaravan, onCancelCaravan]);
+  }, [
+    net,
+    name,
+    visible,
+    world,
+    onSettle,
+    onVisit,
+    onAbandon,
+    onBack,
+    onSendCaravan,
+    onCancelCaravan,
+    describeIdentity,
+    onForgetIdentity,
+  ]);
 
   const hoveredTile = hovered === null ? null : world.tiles[hovered];
   const selectedTile = selected === null ? null : world.tiles[selected];
@@ -425,7 +472,7 @@ export function WorldScreen({
         <div ref={tooltipRef} className="globe-tip">
           {hoveredConvoy ? (
             <>
-              <b>caravane de {hoveredConvoy.owner}</b>
+              <b>caravane de {hoveredConvoy.ownerName}</b>
               <span>
                 case {hoveredConvoy.fromTile} → {hoveredConvoy.toTile}
               </span>
@@ -440,7 +487,7 @@ export function WorldScreen({
             <>
               <b>{BIOME_NAMES[hoveredTile.biome]}</b>
               <span>{coordinates(hoveredTile)}</span>
-              {hoveredSettlement ? <span className="owner">colonie de {hoveredSettlement.owner}</span> : null}
+              {hoveredSettlement ? <span className="owner">colonie de {hoveredSettlement.ownerName}</span> : null}
             </>
           )}
         </div>
@@ -455,7 +502,7 @@ export function WorldScreen({
             </div>
             <div>
               <b>{settlements.length}</b> colonie{settlements.length > 1 ? "s" : ""} ·{" "}
-              <b>{players.length}</b> joueur{players.length > 1 ? "s" : ""} en ligne ·{" "}
+              <b>{onlinePlayers.length}</b> joueur{onlinePlayers.length > 1 ? "s" : ""} en ligne ·{" "}
               {net?.phase === "connected" ? "connecté" : net?.phase === "closed" ? "déconnecté" : "connexion…"}
             </div>
             <div className="help">glisser : tourner · molette : zoom · clic : choisir une case</div>
@@ -467,9 +514,10 @@ export function WorldScreen({
             <div className="world-section">Joueurs ({players.length})</div>
             <ul className="lobby">
               {players.map((player) => (
-                <li key={player}>
-                  {player}
-                  {player === name ? " · vous" : ""}
+                <li key={player.key} className={player.online ? "" : "offline"}>
+                  {player.name}
+                  {player.key === myKey ? " · vous" : ""}
+                  {!player.online ? " · hors ligne" : ""}
                 </li>
               ))}
               {players.length === 0 && <li className="empty">personne pour l'instant</li>}
@@ -480,11 +528,11 @@ export function WorldScreen({
               {settlements.map((settlement) => {
                 const tile = world.tiles[settlement.tile];
                 return (
-                  <li key={settlement.tile} className={settlement.owner === name ? "mine" : ""}>
+                  <li key={settlement.tile} className={settlement.owner === myKey ? "mine" : ""}>
                     <button className="link" onClick={() => select(settlement.tile)}>
                       case {settlement.tile}
                     </button>{" "}
-                    · {settlement.owner} · {tile === undefined ? "?" : BIOME_NAMES[tile.biome]}
+                    · {settlement.ownerName} · {tile === undefined ? "?" : BIOME_NAMES[tile.biome]}
                     <button className="small" onClick={() => onVisit(settlement.tile)}>
                       Visiter
                     </button>
@@ -497,7 +545,7 @@ export function WorldScreen({
             <div className="world-section">Caravanes ({caravans.length})</div>
             <ul className="lobby">
               {caravans.map((caravan) => {
-                const mine = caravan.owner === name;
+                const mine = caravan.owner === myKey;
                 // Le serveur refuse l'annulation au-delà de la moitié : on
                 // grise plutôt que d'encaisser un `caravan_too_late` (§12.7).
                 const cancellable = mine && caravan.status === "travelling" && caravan.progress < CANCEL_LIMIT;
@@ -506,7 +554,7 @@ export function WorldScreen({
                     <button className="link" onClick={() => select(caravan.currentTile)}>
                       {caravan.fromTile} → {caravan.toTile}
                     </button>{" "}
-                    · {caravan.owner} · {Math.round(caravan.progress * 100)} %
+                    · {caravan.ownerName} · {Math.round(caravan.progress * 100)} %
                     {mine && (
                       <button
                         className="small"
@@ -545,13 +593,13 @@ export function WorldScreen({
                   </div>
                   {selectedSettlement && (
                     <div className="help">
-                      colonie de <b>{selectedSettlement.owner}</b> · salle {selectedSettlement.room}
+                      colonie de <b>{selectedSettlement.ownerName}</b> · salle {selectedSettlement.room}
                     </div>
                   )}
                 </div>
                 {selectedSettlement ? (
                   <button className="wide primary" onClick={() => onVisit(selected)}>
-                    {selectedSettlement.owner === name ? "Reprendre ma colonie" : "Visiter"}
+                    {selectedSettlement.owner === myKey ? "Reprendre ma colonie" : "Visiter"}
                   </button>
                 ) : isLand(selectedTile) ? (
                   <button className="wide primary" onClick={() => onSettle(selected)}>

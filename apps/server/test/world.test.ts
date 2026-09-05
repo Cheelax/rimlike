@@ -97,6 +97,9 @@ describe("fonder une colonie", () => {
     expect(result.settlement).toEqual({
       tile: landTile,
       owner: "alice",
+      // Aucun joueur "alice" enregistré dans cet état : `nameOf` retombe sur
+      // la clé elle-même (ici le simple nom qu'on lui a passé comme owner).
+      ownerName: "alice",
       room: `tile-${landTile}`,
       seed: mixTileSeed(DEFAULT_WORLD_SEED, landTile),
       createdAt: now,
@@ -289,5 +292,72 @@ describe("sérialisation JSON", () => {
   it("refuse un état enregistré sur un autre globe", () => {
     const json = { ...state.toJSON(), subdivisions: 5 };
     expect(() => WorldState.fromJSON(json, { world: globe })).toThrow(/incompatible/);
+  });
+
+  it("migre un fichier v1 (owner = nom) : un joueur neuf par nom, jeton compris", () => {
+    // Un fichier écrit avant la tranche « jeton » : pas de `players`, `owner`
+    // est un nom en clair dans les colonies comme dans les caravanes.
+    state.settle(landTile, "alice");
+    state.caravans.depart({
+      owner: "alice",
+      fromTile: landTile,
+      toTile: otherLandTile,
+      manifest: new Uint8Array([1, 2, 3]),
+      summary: { pawns: 1, items: [] },
+    });
+    const { players: _players, ...v1 } = state.toJSON();
+    expect((v1 as { players?: unknown }).players).toBeUndefined();
+
+    const migrated = WorldState.fromJSON(v1, { world: globe, now: () => now });
+    const settlement = migrated.settlementAt(landTile)!;
+    // "alice" n'est plus la clé : c'est un joueur neuf, avec un jeton.
+    expect(settlement.owner).not.toBe("alice");
+    expect(settlement.ownerName).toBe("alice");
+    const players = migrated.listPlayers();
+    expect(players).toHaveLength(1);
+    expect(players[0]!.name).toBe("alice");
+    expect(players[0]!.key).toBe(settlement.owner);
+    expect(players[0]!.token.length).toBeGreaterThan(0);
+    // La caravane du même joueur pointe vers la même clé, pas un doublon.
+    expect(migrated.caravans.list()[0]!.owner).toBe(settlement.owner);
+    expect(migrated.caravans.list()[0]!.ownerName).toBe("alice");
+    // Et ce jeton fonctionne : c'est ainsi que l'exploitant peut le lire et le
+    // communiquer hors bande à l'ancien propriétaire (docs/protocol.md §11.8).
+    expect(migrated.playerByToken(players[0]!.token)?.key).toBe(settlement.owner);
+  });
+});
+
+describe("joueurs du monde", () => {
+  it("crée une clé et un jeton uniques, reconnaît par jeton, jamais par nom", () => {
+    const alice = state.createPlayer("alice");
+    const bob = state.createPlayer("alice"); // même nom, un autre joueur
+    expect(alice.key).not.toBe(bob.key);
+    expect(alice.token).not.toBe(bob.token);
+    expect(state.playerByToken(alice.token)?.key).toBe(alice.key);
+    expect(state.playerByToken(bob.token)?.key).toBe(bob.key);
+    expect(state.playerByToken("jeton-invente")).toBeUndefined();
+    // Un jeton de la même longueur qu'un vrai, mais faux : toujours refusé.
+    expect(state.playerByToken("x".repeat(alice.token.length))).toBeUndefined();
+  });
+
+  it("renomme sans changer la clé ; le nom n'est qu'un libellé", () => {
+    const player = state.createPlayer("alice");
+    state.renamePlayer(player.key, "alice2");
+    expect(state.nameOf(player.key)).toBe("alice2");
+    expect(state.playerByKey(player.key)?.name).toBe("alice2");
+    // Renommer une clé inconnue ne fait rien planter.
+    state.renamePlayer("clé-inconnue", "quelqu'un");
+  });
+
+  it("nameOf retombe sur la clé pour un joueur inconnu", () => {
+    expect(state.nameOf("clé-jamais-vue")).toBe("clé-jamais-vue");
+  });
+
+  it("liste tous les joueurs connus, triés par ancienneté", () => {
+    now = 1000;
+    const alice = state.createPlayer("alice");
+    now = 2000;
+    const bob = state.createPlayer("bob");
+    expect(state.listPlayers().map((p) => p.key)).toEqual([alice.key, bob.key]);
   });
 });

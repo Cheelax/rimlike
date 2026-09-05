@@ -35,8 +35,8 @@ export interface CaravanDestination {
   readonly hours: number | null;
   /** Cases traversées, arrivée comprise. */
   readonly steps: number;
-  /** Propriétaire de la colonie d'arrivée, `null` si la case est libre. */
-  readonly owner: string | null;
+  /** Nom d'affichage du propriétaire de la colonie d'arrivée, `null` si la case est libre. */
+  readonly ownerName: string | null;
 }
 
 export interface CaravanPanelProps {
@@ -157,7 +157,9 @@ export function CaravanPanel({
             <b>{destination.biome}</b> · case {destination.tile}
           </div>
           <div className="help">
-            {destination.owner === null ? "case libre : la caravane y fondera une colonie" : `colonie de ${destination.owner}`}
+            {destination.ownerName === null
+              ? "case libre : la caravane y fondera une colonie"
+              : `colonie de ${destination.ownerName}`}
           </div>
           <div className="help">
             {destination.hours === null

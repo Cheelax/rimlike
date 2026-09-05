@@ -28,6 +28,7 @@ import {
   type ErrorCode,
   type PlayerId,
   type WorldErrorCode,
+  type WorldPlayerInfo,
 } from "@rimlike/protocol";
 import { WORLD_WIRE_VERSION, serializeWorld } from "@rimlike/world";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -110,8 +111,21 @@ interface Connection {
   readonly socket: WebSocket;
   room: Room | null;
   playerId: PlayerId | null;
-  /** Nom du joueur dans le monde, `null` s'il n'a pas fait `world_join`. */
+  /**
+   * Nom envoyé dans le `join { room, name }` de cette connexion, `null` si
+   * elle n'a rejoint aucune salle. Sert au repli v1 par nom (docs/protocol.md
+   * §12.3) : une connexion de salle qui n'a pas fait `world_join` ne porte pas
+   * de clé, on compare alors ce nom au nom d'affichage du joueur monde.
+   */
+  roomJoinName: string | null;
+  /** Libellé du joueur dans le monde, `null` s'il n'a pas fait `world_join`. */
   worldName: string | null;
+  /**
+   * Clé publique et stable du joueur dans le monde (`WorldPlayer.key`), `null`
+   * hors monde. C'est elle, jamais `worldName`, qui identifie le propriétaire
+   * d'une colonie ou d'une caravane (`docs/protocol.md` §11.2).
+   */
+  worldPlayerKey: string | null;
   /** Identifiant de monde, sans rapport avec les identifiants de salle. */
   worldPlayerId: PlayerId | null;
   lastSeen: number;
@@ -368,8 +382,24 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     }
   };
 
-  const worldPlayerNames = (): string[] =>
-    [...worldMembers].map((member) => member.worldName ?? "").filter((name) => name.length > 0);
+  /**
+   * Tous les joueurs déjà vus par le monde, avec qui est présentement
+   * connecté (`docs/protocol.md` §11.2) : la table `{ key, name, online }[]`
+   * diffusée par `world_welcome` et `world_players`.
+   */
+  const worldPlayerInfos = (): WorldPlayerInfo[] => {
+    const online = new Set<string>();
+    for (const member of worldMembers) {
+      if (member.worldPlayerKey !== null) {
+        online.add(member.worldPlayerKey);
+      }
+    }
+    return worldState.listPlayers().map((player) => ({
+      key: player.key,
+      name: player.name,
+      online: online.has(player.key),
+    }));
+  };
 
   const broadcastWorld = (text: string): void => {
     for (const member of worldMembers) {
@@ -382,7 +412,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   };
 
   const broadcastWorldPlayers = (): void => {
-    broadcastWorld(encodeMessage({ type: "world_players", players: worldPlayerNames() }));
+    broadcastWorld(encodeMessage({ type: "world_players", players: worldPlayerInfos() }));
   };
 
   // --- Caravanes ---
@@ -409,10 +439,58 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   };
 
   /**
+   * Vrai si le joueur monde (clé `key`, nom d'affichage `name`) est présent
+   * dans la salle `roomName` par n'importe laquelle de ses connexions
+   * (docs/protocol.md §12.3) : une connexion de salle qui a fait `world_join`
+   * (avec le jeton) porte une clé, comparée directement ; sinon on compare son
+   * nom de salle (`join.name`) au nom d'affichage du joueur monde, en repli
+   * v1. Couvre aussi bien le chemin actuel (la connexion émettrice est
+   * elle-même dans la salle, donc trouvée par sa propre clé) que le nouveau
+   * (une connexion monde distincte, dont le joueur est dans la salle par une
+   * autre connexion).
+   */
+  const isPresentInRoom = (roomName: string, key: string, name: string): boolean => {
+    for (const other of connections) {
+      if (other.room === null || other.room.name !== roomName) {
+        continue;
+      }
+      if (other.worldPlayerKey !== null) {
+        if (other.worldPlayerKey === key) {
+          return true;
+        }
+      } else if (other.roomJoinName === name) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  /**
+   * Vrai si le joueur monde (clé `key`, nom `name`) est l'hôte de la salle
+   * `roomName`, avec la même règle de présence (clé, ou nom en repli) que
+   * `isPresentInRoom`, appliquée à la seule connexion hôte.
+   */
+  const isHostOfRoom = (roomName: string, key: string, name: string): boolean => {
+    const room = rooms.get(roomName);
+    if (room === undefined || room.host === null) {
+      return false;
+    }
+    for (const other of connections) {
+      if (other.room !== room || other.playerId !== room.host) {
+        continue;
+      }
+      return other.worldPlayerKey !== null ? other.worldPlayerKey === key : other.roomJoinName === name;
+    }
+    return false;
+  };
+
+  /**
    * Remet à l'hôte d'une salle les arrivées que personne n'a encore confirmées.
    * Sans hôte, ou tant que la salle est en `lobby` (pas de carte, donc rien où
    * injecter le convoi), l'arrivée attend : elle repartira au prochain
-   * `onHostReady`.
+   * `onHostReady`. Envoyée sur la connexion de salle de l'hôte **et**, si elle
+   * existe, sur sa connexion monde séparée (même clé, ou même nom en repli) :
+   * le client ignore les doublons par `id` (docs/protocol.md §12.3).
    */
   const deliverArrivals = (roomName: string): void => {
     const room = rooms.get(roomName);
@@ -420,9 +498,35 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     if (room === undefined || tileId === null || room.state === "lobby") {
       return;
     }
+    const hostId = room.host;
+    let hostConnection: Connection | undefined;
+    if (hostId !== null) {
+      for (const candidate of connections) {
+        if (candidate.room === room && candidate.playerId === hostId) {
+          hostConnection = candidate;
+          break;
+        }
+      }
+    }
     for (const arrival of worldState.caravans.pendingArrivals(tileId)) {
       if (room.sendToHost({ type: "caravan_arrive", ...arrival })) {
         log(`[monde] caravane ${arrival.id} proposée à l'hôte de ${roomName}`);
+      }
+      if (hostConnection === undefined) {
+        continue;
+      }
+      for (const member of worldMembers) {
+        if (member === hostConnection) {
+          continue;
+        }
+        const sameKey = hostConnection.worldPlayerKey !== null && member.worldPlayerKey === hostConnection.worldPlayerKey;
+        const sameNameFallback =
+          hostConnection.worldPlayerKey === null &&
+          hostConnection.roomJoinName !== null &&
+          member.worldName === hostConnection.roomJoinName;
+        if (sameKey || sameNameFallback) {
+          send(member.socket, encodeMessage({ type: "caravan_arrive", ...arrival }));
+        }
       }
     }
   };
@@ -485,6 +589,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     log(`[monde] ${connection.worldName ?? "?"} quitte le monde — ${worldMembers.size} présent(s)`);
     connection.worldName = null;
     connection.worldPlayerId = null;
+    connection.worldPlayerKey = null;
     broadcastWorldPlayers();
   };
 
@@ -504,7 +609,37 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
         socket.close();
         return;
       }
-      connection.worldName = message.name;
+
+      // L'identité d'un joueur est son jeton, pas son nom (docs/protocol.md
+      // §11.2). Sans jeton : nouveau joueur, clé et jeton neufs, à persister
+      // tout de suite — sinon un redémarrage avant la première colonie
+      // perdrait le jeton qu'on vient de promettre au client. Avec un jeton
+      // connu : le joueur est reconnu, `name` n'est qu'un libellé qui se met
+      // à jour librement. Jeton inconnu : refus et fermeture, comme pour une
+      // version de protocole incompatible — pas de compte de secours.
+      let player;
+      let isNewPlayer: boolean;
+      if (message.token === undefined) {
+        player = worldState.createPlayer(message.name);
+        isNewPlayer = true;
+        store?.scheduleSave(worldState);
+      } else {
+        const known = worldState.playerByToken(message.token);
+        if (known === undefined) {
+          worldFail(socket, "bad_token", "jeton de joueur inconnu");
+          socket.close();
+          return;
+        }
+        player = known;
+        isNewPlayer = false;
+        if (player.name !== message.name) {
+          worldState.renamePlayer(player.key, message.name);
+          store?.scheduleSave(worldState);
+        }
+      }
+
+      connection.worldName = player.name;
+      connection.worldPlayerKey = player.key;
       connection.worldPlayerId = nextWorldPlayerId++;
       worldMembers.add(connection);
       send(
@@ -512,9 +647,13 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
         encodeMessage({
           type: "world_welcome",
           playerId: connection.worldPlayerId,
-          name: message.name,
+          playerKey: player.key,
+          name: player.name,
+          // Uniquement à la création : c'est la seule fois où le jeton part
+          // sur le fil (docs/protocol.md §11.2, jamais journalisé non plus).
+          ...(isNewPlayer ? { token: player.token } : {}),
           settlements: worldState.list(),
-          players: worldPlayerNames(),
+          players: worldPlayerInfos(),
           world: {
             seed: worldState.seed,
             subdivisions: worldState.subdivisions,
@@ -524,7 +663,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       );
       // Les caravanes en vol, tout de suite : le globe s'affiche complet.
       send(socket, encodeMessage({ type: "world_caravans", caravans: worldState.caravans.list() }));
-      log(`[monde] ${message.name} rejoint le monde — ${worldMembers.size} présent(s)`);
+      log(
+        `[monde] ${player.name} rejoint le monde (${isNewPlayer ? "nouveau joueur" : "reconnu"}) — ` +
+          `${worldMembers.size} présent(s)`,
+      );
       broadcastWorldPlayers();
       return;
     }
@@ -533,15 +675,25 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       // Ce message répond à un `caravan_arrive` reçu **dans une salle**. Son
       // auteur n'est pas forcément entré dans le monde : on ne lui impose que
       // d'être dans la salle de la case d'arrivée. Le serveur n'exige pas non
-      // plus qu'il soit encore l'hôte — seul l'hôte reçoit `caravan_arrive`,
-      // et une confirmation tardive après un changement d'hôte reste vraie.
+      // plus qu'il soit encore l'hôte par ce chemin — seul l'hôte reçoit
+      // `caravan_arrive`, et une confirmation tardive après un changement
+      // d'hôte reste vraie. Une connexion **monde** séparée, elle, doit
+      // prouver qu'elle est bien l'hôte de cette salle (même règle de
+      // présence, clé ou nom en repli) : elle n'a pas la garantie d'y être
+      // pour une autre raison (docs/protocol.md §12.3).
       const arrival = worldState.caravans.arrivalOf(message.id);
       if (arrival === undefined) {
         worldFail(socket, "caravan_not_found", caravanErrorText("caravan_not_found"));
         return;
       }
       const room = tileRoomName(arrival.tile);
-      if (connection.room === null || connection.room.name !== room) {
+      const inRoom = connection.room !== null && connection.room.name === room;
+      const isHostFromWorld =
+        !inRoom &&
+        connection.worldPlayerKey !== null &&
+        connection.worldName !== null &&
+        isHostOfRoom(room, connection.worldPlayerKey, connection.worldName);
+      if (!inRoom && !isHostFromWorld) {
         worldFail(socket, "caravan_not_in_room", `il faut être dans la salle ${room} pour livrer cette caravane`);
         return;
       }
@@ -553,7 +705,8 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     }
 
     const name = connection.worldName;
-    if (name === null) {
+    const key = connection.worldPlayerKey;
+    if (name === null || key === null) {
       worldFail(socket, "not_in_world", "envoyer d'abord `world_join`");
       return;
     }
@@ -563,7 +716,9 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
         leaveWorld(connection);
         return;
       case "settle": {
-        const result = worldState.settle(message.tile, name);
+        // `key`, pas `name` : l'appartenance d'une colonie se prouve par
+        // jeton, jamais par un nom qu'un autre joueur pourrait aussi taper.
+        const result = worldState.settle(message.tile, key);
         if (!result.ok) {
           worldFail(socket, result.code, settleErrorText(result.code, message.tile));
           return;
@@ -602,11 +757,11 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
             seed: settlement.seed,
           }),
         );
-        log(`[monde] ${name} visite la case ${settlement.tile} de ${settlement.owner}`);
+        log(`[monde] ${name} visite la case ${settlement.tile} de ${settlement.ownerName}`);
         return;
       }
       case "abandon": {
-        const result = worldState.abandon(message.tile, name);
+        const result = worldState.abandon(message.tile, key);
         if (!result.ok) {
           worldFail(socket, result.code, abandonErrorText(result.code, message.tile));
           return;
@@ -620,14 +775,19 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
         // v1 : tout joueur **présent dans la salle de la case de départ** peut
         // expédier, propriétaire ou simple visiteur. Être dans la salle
         // `tile-<id>` suffit à prouver que la case est colonisée : le serveur
-        // n'ouvre pas de salle de case libre (§11.2).
+        // n'ouvre pas de salle de case libre (§11.2). La présence se vérifie
+        // par n'importe quelle connexion du joueur (`isPresentInRoom`) : la
+        // connexion émettrice elle-même si c'est une connexion de salle
+        // (chemin actuel), ou une autre si c'est une connexion monde séparée
+        // (docs/protocol.md §12.3) — il faut être dans la salle, le
+        // propriétaire de la colonie n'a aucun privilège à distance.
         const room = tileRoomName(message.fromTile);
-        if (connection.room === null || connection.room.name !== room) {
+        if (!isPresentInRoom(room, key, name)) {
           worldFail(socket, "caravan_not_in_room", `il faut être dans la salle ${room} pour en faire partir une caravane`);
           return;
         }
         const result = worldState.caravans.depart({
-          owner: name,
+          owner: key,
           fromTile: message.fromTile,
           toTile: message.toTile,
           manifest: message.manifest,
@@ -646,7 +806,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
         return;
       }
       case "caravan_cancel": {
-        const result = worldState.caravans.cancel(message.id, name);
+        const result = worldState.caravans.cancel(message.id, key);
         if (!result.ok) {
           worldFail(socket, result.code, caravanErrorText(result.code));
           return;
@@ -712,7 +872,9 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       socket,
       room: null,
       playerId: null,
+      roomJoinName: null,
       worldName: null,
+      worldPlayerKey: null,
       worldPlayerId: null,
       lastSeen: Date.now(),
     };
@@ -766,6 +928,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
         }
         connection.room = room;
         connection.playerId = playerId;
+        connection.roomJoinName = message.name;
         return;
       }
       if (message.type === "join") {

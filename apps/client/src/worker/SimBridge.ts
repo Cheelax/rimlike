@@ -33,7 +33,14 @@ export interface SimBridgeHandlers {
 /** Ce que l'accueil a choisi, tel qu'il part au Worker. */
 export type SimSession =
   | { readonly mode: "solo"; readonly seed: number; readonly width: number; readonly height: number }
-  | { readonly mode: "multi"; readonly server: string; readonly room: string; readonly name: string };
+  | {
+      readonly mode: "multi";
+      readonly server: string;
+      readonly room: string;
+      readonly name: string;
+      /** Jeton de la connexion monde en cours, voir `InitMessage.token`. */
+      readonly token?: string;
+    };
 
 export class SimBridge {
   private readonly worker: Worker;
@@ -56,7 +63,14 @@ export class SimBridge {
     const message: InitMessage =
       session.mode === "solo"
         ? { type: "init", mode: "solo", seed: session.seed, width: session.width, height: session.height }
-        : { type: "init", mode: "multi", server: session.server, room: session.room, name: session.name };
+        : {
+            type: "init",
+            mode: "multi",
+            server: session.server,
+            room: session.room,
+            name: session.name,
+            token: session.token,
+          };
     this.post(message);
   }
 

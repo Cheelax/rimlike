@@ -15,7 +15,9 @@
 
 import { LockstepClient } from "../net/LockstepClient";
 import { WebSocketTransport } from "../net/Transport";
+import { encodeFastForward } from "../sim/commands";
 import { SimHandle } from "../sim/SimHandle";
+import { fastForwardOnReopen } from "./fastForward";
 import { SimRunner, type RunnerOutput, type RunnerSim } from "./SimRunner";
 import { transferablesOf, type MainToWorker, type WorkerToMain } from "./protocol";
 
@@ -62,6 +64,7 @@ const SIM_API: ReadonlySet<string> = new Set([
   "attack",
   "setPriority",
   "triggerRaid",
+  "fastForward",
   "tick",
   "ticksPerDay",
   "timeOfDay",
@@ -156,9 +159,22 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
       // L'arrivée d'une caravane vient sur la connexion de salle, donc ici :
       // le thread principal l'encodera puis confirmera (docs/protocol.md §12.7).
       onCaravanArrive: (arrival) => post({ type: "caravanArrive", arrival }),
+      // Même jeton que la connexion monde du thread principal, pour que le
+      // `world_join` paresseux du départ d'une caravane désigne le même joueur
+      // (docs/protocol.md §11.2, §12.7).
+      worldToken: message.token,
       // La fabrique ne produit que des `SimHandle` : le runner a besoin de ses
       // tampons, que `SimLike` n'expose pas.
-      onSim: (sim) => runner?.setSim(sim as RunnerSim),
+      onSim: (sim) => {
+        runner?.setSim(sim as RunnerSim);
+        // Réouverture d'une colonie gelée (§11.6) : le sim restauré vient
+        // d'être adopté, c'est le seul moment où émettre. `consumeFrozenTicks`
+        // remet la valeur à 0, donc un deuxième sim adopté sans nouveau
+        // `frozenTicks` n'émettra rien.
+        const frozen = lockstep?.consumeFrozenTicks() ?? 0;
+        const bytes = fastForwardOnReopen(lockstep?.state.isHost ?? false, frozen, encodeFastForward);
+        if (bytes) lockstep?.issue(bytes);
+      },
     });
     runner = new SimRunner({ lockstep });
     lockstep.join(message.room, message.name);

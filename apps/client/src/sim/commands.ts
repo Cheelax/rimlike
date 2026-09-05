@@ -96,3 +96,13 @@ export function encodeClearDepartures(count: number): Uint8Array {
 export function encodeArriveCaravan(manifest: Uint8Array): Uint8Array {
   return WasmSim.encode_arrive_caravan(manifest);
 }
+
+/**
+ * Avance rapide abstraite d'une colonie gelée (`docs/protocol.md` §11.6).
+ * `ticks` est le `frozenTicks` du `snapshot` : à n'émettre qu'une fois, par
+ * l'hôte, en première commande après la réouverture (voir `worker/sim.worker.ts`
+ * et `LockstepClient.consumeFrozenTicks`).
+ */
+export function encodeFastForward(ticks: number): Uint8Array {
+  return WasmSim.encode_fast_forward(ticks);
+}

@@ -21,12 +21,14 @@ import {
   type ClientMessage,
   type ServerMessage,
   type Settlement,
+  type WorldPlayerInfo,
 } from "../src/index.js";
 
 /** Une colonie de référence, réutilisée par plusieurs cas. */
 const settlement: Settlement = {
   tile: 1234,
-  owner: "alice",
+  owner: "key-alice",
+  ownerName: "alice",
   room: "tile-1234",
   seed: 3_141_592_653,
   createdAt: 1_757_000_000_000,
@@ -35,7 +37,8 @@ const settlement: Settlement = {
 /** Une caravane de référence, en vol à mi-parcours. */
 const caravan: Caravan = {
   id: "c1",
-  owner: "alice",
+  owner: "key-alice",
+  ownerName: "alice",
   fromTile: 12,
   toTile: 40,
   route: [12, 23, 31, 40],
@@ -46,6 +49,12 @@ const caravan: Caravan = {
   summary: { pawns: 3, items: [[0, 40], [4, 12]] },
   status: "travelling",
 };
+
+/** La table des joueurs connus du monde, telle que diffusée par `world_welcome`/`world_players`. */
+const worldPlayers: WorldPlayerInfo[] = [
+  { key: "key-alice", name: "alice", online: true },
+  { key: "key-bob", name: "bob", online: false },
+];
 
 describe("base64", () => {
   it("fait l'aller-retour sur toutes les longueurs de reste", () => {
@@ -89,6 +98,8 @@ describe("encodeMessage / decodeMessage", () => {
     { type: "pong" },
     { type: "world_join", name: "alice" },
     { type: "world_join", name: "bob", protocol: PROTOCOL_VERSION },
+    { type: "world_join", name: "carol", token: "tok-carol" },
+    { type: "world_join", name: "dave", protocol: PROTOCOL_VERSION, token: "tok-dave" },
     { type: "settle", tile: 1234 },
     { type: "visit", tile: 0 },
     { type: "abandon", tile: 10_241 },
@@ -165,16 +176,27 @@ describe("encodeMessage / decodeMessage", () => {
     {
       type: "world_welcome",
       playerId: 2,
+      playerKey: "key-bob",
       name: "bob",
       settlements: [settlement],
-      players: ["alice", "bob"],
+      players: worldPlayers,
       world: { seed: 1, subdivisions: 4, tiles: 2562 },
     },
-    { type: "world_welcome", playerId: 1, name: "alice", settlements: [], players: ["alice"], world: { seed: 0, subdivisions: 0, tiles: 12 } },
+    {
+      type: "world_welcome",
+      playerId: 1,
+      playerKey: "key-alice",
+      name: "alice",
+      // Uniquement à la création d'un nouveau joueur : jamais rejoué ensuite.
+      token: "tok-alice",
+      settlements: [],
+      players: [worldPlayers[0]!],
+      world: { seed: 0, subdivisions: 0, tiles: 12 },
+    },
     { type: "world_settlements", settlements: [] },
     { type: "world_settlements", settlements: [settlement, { ...settlement, tile: 7, room: "tile-7" }] },
     { type: "world_players", players: [] },
-    { type: "world_players", players: ["alice"] },
+    { type: "world_players", players: worldPlayers },
     { type: "settled", tile: 1234, room: "tile-1234", seed: 3_141_592_653 },
     { type: "world_error", code: "occupied", message: "case déjà colonisée" },
     { type: "world_caravans", caravans: [] },
@@ -250,6 +272,8 @@ describe("validation", () => {
       { type: "world_join" },
       { type: "world_join", name: "" },
       { type: "world_join", name: "alice", protocol: "1" },
+      { type: "world_join", name: "alice", token: 7 },
+      { type: "world_join", name: "alice", token: "" },
       { type: "settle" },
       { type: "settle", tile: -1 },
       { type: "settle", tile: 1.5 },
@@ -314,13 +338,44 @@ describe("validation", () => {
         players: [],
         world: { seed: 1, subdivisions: 4, tiles: 2562 },
       },
+      // Sans `playerKey`, ou vide, ou un `token` du mauvais type.
+      {
+        type: "world_welcome",
+        playerId: 1,
+        name: "alice",
+        settlements: [],
+        players: [],
+        world: { seed: 1, subdivisions: 4, tiles: 2562 },
+      },
+      {
+        type: "world_welcome",
+        playerId: 1,
+        playerKey: "",
+        name: "alice",
+        settlements: [],
+        players: [],
+        world: { seed: 1, subdivisions: 4, tiles: 2562 },
+      },
+      {
+        type: "world_welcome",
+        playerId: 1,
+        playerKey: "key-alice",
+        name: "alice",
+        token: 7,
+        settlements: [],
+        players: [],
+        world: { seed: 1, subdivisions: 4, tiles: 2562 },
+      },
       { type: "world_settlements", settlements: {} },
       // Colonie sans `createdAt` : un `Settlement` est validé champ par champ.
-      { type: "world_settlements", settlements: [{ tile: 1, owner: "a", room: "tile-1", seed: 2 }] },
+      { type: "world_settlements", settlements: [{ tile: 1, owner: "a", ownerName: "a", room: "tile-1", seed: 2 }] },
       { type: "world_settlements", settlements: [{ ...settlement, owner: "" }] },
+      { type: "world_settlements", settlements: [{ ...settlement, ownerName: "" }] },
       { type: "world_settlements", settlements: [{ ...settlement, tile: -3 }] },
       { type: "world_players", players: [7] },
       { type: "world_players", players: "alice" },
+      { type: "world_players", players: [{ key: "k" }] },
+      { type: "world_players", players: [{ key: "k", name: "n", online: "oui" }] },
       { type: "settled", tile: 1, room: "", seed: 1 },
       { type: "settled", tile: 1, room: "tile-1", seed: -1 },
       { type: "settled", room: "tile-1", seed: 1 },
@@ -336,6 +391,7 @@ describe("validation", () => {
       { type: "world_caravans", caravans: [{ ...caravan, departedAt: -1 }] },
       { type: "world_caravans", caravans: [{ ...caravan, id: "" }] },
       { type: "world_caravans", caravans: [{ ...caravan, owner: 1 }] },
+      { type: "world_caravans", caravans: [{ ...caravan, ownerName: "" }] },
       { type: "world_caravans", caravans: [{ ...caravan, summary: { pawns: 1 } }] },
       { type: "caravan_arrive", id: "c1", tile: 3, summary: { pawns: 1, items: [] } },
       { type: "caravan_arrive", id: "c1", manifest: "AQID", summary: { pawns: 1, items: [] } },

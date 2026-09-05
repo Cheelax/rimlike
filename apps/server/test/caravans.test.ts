@@ -129,6 +129,10 @@ describe("expédier une caravane", () => {
     const caravan = result.caravan;
     expect(caravan.id).toBe("c1");
     expect(caravan.owner).toBe("alice");
+    // Sans résolveur fourni (défaut des tests) : l'identité, `owner` est
+    // traité comme son propre libellé — c'est `WorldState` qui branche la
+    // vraie table des joueurs (`docs/protocol.md` §11.2).
+    expect(caravan.ownerName).toBe("alice");
     expect(caravan.route).toEqual(farTile.route.tiles);
     expect(caravan.route[0]).toBe(homeTile);
     expect(caravan.route.at(-1)).toBe(farTile.id);
@@ -160,6 +164,23 @@ describe("expédier une caravane", () => {
     const first = depart(caravans, farTile.id);
     const second = depart(caravans, reachable[0]!.id);
     expect(first).not.toBe(second);
+  });
+});
+
+describe("résolution du nom d'affichage", () => {
+  it("appelle le résolveur fourni pour ownerName, clé par clé", () => {
+    const names = new Map([["key-alice", "alice"]]);
+    const caravans = new CaravanRegistry({
+      world: globe,
+      hours: () => 0,
+      ownerName: (key) => names.get(key) ?? `?${key}`,
+    });
+    const result = caravans.depart({ owner: "key-alice", fromTile: homeTile, toTile: farTile.id, manifest, summary });
+    expect(result.ok && result.caravan.owner).toBe("key-alice");
+    expect(result.ok && result.caravan.ownerName).toBe("alice");
+    // Un renommage se voit à la prochaine vue : rien n'est figé côté caravane.
+    names.set("key-alice", "alice2");
+    expect(caravans.get("c1")?.ownerName).toBe("alice2");
   });
 });
 

@@ -36,7 +36,7 @@ import { findRoute, type World } from "@rimlike/world";
 
 /** Ce qu'il faut pour expédier une caravane. */
 export interface CaravanDepartRequest {
-  /** Nom du joueur expéditeur (l'identité v1 est le nom). */
+  /** Clé du joueur expéditeur (`WorldPlayer.key`), pas un nom. */
   readonly owner: string;
   readonly fromTile: number;
   readonly toTile: number;
@@ -102,6 +102,13 @@ export interface CaravanRegistryOptions {
   readonly hours: () => number;
   /** Durée de visibilité d'une caravane livrée. Défaut : `CARAVAN_HISTORY_HOURS`. */
   readonly historyHours?: number;
+  /**
+   * Résout la clé d'un propriétaire (`owner`) en nom d'affichage, pour
+   * `Caravan.ownerName` (`docs/protocol.md` §11.2). Défaut : l'identité —
+   * pratique pour les tests qui n'ont pas de table de joueurs et traitent
+   * `owner` comme son propre libellé.
+   */
+  readonly ownerName?: (key: string) => string;
 }
 
 /** État interne, mutable : la vue diffusée est recalculée à la demande. */
@@ -123,6 +130,7 @@ export class CaravanRegistry {
   private readonly world: World;
   private readonly hours: () => number;
   private readonly historyHours: number;
+  private readonly ownerName: (key: string) => string;
   /** Caravanes par identifiant, dans leur ordre de création (`Map` ordonnée). */
   private readonly caravans = new Map<string, StoredCaravan>();
   private nextId = 1;
@@ -131,6 +139,7 @@ export class CaravanRegistry {
     this.world = options.world;
     this.hours = options.hours;
     this.historyHours = options.historyHours ?? CARAVAN_HISTORY_HOURS;
+    this.ownerName = options.ownerName ?? ((key) => key);
   }
 
   get count(): number {
@@ -369,6 +378,7 @@ export class CaravanRegistry {
     return {
       id: stored.id,
       owner: stored.owner,
+      ownerName: this.ownerName(stored.owner),
       fromTile: stored.fromTile,
       toTile: stored.toTile,
       route: [...stored.route],

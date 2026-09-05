@@ -418,6 +418,31 @@ describe("file de bundles", () => {
     expect(errors).toEqual([]);
   });
 
+  it("stocke frozenTicks reçu par un snapshot, consommé une seule fois", async () => {
+    const { transport, client } = await ready();
+    const snapshot = FakeSim.fresh(5);
+    snapshot.step(4);
+    transport.deliver({ type: "snapshot", tick: 4, data: snapshot.snapshot(), frozenTicks: 3000 });
+    await waitFor("sim restauré", () => client.tick === 4);
+
+    expect(client.state.frozenTicks).toBe(3000);
+    // Idempotence : le deuxième appel ne renvoie plus la valeur.
+    expect(client.consumeFrozenTicks()).toBe(3000);
+    expect(client.consumeFrozenTicks()).toBe(0);
+    expect(client.state.frozenTicks).toBe(0);
+  });
+
+  it("sans le champ frozenTicks, l'état reste à 0", async () => {
+    const { transport, client } = await ready();
+    const snapshot = FakeSim.fresh(5);
+    snapshot.step(4);
+    transport.deliver({ type: "snapshot", tick: 4, data: snapshot.snapshot() });
+    await waitFor("sim restauré", () => client.tick === 4);
+
+    expect(client.state.frozenTicks).toBe(0);
+    expect(client.consumeFrozenTicks()).toBe(0);
+  });
+
   it("répond à une demande de snapshot avec son tick courant", async () => {
     const { transport, client } = await ready();
     transport.deliver({ type: "bundle", from: 0, to: 2, ticks: [] });
