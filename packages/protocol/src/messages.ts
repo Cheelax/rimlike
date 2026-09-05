@@ -471,13 +471,52 @@ export interface PlayersMessage {
   readonly hostId: PlayerId | null;
 }
 
-/** Diffusé quand le host démarre. `tick` vaut 0 : le sim part de zéro. */
+/**
+ * Bornes de `StartClimate`, en dixièmes de °C : le même contrat que
+ * `crates/sim/src/climate.rs` (`TEMPERATURE_MIN`/`MAX`,
+ * `Climate::AMPLITUDE_MAX`) et que `@rimlike/world` (`CLIMATE_BASE_*`,
+ * `CLIMATE_AMPLITUDE_*`), dupliqué ici comme `MAX_FROZEN_TICKS` duplique
+ * `sim::MAX_FAST_FORWARD` : ce paquet n'a pas de dépendance runtime, donc pas
+ * d'import de `@rimlike/world` pour trois entiers.
+ */
+export const CLIMATE_BASE_MIN = -2000;
+export const CLIMATE_BASE_MAX = 2000;
+export const CLIMATE_AMPLITUDE_MIN = 0;
+export const CLIMATE_AMPLITUDE_MAX = 1000;
+
+/**
+ * Climat à imposer au sim d'une colonie, en dixièmes de degré Celsius : la
+ * forme attendue par `Command::SetClimate` (`crates/sim/src/climate.rs`).
+ * Calculé par `@rimlike/world` (`climateForTile`) à partir de la température
+ * et de la latitude de la case, jamais choisi par un client.
+ */
+export interface StartClimate {
+  /** Moyenne annuelle, en dixièmes de °C. */
+  readonly baseTemperature: number;
+  /** Écart été/hiver, en dixièmes de °C. */
+  readonly amplitude: number;
+}
+
+/**
+ * Diffusé quand le host démarre. `tick` vaut 0 : le sim part de zéro.
+ *
+ * `climate` n'apparaît que dans une salle « case » (`docs/protocol.md` §11) :
+ * la colonie hérite du climat de sa case du globe. Absent en salle simple —
+ * le sim y garde son climat par défaut tant que personne n'émet
+ * `SetClimate`. Présent, il n'est **imposé à personne** : c'est à l'hôte, et
+ * seulement lui, d'émettre `encode_set_climate(baseTemperature, amplitude)`
+ * en première commande après ce `start` (`docs/protocol.md` §11.6) — le
+ * champ ne fait qu'informer tous les clients de la valeur à attendre, pour
+ * qu'un HUD puisse l'afficher avant que la commande n'ait fait un aller-retour
+ * en lockstep.
+ */
 export interface ServerStartMessage {
   readonly type: "start";
   readonly seed: number;
   readonly width: number;
   readonly height: number;
   readonly tick: number;
+  readonly climate?: StartClimate;
 }
 
 /** Le message central : tous les clients reçoivent la même suite de bundles. */

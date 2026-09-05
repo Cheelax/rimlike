@@ -308,9 +308,9 @@ navigateur avec deux noms sont deux joueurs), appartenance comparée par clé, l
 avec présence, `bad_token` géré. Serveur : les messages de caravane sont acceptés depuis la
 connexion monde d'un joueur présent dans la salle et l'arrivée est envoyée sur ses deux
 connexions (Sonnet, 109 tests). Essai réel à deux onglets : alice et bob installés sur deux
-cases, un colon d'alice parti en caravane est arrivé chez bob en huit heures de jeu. Reste :
-simplifier le chemin des caravanes côté client (envoi direct depuis la connexion monde), un
-seul contexte WebGL par onglet.
+cases, un colon d'alice parti en caravane est arrivé chez bob en huit heures de jeu. Climat par case livré côté serveur le 2026-09-05 (Sonnet) : `start.climate` dérivé de la
+température et de la latitude de la case (désert plus contrasté), l'hôte l'émet en `SetClimate`
+en première commande (client à brancher). Reste : un seul contexte WebGL par onglet.
 - Globe hexagonal, rendu du globe, biomes, choix de case de départ.
 - Serveur autoritaire persistant : cases, propriétaires, horloge globale.
 - Cartes gelées + avance rapide abstraite.
@@ -393,6 +393,9 @@ mods de contenu, événements monde.
 - 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
   par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
   libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
+- 2026-09-05 : climat par case : dérivé à la volée du globe partagé, jamais persisté ; pas
+  de `snapshot.climate` car le climat est déjà dans l'état du sim restauré, contrairement au
+  temps gelé qui doit être rejoué en commande.
 - 2026-09-05 : faune (sim). Les bêtes sont des `Pawn` de faction Animal : même santé, même
   déplacement, IA courte. La chasse se marque par bête (une commande, pas une désignation de
   case) et reste rattachée au type de travail « désignations ». Paître et fuir marchent en

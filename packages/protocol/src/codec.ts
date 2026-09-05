@@ -9,6 +9,10 @@
  */
 
 import {
+  CLIMATE_AMPLITUDE_MAX,
+  CLIMATE_AMPLITUDE_MIN,
+  CLIMATE_BASE_MAX,
+  CLIMATE_BASE_MIN,
   MAX_FROZEN_TICKS,
   NO_PLAYER,
   PROTOCOL_VERSION,
@@ -22,6 +26,7 @@ import {
   type RoomState,
   type ServerMessage,
   type Settlement,
+  type StartClimate,
   type TickCommand,
   type TickCommands,
   type WorldInfo,
@@ -166,6 +171,29 @@ function isTick(value: unknown): value is number {
  */
 function isFrozenTicks(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_FROZEN_TICKS;
+}
+
+function isInRange(value: unknown, min: number, max: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+}
+
+/**
+ * `start.climate` : un climat à imposer au sim, dans les bornes de
+ * `Command::SetClimate` (`CLIMATE_BASE_*`, `CLIMATE_AMPLITUDE_*`). Une valeur
+ * hors bornes est refusée plutôt que rognée : elle mentirait sur ce que le
+ * sim appliquera réellement (même principe que `isFrozenTicks`).
+ */
+function asStartClimate(value: unknown): StartClimate | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  if (!isInRange(value.baseTemperature, CLIMATE_BASE_MIN, CLIMATE_BASE_MAX)) {
+    return null;
+  }
+  if (!isInRange(value.amplitude, CLIMATE_AMPLITUDE_MIN, CLIMATE_AMPLITUDE_MAX)) {
+    return null;
+  }
+  return { baseTemperature: value.baseTemperature, amplitude: value.amplitude };
 }
 
 function isName(value: unknown): value is string {
@@ -603,12 +631,21 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       if (!isTick(value.tick)) {
         return null;
       }
+      let climate: StartClimate | undefined;
+      if (value.climate !== undefined) {
+        const parsed = asStartClimate(value.climate);
+        if (parsed === null) {
+          return null;
+        }
+        climate = parsed;
+      }
       return {
         type: "start",
         seed: value.seed,
         width: value.width,
         height: value.height,
         tick: value.tick,
+        ...(climate === undefined ? {} : { climate }),
       };
     }
     case "bundle": {

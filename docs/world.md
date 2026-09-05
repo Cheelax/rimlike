@@ -399,6 +399,20 @@ elle est injectée dans le sim de carte comme groupe de pawns.
 Un itinéraire est recalculé si un biome change (route coupée) ; à 10 242 cases, l'A*
 tient largement dans le budget d'un tick de monde.
 
+**Note — climat des colonies.** `climateForTile(tile)` (`src/climate.ts`) relie le
+climat du globe à celui du sim : elle rend `{ baseTemperature, amplitude }` en
+**dixièmes de degré Celsius entiers**, la forme attendue par `Command::SetClimate`
+côté sim (`crates/sim/src/climate.rs`). `baseTemperature` reprend `tile.temperature`
+telle quelle (arrondie, convertie) ; `amplitude` grandit avec la latitude — ±4 °C à
+l'équateur, jusqu'à ±20 °C au pôle, une courbe en sinus de la latitude comme celle de
+la température (§3) — et gagne ±3 °C de plus en désert (plus grand écart été/hiver
+d'un climat sec). Les deux valeurs sont bornées aux limites du sim
+(`CLIMATE_BASE_MIN/MAX`, `CLIMATE_AMPLITUDE_MIN/MAX`), en pratique jamais atteintes par
+ce globe. Le serveur monde (`apps/server/src/server.ts`) l'appelle à la création de la
+salle d'une case pour fabriquer le `climate` du `start` diffusé
+(`docs/protocol.md` §3.2 et §11.6) : rien n'est persisté, c'est une fonction pure de la
+case, recalculée à la volée depuis le globe partagé (`sharedWorld`) à chaque fondation.
+
 ### Client
 
 Le client **reçoit** `WorldWire` et ne génère rien. Rendu du globe en Three.js :

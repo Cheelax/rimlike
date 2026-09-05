@@ -539,6 +539,31 @@ describe("salle de case", () => {
     });
   });
 
+  it("porte le climat de la case dans le start quand il est fourni, l'omet sinon", () => {
+    const climate = { baseTemperature: -340, amplitude: 200 };
+    const { room: tile } = tileRoom({ tile: { id: 4, seed: 777, climate } });
+    const alice = new Recorder();
+    const aliceId = tile.join("alice", alice.send)!;
+    tile.handle(aliceId, { type: "start", seed: 1, width: 32, height: 32 });
+
+    expect(alice.ofType("start")[0]).toEqual({
+      type: "start",
+      seed: 777,
+      width: 32,
+      height: 32,
+      tick: 0,
+      climate,
+    });
+
+    // Sans climat fourni (le cas par défaut de `tileRoom()`) : le champ est
+    // absent, pas `undefined` explicite.
+    const { room: bare } = tileRoom();
+    const bob = new Recorder();
+    const bobId = bare.join("bob", bob.send)!;
+    bare.handle(bobId, { type: "start", seed: 1, width: 32, height: 32 });
+    expect(bob.ofType("start")[0]!).not.toHaveProperty("climate");
+  });
+
   it("réclame périodiquement un snapshot de conservation et le garde sans le relayer", () => {
     const { room: tile, snapshots } = tileRoom();
     const alice = new Recorder();

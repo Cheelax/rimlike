@@ -16,5 +16,6 @@ export * from "./rng.js";
 export * from "./noise.js";
 export * from "./geometry.js";
 export * from "./biomes.js";
+export * from "./climate.js";
 export * from "./travel.js";
 export * from "./serialize.js";

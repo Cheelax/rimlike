@@ -174,8 +174,24 @@ salle a démarré.
 **`start`** — diffusé quand le host démarre. `tick` vaut 0 : tous les clients
 créent leur sim avec `seed`/`width`/`height` et partent du tick 0.
 
+`climate` est facultatif et n'apparaît que dans une salle « case » du monde
+(§11) : la colonie hérite du climat de sa case du globe (`baseTemperature` et
+`amplitude`, en dixièmes de degré Celsius — la forme de `Command::SetClimate`,
+`crates/sim/src/climate.rs`). Absent en salle simple, où le sim garde son
+climat par défaut tant que personne n'émet `SetClimate`. Le champ n'est
+qu'une information : c'est à l'hôte, et lui seul, d'émettre la commande
+correspondante après ce `start` (§11.6).
+
 ```json
 { "type": "start", "seed": 12345, "width": 128, "height": 128, "tick": 0 }
+{
+  "type": "start",
+  "seed": 2007225770,
+  "width": 64,
+  "height": 64,
+  "tick": 0,
+  "climate": { "baseTemperature": -340, "amplitude": 200 }
+}
 ```
 
 **`bundle`** — le message central. Couvre les ticks `from`..`to` **inclus**.
@@ -973,6 +989,53 @@ temps.
   deux est identique chez tous les clients, puisqu'ils appliquent la même
   commande au même tick : le hash reste comparable.
 
+**Le climat, hérité une fois.** Une colonie neuve (pas de snapshot connu, donc
+un `start` en bonne et due forme, §3.2) hérite du climat de sa case du globe :
+`climateForTile` (`@rimlike/world`, `docs/world.md` §7) le calcule depuis la
+température et la latitude de la case, et le `start` diffusé porte ce climat
+(`climate`). Ce n'est qu'une **information** : imposer le climat au sim passe
+par une commande, exactement comme l'avance rapide.
+
+```
+   hôte                                  serveur
+     │◀── start { seed, …, climate } ─────┤  colonie neuve, salle « case »
+     │    (construit son sim, climat      │
+     │     par défaut du sim)             │
+     ├─── encode_set_climate(climate) ───▶│  1ʳᵉ commande, une seule fois
+     │        (repart dans un bundle,     │
+     │         appliqué par tous à ce tick)│
+```
+
+- **L'hôte, et lui seul**, encode et émet `Command::SetClimate` (`encode_set_climate`,
+  `docs/PLAN.md`/`AGENTS.md`, table des contrats) en **première commande**
+  après ce `start`, une seule fois. Deux clients qui l'émettraient chacun
+  feraient dériver le climat de la colonie vers celui qui gagne la course,
+  silencieusement — c'est une commande à faire une fois, jamais une opération
+  locale, la même règle que `FastForward` ci-dessus.
+- **Ordre si les deux s'appliquent** : `SetClimate` **puis** `FastForward`, le
+  climat d'abord, l'avance rapide ensuite — l'avance rapide fait tourner des
+  formules de rattrapage (croissance, péremption…) qui dépendent du climat, pas
+  l'inverse. Avec l'implémentation actuelle, ce cas ne se produit pas : `start`
+  (colonie neuve) et `restore` (réouverture, `frozenTicks`) sont mutuellement
+  exclusifs, une salle ne prenant jamais les deux chemins à la fois. L'ordre
+  est documenté ici pour ne rien laisser d'implicite si ça change un jour.
+- **Sur une réouverture, `start` n'est pas envoyé** (voir plus haut) : donc
+  aucun `SetClimate` n'est émis, seulement `FastForward` s'il y a du temps
+  gelé. Le climat n'a pas besoin d'être réémis — et **`snapshot` ne gagne pas
+  de champ `climate` symétrique à `start`** : `Command::SetClimate` modifie un
+  champ persistant de `Sim` (`climate::Climate`, sérialisé par serde comme le
+  reste de l'état, `crates/sim/src/climate.rs`), donc le sim restauré depuis
+  le snapshot le porte déjà. Contrairement à `frozenTicks`, qui déclenche une
+  commande précisément parce que le serveur ne simule pas le temps écoulé
+  pendant l'absence, il n'y a ici **aucune action requise** côté client à la
+  réouverture : un champ purement informatif dupliquerait un état déjà présent
+  dans `data`, avec le risque qu'il en diverge un jour (par exemple si un
+  climat devenait un jour modifiable en cours de partie par un autre biais que
+  la fondation).
+- Une salle **hors monde** (`join { room: "demo" }`) n'a pas de case, donc pas
+  de `climate` : le sim y garde son climat par défaut (`Climate::default()`,
+  12 °C ± 15 °C) tant que personne n'émet `SetClimate` explicitement.
+
 ### 11.7 Enchaînement complet, côté client
 
 ```ts
@@ -1003,6 +1066,14 @@ Ce que le client doit gérer en plus du mode salle :
 
 - `request_snapshot { forPlayer: 0 }` → répondre `snapshot { tick, data }`
   **sans** `forPlayer` (un `forPlayer: 0` dans la réponse est refusé) ;
+- `start { climate }` → si le champ est présent et que le client est l'hôte
+  (`welcome.isHost`), émettre `encodeSetClimate(climate.baseTemperature,
+  climate.amplitude)` en **première commande** après avoir construit le sim
+  pour ce `start`, une seule fois (§11.6). `encodeSetClimate` n'existe pas
+  encore côté client (`apps/client/src/sim/commands.ts`, à côté de
+  `encodeFastForward`) : à ajouter, symétrique à `WasmSim.set_climate`
+  (déjà là, `apps/client/src/sim/SimHandle.ts`). Absent en salle simple —
+  rien à faire, le sim garde son climat par défaut ;
 - `snapshot { frozenTicks }` → après `restore`, émettre
   `WasmSim.encode_fast_forward(frozenTicks)` **une seule fois**, comme première
   commande, et seulement si le client est l'hôte (`welcome.isHost`) et que

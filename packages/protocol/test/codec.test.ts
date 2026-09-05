@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   base64ToBytes,
   bytesToBase64,
+  CLIMATE_AMPLITUDE_MAX,
+  CLIMATE_BASE_MIN,
   frozenTicksForHours,
   MAX_FROZEN_TICKS,
   decodeClientMessage,
@@ -21,6 +23,7 @@ import {
   type ClientMessage,
   type ServerMessage,
   type Settlement,
+  type StartClimate,
   type WorldPlayerInfo,
 } from "../src/index.js";
 
@@ -49,6 +52,9 @@ const caravan: Caravan = {
   summary: { pawns: 3, items: [[0, 40], [4, 12]] },
   status: "travelling",
 };
+
+/** Le climat d'une colonie sur une case polaire : moyenne très négative, fort écart saisonnier. */
+const climate: StartClimate = { baseTemperature: -340, amplitude: 200 };
 
 /** La table des joueurs connus du monde, telle que diffusée par `world_welcome`/`world_players`. */
 const worldPlayers: WorldPlayerInfo[] = [
@@ -151,6 +157,8 @@ describe("encodeMessage / decodeMessage", () => {
     { type: "players", players: [{ id: 1, name: "alice" }], hostId: 1 },
     { type: "players", players: [], hostId: null },
     { type: "start", seed: 7, width: 128, height: 128, tick: 0 },
+    // Salle « case » : la colonie hérite du climat de sa case (§11.6).
+    { type: "start", seed: 7, width: 128, height: 128, tick: 0, climate },
     { type: "bundle", from: 0, to: 2, ticks: [] },
     {
       type: "bundle",
@@ -314,6 +322,25 @@ describe("validation", () => {
       { type: "welcome", protocol: 1, playerId: 1, isHost: true, players: [], state: "zombie", tick: 0 },
       { type: "players", players: {} },
       { type: "players", players: [], hostId: 0 },
+      { type: "start", seed: 7, width: 128, height: 128, tick: 0, climate: { baseTemperature: 0 } },
+      { type: "start", seed: 7, width: 128, height: 128, tick: 0, climate: { baseTemperature: 0, amplitude: -1 } },
+      {
+        type: "start",
+        seed: 7,
+        width: 128,
+        height: 128,
+        tick: 0,
+        climate: { baseTemperature: CLIMATE_BASE_MIN - 1, amplitude: 0 },
+      },
+      {
+        type: "start",
+        seed: 7,
+        width: 128,
+        height: 128,
+        tick: 0,
+        climate: { baseTemperature: 0, amplitude: CLIMATE_AMPLITUDE_MAX + 1 },
+      },
+      { type: "start", seed: 7, width: 128, height: 128, tick: 0, climate: { baseTemperature: 1.5, amplitude: 0 } },
       { type: "bundle", from: 5, to: 2, ticks: [] },
       { type: "bundle", from: 0, to: 2 },
       { type: "bundle", from: 0, to: 2, ticks: [{ tick: 9, commands: [] }] },
@@ -540,5 +567,26 @@ describe("colonie gelée", () => {
     });
     const back = decodeServerMessage(wire);
     expect(back?.type === "snapshot" ? back.frozenTicks : null).toBe(3000);
+  });
+});
+
+describe("climat des colonies", () => {
+  it("laisse passer un start sans climate et garde le champ sinon", () => {
+    const plain = validateServerMessage({ type: "start", seed: 7, width: 128, height: 128, tick: 0 });
+    expect(plain).toEqual({ type: "start", seed: 7, width: 128, height: 128, tick: 0 });
+    expect(plain !== null && "climate" in plain).toBe(false);
+
+    const wire = encodeMessage({ type: "start", seed: 7, width: 128, height: 128, tick: 0, climate });
+    const back = decodeServerMessage(wire);
+    expect(back?.type === "start" ? back.climate : null).toEqual(climate);
+  });
+
+  it("refuse un climate hors des bornes du sim ou incomplet", () => {
+    const base = { type: "start" as const, seed: 7, width: 128, height: 128, tick: 0 };
+    expect(validateServerMessage({ ...base, climate: { baseTemperature: CLIMATE_BASE_MIN - 1, amplitude: 0 } })).toBeNull();
+    expect(validateServerMessage({ ...base, climate: { baseTemperature: 0, amplitude: CLIMATE_AMPLITUDE_MAX + 1 } })).toBeNull();
+    expect(validateServerMessage({ ...base, climate: { baseTemperature: 0 } })).toBeNull();
+    expect(validateServerMessage({ ...base, climate: { amplitude: 0 } })).toBeNull();
+    expect(validateServerMessage({ ...base, climate: "chaud" })).toBeNull();
   });
 });

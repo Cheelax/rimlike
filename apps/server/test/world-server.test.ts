@@ -18,7 +18,14 @@ import {
   type Caravan,
   type CaravanSummary,
 } from "@rimlike/protocol";
-import { deserializeWorld, findRoute, movementCost, tileCount, type WorldWire } from "@rimlike/world";
+import {
+  climateForTile,
+  deserializeWorld,
+  findRoute,
+  movementCost,
+  tileCount,
+  type WorldWire,
+} from "@rimlike/world";
 
 import { startServer, type RunningServer } from "../src/server.js";
 import { DEFAULT_WORLD_SEED, sharedWorld } from "../src/world.js";
@@ -358,11 +365,33 @@ describe("salle d'une case", () => {
 
     // L'hôte propose n'importe quelle graine : c'est celle de la case qui part.
     alice.send({ type: "start", seed: 424_242, width: 64, height: 64 });
+    const climate = climateForTile(globe.tiles[landTile]!);
     for (const client of [alice, bob]) {
       const start = await client.nth("start");
       expect(start.seed).toBe(settled.seed);
-      expect(start).toEqual({ type: "start", seed: settled.seed, width: 64, height: 64, tick: 0 });
+      expect(start).toEqual({ type: "start", seed: settled.seed, width: 64, height: 64, tick: 0, climate });
     }
+  });
+
+  it("porte le climat de la case dans le start, à base négative sur une case polaire", async () => {
+    // Case 36 du globe de test : latitude -90°, banquise, température annuelle
+    // très négative — le cas le plus contrasté que ce globe de test propose.
+    const polarTile = 36;
+    expect(movementCost(globe.tiles[polarTile]!.biome)).not.toBeNull();
+    expect(globe.tiles[polarTile]!.temperature).toBeLessThan(0);
+
+    const expected = climateForTile(globe.tiles[polarTile]!);
+    expect(expected.baseTemperature).toBeLessThan(0);
+
+    const alice = await joinWorld("alice");
+    alice.send({ type: "settle", tile: polarTile });
+    const settled = await alice.next("settled");
+
+    alice.send({ type: "join", room: settled.room, name: "alice" });
+    await alice.nth("welcome");
+    alice.send({ type: "start", seed: 1, width: 32, height: 32 });
+    const start = await alice.nth("start");
+    expect(start.climate).toEqual(expected);
   });
 
   it("refuse de visiter une case libre et de créer la salle d'une case libre", async () => {

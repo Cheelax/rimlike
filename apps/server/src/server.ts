@@ -31,7 +31,7 @@ import {
   type WorldErrorCode,
   type WorldPlayerInfo,
 } from "@rimlike/protocol";
-import { WORLD_WIRE_VERSION, serializeWorld } from "@rimlike/world";
+import { WORLD_WIRE_VERSION, climateForTile, serializeWorld } from "@rimlike/world";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { WorldStore } from "./persistence.js";
@@ -1019,11 +1019,15 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       return null;
     }
     const snapshot = worldState.snapshotFor(name);
+    // La colonie hérite du climat de sa case (docs/world.md §7,
+    // docs/protocol.md §3.2) : dérivé à la volée depuis le globe partagé,
+    // rien à persister — `climateForTile` est une fonction pure de la case.
+    const climate = climateForTile(globe.tiles[tileId]!);
     return new Room({
       name,
       log,
       ...options.roomOptions,
-      tile: { id: tileId, seed: settlement.seed },
+      tile: { id: tileId, seed: settlement.seed, climate },
       ...(snapshot !== undefined
         ? {
             restore: {

@@ -12,9 +12,10 @@
  * - **salle simple** (`join { room: "demo" }`) : l'hôte choisit la graine et
  *   la taille de carte, la salle disparaît sans laisser de trace ;
  * - **salle « case »** (`tile`), adossée à une case du globe : la graine est
- *   imposée par le serveur, l'hôte fournit périodiquement un snapshot de
- *   conservation, et la salle peut être rouverte depuis ce snapshot
- *   (`restore`) au lieu de repartir d'un lobby.
+ *   imposée par le serveur, le climat de la case part dans le `start` diffusé
+ *   au démarrage (`TileRoom.climate`, `docs/protocol.md` §3.2), l'hôte
+ *   fournit périodiquement un snapshot de conservation, et la salle peut être
+ *   rouverte depuis ce snapshot (`restore`) au lieu de repartir d'un lobby.
  */
 
 import {
@@ -36,6 +37,7 @@ import {
   type PlayerInfo,
   type RoomState,
   type ServerMessage,
+  type StartClimate,
 } from "@rimlike/protocol";
 
 /** Envoi d'une trame déjà sérialisée à un joueur. */
@@ -51,6 +53,14 @@ export type ClockStarter = (onBundle: () => void, intervalMs: number) => StopClo
 export interface TileRoom {
   readonly id: number;
   readonly seed: number;
+  /**
+   * Climat de la case, calculé par `climateForTile` (`@rimlike/world`). Porté
+   * par le `start` diffusé au démarrage (`docs/protocol.md` §3.2, §11.6) : la
+   * colonie hérite du climat de sa case du globe. `Room` ne recalcule rien,
+   * il ne connaît même pas `@rimlike/world` — c'est à l'appelant (le serveur
+   * monde) de le fournir.
+   */
+  readonly climate?: StartClimate;
 }
 
 /**
@@ -461,7 +471,14 @@ export class Room {
     for (const p of this.players) {
       p.synced = true;
     }
-    this.broadcast({ type: "start", seed: effectiveSeed, width, height, tick: 0 });
+    this.broadcast({
+      type: "start",
+      seed: effectiveSeed,
+      width,
+      height,
+      tick: 0,
+      ...(this.tile?.climate !== undefined ? { climate: this.tile.climate } : {}),
+    });
     this.log(
       `[${this.name}] démarrage — seed ${effectiveSeed}${this.tile === null ? "" : " (imposé par la case)"}, carte ${width}x${height}, ${this.players.length} joueur(s)`,
     );
