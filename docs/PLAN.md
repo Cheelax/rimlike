@@ -408,9 +408,18 @@ décroît selon la température de sa case (vitesse normale au-dessus de 15 °C,
 15, quart entre 0 et 5, gelé sous zéro), évaluée toutes les 60 ticks ; une cave froide ou
 l'hiver conservent donc les vivres. Tombe (5 pierre) et job d'inhumation : un cadavre humain au
 sol pèse −40 000 d'humeur par cadavre (plafond −120 000) sur toute la colonie, l'enterrer divise
-le deuil en cours par deux. Interface à faire (outil Tombe, fraîcheur dans le panneau d'objet,
-événement 30). À venir : recherche, relations, factions PNJ avec réputation, mods de contenu,
-événements monde.
+le deuil en cours par deux. Interface livrée le 2026-09-05 (Sonnet) : outil Tombe (pierre
+imposée), tertre vide et tombe refermée dans le catalogue de props, job « enterre », événement
+« Un mort a été enterré », pastille de fraîcheur par genre dans la ligne de stock (pile la plus
+ancienne, calculée dans le Worker) ; vérifié : tombe bâtie puis refermée après un raid.
+Recherche livrée le 2026-09-05 (Opus, sim) : septième type de travail `Research` (les strides
+`priorities` et `skills` passent à 8 et 15), établi de recherche (15 bois), cinq technologies à
+bonus passifs — agriculture (+25 % de pousse), médecine (soins et cicatrisation pansée +50 %),
+conservation (péremption ÷ 2), archerie (portée 10, dégâts +25 %), maçonnerie (pierre −25 % de
+temps) — rien n'est verrouillé derrière la recherche ; `SetResearch` choisit la cible, 10 points
+par tick modulés par humeur et compétence, séances de 600 ticks. Interface à faire (outil Établi
+de recherche, panneau Recherche, colonne Recherche dans les priorités et compétences, événement
+31). À venir : relations, factions PNJ avec réputation, mods de contenu, événements monde.
 
 ## 7. Risques identifiés
 
@@ -425,6 +434,14 @@ le deuil en cours par deux. Interface à faire (outil Tombe, fraîcheur dans le 
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-05 : recherche à bonus, pas à verrous. Une technologie améliore ce que la colonie
+  sait déjà faire ; rien d'existant n'est bloqué derrière l'établi, ce qui laisse les tests
+  et les parties en cours intacts et évite un début de partie vide. Chaque technologie décrit
+  ses effets en constantes et fonctions pures dans `research.rs`, les points d'application
+  (`jobs`, `combat`, `build`, `fastforward`) ne font que lire le drapeau. Une commande de
+  recherche invalide est ignorée, pas réinterprétée. Le septième type de travail change deux
+  strides de tampons : contrat mis à jour des deux côtés dans le même élan.
 
 - 2026-09-05 : conservation par le froid. La date de péremption fixe devient une fraîcheur
   entière par pile dont la perte dépend de la température de la case ; `spoil_at` reste

@@ -29,7 +29,8 @@ use crate::farm;
 use crate::health::{BLOOD_MAX, UP_BLOOD, UP_CONSCIOUSNESS};
 use crate::map::Feature;
 use crate::pawn::{Faction, Job};
-use crate::{EventKind, Sim, TICKS_PER_DAY};
+use crate::research;
+use crate::{EventKind, Sim, TICKS_PER_DAY, Tech};
 
 /// Avance rapide maximale, en ticks : 60 jours de jeu. Une demande plus
 /// grande est **tronquée** plutôt que refusée — une colonie oubliée un an ne
@@ -104,6 +105,8 @@ impl Sim {
     /// rétroactivement — il faudrait pour cela rejouer une météo qui n'a jamais
     /// existé. Une colonie oubliée retrouve son champ intact.
     fn grow_plants(&mut self, ticks: u32) {
+        // Le quart de pousse de `Tech::Agriculture`, compté d'un coup.
+        let ticks = research::crop_growth_ticks(ticks, self.research.is_done(Tech::Agriculture));
         for k in 0..self.crops.len() {
             if self.crops[k].growth >= farm::GROW_TICKS {
                 continue;
@@ -158,6 +161,9 @@ impl Sim {
         // deux si elle est pansée : exactement le rythme de `tick_injuries`,
         // en une seule opération.
         let healed = ticks / HEAL_INTERVAL as u32;
+        // Même règle que `Sim::tick_injuries` : la médecine accélère la
+        // cicatrisation des plaies pansées.
+        let tended_points = research::tended_heal_points(self.research.is_done(Tech::Medicine));
         let now = self.tick;
         for i in 0..self.pawns.len() {
             let was_downed = self.pawns[i].is_downed();
@@ -169,7 +175,7 @@ impl Sim {
                 // Deux mois plus tard, plus rien ne coule.
                 inj.close();
                 let points = if inj.tended {
-                    healed.saturating_mul(2)
+                    healed.saturating_mul(tended_points)
                 } else {
                     healed
                 };

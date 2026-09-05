@@ -241,6 +241,7 @@ fn feature_wealth(f: Feature) -> u32 {
         Feature::Bed => 20,
         Feature::Campfire => 10,
         Feature::CraftingSpot => 15,
+        Feature::ResearchBench => 20,
         // La nature n'appartient à personne : ni arbre, ni rocher, ni buisson,
         // ni plant ne compte comme richesse.
         _ => 0,

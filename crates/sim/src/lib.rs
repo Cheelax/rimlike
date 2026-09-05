@@ -31,6 +31,7 @@ pub mod names;
 pub mod noise;
 pub mod path;
 pub mod pawn;
+pub mod research;
 pub mod rng;
 pub mod storyteller;
 pub mod testmap;
@@ -53,6 +54,7 @@ pub use items::{ItemKind, ItemStack};
 pub use jobs::{Regrow, Reservation};
 pub use map::{Designation, Feature, Map, ROOM_MAX_TILES, Rect, Terrain, Zone};
 pub use pawn::{Faction, Job, Pawn};
+pub use research::{ResearchState, Tech};
 pub use rng::Rng;
 pub use storyteller::{Difficulty, RaidKind};
 pub use trade::{TRADER_STAY, item_value, value_buy, value_sell};
@@ -148,6 +150,10 @@ pub enum EventKind {
     /// `pawn::Job::Bury`). `arg` : toujours 0 — `ItemKind::Corpse` ne garde
     /// aucune trace de qui c'était.
     Buried = 30,
+    /// Une technologie vient d'être acquise (voir `research`). `arg` : la
+    /// technologie (`research::Tech`). La colonie ne cherche plus rien tant
+    /// que le joueur n'a pas choisi la suivante.
+    ResearchDone = 31,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -285,6 +291,14 @@ pub enum Command {
     /// effet si un marchand est déjà là, si la colonie est éteinte ou si aucun
     /// bord n'est atteignable. **Ajoutée en fin d'énumération.**
     TriggerTraderVisit,
+    /// Choisit la technologie que la colonie cherche (`research::Tech`), ou
+    /// arrête tout avec `research::NO_TECH` (255). Ignorée si `tech` ne désigne
+    /// aucune technologie ou si celle-ci est déjà acquise — sans plus de
+    /// manières que `Hunt` sur un id inconnu. Les colons dont la priorité
+    /// Recherche est active s'installent alors à un établi
+    /// (`BuildKind::ResearchBench`), s'il y en a un.
+    /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
+    SetResearch { tech: u8 },
 }
 
 #[derive(Debug)]
@@ -379,6 +393,10 @@ pub struct Sim {
     /// un marchand : les visites programmées d'ici là attendent
     /// `trade::TRADER_GRUDGE_EXTRA` de plus. 0 quand rien n'est reproché.
     trader_grudge_until: u64,
+    /// Ce que la colonie cherche et ce qu'elle a trouvé (voir `research`).
+    /// **Champ ajouté en fin de structure** : un vieux snapshot est refusé net
+    /// (fin de tampon) plutôt que relu de travers.
+    research: ResearchState,
 }
 
 impl Sim {
@@ -442,6 +460,7 @@ impl Sim {
             calendar_offset_days: 0,
             next_trader_at: 0,
             trader_grudge_until: 0,
+            research: ResearchState::default(),
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -699,6 +718,7 @@ impl Sim {
             Command::TriggerTraderVisit => {
                 self.spawn_trader();
             }
+            Command::SetResearch { tech } => self.set_research(tech),
         }
     }
 
@@ -812,6 +832,36 @@ impl Sim {
     /// Objectifs de fabrication courants, indexés par `ItemKind`.
     pub fn craft_targets(&self) -> &[u32; ItemKind::COUNT] {
         &self.craft_targets
+    }
+
+    /// Ce que la colonie cherche et ce qu'elle a trouvé.
+    pub fn research(&self) -> &ResearchState {
+        &self.research
+    }
+
+    /// Accès direct à l'état de la recherche, **pour les tests et les
+    /// scénarios** (comme `map_mut`) : c'est ainsi qu'on part d'une colonie
+    /// qui sait déjà quelque chose. Le jeu, lui, passe par
+    /// `Command::SetResearch` et par le travail des colons.
+    pub fn research_mut(&mut self) -> &mut ResearchState {
+        &mut self.research
+    }
+
+    /// Choisit la technologie cherchée. Un octet qui n'en désigne aucune est
+    /// ignoré, une technologie déjà acquise aussi ; `research::NO_TECH` (255)
+    /// arrête la recherche en cours.
+    fn set_research(&mut self, tech: u8) {
+        if tech == research::NO_TECH {
+            self.research.current = research::NO_TECH;
+            return;
+        }
+        let Some(t) = Tech::from_u8(tech) else {
+            return;
+        };
+        if self.research.is_done(t) {
+            return;
+        }
+        self.research.current = tech;
     }
 
     /// Total d'objets rangés en zone de stockage, par genre.

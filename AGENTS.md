@@ -114,8 +114,8 @@ Les valeurs numériques des enums sont un contrat, à modifier des deux côtés 
 | `items::ItemKind` | `terrain.ts` (`ITEM_NAMES`, `ITEM_COLORS`) |
 | `build::BuildKind`, `Material` | `terrain.ts` (`BUILD_KIND`, `MATERIAL`, `WALL_COLORS`, `DOOR_COLORS`) |
 | `pawn::Faction` (0 colonie, 1 pillard), `EventKind` | `Renderer.ts`, `App.tsx` (index 10 du tampon pawn), `terrain.ts` (`eventLabel`) |
-| `work::WorkType` (6 types), `weather::Weather` (0 clair, 1 pluie, 2 orage) | `terrain.ts` (`WORK_LABELS`, `WEATHER_LABELS`), `Renderer.ts` (`setWeather`) |
-| `work::Skill` (niveau 0-20, xp), `EventKind::LevelUp = 7`, `pawn_name(id)` | tampon `skills`, stride 13 : id puis niveau/xp par type dans l'ordre de `WorkType::ALL` |
+| `work::WorkType` (7 types), `weather::Weather` (0 clair, 1 pluie, 2 orage) | `terrain.ts` (`WORK_LABELS`, `WEATHER_LABELS`), `Renderer.ts` (`setWeather`) |
+| `work::Skill` (niveau 0-20, xp), `EventKind::LevelUp = 7`, `pawn_name(id)` | tampon `skills`, stride 15 : id puis niveau/xp par type dans l'ordre de `WorkType::ALL` |
 | `health::BodyPart` (0 tête … 5 jambe droite), `EventKind` 8 à terre / 9 secouru / 10 soigné, jobs 15 à terre / 16 secourt / 17 soigne, drapeau pawn `DOWNED = 32` | tampon `health`, stride 4 : id, sang 0-1000, conscience %, nombre de blessures ; `pawn_injuries(id)` : partie, sévérité, saignement, pansée |
 | `Command::FastForward { ticks }` (borne 60 jours), `EventKind::FastForwarded = 13` (`arg` = jours écoulés) | `encode_fast_forward(ticks)` ; le serveur envoie `snapshot.frozenTicks` à la réouverture d'une colonie gelée, l'hôte l'émet une seule fois en première commande |
 | `ItemKind` 6 gourdin / 7 épieu / 8 arc (`COUNT` = 9 : `stored_totals` et `craft_targets` ont 9 entrées), `Feature::CraftingSpot = 13`, `BuildKind::CraftingSpot = 5`, `EventKind::WeaponCrafted = 14`, jobs 18 fabrique / 19 s'équipe, `Command::SetCraftTarget` | `set_craft_target`, `encode_set_craft_target`, `craft_targets()`, `pawn_weapon(id)` (−1 si aucune), `pawn_combat_skills(id)` → `[mêlée niv, xp, tir niv, xp]` |
@@ -128,8 +128,9 @@ Les valeurs numériques des enums sont un contrat, à modifier des deux côtés 
 | `caravan::CaravanManifest` (octets postcard opaques), `Command::FormCaravan` / `ClearDepartures` / `ArriveCaravan`, `EventKind` 11 départ / 12 arrivée | `departures_count`, `departure(i)`, `describe_manifest(bytes)` → `[colons, genres, kind, count, …]` ; le manifeste part au serveur monde (`caravan_depart`) et revient dans la commande `ArriveCaravan` de l'hôte d'arrivée (voir `docs/protocol.md` §12) |
 | `BuildKind::Grave = 6` (5 pierre), `Feature::Grave = 14` / `GraveFilled = 15`, job 23 enterre, `EventKind::Buried = 30`, fraîcheur par pile selon la température de la case (`climate::spoilage_divisor`) | `item_freshness(id)` (‰ restant, −1 si non périssable) ; le tampon `items` ne change pas |
 | `Command::TriggerTraderVisit` (débogage, comme `TriggerRaid`) | `trigger_trader_visit`, `encode_trigger_trader_visit` ; `rpc("triggerTraderVisit")` en dev |
+| `work::WorkType::Research = 6` (`WORK_TYPES` = 7 : `PRIORITY_STRIDE` = 8, `SKILL_STRIDE` = 15), `BuildKind::ResearchBench = 7` (15 bois), `Feature::ResearchBench = 16`, job 24 recherche, `research::Tech` (0 agriculture, 1 médecine, 2 conservation, 3 archerie, 4 maçonnerie), `Command::SetResearch { tech }` (255 = aucune, invalide ignorée), `EventKind::ResearchDone = 31` (`arg` = tech) | `set_research`, `encode_set_research`, `research_state()` → `[courante, (avancement, coût, acquise) × 5]`, `tech_cost(tech)` ; `WORK_LABELS` à 7 entrées |
 | `pawn::Job::code()` | `terrain.ts` (`JOB_LABELS`) |
-| `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, `PRIORITY_STRIDE` = 7, `SKILL_STRIDE` = 13, `HEALTH_STRIDE` = 4, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |
+| `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, `PRIORITY_STRIDE` = 8, `SKILL_STRIDE` = 15, `HEALTH_STRIDE` = 4, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |
 
 Les vues mémoire (`tiles`, `features`, `zones`, `designations`) sont en zéro-copie sur la
 mémoire WASM : à recréer après chaque appel au sim, jamais conservées. `pawns()`,

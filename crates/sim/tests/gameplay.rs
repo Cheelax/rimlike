@@ -1621,8 +1621,10 @@ fn armed_raiders_drop_weapons() {
     // vingt secondes à camper au bord de la carte, ce qui ne dit rien du butin.
     // (Graine 2 → 4 le 2026-09-05 : programmer la première visite de marchand
     // consomme un tirage de plus à la construction, et le déroulement de la
-    // graine 2 a glissé jusqu'à ne plus faire aucun mort.)
-    let mut s = Sim::new(4, 32, 32);
+    // graine 2 a glissé jusqu'à ne plus faire aucun mort. Puis 4 → 6, même
+    // jour, même raison : le type de travail Recherche ajoute un tirage de
+    // niveau par colon à la création.)
+    let mut s = Sim::new(6, 32, 32);
     let (bx, by) = s
         .map()
         .nearest_passable(16, 16)

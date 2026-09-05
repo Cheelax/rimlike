@@ -194,11 +194,11 @@ export function clampCraftTarget(n: number): number {
 }
 
 /** Contrat avec `sim::WorkType` : index = valeur de l'enum. */
-export const WORK_LABELS = ["Construire", "Livrer", "Cuisiner", "Désignations", "Cultiver", "Ranger"] as const;
-/** Contrat avec `sim-wasm::PRIORITY_STRIDE` : [id, p0..p5] par colon. */
-export const PRIORITY_STRIDE = 7;
-/** Contrat avec `sim-wasm::SKILL_STRIDE` : [id, (niveau, xp)×6] par colon. */
-export const SKILL_STRIDE = 13;
+export const WORK_LABELS = ["Construire", "Livrer", "Cuisiner", "Désignations", "Cultiver", "Ranger", "Rechercher"] as const;
+/** Contrat avec `sim-wasm::PRIORITY_STRIDE` : [id, p0..p6] par colon. */
+export const PRIORITY_STRIDE = 8;
+/** Contrat avec `sim-wasm::SKILL_STRIDE` : [id, (niveau, xp)×7] par colon. */
+export const SKILL_STRIDE = 15;
 /** Expérience nécessaire pour passer du niveau `level` au suivant (`sim::work::xp_to_next`). */
 export function xpToNext(level: number): number {
   return 1000 * (level + 1);
@@ -330,6 +330,7 @@ export const JOB_LABELS = [
   "dépèce",
   "attend",
   "enterre",
+  "recherche",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */

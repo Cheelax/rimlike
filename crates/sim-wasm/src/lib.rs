@@ -15,10 +15,10 @@ pub const BLUEPRINT_STRIDE: usize = 8;
 /// Entiers par événement : seq, tick, genre, argument.
 pub const EVENT_STRIDE: usize = 4;
 /// Entiers par colon dans le tampon des priorités : id, puis une priorité par
-/// type de travail (`sim::WORK_TYPES`).
+/// type de travail (`sim::WORK_TYPES`, 7 depuis la recherche : 8 entiers).
 pub const PRIORITY_STRIDE: usize = 1 + sim::WORK_TYPES;
 /// Entiers par colon dans le tampon des compétences : id, puis (niveau, xp)
-/// par type de travail (`sim::WORK_TYPES`).
+/// par type de travail (`sim::WORK_TYPES`, 7 depuis la recherche : 15 entiers).
 pub const SKILL_STRIDE: usize = 1 + 2 * sim::WORK_TYPES;
 /// Entiers par pawn dans le tampon de santé : id, sang, conscience %,
 /// nombre de blessures. Toutes factions confondues, comme `pawns()`.
@@ -282,6 +282,15 @@ impl WasmSim {
         self.pending.push(sim::Command::TriggerTraderVisit);
     }
 
+    /// Choisit la technologie cherchée, suivant `sim::Tech` (0 agriculture,
+    /// 1 médecine, 2 conservation, 3 archerie, 4 maçonnerie), ou 255 pour ne
+    /// plus rien chercher. Le sim ignore un numéro inconnu ou une technologie
+    /// déjà acquise. Les colons ne cherchent que s'il existe un établi
+    /// (`BuildKind::ResearchBench` = 7).
+    pub fn set_research(&mut self, tech: u8) {
+        self.pending.push(sim::Command::SetResearch { tech });
+    }
+
     // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
     //
     // Fonctions **associées** : le client doit pouvoir encoder avant même
@@ -425,6 +434,11 @@ impl WasmSim {
         encode(&sim::Command::TriggerTraderVisit)
     }
 
+    /// Technologie cherchée (255 = aucune). Voir `set_research`.
+    pub fn encode_set_research(tech: u8) -> Vec<u8> {
+        encode(&sim::Command::SetResearch { tech })
+    }
+
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
     pub fn encode_set_priority(pawn: u32, work: u8, priority: u8) -> Vec<u8> {
         encode(&sim::Command::SetPriority {
@@ -564,6 +578,27 @@ impl WasmSim {
     /// Objectifs de fabrication courants, indexés par `ItemKind`.
     pub fn craft_targets(&self) -> Vec<u32> {
         self.inner.craft_targets().to_vec()
+    }
+
+    /// Où en est la recherche : `[current, (avancement, coût, acquise) × n]`,
+    /// soit `1 + 3 × sim::Tech::COUNT` entiers, les technologies dans l'ordre
+    /// de `sim::Tech`. `current` vaut 255 quand la colonie ne cherche rien ;
+    /// `acquise` vaut 0 ou 1.
+    pub fn research_state(&self) -> Vec<u32> {
+        let state = self.inner.research();
+        let mut out = Vec::with_capacity(1 + 3 * sim::Tech::COUNT);
+        out.push(u32::from(state.current));
+        for tech in sim::Tech::ALL {
+            out.push(state.progress_of(tech));
+            out.push(tech.cost());
+            out.push(u32::from(state.is_done(tech)));
+        }
+        out
+    }
+
+    /// Coût en points d'une technologie ; 0 si le numéro n'en désigne aucune.
+    pub fn tech_cost(tech: u8) -> u32 {
+        sim::Tech::from_u8(tech).map_or(0, |t| t.cost())
     }
 
     /// Dose de menace courante, suivant `sim::Difficulty` (0 paisible,
@@ -1198,6 +1233,18 @@ mod tests {
                 WasmSim::encode_trigger_trader_visit(),
                 Command::TriggerTraderVisit,
             ),
+            (
+                WasmSim::encode_set_research(sim::Tech::Masonry as u8),
+                Command::SetResearch {
+                    tech: sim::Tech::Masonry as u8,
+                },
+            ),
+            (
+                // 255 : « ne cherche plus rien ». L'octet part tel quel, c'est
+                // le sim qui décide ce qu'il en fait.
+                WasmSim::encode_set_research(255),
+                Command::SetResearch { tech: 255 },
+            ),
         ];
         for (bytes, expected) in cases {
             assert!(!bytes.is_empty(), "une commande encodée n'est jamais vide");
@@ -1313,6 +1360,47 @@ mod tests {
         s.clear_departures(1);
         s.step(1);
         assert_eq!(s.departures_count(), 0);
+    }
+
+    /// Contrat de recherche avec le client : état lisible, coûts, et les deux
+    /// tampons dont la foulée a grandi avec `WorkType::Research`.
+    #[test]
+    fn les_accesseurs_de_recherche_repondent() {
+        let mut s = fresh();
+        assert_eq!(PRIORITY_STRIDE, 8, "id + 7 priorités");
+        assert_eq!(SKILL_STRIDE, 15, "id + (niveau, xp) × 7");
+        assert_eq!(s.priority_stride(), PRIORITY_STRIDE);
+        assert_eq!(s.skill_stride(), SKILL_STRIDE);
+        let colonists = s
+            .inner
+            .pawns()
+            .iter()
+            .filter(|p| p.faction == Faction::Colony)
+            .count();
+        assert_eq!(s.priorities_len(), colonists * PRIORITY_STRIDE);
+        assert_eq!(s.skills_len(), colonists * SKILL_STRIDE);
+
+        let state = s.research_state();
+        assert_eq!(state.len(), 1 + 3 * sim::Tech::COUNT);
+        assert_eq!(state[0], 255, "on ne cherche rien au départ");
+        for (k, tech) in sim::Tech::ALL.iter().enumerate() {
+            assert_eq!(state[1 + 3 * k], 0, "avancement de départ");
+            assert_eq!(state[2 + 3 * k], tech.cost());
+            assert_eq!(state[3 + 3 * k], 0, "rien d'acquis au départ");
+            assert_eq!(WasmSim::tech_cost(*tech as u8), tech.cost());
+        }
+        assert_eq!(WasmSim::tech_cost(200), 0, "numéro inconnu");
+
+        s.set_research(sim::Tech::Medicine as u8);
+        s.step(1);
+        assert_eq!(s.research_state()[0], sim::Tech::Medicine as u32);
+        // Un numéro qui ne désigne rien laisse la recherche en cours.
+        s.set_research(42);
+        s.step(1);
+        assert_eq!(s.research_state()[0], sim::Tech::Medicine as u32);
+        s.set_research(255);
+        s.step(1);
+        assert_eq!(s.research_state()[0], 255, "recherche arrêtée");
     }
 
     /// Contrat d'armement avec le client : objectifs de fabrication lisibles,

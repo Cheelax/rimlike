@@ -10,7 +10,7 @@ use sim::{
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 20;
+pub const VARIANT_COUNT: usize = 21;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -35,6 +35,7 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "SetCalendar",
     "Trade",
     "TriggerTraderVisit",
+    "SetResearch",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -271,9 +272,9 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
         4 => {
             let (x0, y0, x1, y1) = random_rect_i32(rng, size);
             Command::Build {
-                // 0..=6 : murs, portes, sols, lits, feux, postes de
-                // fabrication et tombes.
-                kind: BuildKind::from_u8(rng.below(7) as u8),
+                // 0..=7 : murs, portes, sols, lits, feux, postes de
+                // fabrication, tombes et établis de recherche.
+                kind: BuildKind::from_u8(rng.below(8) as u8),
                 material: Material::from_u8(rng.below(2) as u8),
                 x0,
                 y0,
@@ -298,7 +299,7 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
         }
         7 => Command::SetPriority {
             pawn: random_pawn_id(rng, sim),
-            work: WorkType::from_u8(rng.below(6) as u8),
+            work: WorkType::from_u8(rng.below(7) as u8),
             // Bornes valides 0..=4 : le tirage sur 256 cogne largement
             // au-delà pour vérifier que `Sim::apply` sature bien (`.min(4)`).
             priority: rng.below(256) as u8,
@@ -405,7 +406,18 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
         }
         // Un marchand qui débarque au milieu du chaos : refusé s'il y en a
         // déjà un, sinon un pawn neutre de plus à bousculer.
-        _ => Command::TriggerTraderVisit,
+        19 => Command::TriggerTraderVisit,
+        // Technologie le plus souvent valide (ou juste au-delà de la
+        // dernière), sinon n'importe quel octet — la plupart ne désignent
+        // rien et doivent être ignorés — ou 255, qui arrête la recherche. Une
+        // technologie déjà acquise est refusée sans repartir de zéro.
+        _ => Command::SetResearch {
+            tech: match rng.below(4) {
+                0 => rng.below(256) as u8,
+                1 => sim::research::NO_TECH,
+                _ => rng.below(sim::Tech::COUNT as u32 + 2) as u8,
+            },
+        },
     };
     (cmd, variant)
 }
@@ -426,23 +438,48 @@ mod tests {
         assert!(seen.iter().all(|&s| s), "variantes manquantes : {seen:?}");
     }
 
-    /// `BuildKind::Grave` est la variante la plus récente (voir
-    /// `sim::build::BuildKind`) : elle doit rester tirable comme les autres.
+    /// `BuildKind::ResearchBench` est la variante la plus récente (voir
+    /// `sim::build::BuildKind`) : elle doit rester tirable comme les autres,
+    /// la tombe avec elle.
     #[test]
-    fn build_covers_the_grave() {
+    fn build_covers_the_newest_kinds() {
         let mut rng = Rng::new(3);
         let sim = Sim::new(1, 16, 16);
         let mut seen_grave = false;
-        for _ in 0..2000 {
+        let mut seen_bench = false;
+        for _ in 0..4000 {
             let (cmd, _) = random_command(&mut rng, &sim, 16);
-            if let Command::Build { kind, .. } = cmd
-                && kind == BuildKind::Grave
-            {
-                seen_grave = true;
+            if let Command::Build { kind, .. } = cmd {
+                seen_grave |= kind == BuildKind::Grave;
+                seen_bench |= kind == BuildKind::ResearchBench;
+            }
+            if seen_grave && seen_bench {
                 break;
             }
         }
         assert!(seen_grave, "BuildKind::Grave n'est jamais tiré");
+        assert!(seen_bench, "BuildKind::ResearchBench n'est jamais tiré");
+    }
+
+    /// Toutes les technologies doivent être tirables — sinon la campagne ne
+    /// verrait jamais un bonus s'appliquer.
+    #[test]
+    fn set_research_covers_every_tech() {
+        let mut rng = Rng::new(11);
+        let sim = Sim::new(1, 16, 16);
+        let mut seen = [false; sim::Tech::COUNT];
+        for _ in 0..20_000 {
+            let (cmd, _) = random_command(&mut rng, &sim, 16);
+            if let Command::SetResearch { tech } = cmd
+                && let Some(t) = sim::Tech::from_u8(tech)
+            {
+                seen[t as usize] = true;
+            }
+        }
+        assert!(
+            seen.iter().all(|&s| s),
+            "technologies manquantes : {seen:?}"
+        );
     }
 
     #[test]

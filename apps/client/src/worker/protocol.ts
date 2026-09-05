@@ -128,7 +128,7 @@ export interface FrameMessage {
   readonly blueprints: Int32Array;
   readonly events: Int32Array;
   readonly priorities: Int32Array;
-  /** Compétences : `[id, (niveau, xp)×6]` par colon (`sim-wasm::SKILL_STRIDE`). */
+  /** Compétences : `[id, (niveau, xp)×7]` par colon (`sim-wasm::SKILL_STRIDE`). */
   readonly skills: Int32Array;
   /** Santé : `[id, sang, conscience %, blessures]` par pawn (`sim-wasm::HEALTH_STRIDE`). */
   readonly health: Int32Array;

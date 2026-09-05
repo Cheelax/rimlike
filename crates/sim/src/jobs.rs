@@ -20,9 +20,10 @@ use crate::pawn::{
     BREAK_TICKS, Faction, HUNGER_DECAY, Job, MOOD_BREAK, NEED_MAX, RELIEF_TICKS, REST_DECAY,
     REST_RECOVERY, RESTED,
 };
+use crate::research::{self, RESEARCH_SESSION};
 use crate::traits::{self, Trait};
 use crate::work::{self, WorkType};
-use crate::{EventKind, Sim, TICKS_PER_DAY, Weather};
+use crate::{EventKind, Sim, TICKS_PER_DAY, Tech, Weather};
 
 /// Nombre maximal de candidats pour lesquels on tente un A* par recherche.
 const PATH_ATTEMPTS: usize = 6;
@@ -175,6 +176,7 @@ impl Sim {
                 grave,
                 picked,
             } => self.do_bury(i, corpse, grave, picked),
+            Job::Research { bench } => self.do_research(i, bench),
             // Traité plus haut : un pawn à terre ne passe jamais par ici.
             Job::Downed => {}
             // Réservé aux assiégeants (traités plus haut) : un colon n'attend
@@ -311,7 +313,8 @@ impl Sim {
     }
 
     /// Fait progresser d'un cran la compétence associée à un tick de travail
-    /// effectif. Appelée par `do_work`, `do_build`, `do_farm` et `do_cook` ;
+    /// effectif. Appelée par `do_work`, `do_build`, `do_farm`, `do_cook` et
+    /// `do_research` ;
     /// jamais par `do_haul`/`do_deliver`, qui n'ont pas de barre de
     /// progression et ne font donc jamais gagner d'XP au transport.
     fn gain_xp(&mut self, i: usize, work: WorkType) {
@@ -350,9 +353,9 @@ impl Sim {
         if self.try_start_equip(i) {
             return;
         }
-        // Priorité 1 d'abord, et à priorité égale l'ordre de `WorkType::ALL`.
+        // Priorité 1 d'abord, et à priorité égale l'ordre de `WorkType::ORDER`.
         for prio in 1..=4 {
-            for work in WorkType::ALL {
+            for work in WorkType::ORDER {
                 if self.pawns[i].priorities[work as usize] == prio && self.try_start(work, i) {
                     return;
                 }
@@ -376,6 +379,7 @@ impl Sim {
             // même priorité et la même place dans le tableau de travail.
             WorkType::Designated => self.try_start_work(i) || self.try_start_hunt(i),
             WorkType::Farm => self.try_start_farm(i),
+            WorkType::Research => self.try_start_research(i),
             // Enterrer un cadavre suit le rangement : même priorité, même
             // urgence relative — la colonie range d'abord ce qui se range,
             // puis s'occupe de ses morts.
@@ -660,7 +664,8 @@ impl Sim {
             self.abandon_job(i);
             return;
         }
-        let progress = progress + TEND_STEP;
+        let progress =
+            progress + research::tend_step(TEND_STEP, self.research.is_done(Tech::Medicine));
         if progress < TEND_TICKS * 100 {
             self.pawns[i].job = Job::Tend { target, progress };
             return;
@@ -1307,9 +1312,11 @@ impl Sim {
         if kind.adjacent_only() && self.pawns.iter().any(|p| p.tile() == target) {
             return;
         }
+        let material = self.blueprints[k].material;
+        let masonry = self.research.is_done(Tech::Masonry);
         self.blueprints[k].progress += self.pawns[i].work_step(WorkType::Build);
         self.gain_xp(i, WorkType::Build);
-        if self.blueprints[k].progress < kind.work_ticks() * 100 {
+        if self.blueprints[k].progress < kind.work_ticks_with(material, masonry) * 100 {
             return;
         }
         self.complete_blueprint(k);
@@ -2090,6 +2097,81 @@ impl Sim {
         self.pawns[i].job = Job::Idle;
     }
 
+    // ------------------------------------------------------------------
+    // Recherche
+    // ------------------------------------------------------------------
+
+    /// Cherche s'il y a une technologie en cours et un établi libre. Deux
+    /// court-circuits avant tout balayage : sans établi ou sans technologie
+    /// choisie, un colon inactif ne parcourt pas la carte.
+    fn try_start_research(&mut self, i: usize) -> bool {
+        if self.map.research_bench_count() == 0 || self.research.current().is_none() {
+            return false;
+        }
+        let from = self.pawns[i].tile();
+        let mut benches: Vec<(u32, u32, u32)> = Vec::new();
+        for y in 0..self.map.height() {
+            for x in 0..self.map.width() {
+                if self.map.feature(x, y) == Feature::ResearchBench && !self.is_reserved(x, y) {
+                    benches.push((chebyshev(from, (x, y)), x, y));
+                }
+            }
+        }
+        benches.sort_unstable();
+        for &(_, bx, by) in benches.iter().take(PATH_ATTEMPTS) {
+            let Some(p) = self.path_adjacent(from, (bx, by)) else {
+                continue;
+            };
+            let pawn = self.pawns[i].id;
+            self.reservations.push(Reservation { x: bx, y: by, pawn });
+            self.pawns[i].set_path(p);
+            self.pawns[i].job = Job::Research { bench: (bx, by) };
+            return true;
+        }
+        false
+    }
+
+    /// Une séance à l'établi. Les points vont dans `Sim::research`, pas dans le
+    /// job : ce que la colonie a trouvé ne se perd pas si le chercheur lâche
+    /// tout, meurt ou part en caravane.
+    fn do_research(&mut self, i: usize, bench: (u32, u32)) {
+        // Plus rien à chercher (technologie acquise, ou joueur qui a tout
+        // arrêté) : le colon rend l'établi.
+        let Some(tech) = self.research.current() else {
+            self.abandon_job(i);
+            return;
+        };
+        if self.map.feature(bench.0, bench.1) != Feature::ResearchBench {
+            self.abandon_job(i);
+            return;
+        }
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        if chebyshev(self.pawns[i].tile(), bench) > 1 {
+            self.abandon_job(i);
+            return;
+        }
+        let points = research::points_for(self.pawns[i].work_step(WorkType::Research));
+        let k = tech as usize;
+        self.research.progress[k] = self.research.progress[k].saturating_add(points);
+        self.gain_xp(i, WorkType::Research);
+        if self.research.progress[k] >= tech.cost() {
+            self.research.done[k] = true;
+            self.research.current = research::NO_TECH;
+            self.push_event(EventKind::ResearchDone, tech as u32);
+            self.abandon_job(i);
+            return;
+        }
+        // Fin de séance : le colon lâche l'établi (quitte à le reprendre au
+        // tick suivant), ses besoins et son tableau de travail sont réévalués,
+        // et un camarade peut prendre la place.
+        if self.tick % u64::from(RESEARCH_SESSION) == 0 {
+            self.abandon_job(i);
+        }
+    }
+
     fn can_sow(&self, x: u32, y: u32) -> bool {
         self.map.is_soil(x, y)
             && self.map.feature(x, y) == Feature::None
@@ -2197,6 +2279,9 @@ impl Sim {
         }
         let wet = self.weather.is_wet();
         let tick = self.tick;
+        // Lu une fois pour toutes les cases : la recherche ne change pas en
+        // cours de tick.
+        let agriculture = self.research.is_done(Tech::Agriculture);
         let mut k = 0;
         while k < self.crops.len() {
             let (x, y) = (self.crops[k].x, self.crops[k].y);
@@ -2210,6 +2295,7 @@ impl Sim {
             }
             if self.crops[k].growth < farm::GROW_TICKS {
                 let step = climate::growth_step(temperature, wet, tick);
+                let step = research::crop_growth_step(step, agriculture, tick);
                 self.crops[k].growth = (self.crops[k].growth + step).min(farm::GROW_TICKS);
                 if self.crops[k].growth == farm::GROW_TICKS
                     && self.map.feature(x, y) == Feature::Crop
@@ -2252,6 +2338,7 @@ impl Sim {
             return;
         }
         let now = self.tick;
+        let preservation = self.research.is_done(Tech::Preservation);
         let mut k = 0;
         while k < self.items.len() {
             let Some(life) = self.items[k].kind.shelf_life() else {
@@ -2265,6 +2352,9 @@ impl Sim {
                 k += 1;
                 continue;
             };
+            // La conservation vient s'ajouter au froid : elle multiplie le
+            // diviseur, elle ne le remplace pas.
+            let divisor = research::spoilage_divisor(divisor, preservation);
             // Perte du lot, en millionièmes : voir `ItemStack::freshness`.
             // Tout se fait en `u64` et la division vient en dernier — un
             // `1_000_000 / shelf_life` tronqué trop tôt (`shelf_life` ne

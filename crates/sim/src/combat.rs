@@ -13,9 +13,10 @@ use crate::items::ItemKind;
 use crate::map::{Feature, Map, chebyshev};
 use crate::path;
 use crate::pawn::{Faction, Job, Pawn};
+use crate::research;
 use crate::traits::{self, Trait};
 use crate::work;
-use crate::{EventKind, Sim, TICKS_PER_DAY};
+use crate::{EventKind, Sim, TICKS_PER_DAY, Tech};
 
 /// Ticks entre deux coups d'un même pawn.
 pub const ATTACK_COOLDOWN: u32 = 60;
@@ -202,6 +203,9 @@ impl Sim {
             && !self.pawns[i].is_starving()
             && self.pawns[i].comfort >= crate::climate::HYPOTHERMIA_TEMP
             && self.tick % self.heal_interval(i) == 0;
+        // La médecine fait cicatriser les plaies **pansées** moitié plus vite ;
+        // une plaie laissée à l'air libre ne profite de rien.
+        let tended_points = research::tended_heal_points(self.research.is_done(Tech::Medicine));
         let p = &mut self.pawns[i];
         for inj in &mut p.injuries {
             if inj.bleeding > 0 {
@@ -211,7 +215,9 @@ impl Sim {
                 }
             }
             if heals {
-                inj.severity = inj.severity.saturating_sub(if inj.tended { 2 } else { 1 });
+                inj.severity =
+                    inj.severity
+                        .saturating_sub(if inj.tended { tended_points } else { 1 });
             }
         }
         if heals {
@@ -569,7 +575,7 @@ impl Sim {
         // Un tireur garde ses distances : cible en vue et à portée, il s'arrête
         // là où il est et décoche.
         if self.pawns[i].weapon == Some(ItemKind::Bow)
-            && distance <= BOW_RANGE
+            && distance <= research::bow_range(BOW_RANGE, self.research.is_done(Tech::Archery))
             && line_of_sight(&self.map, me, them)
         {
             self.pawns[i].path.clear();
@@ -668,6 +674,9 @@ impl Sim {
         };
         if self.rng.below(100) < accuracy {
             let damage = self.rng.range_i32(RANGED_DAMAGE.0, RANGED_DAMAGE.1) as u32;
+            // La recherche affûte la flèche avant que la cible n'encaisse :
+            // `Tough`/`Frail` s'appliquent en dernier, sur le coup réel.
+            let damage = research::ranged_damage(damage, self.research.is_done(Tech::Archery));
             let damage = self.pawns[k].damage_from(damage);
             let part = health::part_for_roll(self.rng.below(health::HIT_WEIGHT_TOTAL));
             self.pawns[k].add_injury(part, damage, damage / health::BLEED_FRACTION);

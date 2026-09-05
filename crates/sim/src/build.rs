@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::items::ItemKind;
 use crate::map::{Feature, Map, Terrain};
+use crate::research;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
@@ -19,6 +20,10 @@ pub enum BuildKind {
     /// Tombe : franchissable, matériau pierre imposé (voir
     /// `pawn::Job::Bury`).
     Grave = 6,
+    /// Établi de recherche (voir `research`). Infranchissable et en bois
+    /// imposé, comme le poste de fabrication. **Ajouté en fin
+    /// d'énumération** : postcard encode l'indice.
+    ResearchBench = 7,
 }
 
 impl BuildKind {
@@ -30,6 +35,7 @@ impl BuildKind {
             3 => BuildKind::Bed,
             5 => BuildKind::CraftingSpot,
             6 => BuildKind::Grave,
+            7 => BuildKind::ResearchBench,
             _ => BuildKind::Campfire,
         }
     }
@@ -43,6 +49,21 @@ impl BuildKind {
             BuildKind::Campfire => 200,
             BuildKind::CraftingSpot => 200,
             BuildKind::Grave => 200,
+            BuildKind::ResearchBench => 400,
+        }
+    }
+
+    /// Durée du chantier, matériau et recherche compris : `Tech::Masonry` fait
+    /// gagner un quart du temps sur tout ce qui est bâti en pierre. Le
+    /// matériau ne changeait rien jusque-là (`work_ticks` ne le regarde pas) :
+    /// c'est la recherche qui l'introduit, et elle ne le fait que dans un
+    /// sens — on ne bâtit jamais plus lentement qu'avant.
+    pub fn work_ticks_with(self, material: Material, masonry: bool) -> u32 {
+        let base = self.work_ticks();
+        if masonry && material == Material::Stone {
+            base * research::MASONRY_WORK_PERCENT / 100
+        } else {
+            base
         }
     }
 
@@ -56,6 +77,7 @@ impl BuildKind {
             BuildKind::Campfire => 8,
             BuildKind::CraftingSpot => 10,
             BuildKind::Grave => 5,
+            BuildKind::ResearchBench => 15,
         }
     }
 
@@ -65,14 +87,20 @@ impl BuildKind {
     pub fn adjacent_only(self) -> bool {
         matches!(
             self,
-            BuildKind::Wall | BuildKind::Campfire | BuildKind::CraftingSpot
+            BuildKind::Wall
+                | BuildKind::Campfire
+                | BuildKind::CraftingSpot
+                | BuildKind::ResearchBench
         )
     }
 
     /// Certaines constructions imposent leur matériau.
     pub fn forced_material(self) -> Option<Material> {
         match self {
-            BuildKind::Bed | BuildKind::Campfire | BuildKind::CraftingSpot => Some(Material::Wood),
+            BuildKind::Bed
+            | BuildKind::Campfire
+            | BuildKind::CraftingSpot
+            | BuildKind::ResearchBench => Some(Material::Wood),
             BuildKind::Grave => Some(Material::Stone),
             _ => None,
         }
@@ -155,6 +183,7 @@ pub fn result_feature(kind: BuildKind, material: Material) -> Option<Feature> {
         (BuildKind::Campfire, _) => Some(Feature::Campfire),
         (BuildKind::CraftingSpot, _) => Some(Feature::CraftingSpot),
         (BuildKind::Grave, _) => Some(Feature::Grave),
+        (BuildKind::ResearchBench, _) => Some(Feature::ResearchBench),
         (BuildKind::Floor, _) => None,
     }
 }

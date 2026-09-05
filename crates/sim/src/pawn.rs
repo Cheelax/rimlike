@@ -197,6 +197,17 @@ pub enum Job {
         grave: (u32, u32),
         picked: bool,
     },
+    /// Cherche à l'établi `bench` : le colon s'y tient à côté et verse ses
+    /// points dans la technologie en cours (voir `research`). Le job n'a
+    /// **pas** d'avancement à lui — les points vont dans `Sim::research`, qui
+    /// survit au colon — et se termine quand la technologie est acquise, quand
+    /// le joueur n'en cherche plus, ou au bout d'une séance
+    /// (`research::RESEARCH_SESSION`).
+    ///
+    /// **Ajouté en fin d'énumération** : postcard encode l'indice.
+    Research {
+        bench: (u32, u32),
+    },
 }
 
 impl Job {
@@ -234,6 +245,7 @@ impl Job {
             Job::Butcher { .. } => 21,
             Job::Wait { .. } => 22,
             Job::Bury { .. } => 23,
+            Job::Research { .. } => 24,
         }
     }
 }

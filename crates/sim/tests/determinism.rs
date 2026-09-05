@@ -110,6 +110,47 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             y1: h / 2 + 6,
         });
     }
+    if t == 70 {
+        // Un établi de recherche : les points versés, la technologie acquise
+        // et son bonus font partie de l'état, donc du hash.
+        cmds.push(Command::Build {
+            kind: BuildKind::ResearchBench,
+            material: Material::Wood,
+            x0: w / 2 - 6,
+            y0: h / 2 + 6,
+            x1: w / 2 - 6,
+            y1: h / 2 + 6,
+        });
+    }
+    if t == 200 {
+        cmds.push(Command::SetResearch {
+            tech: sim::Tech::Agriculture as u8,
+        });
+    }
+    if t == 7100 {
+        // Un colon met la recherche en tête : sur une carte aussi occupée
+        // (chantiers, livraisons, rangement), l'établi ne servirait jamais
+        // sinon, et le scénario ne dirait rien de `Job::Research`. Après le
+        // départ de la caravane (tick 7000) et avant le gel (tick 8000) :
+        // ainsi la technologie tombe pendant le scénario, et l'avance rapide
+        // applique son bonus de pousse.
+        if let Some(p) = sim
+            .pawns()
+            .iter()
+            .find(|p| p.faction == Faction::Colony && p.is_alive())
+        {
+            cmds.push(Command::SetPriority {
+                pawn: p.id,
+                work: WorkType::Research,
+                priority: 1,
+            });
+        }
+    }
+    if t == 9900 {
+        // Un numéro qui ne désigne aucune technologie : consommé de la même
+        // façon partout, ignoré partout.
+        cmds.push(Command::SetResearch { tech: 200 });
+    }
     if t == 90 {
         // Les priorités de travail changent l'ordre des recherches de job.
         if let Some(p) = sim.pawns().first() {

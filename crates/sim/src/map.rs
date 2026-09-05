@@ -79,6 +79,9 @@ pub enum Feature {
     Grave = 14,
     /// Tombe occupée : plus rien à y faire, on ne la recreuse pas.
     GraveFilled = 15,
+    /// Établi de recherche : on y accumule les points de `research`.
+    /// Infranchissable comme le poste de fabrication : on travaille à côté.
+    ResearchBench = 16,
 }
 
 impl Feature {
@@ -99,6 +102,7 @@ impl Feature {
             13 => Feature::CraftingSpot,
             14 => Feature::Grave,
             15 => Feature::GraveFilled,
+            16 => Feature::ResearchBench,
             _ => Feature::None,
         }
     }
@@ -112,6 +116,7 @@ impl Feature {
                 | Feature::WallStone
                 | Feature::Campfire
                 | Feature::CraftingSpot
+                | Feature::ResearchBench
         )
     }
 
@@ -266,6 +271,10 @@ pub struct Map {
     /// porter. **Champ ajouté en fin de structure** : un vieux snapshot est
     /// refusé net plutôt que relu de travers.
     grave_count: u32,
+    /// Établis de recherche (`Feature::ResearchBench`), pour court-circuiter
+    /// la recherche d'un poste libre. **Champ ajouté en fin de structure** :
+    /// un vieux snapshot est refusé net plutôt que relu de travers.
+    research_bench_count: u32,
 }
 
 /// Au-delà, la zone est trop vaste pour être une pièce : c'est le dehors.
@@ -359,6 +368,10 @@ impl Map {
             .iter()
             .filter(|&&f| f == Feature::Grave as u8)
             .count() as u32;
+        let research_bench_count = features
+            .iter()
+            .filter(|&&f| f == Feature::ResearchBench as u8)
+            .count() as u32;
         Map {
             width,
             height,
@@ -380,6 +393,7 @@ impl Map {
             indoor_version: 0,
             room_campfires: Vec::new(),
             grave_count,
+            research_bench_count,
         }
     }
 
@@ -433,6 +447,7 @@ impl Map {
                 Feature::Campfire => self.campfire_count -= 1,
                 Feature::CraftingSpot => self.crafting_spot_count -= 1,
                 Feature::Grave => self.grave_count -= 1,
+                Feature::ResearchBench => self.research_bench_count -= 1,
                 _ => {}
             }
             match f {
@@ -440,6 +455,7 @@ impl Map {
                 Feature::Campfire => self.campfire_count += 1,
                 Feature::CraftingSpot => self.crafting_spot_count += 1,
                 Feature::Grave => self.grave_count += 1,
+                Feature::ResearchBench => self.research_bench_count += 1,
                 _ => {}
             }
             if old.room_key() != f.room_key() {
@@ -543,6 +559,11 @@ impl Map {
 
     pub fn crafting_spot_count(&self) -> u32 {
         self.crafting_spot_count
+    }
+
+    /// Établis de recherche posés sur la carte (voir `research`).
+    pub fn research_bench_count(&self) -> u32 {
+        self.research_bench_count
     }
 
     /// Tombes vides, prêtes à recevoir un cadavre (voir `pawn::Job::Bury`).
