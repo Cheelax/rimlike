@@ -19,6 +19,7 @@ import {
   type Caravan,
   type CaravanArriveMessage,
   type ClientMessage,
+  type Merchant,
   type ServerMessage,
   type Settlement,
   type WorldInfo,
@@ -157,6 +158,15 @@ const CONVOY: Caravan = {
     ],
   },
   status: "travelling",
+};
+
+const MERCHANT: Merchant = {
+  id: "m1",
+  name: "Compagnie du Levant",
+  tile: 1745,
+  toTile: 1810,
+  status: "travelling",
+  progress: 0.25,
 };
 
 interface Harness {
@@ -373,6 +383,34 @@ describe("WorldClient", () => {
     // Liste complète comme `world_settlements` : pas de delta (§12.4).
     transport.deliver({ type: "world_caravans", caravans: [] });
     expect(client.state.caravans).toEqual([]);
+  });
+
+  it("garde les marchands à jour et remplace la liste entière à chaque world_caravans", () => {
+    const { transport, client } = joined();
+    expect(client.state.merchants).toEqual([]);
+
+    transport.deliver({ type: "world_caravans", caravans: [], merchants: [MERCHANT] });
+
+    expect(client.state.merchants).toEqual([MERCHANT]);
+    expect(client.merchantById("m1")).toEqual(MERCHANT);
+    expect(client.merchantById("m9")).toBeUndefined();
+
+    // Liste complète, comme les caravanes des joueurs (§13.4) : pas de delta.
+    transport.deliver({ type: "world_caravans", caravans: [], merchants: [] });
+    expect(client.state.merchants).toEqual([]);
+  });
+
+  it("un world_caravans sans le champ merchants (ancien serveur) laisse la liste inchangée", () => {
+    const { transport, client } = joined();
+
+    transport.deliver({ type: "world_caravans", caravans: [], merchants: [MERCHANT] });
+    expect(client.state.merchants).toEqual([MERCHANT]);
+
+    // Un serveur qui ne connaît pas les marchands n'envoie pas le champ : on
+    // reste compatible en gardant la dernière liste connue plutôt que de la
+    // vider (§13.4).
+    transport.deliver({ type: "world_caravans", caravans: [] });
+    expect(client.state.merchants).toEqual([MERCHANT]);
   });
 
   it("garde les caravanes à jour même hors de l'écran Monde", () => {

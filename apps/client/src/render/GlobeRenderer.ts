@@ -20,12 +20,15 @@
  * - les caravanes : une polyligne discrète par itinéraire, un cône par convoi
  *   posé sur sa case courante, et la prévisualisation de l'itinéraire en
  *   préparation, elle bien visible ;
+ * - les marchands itinérants (`docs/protocol.md` §13) : un chariot ocre par
+ *   marchand, posé sur sa case courante — ce sont des PNJ, pas de tracé
+ *   d'itinéraire ni de bouton à leur proposer ;
  * - un fond d'étoiles en `Points`, purement décoratif.
  */
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import type { Caravan, Settlement } from "@rimlike/protocol";
+import type { Caravan, Merchant, Settlement } from "@rimlike/protocol";
 import type { World } from "@rimlike/world";
 import { GLOBE_RADIUS, RELIEF_SCALE, buildGlobeGeometry, buildTileFan, tileRadius } from "./globeGeometry";
 import { disposeTree, type SharedGl } from "./gl";
@@ -57,6 +60,18 @@ const PREVIEW_LIFT = 1.016;
 const CARAVAN_PICK_PX = 16;
 
 /**
+ * Hauteur et taille du marqueur d'un marchand itinérant (`docs/protocol.md`
+ * §13) au-dessus de sa case. Une forme et une couleur distinctes des
+ * caravanes des joueurs : ce sont des PNJ, personne ne les commande.
+ */
+const MERCHANT_LIFT = 0.026;
+const MERCHANT_SIZE = 0.012;
+/** Chariot ocre : ni la couleur d'une colonie, ni celle d'une caravane. */
+const MERCHANT_COLOR = 0xc98a3b;
+/** Rayon de saisie d'un marqueur de marchand, en pixels d'écran. */
+const MERCHANT_PICK_PX = 16;
+
+/**
  * Couleur d'une caravane suivant son statut (`docs/protocol.md` §12.2). Une
  * caravane livrée n'est plus dessinée : elle reste listée dans le panneau
  * pendant `CARAVAN_HISTORY_HOURS`, mais elle n'est plus nulle part sur le
@@ -74,6 +89,8 @@ export interface GlobeRendererOptions {
   readonly onHover?: (tile: number | null) => void;
   /** Rappel appelé quand la caravane survolée change (y compris vers `null`). */
   readonly onHoverCaravan?: (id: string | null) => void;
+  /** Rappel appelé quand le marchand survolé change (y compris vers `null`). */
+  readonly onHoverMerchant?: (id: string | null) => void;
 }
 
 export class GlobeRenderer {
@@ -94,17 +111,28 @@ export class GlobeRenderer {
   private readonly caravanRoot = new THREE.Group();
   private readonly caravanGeometry = new THREE.ConeGeometry(CARAVAN_SIZE, CARAVAN_SIZE * 3, 5);
   private readonly caravanMaterials = new Map<string, THREE.MeshBasicMaterial>();
+  /**
+   * Chariots des marchands itinérants, un enfant par marchand
+   * (`userData.merchantId`). Une seule couleur pour tous (§13) : ce sont des
+   * PNJ interchangeables, contrairement aux caravanes dont la couleur varie
+   * avec le statut.
+   */
+  private readonly merchantRoot = new THREE.Group();
+  private readonly merchantGeometry = new THREE.BoxGeometry(MERCHANT_SIZE * 1.6, MERCHANT_SIZE, MERCHANT_SIZE);
+  private readonly merchantMaterial = new THREE.MeshBasicMaterial({ color: MERCHANT_COLOR });
   /** Itinéraires des caravanes, toutes en une seule polyligne segmentée. */
   private readonly routeLines: THREE.LineSegments;
   /** Itinéraire en préparation, plus haut et plus vif que les autres. */
   private readonly previewLine: THREE.LineSegments;
   private readonly onHover: ((tile: number | null) => void) | null;
   private readonly onHoverCaravan: ((id: string | null) => void) | null;
+  private readonly onHoverMerchant: ((id: string | null) => void) | null;
   /** Désabonnements du contexte partagé, rendus par `dispose`. */
   private readonly offGl: Array<() => void> = [];
 
   private hoverTile: number | null = null;
   private hoverCaravan: string | null = null;
+  private hoverMerchant: string | null = null;
   private selectedTile: number | null = null;
   /** Dernière position du curseur, en pixels client. Le survol est résolu à la frame. */
   private pointer: { x: number; y: number } | null = null;
@@ -125,6 +153,7 @@ export class GlobeRenderer {
   ) {
     this.onHover = options.onHover ?? null;
     this.onHoverCaravan = options.onHoverCaravan ?? null;
+    this.onHoverMerchant = options.onHoverMerchant ?? null;
 
     // Le noir profond du ciel est porté par la scène : le renderer partagé
     // n'a aucun réglage à reprendre d'un écran à l'autre.
@@ -184,7 +213,7 @@ export class GlobeRenderer {
     // joueur est en train de décider.
     this.routeLines = routeMesh(0.5, true);
     this.previewLine = routeMesh(0.95, false, 0x4ad9ff);
-    this.scene.add(this.caravanRoot, this.routeLines, this.previewLine);
+    this.scene.add(this.caravanRoot, this.merchantRoot, this.routeLines, this.previewLine);
 
     this.scene.add(starfield());
 
@@ -311,6 +340,31 @@ export class GlobeRenderer {
   }
 
   /**
+   * Redessine les marchands itinérants : un chariot ocre par marchand, posé
+   * sur sa case courante (`Merchant.tile`, déjà dérivée de l'avancement côté
+   * serveur, `docs/protocol.md` §13.4). Contrairement aux caravanes, un
+   * marchand n'a pas d'itinéraire à tracer (le serveur ne le transporte pas)
+   * et une seule couleur suffit : ce sont des PNJ interchangeables, sans statut
+   * à distinguer visuellement au premier coup d'œil.
+   */
+  setMerchants(merchants: readonly Merchant[]): void {
+    for (const marker of this.merchantRoot.children.slice()) {
+      this.merchantRoot.remove(marker);
+    }
+    for (const merchant of merchants) {
+      if (!this.hasTile(merchant.tile)) continue;
+      const tile = this.world.tiles[merchant.tile];
+      const marker = new THREE.Mesh(this.merchantGeometry, this.merchantMaterial);
+      const height = tileRadius(tile) + MERCHANT_LIFT;
+      const up = new THREE.Vector3(tile.center[0], tile.center[1], tile.center[2]).normalize();
+      marker.position.copy(up).multiplyScalar(height);
+      marker.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+      marker.userData.merchantId = merchant.id;
+      this.merchantRoot.add(marker);
+    }
+  }
+
+  /**
    * Itinéraire en préparation, ou `null` pour l'effacer. Le client le calcule
    * lui-même par `findRoute` : c'est une prévisualisation, le serveur a le
    * dernier mot sur la route qui voyagera (`docs/world.md` §5).
@@ -357,6 +411,35 @@ export class GlobeRenderer {
     return bestId;
   }
 
+  /**
+   * Marchand sous un pixel, ou `null`. Même méthode de saisie à l'écran que
+   * `pickCaravan` : un chariot est bien trop petit à viser au raycast.
+   */
+  pickMerchant(clientX: number, clientY: number): string | null {
+    const rect = this.host.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    const camera = this.camera.position;
+    const point = new THREE.Vector3();
+    let bestId: string | null = null;
+    let bestDistance = MERCHANT_PICK_PX;
+    for (const marker of this.merchantRoot.children) {
+      const id = marker.userData.merchantId;
+      if (typeof id !== "string") continue;
+      point.copy(marker.position);
+      // Même test d'horizon que `pickCaravan` : pas de saisie à travers le globe.
+      if (point.dot(camera) < GLOBE_RADIUS * GLOBE_RADIUS) continue;
+      point.project(this.camera);
+      const x = rect.left + ((point.x + 1) / 2) * rect.width;
+      const y = rect.top + ((1 - point.y) / 2) * rect.height;
+      const distance = Math.hypot(clientX - x, clientY - y);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestId = id;
+      }
+    }
+    return bestId;
+  }
+
   /** Amène la case au centre de l'écran, en gardant la distance courante. */
   focusTile(tile: number): void {
     if (!this.hasTile(tile)) return;
@@ -388,6 +471,11 @@ export class GlobeRenderer {
       if (caravan !== this.hoverCaravan) {
         this.hoverCaravan = caravan;
         this.onHoverCaravan?.(caravan);
+      }
+      const merchant = this.pointer === null ? null : this.pickMerchant(this.pointer.x, this.pointer.y);
+      if (merchant !== this.hoverMerchant) {
+        this.hoverMerchant = merchant;
+        this.onHoverMerchant?.(merchant);
       }
     }
     this.gl.renderer.render(this.scene, this.camera);
@@ -435,6 +523,8 @@ export class GlobeRenderer {
     this.caravanGeometry.dispose();
     for (const material of this.caravanMaterials.values()) material.dispose();
     this.caravanMaterials.clear();
+    this.merchantGeometry.dispose();
+    this.merchantMaterial.dispose();
   }
 
   /** Vrai si l'identifiant désigne une case de ce globe. */

@@ -95,6 +95,23 @@ export interface LockstepState {
    */
   readonly dayOfYear: number | null;
   /**
+   * Marchands itinérants arrivés sur notre case pendant que la colonie était
+   * fermée (`docs/protocol.md` §13.5), reçus par `start.pendingTraders`
+   * (colonie neuve) ou `snapshot.pendingTraders` (colonie gelée qui rouvre) —
+   * jamais les deux à la fois. `0` hors de ces cas, ou une fois consommé par
+   * `consumePendingTraders` — même schéma que `frozenTicks`/`consumeFrozenTicks`.
+   */
+  readonly pendingTraders: number;
+  /**
+   * Marchands accueillis en jeu depuis le début de cette session client, un
+   * par `trader_arrival` reçu (`docs/protocol.md` §13.3) — qu'on soit l'hôte
+   * (qui émet `TriggerTraderVisit`) ou non (qui l'ignore). Sert de compteur
+   * pour les tests et pour un éventuel affichage HUD : l'annonce partagée,
+   * elle, vient déjà de l'événement du sim (kind 26), pas d'ici, pour ne pas
+   * la doubler.
+   */
+  readonly traderArrivals: number;
+  /**
    * Joueurs actuellement connus comme déviants (§7) : `desync.outliers` au
    * départ, réduit à chaque `resynced` reçu. Vide tant qu'aucune majorité n'a
    * jamais été connue (salle à deux joueurs, ou moins de trois hashes) : dans
@@ -165,6 +182,14 @@ export interface LockstepOptions {
   readonly onSim?: (sim: SimLike) => void;
   /** Erreurs serveur et trous de bundles. Jamais avalées en silence. */
   readonly onError?: (error: LockstepError) => void;
+  /**
+   * Encode `Command::TriggerTraderVisit` (`docs/protocol.md` §13.3),
+   * normalement `sim/commands.ts::encodeTriggerTraderVisit`. Appelé, pour
+   * l'hôte seulement, à chaque `trader_arrival` reçu — omis dans les tests qui
+   * ne simulent pas l'arrivée d'un marchand : sans lui, `traderArrivals` se
+   * compte quand même, rien n'est simplement émis.
+   */
+  readonly encodeTriggerTraderVisit?: () => Uint8Array;
 }
 
 export class LockstepClient {
@@ -174,6 +199,7 @@ export class LockstepClient {
   private readonly onState: ((state: LockstepState) => void) | null;
   private readonly onSim: ((sim: SimLike) => void) | null;
   private readonly onError: ((error: LockstepError) => void) | null;
+  private readonly encodeTriggerTraderVisit: (() => Uint8Array) | null;
 
   private simInstance: SimLike | null = null;
   /** Incrémenté à chaque sim demandé : une création tardive ne l'écrase pas. */
@@ -207,6 +233,10 @@ export class LockstepClient {
   private climateValue: StartClimate | null = null;
   /** Voir `LockstepState.dayOfYear` et `consumeStartDayOfYear`. */
   private dayOfYearValue: number | null = null;
+  /** Voir `LockstepState.pendingTraders` et `consumePendingTraders`. */
+  private pendingTradersValue = 0;
+  /** Voir `LockstepState.traderArrivals`. */
+  private traderArrivalsValue = 0;
   /**
    * Dose de menace choisie par l'hôte pour la partie qui démarre, mémorisée
    * par `startGame` (jamais par le réseau : la difficulté n'est pas dans le
@@ -238,6 +268,7 @@ export class LockstepClient {
     this.onState = options.onState ?? null;
     this.onSim = options.onSim ?? null;
     this.onError = options.onError ?? null;
+    this.encodeTriggerTraderVisit = options.encodeTriggerTraderVisit ?? null;
     this.transport.onMessage((text) => this.receive(text));
     // `code`/`reason` ne sont utiles qu'au diagnostic (pas affichés) : ce qui
     // compte pour le joueur est que la salle ne répond plus. Si le `Transport`
@@ -387,6 +418,19 @@ export class LockstepClient {
   }
 
   /**
+   * Lit le compte de marchands en attente et le remet à 0 : deux appels ne le
+   * renvoient qu'une fois. C'est ce qui garantit qu'on n'émet
+   * `TriggerTraderVisit` qu'une fois par marchand en attente, même si
+   * l'appelant se trompe et appelle deux fois (`docs/protocol.md` §13.5, même
+   * garantie que `consumeFrozenTicks`).
+   */
+  consumePendingTraders(): number {
+    const value = this.pendingTradersValue;
+    this.pendingTradersValue = 0;
+    return value;
+  }
+
+  /**
    * Lit la difficulté choisie par l'hôte au moment de `startGame` et la
    * remet à `null` : deux appels ne la renvoient qu'une fois, même garantie
    * que `consumeFrozenTicks`/`consumeStartClimate`. `null` pour un non-hôte,
@@ -510,6 +554,11 @@ export class LockstepClient {
         // stocké jusqu'à ce que `consumeStartDayOfYear` le consomme (voir le
         // Worker), une fois le sim neuf adopté.
         this.dayOfYearValue = message.dayOfYear ?? null;
+        // Marchands en attente sur cette case pendant qu'elle était fermée
+        // (§13.5) : stocké, jamais appliqué ici. `consumePendingTraders` est le
+        // seul chemin qui le consomme, dès que le sim neuf est adopté (voir le
+        // Worker), après tout le reste (une visite se joue dans le présent).
+        this.pendingTradersValue = message.pendingTraders ?? 0;
         this.adopt(this.createSim(message.seed, message.width, message.height));
         this.emit();
         return;
@@ -520,6 +569,11 @@ export class LockstepClient {
         // ici. `consumeFrozenTicks` est le seul chemin qui le consomme, dès
         // que le sim restauré est adopté (voir le Worker).
         this.frozenTicksValue = message.frozenTicks ?? 0;
+        // Le pendant de `start.pendingTraders` pour une colonie qui rouvre
+        // depuis son snapshot conservé (§13.5) : ces deux chemins sont
+        // mutuellement exclusifs, jamais les deux à la fois pour une même
+        // ouverture.
+        this.pendingTradersValue = message.pendingTraders ?? 0;
         this.adopt(this.restoreSim(message.data));
         this.emit();
         return;
@@ -559,6 +613,21 @@ export class LockstepClient {
         // connexion **monde** (`WorldClient`, voir `docs/protocol.md` §12.7),
         // qui reçoit le même message par la même règle de présence (clé, ou
         // nom en repli) et suffit à piloter tout le flux d'arrivée.
+        return;
+      case "trader_arrival":
+        // Un marchand itinérant vient d'arriver sur notre case, en jeu
+        // (§13.3) : seul l'hôte fait entrer le marchand sur la carte, en
+        // lockstep — un invité l'ignore (défense en profondeur : le serveur
+        // n'adresse ce message qu'à l'hôte d'une salle, mais deux clients qui
+        // émettraient chacun `TriggerTraderVisit` feraient venir deux
+        // marchands, §13.2). Rien à confirmer au serveur, contrairement à
+        // `caravan_arrive` : pas de manifeste, une occasion manquée n'est
+        // qu'une occasion manquée.
+        this.traderArrivalsValue += 1;
+        if (this.playerId !== null && this.playerId === this.hostId && this.encodeTriggerTraderVisit !== null) {
+          this.issue(this.encodeTriggerTraderVisit());
+        }
+        this.emit();
         return;
       case "world_error":
         // Un refus de caravane ne peut plus arriver ici : ces ordres ne
@@ -689,6 +758,8 @@ export class LockstepClient {
       frozenTicks: this.frozenTicksValue,
       climate: this.climateValue,
       dayOfYear: this.dayOfYearValue,
+      pendingTraders: this.pendingTradersValue,
+      traderArrivals: this.traderArrivalsValue,
       outliers: Object.freeze([...this.deviating]),
       isOutlier: this.playerId !== null && this.deviating.has(this.playerId),
       roomDesynced: this.desyncInfo !== null && !(this.outliersKnown && this.deviating.size === 0),

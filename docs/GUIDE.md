@@ -322,6 +322,17 @@ point, seule l'arrivée reste possible. Arrivée sur une case libre, elle y
 fonde une nouvelle colonie au nom de son expéditeur ; arrivée sur une
 colonie fermée, elle patiente jusqu'à ce que quelqu'un l'ouvre.
 
+### Marchands itinérants
+
+Des compagnies marchandes PNJ circulent en permanence de colonie en colonie
+sur le globe, indépendamment de tout joueur : elles se voient sur le globe
+(chariot ocre, distinct des caravanes des joueurs), avec leur nom et leur
+destination au survol ou au clic. À leur arrivée, le marchand entre
+directement dans la colonie visitée et s'installe à l'étal, exactement comme
+un marchand fait venir par le storyteller local — même si personne ne jouait
+cette colonie à cet instant : les passages manqués sont livrés à la
+prochaine ouverture, trois au plus, les arrivées suivantes étant perdues au-delà.
+
 ### Colonies gelées et avance rapide
 
 Une colonie sans personne dessus ne tourne plus : à la réouverture, elle

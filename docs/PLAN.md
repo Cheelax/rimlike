@@ -439,8 +439,11 @@ caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus 
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;
 à l'arrivée, `trader_arrival` à l'hôte seul (qui doit émettre `TriggerTraderVisit`), ou
 `pendingTraders` (borné à 3) remis au prochain `start`/`snapshot` d'une colonie gelée ;
-`world_caravans.merchants` pour le globe, persistance v3 tolérante. Client à câbler (émission par
-l'hôte, marchands dessinés sur le globe). Relations entre colons livrées le 2026-09-05 (Opus, sim) : avis de −100 à +100 (seize au
+`world_caravans.merchants` pour le globe, persistance v3 tolérante. Client câblé le 2026-09-05
+(Sonnet) : `trader_arrival` traité dans le Worker par `LockstepClient` (l'hôte émet
+`TriggerTraderVisit`, l'invité l'ignore), `startTraders.ts` rejoue les passages manqués après
+`FastForward`, chariots ocres sur le globe avec étiquette, compte dans la ligne d'état ; vérifié en
+conditions réelles : deux caravanes PNJ arrivées sur la colonie, marchand entré, événement 26. Relations entre colons livrées le 2026-09-05 (Opus, sim) : avis de −100 à +100 (seize au
 plus par colon), bavardage de 90 ticks entre voisins désœuvrés (+4 d'avis mutuel, +8 000 d'humeur
 un jour, délai de 1 200 ticks par paire, moitié pour un sociable), dispute une fois sur huit (un
 sur quatre avec un bagarreur : −10, −10 000), rixe non mortelle sous −60, amis (≥ 50) et rivaux

@@ -599,6 +599,43 @@ describe("file de bundles", () => {
     expect(client.consumeStartDayOfYear()).toBeNull();
   });
 
+  it("stocke pendingTraders reçu par un start, consommé une seule fois", async () => {
+    // Même remarque que `dayOfYear` : `pendingTradersValue` est posé de façon
+    // synchrone par `handle()`, avant même que le sim (re)créé ne soit résolu.
+    const { transport, client } = await ready();
+    transport.deliver({ type: "start", seed: 7, width: 16, height: 16, tick: 0, pendingTraders: 2 });
+
+    expect(client.state.pendingTraders).toBe(2);
+    // Idempotence : le deuxième appel ne renvoie plus la valeur.
+    expect(client.consumePendingTraders()).toBe(2);
+    expect(client.consumePendingTraders()).toBe(0);
+    expect(client.state.pendingTraders).toBe(0);
+  });
+
+  it("stocke pendingTraders reçu par un snapshot, consommé une seule fois", async () => {
+    // Le pendant de `start.pendingTraders` pour une colonie qui rouvre depuis
+    // son snapshot conservé (§13.5) : mutuellement exclusifs, mais le même
+    // champ côté client (`pendingTradersValue`) sert aux deux chemins.
+    const { transport, client } = await ready();
+    const snapshot = FakeSim.fresh(5);
+    snapshot.step(4);
+    transport.deliver({ type: "snapshot", tick: 4, data: snapshot.snapshot(), pendingTraders: 3 });
+    await waitFor("sim restauré", () => client.tick === 4);
+
+    expect(client.state.pendingTraders).toBe(3);
+    expect(client.consumePendingTraders()).toBe(3);
+    expect(client.consumePendingTraders()).toBe(0);
+    expect(client.state.pendingTraders).toBe(0);
+  });
+
+  it("sans le champ pendingTraders, l'état reste à 0", async () => {
+    // `ready()` livre déjà un `start` sans `pendingTraders` (salle hors monde).
+    const { client } = await ready();
+
+    expect(client.state.pendingTraders).toBe(0);
+    expect(client.consumePendingTraders()).toBe(0);
+  });
+
   it("répond à une demande de snapshot avec son tick courant", async () => {
     const { transport, client } = await ready();
     transport.deliver({ type: "bundle", from: 0, to: 2, ticks: [] });
@@ -705,6 +742,99 @@ describe("file de bundles", () => {
     transport.sent.length = 0;
     client.requestResync();
     expect(transport.sent.map((t) => JSON.parse(t) as { type: string })).toEqual([{ type: "resync" }]);
+  });
+});
+
+describe("trader_arrival (docs/protocol.md §13.3)", () => {
+  /** `encodeTriggerTraderVisit` factice : des octets reconnaissables, pas de WASM. */
+  const fakeEncodeTrader = (): Uint8Array => bytes(0xe1);
+
+  async function readyAs(isHost: boolean): Promise<{ transport: FakeTransport; client: LockstepClient }> {
+    const transport = new FakeTransport();
+    const client = new LockstepClient({
+      transport,
+      createSim: (seed) => Promise.resolve(FakeSim.fresh(seed)),
+      restoreSim: (data) => Promise.resolve(FakeSim.fromSnapshot(data)),
+      encodeTriggerTraderVisit: fakeEncodeTrader,
+    });
+    client.join("tile-1732", isHost ? "alice" : "bob");
+    transport.deliver({
+      type: "welcome",
+      protocol: 2,
+      playerId: 1,
+      isHost,
+      players: [{ id: 1, name: isHost ? "alice" : "bob" }],
+      state: "lobby",
+      tick: 0,
+    });
+    transport.deliver({ type: "start", seed: 5, width: 16, height: 16, tick: 0 });
+    await waitFor("sim créé", () => client.sim !== null);
+    return { transport, client };
+  }
+
+  /** Les commandes émises par `issue`, décodées. */
+  function commandsSent(transport: FakeTransport): { type: string }[] {
+    return transport.sent
+      .map((t) => JSON.parse(t) as { type: string })
+      .filter((m) => m.type === "command");
+  }
+
+  it("l'hôte émet TriggerTraderVisit et compte l'arrivée", async () => {
+    const { transport, client } = await readyAs(true);
+    transport.sent.length = 0;
+
+    transport.deliver({ type: "trader_arrival", tile: 1732, merchantId: "m1", merchantName: "Compagnie du Levant" });
+
+    expect(client.state.traderArrivals).toBe(1);
+    expect(commandsSent(transport)).toHaveLength(1);
+  });
+
+  it("un invité compte l'arrivée mais n'émet rien : la commande viendra dans un bundle", async () => {
+    const { transport, client } = await readyAs(false);
+    transport.sent.length = 0;
+
+    transport.deliver({ type: "trader_arrival", tile: 1732, merchantId: "m1", merchantName: "Compagnie du Levant" });
+
+    expect(client.state.traderArrivals).toBe(1);
+    expect(commandsSent(transport)).toEqual([]);
+  });
+
+  it("plusieurs arrivées incrémentent le compteur, une émission par arrivée pour l'hôte", async () => {
+    const { transport, client } = await readyAs(true);
+    transport.sent.length = 0;
+
+    transport.deliver({ type: "trader_arrival", tile: 1732, merchantId: "m1", merchantName: "Compagnie du Levant" });
+    transport.deliver({ type: "trader_arrival", tile: 1732, merchantId: "m2", merchantName: "Caravane du Sel" });
+
+    expect(client.state.traderArrivals).toBe(2);
+    expect(commandsSent(transport)).toHaveLength(2);
+  });
+
+  it("sans encodeTriggerTraderVisit fourni, l'hôte compte l'arrivée sans rien émettre", async () => {
+    const transport = new FakeTransport();
+    const client = new LockstepClient({
+      transport,
+      createSim: (seed) => Promise.resolve(FakeSim.fresh(seed)),
+      restoreSim: (data) => Promise.resolve(FakeSim.fromSnapshot(data)),
+    });
+    client.join("tile-1732", "alice");
+    transport.deliver({
+      type: "welcome",
+      protocol: 2,
+      playerId: 1,
+      isHost: true,
+      players: [{ id: 1, name: "alice" }],
+      state: "lobby",
+      tick: 0,
+    });
+    transport.deliver({ type: "start", seed: 5, width: 16, height: 16, tick: 0 });
+    await waitFor("sim créé", () => client.sim !== null);
+    transport.sent.length = 0;
+
+    transport.deliver({ type: "trader_arrival", tile: 1732, merchantId: "m1", merchantName: "Compagnie du Levant" });
+
+    expect(client.state.traderArrivals).toBe(1);
+    expect(commandsSent(transport)).toEqual([]);
   });
 });
 

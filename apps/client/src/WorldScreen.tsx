@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Caravan, Settlement } from "@rimlike/protocol";
+import type { Caravan, Merchant, Settlement } from "@rimlike/protocol";
 import { BIOME_NAMES, climateForTile, findRoute, movementCost, type Tile, type World } from "@rimlike/world";
 import { formatClimate } from "./render/terrain";
 import { formatHours } from "./CaravanPanel";
@@ -32,6 +32,8 @@ const CLICK_TOLERANCE_PX = 5;
 const NO_SETTLEMENTS: readonly Settlement[] = Object.freeze([]);
 /** Idem pour les caravanes : le calque du globe ne se rebâtit qu'au changement. */
 const NO_CARAVANS: readonly Caravan[] = Object.freeze([]);
+/** Idem pour les marchands itinérants. */
+const NO_MERCHANTS: readonly Merchant[] = Object.freeze([]);
 
 /** Une caravane s'annule tant qu'elle n'a pas fait la moitié du trajet (§12.5). */
 const CANCEL_LIMIT = 0.5;
@@ -77,6 +79,24 @@ export function caravanStatusLabel(caravan: Caravan): string {
  */
 export function remainingHours(caravan: Caravan): number {
   return Math.max(0, (1 - caravan.progress) * (caravan.arrivesAt - caravan.departedAt));
+}
+
+/**
+ * Ce qu'une étiquette de marchand donne à lire, en plus de son nom : « vers
+ * <biome> » en route, « à l'étal » en visite, ou « cherche une colonie »
+ * pour celui qui attend faute de colonie à portée (`docs/protocol.md` §13.1,
+ * §13.4 : `toTile === tile` avec `progress: 0` distingue ce dernier cas d'une
+ * visite, où `toTile === tile` aussi mais `progress` vaut 1).
+ */
+export function merchantLabel(merchant: Merchant, world: World): string {
+  if (merchant.status === "visiting") {
+    return "à l'étal";
+  }
+  if (merchant.toTile === merchant.tile) {
+    return "cherche une colonie";
+  }
+  const destination = world.tiles[merchant.toTile];
+  return `vers ${destination === undefined ? "?" : BIOME_NAMES[destination.biome]}`;
 }
 
 export interface WorldScreenProps {
@@ -171,6 +191,7 @@ export function WorldScreen({
   const [selected, setSelected] = useState<number | null>(initialTile);
   const [hovered, setHovered] = useState<number | null>(null);
   const [hoveredCaravan, setHoveredCaravan] = useState<string | null>(null);
+  const [hoveredMerchant, setHoveredMerchant] = useState<string | null>(null);
   /** Miroir synchrone de la sélection : le crochet de dev le lit sans passer par React. */
   const selectedRef = useRef<number | null>(initialTile);
   /**
@@ -185,6 +206,7 @@ export function WorldScreen({
 
   const settlements = net?.settlements ?? NO_SETTLEMENTS;
   const caravans = net?.caravans ?? NO_CARAVANS;
+  const merchants = net?.merchants ?? NO_MERCHANTS;
   const byTile = new Map<number, Settlement>(settlements.map((s) => [s.tile, s]));
   /**
    * Notre clé publique et stable (`docs/protocol.md` §11.2) : c'est elle qui
@@ -215,6 +237,7 @@ export function WorldScreen({
     const renderer = new GlobeRenderer(gl, host, world, {
       onHover: (tile) => setHovered(tile),
       onHoverCaravan: (id) => setHoveredCaravan(id),
+      onHoverMerchant: (id) => setHoveredMerchant(id),
     });
     rendererRef.current = renderer;
 
@@ -320,6 +343,11 @@ export function WorldScreen({
     // Idem : `world_caravans` porte la liste complète, à chaque tick du monde.
   }, [caravans, myKey]);
 
+  useEffect(() => {
+    // Même message que les caravanes, à la même cadence (`docs/protocol.md` §13.4).
+    rendererRef.current?.setMerchants(merchants);
+  }, [merchants]);
+
   /**
    * Itinéraire prévisualisé. En mode sélection il suit le survol — le joueur
    * voit la route et sa durée avant de cliquer ; sinon c'est celui que la
@@ -350,6 +378,7 @@ export function WorldScreen({
           players: net?.players ?? [],
           settlements: net?.settlements ?? [],
           caravans: net?.caravans ?? [],
+          merchants: net?.merchants ?? [],
           selected: selectedRef.current,
           visible,
           seed: world.seed,
@@ -379,6 +408,10 @@ export function WorldScreen({
       /** Les caravanes connues, telles que le serveur les diffuse. */
       get caravans() {
         return net?.caravans ?? [];
+      },
+      /** Les marchands itinérants connus, telles que le serveur les diffuse. */
+      get merchants() {
+        return net?.merchants ?? [];
       },
       /** Sélectionne une case et l'amène au centre de l'écran. */
       select(tile: number) {
@@ -488,6 +521,7 @@ export function WorldScreen({
   const selectedSettlement = selected === null ? undefined : byTile.get(selected);
   const hoveredSettlement = hovered === null ? undefined : byTile.get(hovered);
   const hoveredConvoy = hoveredCaravan === null ? undefined : caravans.find((c) => c.id === hoveredCaravan);
+  const hoveredTrader = hoveredMerchant === null ? undefined : merchants.find((m) => m.id === hoveredMerchant);
   const picking = pickingFrom !== null;
 
   return (
@@ -511,11 +545,16 @@ export function WorldScreen({
         </div>
       )}
 
-      {visible && (hoveredTile !== null || hoveredConvoy !== undefined) && (
-        // Une seule infobulle, suivie par le curseur : la caravane survolée
-        // passe devant la case, c'est elle qu'on vise.
+      {visible && (hoveredTile !== null || hoveredConvoy !== undefined || hoveredTrader !== undefined) && (
+        // Une seule infobulle, suivie par le curseur : la caravane ou le
+        // marchand survolé passe devant la case, c'est lui qu'on vise.
         <div ref={tooltipRef} className="globe-tip">
-          {hoveredConvoy ? (
+          {hoveredTrader ? (
+            <>
+              <b>{hoveredTrader.name}</b>
+              <span className="owner">{merchantLabel(hoveredTrader, world)}</span>
+            </>
+          ) : hoveredConvoy ? (
             <>
               <b>caravane de {hoveredConvoy.ownerName}</b>
               <span>
@@ -547,7 +586,14 @@ export function WorldScreen({
             </div>
             <div>
               <b>{settlements.length}</b> colonie{settlements.length > 1 ? "s" : ""} ·{" "}
-              <b>{onlinePlayers.length}</b> joueur{onlinePlayers.length > 1 ? "s" : ""} en ligne ·{" "}
+              <b>{onlinePlayers.length}</b> joueur{onlinePlayers.length > 1 ? "s" : ""} en ligne
+              {merchants.length > 0 && (
+                <>
+                  {" "}
+                  · <b>{merchants.length}</b> marchand{merchants.length > 1 ? "s" : ""} en route
+                </>
+              )}{" "}
+              ·{" "}
               {net?.phase === "connected"
                 ? "connecté"
                 : net?.phase === "closed"

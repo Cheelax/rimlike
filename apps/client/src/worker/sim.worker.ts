@@ -15,13 +15,20 @@
 
 import { LockstepClient } from "../net/LockstepClient";
 import { ReconnectingTransport, WebSocketTransport } from "../net/Transport";
-import { encodeFastForward, encodeSetCalendar, encodeSetClimate, encodeSetDifficulty } from "../sim/commands";
+import {
+  encodeFastForward,
+  encodeSetCalendar,
+  encodeSetClimate,
+  encodeSetDifficulty,
+  encodeTriggerTraderVisit,
+} from "../sim/commands";
 import { SimHandle } from "../sim/SimHandle";
 import { DIFFICULTY } from "../render/terrain";
 import { fastForwardOnReopen } from "./fastForward";
 import { setCalendarOnStart } from "./startCalendar";
 import { setClimateOnStart } from "./startClimate";
 import { setDifficultyOnStart } from "./startDifficulty";
+import { pendingTraderCommands } from "./startTraders";
 import { SimRunner, type RunnerOutput, type RunnerSim } from "./SimRunner";
 import { transferablesOf, type MainToWorker, type WorkerToMain } from "./protocol";
 
@@ -220,6 +227,9 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
       createSim: (seed, width, height) => SimHandle.create({ seed: BigInt(seed), width, height }),
       restoreSim: (bytes) => SimHandle.restore(bytes),
       onState: (state) => post({ type: "net", state }),
+      // Un marchand itinérant qui s'installe en jeu (§13.3) : seul l'hôte
+      // (vérifié par `LockstepClient` lui-même) doit réellement l'émettre.
+      encodeTriggerTraderVisit,
       // La fabrique ne produit que des `SimHandle` : le runner a besoin de ses
       // tampons, que `SimLike` n'expose pas.
       onSim: (sim) => {
@@ -263,6 +273,18 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
         const frozen = lockstep?.consumeFrozenTicks() ?? 0;
         const bytes = fastForwardOnReopen(lockstep?.state.isHost ?? false, frozen, encodeFastForward);
         if (bytes) lockstep?.issue(bytes);
+        // Marchands en attente (§13.5) : en tout dernier, une visite se jouant
+        // dans le présent de la colonie, pas dans le temps qu'elle vient de
+        // rattraper. `consumePendingTraders` remet la valeur à 0, donc un
+        // deuxième sim adopté sans nouveau `pendingTraders` n'émettra rien.
+        const pendingTraders = lockstep?.consumePendingTraders() ?? 0;
+        for (const traderBytes of pendingTraderCommands(
+          pendingTraders,
+          lockstep?.state.isHost ?? false,
+          encodeTriggerTraderVisit,
+        )) {
+          lockstep?.issue(traderBytes);
+        }
       },
     });
     transport.onReconnect(() => lockstep?.reconnect());

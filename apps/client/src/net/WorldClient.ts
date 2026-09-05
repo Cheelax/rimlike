@@ -21,6 +21,7 @@ import {
   type CaravanArriveMessage,
   type CaravanSummary,
   type ClientMessage,
+  type Merchant,
   type PlayerId,
   type ServerMessage,
   type Settlement,
@@ -85,6 +86,16 @@ export interface WorldClientState {
    * retour au globe montre tout de suite l'état courant.
    */
   readonly caravans: readonly Caravan[];
+  /**
+   * Marchands itinérants du globe, tels que diffusés par `world_caravans`
+   * (`docs/protocol.md` §13.4) : même message, même cadence et même règle de
+   * remplacement complet que `caravans`. Ce sont des PNJ, entièrement
+   * serveur — aucune action de notre part n'agit sur eux, on les affiche.
+   * Vide par défaut (avant le premier `world_caravans`, ou serveur qui ne les
+   * connaît pas encore) ; un `world_caravans` sans champ `merchants` (ancien
+   * serveur, §13.4) laisse la liste **inchangée** plutôt que de la vider.
+   */
+  readonly merchants: readonly Merchant[];
   /** Le globe annoncé par le serveur, `null` avant `world_welcome`. */
   readonly world: WorldInfo | null;
   readonly lastError: WorldError | null;
@@ -167,6 +178,7 @@ export class WorldClient {
   private settlements: readonly Settlement[] = [];
   private players: readonly WorldPlayerInfo[] = Object.freeze([]);
   private caravans: readonly Caravan[] = Object.freeze([]);
+  private merchants: readonly Merchant[] = Object.freeze([]);
   private worldInfo: WorldInfo | null = null;
   private lastError: WorldError | null = null;
   /** Jeton et clé connus pour ce serveur, `null` si on n'en a aucun. */
@@ -218,6 +230,11 @@ export class WorldClient {
   /** Une caravane par son identifiant, ou `undefined` si elle est inconnue. */
   caravanById(id: string): Caravan | undefined {
     return this.caravans.find((caravan) => caravan.id === id);
+  }
+
+  /** Un marchand itinérant par son identifiant, ou `undefined` si inconnu. */
+  merchantById(id: string): Merchant | undefined {
+    return this.merchants.find((merchant) => merchant.id === id);
   }
 
   // --- Actions ---
@@ -393,6 +410,13 @@ export class WorldClient {
       case "world_caravans":
         // Liste complète, comme `world_settlements` : on remplace (§12.4).
         this.caravans = Object.freeze([...message.caravans]);
+        // `merchants` est facultatif (§13.4) : absent, on garde la liste
+        // précédente plutôt que de la vider — c'est ce qui rend un client
+        // compatible avec un serveur qui ne connaît pas encore les marchands.
+        // Présent, c'est une liste complète comme les caravanes : on remplace.
+        if (message.merchants !== undefined) {
+          this.merchants = Object.freeze([...message.merchants]);
+        }
         this.emit();
         return;
       case "caravan_arrive":
@@ -457,6 +481,7 @@ export class WorldClient {
       settlements: this.settlements,
       players: this.players,
       caravans: this.caravans,
+      merchants: this.merchants,
       world: this.worldInfo,
       lastError: this.lastError,
       token: this.identity?.token ?? null,
