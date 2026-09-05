@@ -24,6 +24,12 @@ pub enum BuildKind {
     /// imposé, comme le poste de fabrication. **Ajouté en fin
     /// d'énumération** : postcard encode l'indice.
     ResearchBench = 7,
+    /// Piège à pointes : une case, en bois imposé, **franchissable** une fois
+    /// posée — c'est tout l'intérêt. Le constructeur travaille depuis une case
+    /// voisine (`adjacent_only`) : on ne creuse pas une fosse à pointes en se
+    /// tenant dedans. **Ajouté en fin d'énumération** : postcard encode
+    /// l'indice.
+    SpikeTrap = 8,
 }
 
 impl BuildKind {
@@ -36,6 +42,7 @@ impl BuildKind {
             5 => BuildKind::CraftingSpot,
             6 => BuildKind::Grave,
             7 => BuildKind::ResearchBench,
+            8 => BuildKind::SpikeTrap,
             _ => BuildKind::Campfire,
         }
     }
@@ -50,6 +57,7 @@ impl BuildKind {
             BuildKind::CraftingSpot => 200,
             BuildKind::Grave => 200,
             BuildKind::ResearchBench => 400,
+            BuildKind::SpikeTrap => 150,
         }
     }
 
@@ -78,12 +86,16 @@ impl BuildKind {
             BuildKind::CraftingSpot => 10,
             BuildKind::Grave => 5,
             BuildKind::ResearchBench => 15,
+            BuildKind::SpikeTrap => 5,
         }
     }
 
-    /// Le constructeur doit rester à côté : la case devient infranchissable.
-    /// Une tombe reste franchissable une fois bâtie : le constructeur
-    /// termine debout dessus, comme pour un lit.
+    /// Le constructeur doit rester à côté. C'est le cas de tout ce qui devient
+    /// infranchissable — et du piège à pointes, qui reste pourtant
+    /// franchissable : un colon ne finit pas de creuser une fosse à pointes
+    /// debout au milieu, et cela suffit à rendre « un colon sur un piège
+    /// armé » impossible en jeu normal. Une tombe, elle, reste franchissable
+    /// et se termine debout dessus, comme un lit.
     pub fn adjacent_only(self) -> bool {
         matches!(
             self,
@@ -91,6 +103,7 @@ impl BuildKind {
                 | BuildKind::Campfire
                 | BuildKind::CraftingSpot
                 | BuildKind::ResearchBench
+                | BuildKind::SpikeTrap
         )
     }
 
@@ -100,7 +113,8 @@ impl BuildKind {
             BuildKind::Bed
             | BuildKind::Campfire
             | BuildKind::CraftingSpot
-            | BuildKind::ResearchBench => Some(Material::Wood),
+            | BuildKind::ResearchBench
+            | BuildKind::SpikeTrap => Some(Material::Wood),
             BuildKind::Grave => Some(Material::Stone),
             _ => None,
         }
@@ -184,6 +198,7 @@ pub fn result_feature(kind: BuildKind, material: Material) -> Option<Feature> {
         (BuildKind::CraftingSpot, _) => Some(Feature::CraftingSpot),
         (BuildKind::Grave, _) => Some(Feature::Grave),
         (BuildKind::ResearchBench, _) => Some(Feature::ResearchBench),
+        (BuildKind::SpikeTrap, _) => Some(Feature::SpikeTrap),
         (BuildKind::Floor, _) => None,
     }
 }

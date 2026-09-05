@@ -10,12 +10,13 @@ use core::cmp::Reverse;
 use crate::animals::Species;
 use crate::build;
 use crate::climate;
+use crate::combat;
 use crate::craft::{self, CraftStage};
 use crate::farm::{self, Crop};
 use crate::health::{TEND_STEP, TEND_TICKS};
 use crate::items::{FRESHNESS_MAX, ItemKind, ItemStack, STACK_MAX};
 use crate::map::{Designation, Feature, Zone, chebyshev};
-use crate::path;
+use crate::path::{self, Walker};
 use crate::pawn::{
     BREAK_TICKS, Faction, HUNGER_DECAY, Job, MOOD_BREAK, NEED_MAX, RELIEF_TICKS, REST_DECAY,
     REST_RECOVERY, RESTED,
@@ -178,6 +179,7 @@ impl Sim {
             } => self.do_bury(i, corpse, grave, picked),
             Job::Research { bench } => self.do_research(i, bench),
             Job::Chat { with, ticks } => self.do_chat(i, with, ticks),
+            Job::RearmTrap { at, progress } => self.do_rearm(i, at, progress),
             // Traité plus haut : un pawn à terre ne passe jamais par ici.
             Job::Downed => {}
             // Réservé aux assiégeants (traités plus haut) : un colon n'attend
@@ -231,7 +233,7 @@ impl Sim {
             return;
         }
         // Le chemin est posé, mais le job reste la crise jusqu'à son terme.
-        if let Some(path) = path::find_path(&self.map, (px, py), (tx as u32, ty as u32))
+        if let Some(path) = self.colonist_path((px, py), (tx as u32, ty as u32))
             && !path.is_empty()
         {
             self.pawns[i].set_path(path);
@@ -376,7 +378,12 @@ impl Sim {
         match work {
             // La fabrication est du travail de constructeur : elle suit la même
             // priorité et la même compétence, après les chantiers en cours.
-            WorkType::Build => self.try_start_build(i) || self.try_start_craft(i),
+            // Le réarmement d'un piège se glisse entre les deux : c'est de la
+            // défense, elle passe avant la tunique de rechange, mais un
+            // chantier déjà lancé passe avant elle.
+            WorkType::Build => {
+                self.try_start_build(i) || self.try_start_rearm(i) || self.try_start_craft(i)
+            }
             WorkType::Deliver => self.try_start_deliver(i),
             // Le dépeçage suit la cuisine : même compétence, même urgence
             // (la viande se gâte), mais après les repas déjà lancés.
@@ -406,7 +413,7 @@ impl Sim {
         if !self.map.in_bounds(tx, ty) || !self.map.passable(tx as u32, ty as u32) {
             return;
         }
-        if let Some(path) = path::find_path(&self.map, (px, py), (tx as u32, ty as u32))
+        if let Some(path) = self.colonist_path((px, py), (tx as u32, ty as u32))
             && !path.is_empty()
         {
             self.pawns[i].set_path(path);
@@ -436,7 +443,7 @@ impl Sim {
         }
         beds.sort_unstable();
         for &(_, x, y) in beds.iter().take(PATH_ATTEMPTS) {
-            if let Some(p) = path::find_path(&self.map, from, (x, y)) {
+            if let Some(p) = self.colonist_path(from, (x, y)) {
                 self.pawns[i].set_path(p);
                 self.pawns[i].job = Job::Sleep { in_bed: true };
                 return;
@@ -489,7 +496,7 @@ impl Sim {
         beds.sort_unstable();
         beds.iter()
             .take(PATH_ATTEMPTS)
-            .find(|&&(_, x, y)| path::find_path(&self.map, near, (x, y)).is_some())
+            .find(|&&(_, x, y)| self.colonist_path(near, (x, y)).is_some())
             .map(|&(_, x, y)| (x, y))
     }
 
@@ -577,7 +584,7 @@ impl Sim {
                 self.abandon_job(i);
                 return;
             };
-            let Some(p) = path::find_path(&self.map, me, bed) else {
+            let Some(p) = self.colonist_path(me, bed) else {
                 self.abandon_job(i);
                 return;
             };
@@ -699,7 +706,7 @@ impl Sim {
             .collect();
         candidates.sort_unstable();
         for &(_, _, x, y, k) in candidates.iter().take(PATH_ATTEMPTS) {
-            if let Some(p) = path::find_path(&self.map, from, (x, y)) {
+            if let Some(p) = self.colonist_path(from, (x, y)) {
                 let id = self.pawns[i].id;
                 self.items[k].reserved_by = Some(id);
                 let item = self.items[k].id;
@@ -726,7 +733,7 @@ impl Sim {
         candidates.sort_unstable();
         for &(_, x, y, k) in candidates.iter().take(PATH_ATTEMPTS) {
             let path = if self.blueprints[k].kind.adjacent_only() {
-                self.path_adjacent(from, (x, y))
+                self.colonist_adjacent(from, (x, y))
             } else {
                 self.path_to_work(from, (x, y))
             };
@@ -774,7 +781,7 @@ impl Sim {
                 continue;
             };
             attempts += 1;
-            if let Some(p) = path::find_path(&self.map, from, (sx, sy)) {
+            if let Some(p) = self.colonist_path(from, (sx, sy)) {
                 let id = self.pawns[i].id;
                 self.blueprints[k].reserved_by = Some(id);
                 self.items[j].reserved_by = Some(id);
@@ -828,19 +835,55 @@ impl Sim {
         false
     }
 
-    /// Chemin vers la cible si elle est franchissable, sinon vers une voisine.
-    fn path_to_work(&self, from: (u32, u32), target: (u32, u32)) -> Option<Vec<path::Tile>> {
-        if self.map.passable(target.0, target.1) {
-            return path::find_path(&self.map, from, target);
+    /// Ce que le pawn `i` sait de la carte : la colonie connaît ses pièges à
+    /// pointes et les contourne, personne d'autre ne les voit (voir
+    /// `path::Walker`).
+    pub(crate) fn walker(&self, i: usize) -> Walker {
+        if self.pawns[i].faction == Faction::Colony {
+            Walker::COLONIST
+        } else {
+            Walker::ANYONE
         }
-        self.path_adjacent(from, target)
     }
 
-    /// Chemin vers la case voisine franchissable la plus proche du colon.
+    /// Chemin d'un colon. Tout ce module travaille pour la colonie —
+    /// `tick_pawn` renvoie les pillards, les marchands et les bêtes vers leur
+    /// propre boucle avant d'arriver ici — d'où le raccourci.
+    fn colonist_path(&self, from: (u32, u32), to: (u32, u32)) -> Option<Vec<path::Tile>> {
+        path::find_path_for(&self.map, from, to, Walker::COLONIST)
+    }
+
+    /// Chemin d'un colon vers une voisine de la cible.
+    fn colonist_adjacent(&self, from: (u32, u32), target: (u32, u32)) -> Option<Vec<path::Tile>> {
+        self.path_adjacent_for(from, target, Walker::COLONIST)
+    }
+
+    /// Chemin vers la cible si elle est franchissable, sinon vers une voisine.
+    /// Toujours pour un colon, comme le reste du module.
+    fn path_to_work(&self, from: (u32, u32), target: (u32, u32)) -> Option<Vec<path::Tile>> {
+        if self.map.passable_for(target.0, target.1, Walker::COLONIST) {
+            return self.colonist_path(from, target);
+        }
+        self.colonist_adjacent(from, target)
+    }
+
+    /// Chemin vers la case voisine franchissable la plus proche, pour
+    /// quelqu'un qui ne connaît pas les pièges (pillard, bête, marchand).
     pub(crate) fn path_adjacent(
         &self,
         from: (u32, u32),
         target: (u32, u32),
+    ) -> Option<Vec<path::Tile>> {
+        self.path_adjacent_for(from, target, Walker::ANYONE)
+    }
+
+    /// Même chose pour un marcheur donné : une case voisine occupée par un
+    /// piège armé n'est pas un poste de travail pour un colon.
+    pub(crate) fn path_adjacent_for(
+        &self,
+        from: (u32, u32),
+        target: (u32, u32),
+        walker: Walker,
     ) -> Option<Vec<path::Tile>> {
         let mut neighbours: Vec<(u32, u32, u32)> = Vec::new();
         for dy in -1i32..=1 {
@@ -850,7 +893,8 @@ impl Sim {
                 }
                 let nx = target.0 as i32 + dx;
                 let ny = target.1 as i32 + dy;
-                if self.map.in_bounds(nx, ny) && self.map.passable(nx as u32, ny as u32) {
+                if self.map.in_bounds(nx, ny) && self.map.passable_for(nx as u32, ny as u32, walker)
+                {
                     let n = (nx as u32, ny as u32);
                     neighbours.push((chebyshev(from, n), n.0, n.1));
                 }
@@ -859,7 +903,7 @@ impl Sim {
         neighbours.sort_unstable();
         neighbours
             .iter()
-            .find_map(|&(_, x, y)| path::find_path(&self.map, from, (x, y)))
+            .find_map(|&(_, x, y)| path::find_path_for(&self.map, from, (x, y), walker))
     }
 
     fn try_start_haul(&mut self, i: usize) -> bool {
@@ -885,7 +929,7 @@ impl Sim {
                 continue;
             };
             attempts += 1;
-            if let Some(p) = path::find_path(&self.map, from, (x, y)) {
+            if let Some(p) = self.colonist_path(from, (x, y)) {
                 let id = self.pawns[i].id;
                 self.items[k].reserved_by = Some(id);
                 let item = self.items[k].id;
@@ -945,7 +989,7 @@ impl Sim {
             else {
                 continue;
             };
-            if let Some(p) = path::find_path(&self.map, from, (cx, cy)) {
+            if let Some(p) = self.colonist_path(from, (cx, cy)) {
                 let pawn = self.pawns[i].id;
                 self.items[k].reserved_by = Some(pawn);
                 self.reservations.push(Reservation { x: gx, y: gy, pawn });
@@ -993,7 +1037,7 @@ impl Sim {
             self.pawns[i].carrying = Some((ItemKind::Corpse, 1));
             // La tombe est franchissable : on marche dessus, comme pour un
             // stockage, plutôt que de s'arrêter à côté.
-            match path::find_path(&self.map, here, grave) {
+            match self.colonist_path(here, grave) {
                 Some(p) => {
                     self.pawns[i].set_path(p);
                     self.pawns[i].job = Job::Bury {
@@ -1160,7 +1204,7 @@ impl Sim {
             let dest = dest
                 .filter(|&d| self.dest_accepts(d, kind))
                 .or_else(|| self.find_stockpile_dest(kind, here));
-            match dest.and_then(|d| path::find_path(&self.map, here, d).map(|p| (d, p))) {
+            match dest.and_then(|d| self.colonist_path(here, d).map(|p| (d, p))) {
                 Some((d, p)) => {
                     self.pawns[i].set_path(p);
                     self.pawns[i].job = Job::Haul {
@@ -1183,7 +1227,7 @@ impl Sim {
         if dest != Some(here) || !self.dest_accepts(here, kind) {
             // La destination a changé sous nos pieds : en chercher une autre.
             if let Some(d) = self.find_stockpile_dest(kind, here)
-                && let Some(p) = path::find_path(&self.map, here, d)
+                && let Some(p) = self.colonist_path(here, d)
             {
                 self.pawns[i].set_path(p);
                 self.pawns[i].job = Job::Haul {
@@ -1338,6 +1382,11 @@ impl Sim {
                 if !f.passable() {
                     self.relocate_items_from(bp.x, bp.y);
                     self.replan_paths_through(bp.x, bp.y);
+                } else if f == Feature::SpikeTrap {
+                    // Franchissable pour tout le monde, sauf pour ceux qui
+                    // viennent de l'enterrer là : les colons qui passaient par
+                    // cette case refont leur chemin sur-le-champ.
+                    self.replan_paths_through(bp.x, bp.y);
                 }
             }
             None => self
@@ -1369,11 +1418,88 @@ impl Sim {
             }
             let dest = self.pawns[i].path[0];
             let from = self.pawns[i].tile();
-            match path::find_path(&self.map, from, (u32::from(dest.0), u32::from(dest.1))) {
+            let walker = self.walker(i);
+            match path::find_path_for(
+                &self.map,
+                from,
+                (u32::from(dest.0), u32::from(dest.1)),
+                walker,
+            ) {
                 Some(p) if !p.is_empty() => self.pawns[i].set_path(p),
                 _ => self.abandon_job(i),
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Pièges à pointes
+    // ------------------------------------------------------------------
+
+    /// Va réarmer le piège déclenché le plus proche. Court-circuit avant tout
+    /// balayage : le compteur de la carte. La case est réservée comme celle
+    /// d'un travail désigné — deux colons ne réarment pas le même piège.
+    fn try_start_rearm(&mut self, i: usize) -> bool {
+        if self.map.sprung_trap_count() == 0 {
+            return false;
+        }
+        let from = self.pawns[i].tile();
+        let mut traps: Vec<(u32, u32, u32)> = Vec::new();
+        for y in 0..self.map.height() {
+            for x in 0..self.map.width() {
+                if self.map.feature(x, y) == Feature::SpikeTrapSprung && !self.is_reserved(x, y) {
+                    traps.push((chebyshev(from, (x, y)), x, y));
+                }
+            }
+        }
+        traps.sort_unstable();
+        for &(_, x, y) in traps.iter().take(PATH_ATTEMPTS) {
+            // Un piège déclenché est franchissable par tout le monde : le
+            // colon va se planter dessus pour le remonter.
+            let Some(p) = self.path_to_work(from, (x, y)) else {
+                continue;
+            };
+            let pawn = self.pawns[i].id;
+            self.reservations.push(Reservation { x, y, pawn });
+            self.pawns[i].set_path(p);
+            self.pawns[i].job = Job::RearmTrap {
+                at: (x, y),
+                progress: 0,
+            };
+            return true;
+        }
+        false
+    }
+
+    /// Remonte les pointes. Aucun matériau n'est consommé et rien n'est
+    /// annoncé : un piège réarmé est un retour à la normale, pas un fait
+    /// notable.
+    fn do_rearm(&mut self, i: usize, at: (u32, u32), progress: u32) {
+        if self.map.feature(at.0, at.1) != Feature::SpikeTrapSprung {
+            self.abandon_job(i);
+            return;
+        }
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        if chebyshev(self.pawns[i].tile(), at) > 1 {
+            self.abandon_job(i);
+            return;
+        }
+        let progress = progress + self.pawns[i].work_step(WorkType::Build);
+        self.gain_xp(i, WorkType::Build);
+        if progress < combat::REARM_TICKS * 100 {
+            self.pawns[i].job = Job::RearmTrap { at, progress };
+            return;
+        }
+        self.map.set_feature(at.0, at.1, Feature::SpikeTrap);
+        let id = self.pawns[i].id;
+        self.reservations.retain(|r| r.pawn != id);
+        self.pawns[i].job = Job::Idle;
+        // Le colon peut se retrouver debout sur le piège qu'il vient de
+        // remonter : il n'en souffre pas (seuls les hostiles et les bêtes le
+        // déclenchent) et son prochain chemin repart de là sans encombre — la
+        // case de départ n'est jamais testée (`path::find_path_for`).
     }
 
     // ------------------------------------------------------------------
@@ -1425,7 +1551,7 @@ impl Sim {
             else {
                 return false;
             };
-            if let Some(p) = path::find_path(&self.map, from, (sx, sy)) {
+            if let Some(p) = self.colonist_path(from, (sx, sy)) {
                 let pawn = self.pawns[i].id;
                 self.items[k].reserved_by = Some(pawn);
                 self.reservations.push(Reservation { x: fx, y: fy, pawn });
@@ -1471,7 +1597,7 @@ impl Sim {
                 self.items.remove(j);
             }
             self.pawns[i].carrying = Some((kind, farm::RAW_PER_MEAL));
-            match self.path_adjacent(here, campfire) {
+            match self.colonist_adjacent(here, campfire) {
                 Some(p) => {
                     self.pawns[i].set_path(p);
                     self.pawns[i].job = Job::Cook {
@@ -1599,7 +1725,7 @@ impl Sim {
         }
         let first = picks[0];
         let target = (self.items[first].x, self.items[first].y);
-        let Some(p) = path::find_path(&self.map, from, target) else {
+        let Some(p) = self.colonist_path(from, target) else {
             return false;
         };
         let pawn = self.pawns[i].id;
@@ -1719,7 +1845,7 @@ impl Sim {
             self.items.remove(j);
         }
         self.pawns[i].carrying = Some((kind, need));
-        match self.path_adjacent(here, spot) {
+        match self.colonist_adjacent(here, spot) {
             Some(p) => {
                 self.pawns[i].set_path(p);
                 self.pawns[i].job = Job::Craft {
@@ -1763,7 +1889,7 @@ impl Sim {
         };
         let target = (self.items[j].x, self.items[j].y);
         let item = self.items[j].id;
-        match path::find_path(&self.map, here, target) {
+        match self.colonist_path(here, target) {
             Some(p) => {
                 self.pawns[i].set_path(p);
                 self.pawns[i].job = Job::Craft {
@@ -1850,7 +1976,7 @@ impl Sim {
             .collect();
         candidates.sort_unstable();
         for &(_, _, x, y, k) in candidates.iter().take(PATH_ATTEMPTS) {
-            if let Some(p) = path::find_path(&self.map, from, (x, y)) {
+            if let Some(p) = self.colonist_path(from, (x, y)) {
                 let id = self.pawns[i].id;
                 self.items[k].reserved_by = Some(id);
                 let item = self.items[k].id;
@@ -1942,7 +2068,7 @@ impl Sim {
             // La bête bouge : le chemin sera refait à chaque tick par
             // `engage`. Ici on vérifie seulement qu'elle est atteignable, pour
             // qu'un chasseur ne parte pas après un lapin de l'autre rive.
-            if d <= 1 || self.path_adjacent(from, (x, y)).is_some() {
+            if d <= 1 || self.colonist_adjacent(from, (x, y)).is_some() {
                 self.pawns[i].path.clear();
                 self.pawns[i].job = Job::Hunt { target };
                 return true;
@@ -2014,7 +2140,7 @@ impl Sim {
             else {
                 return false;
             };
-            if let Some(p) = path::find_path(&self.map, from, (sx, sy)) {
+            if let Some(p) = self.colonist_path(from, (sx, sy)) {
                 let pawn = self.pawns[i].id;
                 self.items[k].reserved_by = Some(pawn);
                 self.reservations.push(Reservation { x: fx, y: fy, pawn });
@@ -2060,7 +2186,7 @@ impl Sim {
                 self.items.remove(j);
             }
             self.pawns[i].carrying = Some((kind, 1));
-            match self.path_adjacent(here, spot) {
+            match self.colonist_adjacent(here, spot) {
                 Some(p) => {
                     self.pawns[i].set_path(p);
                     self.pawns[i].job = Job::Butcher {
@@ -2126,7 +2252,7 @@ impl Sim {
         }
         benches.sort_unstable();
         for &(_, bx, by) in benches.iter().take(PATH_ATTEMPTS) {
-            let Some(p) = self.path_adjacent(from, (bx, by)) else {
+            let Some(p) = self.colonist_adjacent(from, (bx, by)) else {
                 continue;
             };
             let pawn = self.pawns[i].id;

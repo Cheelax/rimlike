@@ -151,8 +151,11 @@ impl WasmSim {
         });
     }
 
-    /// `kind` : 0 mur, 1 porte, 2 sol, 3 lit, 4 feu, 5 poste de fabrication.
-    /// `material` : 0 bois, 1 pierre.
+    /// `kind` : 0 mur, 1 porte, 2 sol, 3 lit, 4 feu, 5 poste de fabrication,
+    /// 6 tombe, 7 établi de recherche, 8 piège à pointes (5 bois, franchissable,
+    /// blesse le premier hostile qui marche dessus).
+    /// `material` : 0 bois, 1 pierre. Certains genres imposent le leur (pierre
+    /// pour la tombe, bois pour le reste) : le matériau donné est alors ignoré.
     pub fn build(&mut self, kind: u8, material: u8, x0: i32, y0: i32, x1: i32, y1: i32) {
         self.pending.push(sim::Command::Build {
             kind: BuildKind::from_u8(kind),
@@ -331,8 +334,11 @@ impl WasmSim {
         })
     }
 
-    /// `kind` : 0 mur, 1 porte, 2 sol, 3 lit, 4 feu, 5 poste de fabrication.
-    /// `material` : 0 bois, 1 pierre.
+    /// `kind` : 0 mur, 1 porte, 2 sol, 3 lit, 4 feu, 5 poste de fabrication,
+    /// 6 tombe, 7 établi de recherche, 8 piège à pointes (5 bois, franchissable,
+    /// blesse le premier hostile qui marche dessus).
+    /// `material` : 0 bois, 1 pierre. Certains genres imposent le leur (pierre
+    /// pour la tombe, bois pour le reste) : le matériau donné est alors ignoré.
     pub fn encode_build(kind: u8, material: u8, x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<u8> {
         encode(&sim::Command::Build {
             kind: BuildKind::from_u8(kind),

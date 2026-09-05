@@ -219,6 +219,20 @@ pub enum Job {
         with: u32,
         ticks: u32,
     },
+    /// Réarme un piège à pointes déclenché (`map::Feature::SpikeTrapSprung`) :
+    /// le colon se rend sur la case et y travaille `combat::REARM_TICKS` ticks,
+    /// sans le moindre matériau — on remet les pointes en place, on n'en taille
+    /// pas de nouvelles. C'est du travail de constructeur (`WorkType::Build`).
+    ///
+    /// `progress` vit dans le job, comme celui de `Job::Work` ou de
+    /// `Job::Farm` : l'avancement appartient au colon qui s'y colle, et se perd
+    /// avec lui s'il lâche tout.
+    ///
+    /// **Ajouté en fin d'énumération** : postcard encode l'indice.
+    RearmTrap {
+        at: (u32, u32),
+        progress: u32,
+    },
 }
 
 impl Job {
@@ -258,6 +272,7 @@ impl Job {
             Job::Bury { .. } => 23,
             Job::Research { .. } => 24,
             Job::Chat { .. } => 25,
+            Job::RearmTrap { .. } => 26,
         }
     }
 }

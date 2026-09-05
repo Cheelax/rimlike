@@ -138,6 +138,47 @@ pub const GRIEF_TICKS: u32 = TICKS_PER_DAY * 2;
 /// difficile dépasse largement l'ancien plafond.
 pub const MAX_RAIDERS: u32 = 12;
 
+/// Sévérité de la blessure d'un piège à pointes, posée sur une jambe et
+/// saignante comme un coup d'épieu (`health::BLEED_FRACTION`).
+///
+/// **Mesurée, pas devinée.** Scénario : colonie murée de trois colons, une
+/// seule entrée de trois cases toutes piégées, trois pillards à mains nues
+/// lâchés devant ; 120 graines, la même jouée avec et sans pièges, jusqu'à ce
+/// qu'aucun pillard ne reste debout (au plus trois jours). « À terre ou tué »
+/// se compte parmi les **pillards piégés** (357 sur les 360 possibles : le
+/// couloir en épargne à peine un).
+///
+/// | sévérité | à terre ou tué | repartis vivants | PV perdus par la colonie (avec / sans pièges) |
+/// |---|---|---|---|
+/// |   0 (piège inoffensif) | 25 % | 74 % | 1271 / 1169 |
+/// | 180 | 42 % | 57 % |  884 / 1210 |
+/// | 200 | 38 % | 61 % |  800 / 1210 |
+/// | **250** | **50 %** | 50 % |  **741 / 1210** |
+/// | 300 | 40 % | 59 % |  627 / 1210 |
+///
+/// 250 est le palier qui met à terre ou tue exactement un pillard piégé sur
+/// deux. Ce n'est pas monotone, et c'est le seuil de décrochage qui l'explique :
+/// à 300, le pillard tombe à 700 PV et passe sous `FLEE_HP` au premier coup
+/// reçu — il repart par le bord avant d'avoir saigné, la blessure plus grave
+/// tue donc **moins**. À 250 il lui reste 750 PV, assez pour rester au contact
+/// le temps que le saignement (250 / 4 = 62 points de sang par
+/// `health::BLEED_INTERVAL`, sur `health::BLEED_TICKS`, soit bien plus que les
+/// 1000 points d'un corps) fasse son œuvre. Au-delà de `HP_MAX - FLEE_HP`
+/// (350), le piège ferait décrocher le pillard sur le coup : il repartirait
+/// vivant, exactement le contraire du but.
+///
+/// La ligne à 0 est le témoin : un piège qui ne fait que barrer le passage
+/// **coûte** des PV à la colonie (1271 contre 1169), parce qu'il empêche les
+/// colons de sortir prendre les pillards à revers. C'est la blessure, et elle
+/// seule, qui fait d'un piège une défense.
+pub const TRAP_SEVERITY: u32 = 250;
+
+/// Durée du réarmement d'un piège déclenché (`pawn::Job::RearmTrap`). Sans
+/// matériau : on remet les pointes en place, on ne les retaille pas. Court
+/// exprès — le coût d'un piège est le bois qu'il a fallu pour le poser, pas
+/// l'entretien.
+pub const REARM_TICKS: u32 = 100;
+
 /// Ce qu'a donné un tour d'approche-et-frappe (`Sim::engage`). L'appelant
 /// décide quoi faire d'un échec : un pillard repart, un chasseur abandonne son
 /// gibier, un sanglier détale.
@@ -524,9 +565,15 @@ impl Sim {
     /// terre ne sont jamais visés d'eux-mêmes : les pillards passent devant un
     /// colon écroulé sans s'y arrêter, ce qui laisse une chance au sauvetage.
     /// Un ordre explicite du joueur (`Command::Attack`) reste possible.
+    ///
+    /// Le chemin est celui du **chercheur** (`Sim::walker`) : un colon qui ne
+    /// peut atteindre un pillard qu'en traversant ses propres pièges ne le
+    /// prend pas pour cible — sans quoi il basculerait d'`Attack` à `Idle` à
+    /// chaque tick sans jamais travailler ni se battre.
     fn nearest_reachable_enemy(&self, i: usize, radius: u32) -> Option<u32> {
         let me = self.pawns[i].tile();
         let faction = self.pawns[i].faction;
+        let walker = self.walker(i);
         let mut enemies: Vec<(u32, u32, u32, u32)> = self
             .pawns
             .iter()
@@ -546,7 +593,7 @@ impl Sim {
         enemies
             .iter()
             .take(MELEE_TARGETS)
-            .find(|&&(d, x, y, _)| d <= 1 || self.path_adjacent(me, (x, y)).is_some())
+            .find(|&&(d, x, y, _)| d <= 1 || self.path_adjacent_for(me, (x, y), walker).is_some())
             .map(|&(.., id)| id)
     }
 
@@ -595,7 +642,10 @@ impl Sim {
             .first()
             .is_none_or(|&(dx, dy)| chebyshev((u32::from(dx), u32::from(dy)), them) > 1);
         if stale {
-            match self.path_adjacent(me, them) {
+            // Un colon qui charge ne traverse pas ses propres pièges ; un
+            // pillard, lui, ne les voit pas venir.
+            let walker = self.walker(i);
+            match self.path_adjacent_for(me, them, walker) {
                 Some(p) => self.pawns[i].set_path(p),
                 None => return EngageOutcome::Unreachable,
             }
@@ -735,8 +785,9 @@ impl Sim {
             .map(|(x, y)| (chebyshev(me, (x, y)), x, y))
             .collect();
         edges.sort_unstable();
+        let walker = self.walker(i);
         for &(_, x, y) in edges.iter().take(FLEE_ATTEMPTS) {
-            let Some(p) = path::find_path(&self.map, me, (x, y)) else {
+            let Some(p) = path::find_path_for(&self.map, me, (x, y), walker) else {
                 continue;
             };
             if p.is_empty() {
@@ -749,6 +800,50 @@ impl Sim {
         // Aucun bord atteignable : le pillard disparaît plutôt que de rester
         // coincé pour l'éternité.
         self.pawns[i].gone = true;
+    }
+
+    // ------------------------------------------------------------------
+    // Pièges à pointes
+    // ------------------------------------------------------------------
+
+    /// Le piège se referme sur qui vient d'**entrer** sur sa case. Appelée
+    /// après le tour de chaque pawn (voir `Sim::update`), avec la case qu'il
+    /// occupait avant : c'est le changement de case qui déclenche, jamais le
+    /// simple fait d'être là. Sans quoi un pillard planté sur un piège se
+    /// ferait charcuter à chaque tick.
+    ///
+    /// Qui tombe dedans : les hostiles (pillards, marchand poussé à bout) et
+    /// les bêtes. Jamais un colon — il sait où sont les pointes, et son chemin
+    /// les contourne déjà (`path::Walker`) — jamais un marchand neutre, qui
+    /// connaît la maison.
+    pub(crate) fn spring_trap(&mut self, i: usize, before: (u32, u32)) {
+        // Court-circuit du cas courant : aucune colonie n'est piégée.
+        if self.map.trap_count() == 0 {
+            return;
+        }
+        let p = &self.pawns[i];
+        if !p.is_alive() || !(p.is_raider_like() || p.faction == Faction::Animal) {
+            return;
+        }
+        let here = p.tile();
+        if here == before || self.map.feature(here.0, here.1) != Feature::SpikeTrap {
+            return;
+        }
+        // Une jambe ou l'autre. Aucun modificateur de dégâts : ni pillard ni
+        // bête ne porte de trait, et un piège ne choisit pas qui passe.
+        let part = if self.rng.chance(1, 2) {
+            health::BodyPart::LeftLeg
+        } else {
+            health::BodyPart::RightLeg
+        };
+        self.pawns[i].add_injury(part, TRAP_SEVERITY, TRAP_SEVERITY / health::BLEED_FRACTION);
+        self.map
+            .set_feature(here.0, here.1, Feature::SpikeTrapSprung);
+        let victim = self.pawns[i].id;
+        self.push_event(EventKind::TrapSprung, victim);
+        // Une bête prise au piège détale, sanglier compris : il n'y a personne
+        // à charger (même règle que `Sim::inflict_injury`).
+        self.animal_hit(i, None);
     }
 
     // ------------------------------------------------------------------

@@ -82,6 +82,15 @@ pub enum Feature {
     /// Établi de recherche : on y accumule les points de `research`.
     /// Infranchissable comme le poste de fabrication : on travaille à côté.
     ResearchBench = 16,
+    /// Piège à pointes armé, caché dans le sol (voir `build::BuildKind::SpikeTrap`).
+    /// **Franchissable** : c'est tout l'intérêt, un ennemi marche dessus sans
+    /// le voir. Les colons, eux, savent où il est et ne le traversent jamais —
+    /// c'est le chemin qui l'interdit (`path::Walker`), pas la carte.
+    SpikeTrap = 17,
+    /// Piège déclenché : inoffensif jusqu'à ce qu'un colon le réarme
+    /// (`pawn::Job::RearmTrap`). Franchissable par tout le monde, colons
+    /// compris.
+    SpikeTrapSprung = 18,
 }
 
 impl Feature {
@@ -103,10 +112,14 @@ impl Feature {
             14 => Feature::Grave,
             15 => Feature::GraveFilled,
             16 => Feature::ResearchBench,
+            17 => Feature::SpikeTrap,
+            18 => Feature::SpikeTrapSprung,
             _ => Feature::None,
         }
     }
 
+    /// Franchissable par n'importe qui. Les pièges à pointes le sont : ce
+    /// qu'un colon en sait relève du chemin (`path::Walker`), pas de la case.
     pub fn passable(self) -> bool {
         !matches!(
             self,
@@ -275,6 +288,15 @@ pub struct Map {
     /// la recherche d'un poste libre. **Champ ajouté en fin de structure** :
     /// un vieux snapshot est refusé net plutôt que relu de travers.
     research_bench_count: u32,
+    /// Pièges à pointes **armés** (`Feature::SpikeTrap`). Lu à chaque tick par
+    /// le déclenchement et par la recherche de chemin des colons : sans piège
+    /// sur la carte, ni l'un ni l'autre ne coûte quoi que ce soit. **Champs
+    /// ajoutés en fin de structure** : un vieux snapshot est refusé net plutôt
+    /// que relu de travers.
+    trap_count: u32,
+    /// Pièges déclenchés (`Feature::SpikeTrapSprung`), à réarmer : court-circuit
+    /// de `Job::RearmTrap`, sur le modèle de `grave_count`.
+    sprung_trap_count: u32,
 }
 
 /// Au-delà, la zone est trop vaste pour être une pièce : c'est le dehors.
@@ -372,6 +394,14 @@ impl Map {
             .iter()
             .filter(|&&f| f == Feature::ResearchBench as u8)
             .count() as u32;
+        let trap_count = features
+            .iter()
+            .filter(|&&f| f == Feature::SpikeTrap as u8)
+            .count() as u32;
+        let sprung_trap_count = features
+            .iter()
+            .filter(|&&f| f == Feature::SpikeTrapSprung as u8)
+            .count() as u32;
         Map {
             width,
             height,
@@ -394,6 +424,8 @@ impl Map {
             room_campfires: Vec::new(),
             grave_count,
             research_bench_count,
+            trap_count,
+            sprung_trap_count,
         }
     }
 
@@ -448,6 +480,8 @@ impl Map {
                 Feature::CraftingSpot => self.crafting_spot_count -= 1,
                 Feature::Grave => self.grave_count -= 1,
                 Feature::ResearchBench => self.research_bench_count -= 1,
+                Feature::SpikeTrap => self.trap_count -= 1,
+                Feature::SpikeTrapSprung => self.sprung_trap_count -= 1,
                 _ => {}
             }
             match f {
@@ -456,6 +490,8 @@ impl Map {
                 Feature::CraftingSpot => self.crafting_spot_count += 1,
                 Feature::Grave => self.grave_count += 1,
                 Feature::ResearchBench => self.research_bench_count += 1,
+                Feature::SpikeTrap => self.trap_count += 1,
+                Feature::SpikeTrapSprung => self.sprung_trap_count += 1,
                 _ => {}
             }
             if old.room_key() != f.room_key() {
@@ -511,6 +547,21 @@ impl Map {
 
     pub fn passable(&self, x: u32, y: u32) -> bool {
         self.move_cost(x, y).is_some()
+    }
+
+    /// Même chose, mais pour un marcheur donné : un colon connaît les pièges à
+    /// pointes de la colonie et ne pose jamais le pied sur un piège **armé**
+    /// (voir `path::Walker`). Un pillard, une bête ou un marchand ne savent
+    /// rien : pour eux, le coût est celui de la case nue.
+    pub fn move_cost_for(&self, x: u32, y: u32, walker: crate::path::Walker) -> Option<u32> {
+        if walker.avoids_traps && self.feature(x, y) == Feature::SpikeTrap {
+            return None;
+        }
+        self.move_cost(x, y)
+    }
+
+    pub fn passable_for(&self, x: u32, y: u32, walker: crate::path::Walker) -> bool {
+        self.move_cost_for(x, y, walker).is_some()
     }
 
     pub fn tiles(&self) -> &[u8] {
@@ -569,6 +620,16 @@ impl Map {
     /// Tombes vides, prêtes à recevoir un cadavre (voir `pawn::Job::Bury`).
     pub fn grave_count(&self) -> u32 {
         self.grave_count
+    }
+
+    /// Pièges à pointes armés (`Feature::SpikeTrap`).
+    pub fn trap_count(&self) -> u32 {
+        self.trap_count
+    }
+
+    /// Pièges déclenchés en attente de réarmement (`Feature::SpikeTrapSprung`).
+    pub fn sprung_trap_count(&self) -> u32 {
+        self.sprung_trap_count
     }
 
     /// Couche « intérieur », une valeur par case : 0 dehors, sinon le numéro

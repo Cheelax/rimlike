@@ -272,9 +272,10 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
         4 => {
             let (x0, y0, x1, y1) = random_rect_i32(rng, size);
             Command::Build {
-                // 0..=7 : murs, portes, sols, lits, feux, postes de
-                // fabrication, tombes et établis de recherche.
-                kind: BuildKind::from_u8(rng.below(8) as u8),
+                // 0..=8 : murs, portes, sols, lits, feux, postes de
+                // fabrication, tombes, établis de recherche et pièges à
+                // pointes.
+                kind: BuildKind::from_u8(rng.below(9) as u8),
                 material: Material::from_u8(rng.below(2) as u8),
                 x0,
                 y0,
@@ -438,27 +439,30 @@ mod tests {
         assert!(seen.iter().all(|&s| s), "variantes manquantes : {seen:?}");
     }
 
-    /// `BuildKind::ResearchBench` est la variante la plus récente (voir
+    /// `BuildKind::SpikeTrap` est la variante la plus récente (voir
     /// `sim::build::BuildKind`) : elle doit rester tirable comme les autres,
-    /// la tombe avec elle.
+    /// la tombe et l'établi avec elle.
     #[test]
     fn build_covers_the_newest_kinds() {
         let mut rng = Rng::new(3);
         let sim = Sim::new(1, 16, 16);
         let mut seen_grave = false;
         let mut seen_bench = false;
-        for _ in 0..4000 {
+        let mut seen_trap = false;
+        for _ in 0..8000 {
             let (cmd, _) = random_command(&mut rng, &sim, 16);
             if let Command::Build { kind, .. } = cmd {
                 seen_grave |= kind == BuildKind::Grave;
                 seen_bench |= kind == BuildKind::ResearchBench;
+                seen_trap |= kind == BuildKind::SpikeTrap;
             }
-            if seen_grave && seen_bench {
+            if seen_grave && seen_bench && seen_trap {
                 break;
             }
         }
         assert!(seen_grave, "BuildKind::Grave n'est jamais tiré");
         assert!(seen_bench, "BuildKind::ResearchBench n'est jamais tiré");
+        assert!(seen_trap, "BuildKind::SpikeTrap n'est jamais tiré");
     }
 
     /// Toutes les technologies doivent être tirables — sinon la campagne ne

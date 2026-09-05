@@ -169,6 +169,12 @@ pub enum EventKind {
     /// deux fois plus longtemps. `arg` : l'id du **survivant**, pas du mort —
     /// celui-là vient d'être annoncé par `ColonistDied`.
     FriendLost = 34,
+    /// Un piège à pointes vient de se refermer sur quelqu'un (voir
+    /// `combat::TRAP_SEVERITY`). `arg` : l'id de la **victime** — un pillard,
+    /// un marchand devenu hostile ou une bête, jamais un colon. Le piège est
+    /// désormais déclenché (`Feature::SpikeTrapSprung`) et attend d'être
+    /// réarmé.
+    TrapSprung = 35,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -568,7 +574,10 @@ impl Sim {
                     return;
                 };
                 let from = self.pawns[i].tile();
-                if let Some(path) = path::find_path(&self.map, from, (x, y)) {
+                // Même un ordre du joueur ne fait pas marcher un colon sur un
+                // piège armé : il contourne, ou il n'y va pas.
+                let walker = self.walker(i);
+                if let Some(path) = path::find_path_for(&self.map, from, (x, y), walker) {
                     self.abandon_job(i);
                     self.pawns[i].set_path(path);
                     self.pawns[i].job = Job::Move { manual: true };
@@ -755,8 +764,22 @@ impl Sim {
         // Un seul comptage par tick, partagé par tous les colons (comme
         // `outdoor`) : voir `Pawn::corpses_on_map`.
         let corpses = self.corpse_count();
+        // Aucun pawn n'apparaît ni ne disparaît pendant cette boucle (le
+        // ménage se fait après), les indices restent donc valides.
+        let trapped = self.map.trap_count() > 0;
         for i in 0..self.pawns.len() {
+            // Case occupée avant son tour : le piège se déclenche à l'entrée,
+            // pas au séjour (voir `Sim::spring_trap`). Sans piège sur la
+            // carte, on ne relit même pas la case.
+            let before = if trapped {
+                Some(self.pawns[i].tile())
+            } else {
+                None
+            };
             self.tick_pawn(i, outdoor, corpses);
+            if let Some(before) = before {
+                self.spring_trap(i, before);
+            }
         }
         self.remove_dead();
     }

@@ -427,7 +427,14 @@ par tick modulés par humeur et compétence, séances de 600 ticks. Interface li
 (Sonnet) : outil Établi de recherche, panneau Recherche (touche R : cinq technologies, barre
 d'avancement, « Arrêter », avertissement sans établi), ligne HUD, événement 31 ; cadence
 corrigée après mesure (voir journal) ; vérifié : Médecine à 31 % après 6 000 ticks d'un
-chercheur. Marchands itinérants côté serveur livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
+chercheur. Pièges à pointes livrés le 2026-09-05 (Opus, sim) : piège (5 bois, 150 ticks, une case,
+franchissable) qui blesse une jambe du premier pillard, marchand hostile ou animal qui y entre puis
+se déclenche ; les colons le connaissent et le contournent (`path::Walker`, court-circuité sans
+piège) ; réarmement par un colon (100 ticks, sans bois) ; poids modeste dans la richesse ; sévérité
+250 mesurée sur 120 graines (un pillard piégé sur deux à terre ou tué, pertes de la colonie 741
+contre 1 210 sans pièges ; non monotone : à 300 le pillard fuit avant de saigner). Interface à
+faire (outil Piège, éléments 17/18, job 26, événement 35). Marchands itinérants côté serveur
+livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
 caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;
 à l'arrivée, `trader_arrival` à l'hôte seul (qui doit émettre `TriggerTraderVisit`), ou
@@ -458,6 +465,14 @@ hors du frame), job « bavarde », événements 32-34 ; vérifié : avis mutuels
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-05 : pièges à pointes réglés à la mesure. Sévérité choisie sur 120 graines jouées avec
+  et sans pièges ; la courbe n'est pas monotone (à 300 le pillard tombe sous le seuil de fuite au
+  premier coup et repart avant d'avoir saigné, donc meurt moins), et un piège inoffensif coûte
+  des points de vie à la colonie parce qu'il empêche les colons de sortir. Les colons voient
+  leurs propres pièges : la traversabilité dépend du marcheur (`Walker`), la case de départ
+  n'est jamais testée, et sans piège sur la carte le marcheur averti redevient ordinaire.
+  L'avancement du réarmement vit dans le job du colon, comme `Work` ou `Tend`.
 
 - 2026-09-05 : marchands itinérants 100 % serveur. Le serveur monde fait circuler des caravanes
   PNJ et ne fait jamais confiance au client pour elles ; il ne réémet jamais une arrivée (pas

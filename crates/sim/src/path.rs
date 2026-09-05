@@ -26,10 +26,49 @@ fn heuristic(a: (u32, u32), b: (u32, u32)) -> u32 {
     100 * dx.max(dy) + 41 * dx.min(dy)
 }
 
-/// Chemin de `from` (exclu) à `to` (inclus). `None` si `to` est inaccessible.
-/// `Some(vec![])` si `from == to`.
+/// Ce que celui qui marche sait de la carte. Toute la traversabilité ne
+/// dépendait jusqu'ici que de la case ; le piège à pointes est le premier
+/// obstacle qui dépend de **qui** passe : la colonie sait où elle a enterré ses
+/// pointes, un pillard ou une bête l'apprend en marchant dessus.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Walker {
+    /// Les pièges armés (`map::Feature::SpikeTrap`) sont infranchissables.
+    pub avoids_traps: bool,
+}
+
+impl Walker {
+    /// Celui qui ne sait rien : pillard, bête, marchand. C'est le défaut, donc
+    /// ce que voient les appels historiques (`find_path`).
+    pub const ANYONE: Walker = Walker {
+        avoids_traps: false,
+    };
+    /// Un membre de la colonie : il contourne ses propres pièges.
+    pub const COLONIST: Walker = Walker { avoids_traps: true };
+}
+
+/// Chemin de `from` (exclu) à `to` (inclus), pour quelqu'un qui ne connaît pas
+/// les pièges. `None` si `to` est inaccessible, `Some(vec![])` si `from == to`.
 pub fn find_path(map: &Map, from: (u32, u32), to: (u32, u32)) -> Option<Vec<Tile>> {
-    if !map.passable(to.0, to.1) {
+    find_path_for(map, from, to, Walker::ANYONE)
+}
+
+/// Même chose pour un marcheur donné (voir `Walker`). La case de **départ**
+/// n'est jamais testée : un colon posé sur un piège armé (snapshot bricolé,
+/// piège réarmé sous ses pieds) doit pouvoir en repartir.
+pub fn find_path_for(
+    map: &Map,
+    from: (u32, u32),
+    to: (u32, u32),
+    walker: Walker,
+) -> Option<Vec<Tile>> {
+    // Sans piège armé sur la carte, le marcheur averti est un marcheur comme
+    // un autre : on s'épargne la lecture d'élément par case.
+    let walker = if map.trap_count() == 0 {
+        Walker::ANYONE
+    } else {
+        walker
+    };
+    if !map.passable_for(to.0, to.1, walker) {
         return None;
     }
     if from == to {
@@ -71,12 +110,13 @@ pub fn find_path(map: &Map, from: (u32, u32), to: (u32, u32)) -> Option<Vec<Tile
             if closed[ni] {
                 continue;
             }
-            let Some(cost) = map.move_cost(nx as u32, ny as u32) else {
+            let Some(cost) = map.move_cost_for(nx as u32, ny as u32, walker) else {
                 continue;
             };
             let diagonal = dx != 0 && dy != 0;
             if diagonal
-                && (!map.passable(cx as u32, ny as u32) || !map.passable(nx as u32, cy as u32))
+                && (!map.passable_for(cx as u32, ny as u32, walker)
+                    || !map.passable_for(nx as u32, cy as u32, walker))
             {
                 continue;
             }

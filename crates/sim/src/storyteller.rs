@@ -242,6 +242,10 @@ fn feature_wealth(f: Feature) -> u32 {
         Feature::Campfire => 10,
         Feature::CraftingSpot => 15,
         Feature::ResearchBench => 20,
+        // Une défense passive compte, comme dans RimWorld : elle attire les
+        // convoitises. Modeste — un piège vaut deux murs — et seulement tant
+        // qu'il est armé : un piège déclenché ne défend plus rien.
+        Feature::SpikeTrap => TRAP_WEALTH,
         // La nature n'appartient à personne : ni arbre, ni rocher, ni buisson,
         // ni plant ne compte comme richesse.
         _ => 0,
@@ -250,6 +254,9 @@ fn feature_wealth(f: Feature) -> u32 {
 
 /// Ce que vaut une case de sol bâti.
 const FLOOR_WEALTH: u32 = 3;
+
+/// Ce que vaut un piège à pointes **armé** dans la richesse de la colonie.
+pub const TRAP_WEALTH: u32 = 10;
 
 impl Sim {
     // ------------------------------------------------------------------
