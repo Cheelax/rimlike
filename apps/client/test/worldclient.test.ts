@@ -12,6 +12,8 @@ import {
   PROTOCOL_VERSION,
   decodeClientMessage,
   encodeMessage,
+  type Caravan,
+  type CaravanArriveMessage,
   type ClientMessage,
   type ServerMessage,
   type Settlement,
@@ -73,12 +75,33 @@ const ALICE: Settlement = {
   createdAt: 1757000000000,
 };
 
+const CONVOY: Caravan = {
+  id: "c7",
+  owner: "alice",
+  fromTile: 1732,
+  toTile: 1810,
+  route: [1732, 1745, 1799, 1810],
+  departedAt: 412.5,
+  arrivesAt: 436.5,
+  progress: 0.25,
+  currentTile: 1732,
+  summary: {
+    pawns: 3,
+    items: [
+      [0, 40],
+      [4, 12],
+    ],
+  },
+  status: "travelling",
+};
+
 interface Harness {
   transport: FakeTransport;
   client: WorldClient;
   states: WorldClientState[];
   errors: WorldError[];
   settled: { tile: number; room: string; seed: number }[];
+  arrivals: CaravanArriveMessage[];
 }
 
 function harness(expected: WorldInfo = GLOBE): Harness {
@@ -86,15 +109,17 @@ function harness(expected: WorldInfo = GLOBE): Harness {
   const states: WorldClientState[] = [];
   const errors: WorldError[] = [];
   const settled: { tile: number; room: string; seed: number }[] = [];
+  const arrivals: CaravanArriveMessage[] = [];
   const client = new WorldClient({
     transport,
     name: "bob",
     expected,
     onState: (state) => states.push(state),
     onSettled: (message) => settled.push({ tile: message.tile, room: message.room, seed: message.seed }),
+    onCaravanArrive: (message) => arrivals.push(message),
     onError: (error) => errors.push(error),
   });
-  return { transport, client, states, errors, settled };
+  return { transport, client, states, errors, settled, arrivals };
 }
 
 /** Entre dans le monde et laisse le harnais prêt à jouer les actions. */
@@ -185,6 +210,85 @@ describe("WorldClient", () => {
     // `visit` répond lui aussi `settled` : c'est le même chemin d'entrée en salle.
     transport.deliver({ type: "settled", tile: 1732, room: "tile-1732", seed: 2007225770 });
     expect(settled).toEqual([{ tile: 1732, room: "tile-1732", seed: 2007225770 }]);
+  });
+
+  it("remplace la liste entière à chaque `world_caravans`", () => {
+    const { transport, client } = joined();
+    expect(client.state.caravans).toEqual([]);
+
+    transport.deliver({ type: "world_caravans", caravans: [CONVOY] });
+
+    expect(client.state.caravans).toEqual([CONVOY]);
+    expect(client.caravanById("c7")).toEqual(CONVOY);
+    expect(client.caravanById("c9")).toBeUndefined();
+
+    // Liste complète comme `world_settlements` : pas de delta (§12.4).
+    transport.deliver({ type: "world_caravans", caravans: [] });
+    expect(client.state.caravans).toEqual([]);
+  });
+
+  it("garde les caravanes à jour même hors de l'écran Monde", () => {
+    const { transport, client, states } = joined();
+
+    transport.deliver({ type: "world_caravans", caravans: [{ ...CONVOY, progress: 0.75, currentTile: 1799 }] });
+
+    // La connexion monde survit à l'entrée dans une colonie : c'est ce qui
+    // rend le retour au globe immédiat et à jour.
+    expect(states.at(-1)?.caravans[0].currentTile).toBe(1799);
+    expect(client.state.caravans[0].progress).toBe(0.75);
+  });
+
+  it("envoie `caravan_depart` avec son manifeste et son résumé", () => {
+    const { transport, client } = joined();
+
+    client.sendDepart({
+      fromTile: 1732,
+      toTile: 1810,
+      manifest: new Uint8Array([5, 0, 0, 0, 3]),
+      summary: { pawns: 3, items: [[0, 40]] },
+    });
+
+    // Le manifeste voyage en base64 sur le fil : c'est le codec qui le dit,
+    // pas une comparaison de texte.
+    const sent = transport.sent.at(-1) ?? "";
+    expect(JSON.parse(sent).manifest).toBe("BQAAAAM=");
+    expect(transport.messages().at(-1)).toEqual({
+      type: "caravan_depart",
+      fromTile: 1732,
+      toTile: 1810,
+      manifest: new Uint8Array([5, 0, 0, 0, 3]),
+      summary: { pawns: 3, items: [[0, 40]] },
+    });
+  });
+
+  it("déclenche le rappel d'arrivée, puis émet `caravan_delivered`", () => {
+    const { transport, client, arrivals } = joined();
+
+    transport.deliver({
+      type: "caravan_arrive",
+      id: "c7",
+      tile: 1810,
+      manifest: new Uint8Array([5, 0, 0, 0, 3]),
+      summary: { pawns: 3, items: [[0, 40]] },
+    });
+
+    expect(arrivals).toHaveLength(1);
+    expect(arrivals[0].id).toBe("c7");
+    expect(arrivals[0].tile).toBe(1810);
+    expect(arrivals[0].manifest).toEqual(new Uint8Array([5, 0, 0, 0, 3]));
+
+    // La confirmation part **après** que l'appelant a émis sa commande : tant
+    // qu'elle manque, le serveur réémet l'arrivée (§12.5).
+    client.deliverCaravan("c7");
+    expect(transport.messages().at(-1)).toEqual({ type: "caravan_delivered", id: "c7" });
+  });
+
+  it("envoie `caravan_cancel` tel quel", () => {
+    const { transport, client } = joined();
+
+    client.cancelCaravan("c7");
+
+    expect(transport.messages().at(-1)).toEqual({ type: "caravan_cancel", id: "c7" });
   });
 
   it("remonte un `world_error` sans quitter le monde", () => {

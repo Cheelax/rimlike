@@ -282,16 +282,28 @@ le serveur date chaque snapshot de conservation en heures monde et envoie `froze
 réouverture, l'hôte émet l'avance rapide comme première commande. Équilibrage du combat
 (Sonnet) : les pillards décrochent à 60 % de PV (mesuré sur 200 graines, plus aucun raid à
 deux morts quand les colons sont dispersés) et un test statistique sur douze graines garde
-le premier raid dangereux mais survivable. Reste : interface des caravanes et de l'avance
-rapide côté client (en cours), comptes, un seul contexte WebGL par onglet.
+le premier raid dangereux mais survivable. Interface des caravanes livrée le 2026-09-05
+(Opus) : panneau Caravane (touche V) avec colons cochables et marchandises bornées au stock,
+choix de la destination sur le globe avec itinéraire et durée prévisualisés, convois dessinés
+sur le globe avec progression et annulation, expédition des départs par l'hôte
+(`CaravanDispatcher`, FIFO des destinations, vidage par préfixe), réinjection à l'arrivée et
+confirmation ; 22 tests dont deux voyages complets contre le vrai serveur. Découverte : le
+serveur n'accepte `caravan_depart` / `caravan_delivered` et n'envoie `caravan_arrive` que sur
+la connexion de salle ; le client relaie donc par le Worker et fait un `world_join` paresseux
+sur cette connexion (le joueur apparaît deux fois dans la liste, dédoublonné par nom).
+**À corriger côté serveur** : accepter ces messages depuis la connexion monde d'un joueur
+présent dans la salle, ou documenter §12.3 comme réservé aux clients mono-connexion.
+Reste : `frozenTicks` côté client (émission de l'avance rapide par l'hôte), jetons
+d'identité côté client, un seul contexte WebGL par onglet.
 - Globe hexagonal, rendu du globe, biomes, choix de case de départ.
 - Serveur autoritaire persistant : cases, propriétaires, horloge globale.
 - Cartes gelées + avance rapide abstraite.
 - Caravanes : formation, chemin sur le globe, arrivée sur une case, retour.
 - Visite d'une case occupée par un autre joueur.
 **Jalon** : deux joueurs s'installent sur des cases distinctes, l'un envoie une
-caravane chez l'autre. **À moitié atteint le 2026-09-05** : deux joueurs peuvent s'installer
-et se visiter ; les caravanes restent à faire.
+caravane chez l'autre. **Atteint le 2026-09-05** en tests d'intégration contre le vrai
+serveur (voyage complet, colonie fondée par caravane) ; essai manuel à deux onglets à refaire
+une fois le serveur stabilisé (chantier identité en cours).
 
 ### Phase 5 — Profondeur (ouvert) — entamée le 2026-09-05
 Fait : noms de colons (tirés au sort par faction, déterministes) et compétences (six

@@ -122,6 +122,13 @@ class FakeSim implements RunnerSim {
     return new Uint32Array([1, 2, 3, 4, 5, 6]);
   }
 
+  /** Manifestes de caravane en attente : pilotable, le `frame` les porte. */
+  departures = 0;
+
+  departuresCount(): number {
+    return this.departures;
+  }
+
   weather(): number {
     return 1;
   }

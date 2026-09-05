@@ -107,6 +107,53 @@ export class SimHandle implements SimLike {
     this.inner.trigger_raid();
   }
 
+  // --- Caravanes (docs/protocol.md §12) ---
+
+  /**
+   * Forme une caravane : les colons choisis quittent la carte, les
+   * marchandises sont prélevées en stockage, et le manifeste encodé entre dans
+   * la file des départs. `itemKinds` suit `sim::ItemKind`, apparié avec
+   * `itemCounts` dans l'ordre.
+   *
+   * En multi, c'est `encodeFormCaravan` qui sert : cette méthode n'existe que
+   * pour le solo et le crochet de dev.
+   */
+  formCaravan(pawnIds: readonly number[], itemKinds: readonly number[], itemCounts: readonly number[]): void {
+    this.inner.form_caravan(Uint32Array.from(pawnIds), Uint8Array.from(itemKinds), Uint32Array.from(itemCounts));
+  }
+
+  /** Retire les `count` premiers manifestes de la file des départs. */
+  clearDepartures(count: number): void {
+    this.inner.clear_departures(count);
+  }
+
+  /** Fait entrer un manifeste sur cette carte. */
+  arriveCaravan(manifest: Uint8Array): void {
+    this.inner.arrive_caravan(manifest);
+  }
+
+  /** Manifestes en attente d'expédition vers le serveur monde. */
+  departuresCount(): number {
+    return this.inner.departures_count();
+  }
+
+  /** Copie du manifeste à cet indice, vide si l'indice est hors file. */
+  departure(index: number): Uint8Array {
+    return this.inner.departure(index);
+  }
+
+  /**
+   * Résumé d'un manifeste sans décoder le postcard côté TypeScript :
+   * `[nb colons, nb genres, genre0, quantité0, …]`, vide si les octets ne sont
+   * pas un manifeste lisible.
+   *
+   * **Statique** : le thread principal résume les manifestes que le Worker lui
+   * rend, sans posséder de sim (voir `initSim`).
+   */
+  static describeManifest(bytes: Uint8Array): Int32Array {
+    return WasmSim.describe_manifest(bytes);
+  }
+
   tick(): number {
     return this.inner.tick();
   }

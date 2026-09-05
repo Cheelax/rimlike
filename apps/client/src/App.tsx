@@ -1,11 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SettledMessage } from "@rimlike/protocol";
-import type { World } from "@rimlike/world";
+import { BIOME_NAMES, findRoute, type World } from "@rimlike/world";
+import { CaravanPanel, type CaravanColonist, type CaravanDestination } from "./CaravanPanel";
+import {
+  CaravanDispatcher,
+  manifestSummary,
+  tileOfRoom,
+  type DispatchedDeparture,
+} from "./net/CaravanDispatcher";
 import type { LockstepError, LockstepState } from "./net/LockstepClient";
 import { WebSocketTransport } from "./net/Transport";
 import { WorldClient, type WorldClientState } from "./net/WorldClient";
 import { fetchWorld, type WorldProgress } from "./net/worldFetch";
-import { WorldScreen } from "./WorldScreen";
+import { WorldScreen, type CaravanOrder } from "./WorldScreen";
 import { PAWN_FLAGS, PAWN_STRIDE, Renderer, type TilePos, type TileRect } from "./render/Renderer";
 import {
   BLUEPRINT_STRIDE,
@@ -26,16 +33,19 @@ import {
   ZONE,
 } from "./render/terrain";
 import {
+  encodeArriveCaravan,
   encodeAttack,
   encodeBuild,
   encodeCancelBuild,
+  encodeClearDepartures,
   encodeDesignate,
+  encodeFormCaravan,
   encodeMoveTo,
   encodeSetPriority,
   encodeSetZone,
   encodeTriggerRaid,
 } from "./sim/commands";
-import { initSim } from "./sim/SimHandle";
+import { initSim, SimHandle } from "./sim/SimHandle";
 import { SimBridge } from "./worker/SimBridge";
 import type { FrameMessage } from "./worker/protocol";
 
@@ -168,6 +178,10 @@ interface Stats {
   priorities: number[];
   /** Nom de chaque pawn vivant, par id (voir `FrameMessage.names`). */
   names: Record<number, string>;
+  /** Les colons de la colonie, de quoi composer une caravane. */
+  colonistList: CaravanColonist[];
+  /** Manifestes de caravane en attente d'expédition (`Sim::departures`). */
+  departures: number;
   /** Retard du lockstep, en ticks. Toujours 0 en solo. */
   lag: number;
 }
@@ -189,6 +203,8 @@ const INITIAL: Stats = {
   selected: null,
   priorities: [],
   names: {},
+  colonistList: [],
+  departures: 0,
   lag: 0,
 };
 
@@ -304,8 +320,33 @@ export function App() {
   const [imposedSeed, setImposedSeed] = useState<number | null>(null);
   /** Identifiants des toasts du monde, hors de portée de ceux du sim et du réseau. */
   const worldToastId = useRef(-1_000_000);
+  // --- Caravanes : le panneau, la destination, et l'expéditeur ---
+  const [caravanOpen, setCaravanOpen] = useState(false);
+  /** Vrai pendant qu'on choisit la case d'arrivée sur le globe. */
+  const [caravanPicking, setCaravanPicking] = useState(false);
+  const [caravanTo, setCaravanTo] = useState<number | null>(null);
+  /** Manifestes sortis du sim sans destination connue (voir `CaravanDispatcher`). */
+  const [caravanWaiting, setCaravanWaiting] = useState(0);
+  const dispatcherRef = useRef<CaravanDispatcher | null>(null);
+  /**
+   * Case et rôle de la salle en cours, lus par la connexion monde — qui vit
+   * dans un autre effet et ne doit pas se rouvrir à chaque changement d'hôte.
+   */
+  const roomTileRef = useRef<number | null>(null);
+  const isHostRef = useRef(false);
 
   const multi = session?.mode === "multi";
+  /** Case du globe jouée en ce moment, `null` en solo ou en salle nommée. */
+  const roomTile = session?.mode === "multi" ? tileOfRoom(session.room) : null;
+  roomTileRef.current = roomTile;
+
+  /** Une notification de monde, hors de la plage des `seq` du sim. */
+  const worldToast = (text: string) => {
+    const id = worldToastId.current--;
+    setToasts((prev) => [...prev, { id, text }]);
+    window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_MS);
+  };
+
   const setTool = (t: Tool) => {
     toolRef.current = t;
     setToolState(t);
@@ -482,6 +523,18 @@ export function App() {
       }
     };
 
+    /**
+     * L'expéditeur des caravanes, créé juste après le pont (il lit la file des
+     * départs par RPC). Déclaré avant lui parce que `onFrame` s'en sert.
+     */
+    let dispatcher: CaravanDispatcher | null = null;
+    /**
+     * Arrivées déjà injectées dans cette session. Le serveur réémet une
+     * arrivée tant qu'il n'a pas la confirmation et assume le doublon (§12.5) :
+     * mieux vaut un convoi confirmé deux fois que des colons débarqués deux fois.
+     */
+    const deliveredCaravans = new Set<string>();
+
     // --- Le Worker de simulation ---
     const bridge = new SimBridge({
       onMap: (m) => renderer.setMap(m.width, m.height, m.tiles, m.features),
@@ -514,9 +567,18 @@ export function App() {
         confirmPriorities(f.priorities);
         notifyEvents(f.events, f.names, freshSim);
         freshSim = false;
+        // Vider la file des départs est le travail de l'hôte de la case, et de
+        // lui seul (docs/protocol.md §12.7). Hors de ce cas, `pump(0)` ne coûte
+        // rien et remet l'expéditeur à zéro.
+        const mine = roomTileRef.current !== null && (netState?.isHost ?? false);
+        void dispatcher?.pump(mine ? f.departures : 0).catch(() => {
+          // Worker fermé ou WASM pas encore prêt : le prochain `frame` reprend
+          // la file là où elle en est, rien n'est perdu.
+        });
       },
       onNet: (state) => {
         netState = state;
+        isHostRef.current = state.isHost;
         setNet(state);
         // Un sim restauré depuis le snapshot du host repart de zéro côté rendu.
         if (state.ready && !netReady) freshSim = true;
@@ -525,6 +587,26 @@ export function App() {
           netError = state.lastError;
           pushToast(`Serveur : ${state.lastError.message}`);
         }
+      },
+      onCaravanArrive: (arrival) => {
+        // Reçue sur la connexion de salle : le serveur ne l'envoie qu'à l'hôte
+        // de la case d'arrivée, il n'y a donc rien à vérifier de plus. Elle est
+        // réémise tant qu'elle n'est pas confirmée, doublon compris (§12.5) :
+        // le journal évite de débarquer deux fois les mêmes colons.
+        if (!deliveredCaravans.has(arrival.id)) {
+          try {
+            // Commande lockstep comme un clic du joueur : l'effet arrive avec
+            // le bundle, on n'applique rien localement.
+            issue(encodeArriveCaravan(arrival.manifest));
+          } catch (e) {
+            pushToast(`Caravane : arrivée impossible (${e instanceof Error ? e.message : String(e)})`);
+            return;
+          }
+          deliveredCaravans.add(arrival.id);
+        }
+        // Confirmer **après** avoir émis la commande : tant que le serveur n'a
+        // pas ce message, il garde l'arrivée.
+        bridge.caravanDelivered(arrival.id);
       },
       onSaved: (bytes) => {
         try {
@@ -555,6 +637,31 @@ export function App() {
     // Les `encode*` sont des fonctions du WASM : le thread principal en garde
     // une instance rien que pour encoder. Le sim, lui, n'existe que côté Worker.
     void initSim().catch(showError);
+
+    /**
+     * Les manifestes sortent du sim (donc du Worker) par RPC, partent sur la
+     * connexion monde, puis quittent la file par une **commande** — au même
+     * tick chez tout le monde. Voir `net/CaravanDispatcher.ts`.
+     */
+    dispatcher = new CaravanDispatcher({
+      readDeparture: async (index) => {
+        const bytes = await bridge.rpc("departure", index);
+        return bytes instanceof Uint8Array ? bytes : new Uint8Array(0);
+      },
+      describe: (manifest) => manifestSummary(SimHandle.describeManifest(manifest)),
+      sendDepart: (departure) => {
+        const fromTile = roomTileRef.current;
+        if (fromTile === null) return;
+        // Par la connexion **de salle** (le Worker) : le serveur refuse un
+        // `caravan_depart` venu d'une connexion qui n'est pas dans la salle de
+        // `fromTile`, et notre connexion monde n'y est pas.
+        bridge.caravanDepart({ fromTile, ...departure });
+      },
+      issue: (bytes) => bridge.issue(bytes),
+      encodeClear: encodeClearDepartures,
+      onWaiting: (count) => setCaravanWaiting(count),
+    });
+    dispatcherRef.current = dispatcher;
 
     // --- Boucle de rendu : plus un seul tick ici, uniquement du rendu ---
     const draw = (now: number) => {
@@ -868,10 +975,27 @@ export function App() {
       let info: PawnInfo | null = null;
       let colonists = 0;
       let hostiles = 0;
+      // Sang par id : le panneau Caravane l'affiche pour chaque colon, une
+      // recherche linéaire par colon coûterait un balayage de plus par tour.
+      const bloodById = new Map<number, number>();
+      for (let h = 0; h + HEALTH_STRIDE <= f.health.length; h += HEALTH_STRIDE) {
+        bloodById.set(f.health[h], f.health[h + 1] / 10);
+      }
+      const colonistList: CaravanColonist[] = [];
       for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
         const hostile = curPawns[o + 10] === FACTION_RAIDER;
         if (hostile) hostiles++;
         else colonists++;
+        if (!hostile) {
+          const pid = curPawns[o];
+          colonistList.push({
+            id: pid,
+            name: f.names[pid] ?? "",
+            downed: (curPawns[o + 3] & PAWN_FLAGS.DOWNED) !== 0,
+            hp: (curPawns[o + 11] * 100) / HP_MAX,
+            blood: bloodById.get(pid) ?? 0,
+          });
+        }
         if (curPawns[o] !== selected) continue;
         const id = curPawns[o];
         const ck = curPawns[o + 8];
@@ -960,6 +1084,8 @@ export function App() {
         selected: info,
         priorities: Array.from(f.priorities),
         names: f.names,
+        colonistList,
+        departures: f.departures,
         lag: f.lag,
       });
     }, 500);
@@ -975,8 +1101,117 @@ export function App() {
       actionsRef.current = null;
       rendererRef.current = null;
       bridgeRef.current = null;
+      dispatcherRef.current = null;
+      isHostRef.current = false;
     };
   }, [session]);
+
+  /**
+   * Itinéraire prévisualisé vers la destination retenue. `findRoute` est le
+   * même code que le serveur (`packages/world`) : l'estimation affichée est la
+   * bonne, mais c'est la route calculée côté serveur qui voyagera.
+   */
+  const caravanRoute = useMemo(() => {
+    if (globe === null || roomTile === null || caravanTo === null) return null;
+    if (globe.tiles[roomTile] === undefined || globe.tiles[caravanTo] === undefined) return null;
+    return findRoute(globe, roomTile, caravanTo);
+  }, [globe, roomTile, caravanTo]);
+
+  const caravanDestination: CaravanDestination | null =
+    globe === null || caravanTo === null || globe.tiles[caravanTo] === undefined
+      ? null
+      : {
+          tile: caravanTo,
+          biome: BIOME_NAMES[globe.tiles[caravanTo].biome],
+          hours: caravanRoute?.hours ?? null,
+          steps: caravanRoute?.tiles.length ?? 0,
+          owner: worldNet?.settlements.find((s) => s.tile === caravanTo)?.owner ?? null,
+        };
+
+  /**
+   * Forme une caravane : la destination entre dans la file de l'expéditeur
+   * **avant** la commande, l'ordre des deux files devant coïncider (le serveur
+   * garantit l'ordre des commandes, `docs/protocol.md` §5).
+   */
+  const formCaravan = (
+    pawnIds: readonly number[],
+    items: readonly (readonly [number, number])[],
+    toTile: number,
+    onDispatched?: (departure: DispatchedDeparture) => void,
+  ): boolean => {
+    const dispatcher = dispatcherRef.current;
+    const bridge = bridgeRef.current;
+    if (dispatcher === null || bridge === null || roomTile === null) return false;
+    // Le serveur refuse une caravane qui n'irait nulle part (`caravan_same_tile`),
+    // et les colons seraient déjà sortis de la carte : mieux vaut ne rien former.
+    if (toTile === roomTile) return false;
+    dispatcher.planDestination(toTile, (departure) => {
+      worldToast(`Caravane en route vers la case ${departure.toTile}`);
+      onDispatched?.(departure);
+    });
+    bridge.issue(
+      encodeFormCaravan(
+        [...pawnIds],
+        items.map(([kind]) => kind),
+        items.map(([, count]) => count),
+      ),
+    );
+    return true;
+  };
+
+  /** Le crochet de dev : tout le flux, sans souris. */
+  const sendCaravanOrder = (order: CaravanOrder): Promise<DispatchedDeparture> =>
+    new Promise((resolve, reject) => {
+      if (roomTile === null) {
+        reject(new Error("aucune colonie du monde en cours : il faut être dans une salle tile-N"));
+        return;
+      }
+      if (!isHostRef.current) {
+        reject(new Error("seul l'hôte de la salle expédie les caravanes (docs/protocol.md §12.7)"));
+        return;
+      }
+      // Vérifié ici plutôt qu'attendu du serveur : sans route, les colons
+      // seraient sortis de la carte pour un convoi que le serveur refuse.
+      if (globe !== null && findRoute(globe, roomTile, order.toTile) === null) {
+        reject(new Error(`aucune route terrestre entre les cases ${roomTile} et ${order.toTile}`));
+        return;
+      }
+      if (!formCaravan(order.pawnIds, order.items, order.toTile, resolve)) {
+        reject(new Error("destination invalide, ou Worker de simulation pas prêt"));
+      }
+    });
+
+  /**
+   * Touche V : ouvrir ou fermer le panneau Caravane. Échap : sortir du mode
+   * « choisir la case d'arrivée ». Écouteur à part de celui de la partie, dont
+   * les fermetures sont figées à la création de la session.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement) return;
+      if (e.metaKey || e.ctrlKey) return;
+      const k = e.key.toUpperCase();
+      if (k === "ESCAPE" && caravanPicking) {
+        setCaravanPicking(false);
+        return;
+      }
+      if (k === "V" && roomTile !== null) {
+        setCaravanOpen((open) => !open);
+        setCaravanPicking(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [caravanPicking, roomTile]);
+
+  /** Quitter la salle referme le panneau : il parle d'une colonie précise. */
+  useEffect(() => {
+    if (roomTile === null) {
+      setCaravanOpen(false);
+      setCaravanPicking(false);
+      setCaravanTo(null);
+    }
+  }, [roomTile]);
 
   if (error) return <div className="error">{error}</div>;
 
@@ -1022,12 +1257,24 @@ export function App() {
           world={globe}
           net={worldNet}
           name={worldSession.name}
-          visible={session === null}
+          // Le globe repasse devant la colonie le temps de choisir la case
+          // d'arrivée d'une caravane, puis se remasque.
+          visible={session === null || caravanPicking}
           onSettle={(tile) => worldRef.current?.settle(tile)}
           onVisit={(tile) => worldRef.current?.visit(tile)}
           onAbandon={(tile) => worldRef.current?.abandon(tile)}
           onBack={backToWorld}
           onQuit={quitWorld}
+          pickingFrom={caravanPicking ? roomTile : null}
+          onPickTile={(tile) => {
+            setCaravanTo(tile);
+            setCaravanPicking(false);
+            setCaravanOpen(true);
+          }}
+          onCancelPick={() => setCaravanPicking(false)}
+          routePreview={caravanRoute?.tiles ?? null}
+          onCancelCaravan={(id) => worldRef.current?.cancelCaravan(id)}
+          onSendCaravan={sendCaravanOrder}
         />
       )}
       {session === null && inWorld && globe === null && (
@@ -1058,7 +1305,9 @@ export function App() {
         )
       )}
 
-      {running && (
+      {/* Pendant le choix de la case d'arrivée, le globe reprend tout l'écran :
+          le HUD de colonie et sa barre d'outils passeraient par-dessus. */}
+      {running && !caravanPicking && (
         <>
           <div className="hud">
             <div>
@@ -1183,6 +1432,21 @@ export function App() {
             >
               Travail <span className="key">J</span>
             </button>
+            <button
+              className={caravanOpen ? "active" : ""}
+              disabled={roomTile === null}
+              onClick={() => {
+                setCaravanOpen((v) => !v);
+                setCaravanPicking(false);
+              }}
+              title={
+                roomTile === null
+                  ? "Réservé aux colonies du monde partagé (salle tile-N)"
+                  : "Touche V : former une caravane"
+              }
+            >
+              Caravane <span className="key">V</span>
+            </button>
             <button onClick={() => actionsRef.current?.save()} disabled={multi} title={multi ? MULTI_DISABLED : undefined}>
               Sauver
             </button>
@@ -1252,6 +1516,33 @@ export function App() {
               </table>
               <div className="help">1 = urgent, 4 = quand il n'y a rien d'autre, — = jamais</div>
             </div>
+          )}
+          {caravanOpen && roomTile !== null && !caravanPicking && (
+            <CaravanPanel
+              fromTile={roomTile}
+              colonists={stats.colonistList}
+              stored={stats.stored}
+              destination={caravanDestination}
+              isHost={net?.isHost ?? false}
+              waiting={caravanWaiting}
+              onPickDestination={() => setCaravanPicking(true)}
+              onSend={(pawnIds, items) => {
+                if (caravanTo === null) return;
+                if (formCaravan(pawnIds, items, caravanTo)) setCaravanOpen(false);
+              }}
+              onSendWaiting={() => {
+                // Les manifestes en attente repartent dès qu'ils ont une
+                // destination : `pump` les reprendra au prochain `frame`.
+                const dispatcher = dispatcherRef.current;
+                if (dispatcher === null || caravanTo === null) return;
+                for (let i = 0; i < caravanWaiting; i += 1) {
+                  dispatcher.planDestination(caravanTo, (departure) =>
+                    worldToast(`Caravane en route vers la case ${departure.toTile}`),
+                  );
+                }
+              }}
+              onClose={() => setCaravanOpen(false)}
+            />
           )}
         </>
       )}

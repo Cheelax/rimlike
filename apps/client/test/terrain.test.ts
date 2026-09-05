@@ -27,6 +27,16 @@ describe("eventLabel", () => {
     expect(eventLabel(2, 3, { 3: "Alice" })).toBe("Un colon est mort");
     expect(eventLabel(99, 0)).toBe("");
   });
+
+  it("compte les colons d'une caravane, `arg` n'étant pas un id ici", () => {
+    // Contrat avec `sim::EventKind` : 11 départ, 12 arrivée, `arg` = le nombre
+    // de colons. Un dictionnaire de noms ne doit pas s'y glisser.
+    expect(eventLabel(11, 3, { 3: "Alice" })).toBe("Une caravane est partie (3 colons)");
+    expect(eventLabel(12, 3)).toBe("Une caravane est arrivée (3 colons)");
+    expect(eventLabel(11, 1)).toBe("Une caravane est partie (1 colon)");
+    // Un convoi de marchandises seules débarque zéro colon.
+    expect(eventLabel(12, 0)).toBe("Une caravane est arrivée (0 colon)");
+  });
 });
 
 describe("formatInjury", () => {

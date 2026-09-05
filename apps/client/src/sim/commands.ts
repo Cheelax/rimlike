@@ -60,3 +60,39 @@ export function encodeTriggerRaid(): Uint8Array {
 export function encodeSetPriority(pawn: number, work: number, priority: number): Uint8Array {
   return WasmSim.encode_set_priority(pawn, work, priority);
 }
+
+/**
+ * Départ d'une caravane : les colons quittent la carte et leur manifeste entre
+ * dans la file des départs du sim (`docs/protocol.md` §12.7).
+ *
+ * `itemKinds` suit `sim::ItemKind` (l'index de `ITEM_NAMES` de `terrain.ts`),
+ * apparié avec `itemCounts` dans l'ordre. La destination, elle, n'est pas dans
+ * la commande : le voyage appartient au serveur monde, le sim ne connaît que
+ * les deux bouts.
+ */
+export function encodeFormCaravan(
+  pawnIds: readonly number[],
+  itemKinds: readonly number[],
+  itemCounts: readonly number[],
+): Uint8Array {
+  return WasmSim.encode_form_caravan(
+    Uint32Array.from(pawnIds),
+    Uint8Array.from(itemKinds),
+    Uint32Array.from(itemCounts),
+  );
+}
+
+/**
+ * Vidange des `count` premiers manifestes de la file des départs, à émettre
+ * une fois qu'ils sont partis chez le serveur monde. **Commande lockstep** :
+ * la lecture de la file est locale mais son vidage doit se faire au même tick
+ * chez tout le monde, sinon les sims divergent (`docs/protocol.md` §12.7).
+ */
+export function encodeClearDepartures(count: number): Uint8Array {
+  return WasmSim.encode_clear_departures(count);
+}
+
+/** Arrivée d'une caravane : le manifeste voyage **dans** la commande. */
+export function encodeArriveCaravan(manifest: Uint8Array): Uint8Array {
+  return WasmSim.encode_arrive_caravan(manifest);
+}

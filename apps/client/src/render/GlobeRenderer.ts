@@ -16,12 +16,15 @@
  *   différentes ;
  * - trois calques légers redessinés à la demande : survol, sélection,
  *   colonies ;
+ * - les caravanes : une polyligne discrète par itinéraire, un cône par convoi
+ *   posé sur sa case courante, et la prévisualisation de l'itinéraire en
+ *   préparation, elle bien visible ;
  * - un fond d'étoiles en `Points`, purement décoratif.
  */
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import type { Settlement } from "@rimlike/protocol";
+import type { Caravan, Settlement } from "@rimlike/protocol";
 import type { World } from "@rimlike/world";
 import { GLOBE_RADIUS, RELIEF_SCALE, buildGlobeGeometry, buildTileFan, tileRadius } from "./globeGeometry";
 
@@ -41,9 +44,34 @@ const STAR_RADIUS = 40;
 const OWN_COLONY = 0xffe066;
 const OTHER_COLONY = 0xff8a4a;
 
+/** Hauteur du marqueur d'une caravane au-dessus de sa case, et sa taille. */
+const CARAVAN_LIFT = 0.026;
+const CARAVAN_SIZE = 0.011;
+/** Les itinéraires flottent un peu plus haut que les calques de case. */
+const ROUTE_LIFT = 1.008;
+/** L'itinéraire en préparation passe au-dessus de ceux qui voyagent déjà. */
+const PREVIEW_LIFT = 1.016;
+/** Rayon de saisie d'un marqueur de caravane, en pixels d'écran. */
+const CARAVAN_PICK_PX = 16;
+
+/**
+ * Couleur d'une caravane suivant son statut (`docs/protocol.md` §12.2). Une
+ * caravane livrée n'est plus dessinée : elle reste listée dans le panneau
+ * pendant `CARAVAN_HISTORY_HOURS`, mais elle n'est plus nulle part sur le
+ * globe.
+ */
+const CARAVAN_COLORS: Readonly<Record<string, number>> = {
+  travelling: 0xffb347,
+  returning: 0xff8f8f,
+  arrived: 0x7fd8ff,
+  delivered: 0x8a8f96,
+};
+
 export interface GlobeRendererOptions {
   /** Rappel appelé quand la case survolée change (y compris vers `null`). */
   readonly onHover?: (tile: number | null) => void;
+  /** Rappel appelé quand la caravane survolée change (y compris vers `null`). */
+  readonly onHoverCaravan?: (id: string | null) => void;
 }
 
 export class GlobeRenderer {
@@ -61,10 +89,20 @@ export class GlobeRenderer {
   private readonly markerGeometry = new THREE.OctahedronGeometry(MARKER_SIZE, 0);
   private readonly ownMarkerMaterial: THREE.MeshBasicMaterial;
   private readonly otherMarkerMaterial: THREE.MeshBasicMaterial;
+  /** Cônes des caravanes en vol, un enfant par convoi (`userData.caravanId`). */
+  private readonly caravanRoot = new THREE.Group();
+  private readonly caravanGeometry = new THREE.ConeGeometry(CARAVAN_SIZE, CARAVAN_SIZE * 3, 5);
+  private readonly caravanMaterials = new Map<string, THREE.MeshBasicMaterial>();
+  /** Itinéraires des caravanes, toutes en une seule polyligne segmentée. */
+  private readonly routeLines: THREE.LineSegments;
+  /** Itinéraire en préparation, plus haut et plus vif que les autres. */
+  private readonly previewLine: THREE.LineSegments;
   private readonly onHover: ((tile: number | null) => void) | null;
+  private readonly onHoverCaravan: ((id: string | null) => void) | null;
   private readonly onResize = () => this.resize();
 
   private hoverTile: number | null = null;
+  private hoverCaravan: string | null = null;
   private selectedTile: number | null = null;
   /** Dernière position du curseur, en pixels client. Le survol est résolu à la frame. */
   private pointer: { x: number; y: number } | null = null;
@@ -77,6 +115,7 @@ export class GlobeRenderer {
     options: GlobeRendererOptions = {},
   ) {
     this.onHover = options.onHover ?? null;
+    this.onHoverCaravan = options.onHoverCaravan ?? null;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -130,6 +169,13 @@ export class GlobeRenderer {
 
     this.ownMarkerMaterial = new THREE.MeshBasicMaterial({ color: OWN_COLONY });
     this.otherMarkerMaterial = new THREE.MeshBasicMaterial({ color: OTHER_COLONY });
+
+    // Les itinéraires en vol restent discrets : ce sont des indications, pas
+    // l'information principale. La prévisualisation, elle, est ce que le
+    // joueur est en train de décider.
+    this.routeLines = routeMesh(0.5, true);
+    this.previewLine = routeMesh(0.95, false, 0x4ad9ff);
+    this.scene.add(this.caravanRoot, this.routeLines, this.previewLine);
 
     this.scene.add(starfield());
 
@@ -209,6 +255,89 @@ export class GlobeRenderer {
     this.colonyMesh.visible = positions.length > 0;
   }
 
+  /**
+   * Redessine les caravanes : un cône par convoi sur sa case courante, une
+   * polyligne par itinéraire. Les caravanes `delivered` ne sont plus
+   * dessinées — elles ne sont plus nulle part sur le globe, seulement dans
+   * l'historique du panneau.
+   *
+   * `me` n'entre pas dans la couleur (le statut suffit à lire la scène) mais
+   * les nôtres sont un peu plus grosses : c'est ce qu'on cherche des yeux.
+   */
+  setCaravans(caravans: readonly Caravan[], me: string): void {
+    for (const marker of this.caravanRoot.children.slice()) {
+      this.caravanRoot.remove(marker);
+    }
+    const segments: number[] = [];
+    const colors: number[] = [];
+    for (const caravan of caravans) {
+      if (caravan.status === "delivered") continue;
+      const hex = CARAVAN_COLORS[caravan.status] ?? OTHER_COLONY;
+      const rgb = new THREE.Color(hex).convertSRGBToLinear();
+      this.pushRoute(caravan.route, GLOBE_RADIUS * ROUTE_LIFT, segments, colors, rgb);
+      if (!this.hasTile(caravan.currentTile)) continue;
+      const tile = this.world.tiles[caravan.currentTile];
+      const marker = new THREE.Mesh(this.caravanGeometry, this.caravanMaterial(caravan.status));
+      const height = tileRadius(tile) + CARAVAN_LIFT;
+      const up = new THREE.Vector3(tile.center[0], tile.center[1], tile.center[2]).normalize();
+      marker.position.copy(up).multiplyScalar(height);
+      // Le cône pointe vers le ciel de sa case : sinon il coucherait dans
+      // l'axe Y de la scène, qui n'a aucun sens sur une sphère.
+      marker.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+      if (caravan.owner === me) marker.scale.setScalar(1.35);
+      marker.userData.caravanId = caravan.id;
+      this.caravanRoot.add(marker);
+    }
+    applySegments(this.routeLines, segments, colors);
+  }
+
+  /**
+   * Itinéraire en préparation, ou `null` pour l'effacer. Le client le calcule
+   * lui-même par `findRoute` : c'est une prévisualisation, le serveur a le
+   * dernier mot sur la route qui voyagera (`docs/world.md` §5).
+   */
+  setRoutePreview(route: readonly number[] | null): void {
+    const segments: number[] = [];
+    const colors: number[] = [];
+    if (route !== null) {
+      const rgb = new THREE.Color(0x4ad9ff).convertSRGBToLinear();
+      this.pushRoute(route, GLOBE_RADIUS * PREVIEW_LIFT, segments, colors, rgb);
+    }
+    applySegments(this.previewLine, segments, colors);
+  }
+
+  /**
+   * Caravane sous un pixel, ou `null`. La saisie se fait **à l'écran** plutôt
+   * qu'au raycast : un cône de 2 % de rayon est trop petit pour être visé à la
+   * souris, et il n'y a jamais qu'une poignée de convois à tester.
+   */
+  pickCaravan(clientX: number, clientY: number): string | null {
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    const camera = this.camera.position;
+    const point = new THREE.Vector3();
+    let bestId: string | null = null;
+    let bestDistance = CARAVAN_PICK_PX;
+    for (const marker of this.caravanRoot.children) {
+      const id = marker.userData.caravanId;
+      if (typeof id !== "string") continue;
+      point.copy(marker.position);
+      // Horizon d'une sphère de rayon 1 vue d'un point `c` : un point `p` de
+      // la surface est visible si `p · c >= 1`. Sans ce test, les caravanes de
+      // l'autre côté du globe seraient survolables à travers.
+      if (point.dot(camera) < GLOBE_RADIUS * GLOBE_RADIUS) continue;
+      point.project(this.camera);
+      const x = rect.left + ((point.x + 1) / 2) * rect.width;
+      const y = rect.top + ((1 - point.y) / 2) * rect.height;
+      const distance = Math.hypot(clientX - x, clientY - y);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestId = id;
+      }
+    }
+    return bestId;
+  }
+
   /** Amène la case au centre de l'écran, en gardant la distance courante. */
   focusTile(tile: number): void {
     if (!this.hasTile(tile)) return;
@@ -234,6 +363,11 @@ export class GlobeRenderer {
         this.applyFan(this.hoverMesh, found);
         this.onHover?.(found);
       }
+      const caravan = this.pointer === null ? null : this.pickCaravan(this.pointer.x, this.pointer.y);
+      if (caravan !== this.hoverCaravan) {
+        this.hoverCaravan = caravan;
+        this.onHoverCaravan?.(caravan);
+      }
     }
     this.renderer.render(this.scene, this.camera);
   }
@@ -253,6 +387,9 @@ export class GlobeRenderer {
     this.markerGeometry.dispose();
     this.ownMarkerMaterial.dispose();
     this.otherMarkerMaterial.dispose();
+    this.caravanGeometry.dispose();
+    for (const material of this.caravanMaterials.values()) material.dispose();
+    this.caravanMaterials.clear();
     this.renderer.dispose();
     // Pas de `forceContextLoss` : un contexte perdu ne se recrée pas sur le
     // même canevas, et React StrictMode monte deux fois en développement — le
@@ -263,6 +400,40 @@ export class GlobeRenderer {
   /** Vrai si l'identifiant désigne une case de ce globe. */
   private hasTile(tile: number): boolean {
     return Number.isInteger(tile) && tile >= 0 && tile < this.world.tiles.length;
+  }
+
+  /** Matériau d'un statut, créé à la demande et réutilisé (un par statut). */
+  private caravanMaterial(status: string): THREE.MeshBasicMaterial {
+    const existing = this.caravanMaterials.get(status);
+    if (existing !== undefined) return existing;
+    const material = new THREE.MeshBasicMaterial({ color: CARAVAN_COLORS[status] ?? OTHER_COLONY });
+    this.caravanMaterials.set(status, material);
+    return material;
+  }
+
+  /**
+   * Ajoute les segments d'un itinéraire aux tampons d'une polyligne. Les
+   * points sont posés au rayon de relief de chaque case, calculé sur un globe
+   * légèrement plus grand : la ligne suit le terrain sans s'y enfoncer.
+   */
+  private pushRoute(
+    route: readonly number[],
+    radius: number,
+    segments: number[],
+    colors: number[],
+    color: THREE.Color,
+  ): void {
+    for (let i = 0; i + 1 < route.length; i += 1) {
+      const a = route[i];
+      const b = route[i + 1];
+      if (!this.hasTile(a) || !this.hasTile(b)) continue;
+      for (const id of [a, b]) {
+        const tile = this.world.tiles[id];
+        const r = tileRadius(tile, radius);
+        segments.push(tile.center[0] * r, tile.center[1] * r, tile.center[2] * r);
+        colors.push(color.r, color.g, color.b);
+      }
+    }
   }
 
   /** Remplace la géométrie d'un calque par le polygone d'une case. */
@@ -289,6 +460,30 @@ function overlayMesh(color: number, opacity: number, vertexColors = false): THRE
   // ferait clignoter la case survolée.
   mesh.renderOrder = 1;
   return mesh;
+}
+
+/**
+ * Une polyligne d'itinéraires. `LineSegments` plutôt que `Line` : toutes les
+ * routes tiennent dans une seule géométrie, alors qu'une `Line` les relierait
+ * bout à bout. `vertexColors` porte la couleur du statut de chaque caravane.
+ */
+function routeMesh(opacity: number, vertexColors: boolean, color = 0xffffff): THREE.LineSegments {
+  const mesh = new THREE.LineSegments(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color, vertexColors, transparent: true, opacity, depthWrite: false }),
+  );
+  mesh.visible = false;
+  mesh.renderOrder = 2;
+  return mesh;
+}
+
+/** Remplace les sommets d'une polyligne, et la masque si elle est vide. */
+function applySegments(mesh: THREE.LineSegments, segments: number[], colors: number[]): void {
+  const geometry = mesh.geometry;
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(segments, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeBoundingSphere();
+  mesh.visible = segments.length > 0;
 }
 
 /** Fond d'étoiles : des points sur une grande sphère. Purement décoratif. */

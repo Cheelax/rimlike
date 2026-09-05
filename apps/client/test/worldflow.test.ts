@@ -12,8 +12,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { SettledMessage } from "@rimlike/protocol";
-import { movementCost, tileCount, type World } from "@rimlike/world";
+import type { CaravanArriveMessage, SettledMessage } from "@rimlike/protocol";
+import { findRoute, movementCost, tileCount, type World } from "@rimlike/world";
 
 import { startServer, type RunningServer } from "../../server/src/server.js";
 import { LockstepClient, type LockstepError } from "../src/net/LockstepClient";
@@ -27,6 +27,14 @@ const SUBDIVISIONS = 2;
 const WORLD_SEED = 7;
 /** Snapshot de conservation réclamé tôt : le test n'attend pas 1800 ticks. */
 const SNAPSHOT_EVERY = 30;
+/**
+ * Une heure de jeu du monde, en millisecondes réelles (30 000 en vrai) : assez
+ * courte pour qu'un voyage tienne dans un test, assez longue pour qu'une
+ * annulation ait le temps d'arriver avant la moitié du trajet.
+ */
+const WORLD_HOUR_MS = 20;
+/** Période du tick du monde : avancement des caravanes et `world_caravans`. */
+const CARAVAN_TICK_MS = 5;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -112,15 +120,17 @@ async function enterWorld(world: World, name: string) {
 async function enterRoom(room: string, name: string) {
   const transport = await WsTransport.connect(server.url);
   const errors: LockstepError[] = [];
+  const arrivals: CaravanArriveMessage[] = [];
   const client = new LockstepClient({
     transport,
     createSim: (seed) => Promise.resolve(FakeSim.fresh(seed)),
     restoreSim: (data) => Promise.resolve(FakeSim.fromSnapshot(data)),
+    onCaravanArrive: (arrival) => arrivals.push(arrival),
     onError: (error) => errors.push(error),
   });
   closers.push(() => client.close());
   client.join(room, name);
-  return { client, errors, sim: () => client.sim as FakeSim | null };
+  return { client, errors, arrivals, sim: () => client.sim as FakeSim | null };
 }
 
 /** Pompe comme le ferait la boucle du Worker jusqu'à ce que `done` soit vrai. */
@@ -142,6 +152,10 @@ beforeEach(async () => {
     worldSubdivisions: SUBDIVISIONS,
     // Horloge accélérée et conservation rapprochée : le test tient en une seconde.
     roomOptions: { tickRate: 600, snapshotEveryTicks: SNAPSHOT_EVERY },
+    // Horloge du monde accélérée : un voyage de caravane tient dans un test,
+    // au lieu des 30 s réelles par heure de jeu du serveur.
+    worldHourMs: WORLD_HOUR_MS,
+    caravanTickMs: CARAVAN_TICK_MS,
   });
 });
 
@@ -264,5 +278,125 @@ describe("écran Monde contre le vrai serveur", () => {
     const target = second.client.tick + 12;
     await pumpUntil(second.client, "reprise des bundles", () => second.client.tick >= target);
     expect(second.errors).toEqual([]);
+  });
+});
+
+/**
+ * Deux cases terrestres reliées par la terre : la plus proche pour voyager
+ * vite, la plus lointaine pour avoir le temps de faire demi-tour.
+ */
+function landPair(world: World, want: "nearest" | "farthest") {
+  const from = world.tiles.find((tile) => movementCost(tile.biome) !== null)!;
+  let best: { id: number; hours: number } | null = null;
+  for (const tile of world.tiles) {
+    if (tile.id === from.id || movementCost(tile.biome) === null) continue;
+    const route = findRoute(world, from.id, tile.id);
+    if (route === null) continue;
+    const better = best === null || (want === "nearest" ? route.hours < best.hours : route.hours > best.hours);
+    if (better) best = { id: tile.id, hours: route.hours };
+  }
+  return { from: from.id, to: best!.id, hours: best!.hours };
+}
+
+describe("caravanes contre le vrai serveur", () => {
+  /**
+   * Le voyage complet : former, expédier, voir la colonie d'arrivée se fonder
+   * toute seule, l'ouvrir, recevoir le manifeste et le livrer.
+   *
+   * C'est ici que se vérifie le point qu'aucun transport factice ne dit : les
+   * ordres de caravane partent de la connexion **de salle** (celle du Worker),
+   * pas de la connexion monde — le serveur exige d'être dans la salle de
+   * `fromTile`, et un `world_join` sur la même connexion (`docs/protocol.md`
+   * §12.5).
+   */
+  it("expédie une caravane, fonde la colonie d'arrivée, puis la livre", async () => {
+    const { world } = await fetchWorld(server.url);
+    const { from, to } = landPair(world, "nearest");
+    const manifest = new Uint8Array([1, 2, 3, 4]);
+
+    const alice = await enterWorld(world, "alice");
+    alice.client.settle(from);
+    await waitFor("settled", () => alice.settled.length === 1);
+    const departure = await enterRoom(alice.settled[0].room, "alice");
+    await waitFor("lobby", () => departure.client.state.phase === "lobby");
+    departure.client.startGame(1, 16, 16);
+    await waitFor("sim créé", () => departure.sim() !== null);
+
+    departure.client.sendCaravanDepart({
+      fromTile: from,
+      toTile: to,
+      manifest,
+      summary: { pawns: 1, items: [[0, 20]] },
+    });
+
+    // Le globe apprend la caravane par la connexion monde, elle.
+    await waitFor("caravane diffusée", () => alice.client.state.caravans.length === 1);
+    const caravan = alice.client.state.caravans[0];
+    expect(caravan.owner).toBe("alice");
+    expect(caravan.fromTile).toBe(from);
+    expect(caravan.route[0]).toBe(from);
+    expect(caravan.route.at(-1)).toBe(to);
+    expect(departure.errors).toEqual([]);
+    expect(alice.errors).toEqual([]);
+
+    // Arrivée sur une case libre : le serveur fonde la colonie au nom de son
+    // propriétaire, et l'annonce à tout le monde (§12.5).
+    await waitFor("colonie fondée à l'arrivée", () => alice.client.settlementAt(to) !== undefined);
+    expect(alice.client.settlementAt(to)?.owner).toBe("alice");
+
+    // « La colonie naît quand quelqu'un l'ouvre » : le manifeste attend le
+    // premier hôte en jeu, pas le `join`.
+    const arrival = await enterRoom(`tile-${to}`, "alice");
+    await waitFor("lobby de la case d'arrivée", () => arrival.client.state.phase === "lobby");
+    expect(arrival.arrivals).toEqual([]);
+    arrival.client.startGame(1, 16, 16);
+    await waitFor("arrivée proposée à l'hôte", () => arrival.arrivals.length === 1);
+    expect(arrival.arrivals[0].tile).toBe(to);
+    expect(arrival.arrivals[0].manifest).toEqual(manifest);
+
+    // On injecte en lockstep, **puis** on confirme : c'est l'ordre du protocole.
+    arrival.client.issue(new Uint8Array([0x0c, ...manifest]));
+    arrival.client.sendCaravanDelivered(arrival.arrivals[0].id);
+    await waitFor(
+      "caravane livrée",
+      () => alice.client.caravanById(caravan.id)?.status === "delivered",
+    );
+    expect(arrival.errors).toEqual([]);
+  });
+
+  it("rappelle une caravane avant la moitié du trajet", async () => {
+    const { world } = await fetchWorld(server.url);
+    // Un trajet long : le demi-tour doit tenir dans la première moitié.
+    const { from, to } = landPair(world, "farthest");
+
+    const alice = await enterWorld(world, "alice");
+    alice.client.settle(from);
+    await waitFor("settled", () => alice.settled.length === 1);
+    const room = await enterRoom(alice.settled[0].room, "alice");
+    await waitFor("lobby", () => room.client.state.phase === "lobby");
+    room.client.startGame(1, 16, 16);
+    await waitFor("sim créé", () => room.sim() !== null);
+
+    room.client.sendCaravanDepart({
+      fromTile: from,
+      toTile: to,
+      manifest: new Uint8Array([7]),
+      summary: { pawns: 2, items: [] },
+    });
+    await waitFor("caravane diffusée", () => alice.client.state.caravans.length === 1);
+    const id = alice.client.state.caravans[0].id;
+
+    // On laisse la caravane quitter sa case de départ : sinon le demi-tour est
+    // un trajet de zéro heure, et elle « rentre » avant même d'être repartie.
+    await waitFor("caravane en chemin", () => (alice.client.caravanById(id)?.progress ?? 0) > 0.1);
+    expect(alice.client.caravanById(id)!.currentTile).not.toBe(from);
+
+    // `caravan_cancel` n'exige que le monde, pas la salle : il part donc de la
+    // connexion monde, comme le fait le panneau du globe.
+    alice.client.cancelCaravan(id);
+    await waitFor("demi-tour", () => alice.client.caravanById(id)?.status === "returning");
+    // La case d'origine devient la destination, sur un itinéraire recalculé.
+    expect(alice.client.caravanById(id)?.toTile).toBe(from);
+    expect(alice.errors).toEqual([]);
   });
 });

@@ -17,6 +17,9 @@ import {
   PROTOCOL_VERSION,
   decodeServerMessage,
   encodeMessage,
+  type Caravan,
+  type CaravanArriveMessage,
+  type CaravanSummary,
   type ClientMessage,
   type PlayerId,
   type ServerMessage,
@@ -51,9 +54,25 @@ export interface WorldClientState {
   readonly settlements: readonly Settlement[];
   /** Noms des joueurs présents dans le monde (l'identité v1 est le nom). */
   readonly players: readonly string[];
+  /**
+   * Caravanes en vol, telles que diffusées par `world_caravans`. Liste
+   * complète elle aussi : le client remplace la sienne (`docs/protocol.md`
+   * §12.4). Tenue à jour même pendant qu'on joue une colonie, pour que le
+   * retour au globe montre tout de suite l'état courant.
+   */
+  readonly caravans: readonly Caravan[];
   /** Le globe annoncé par le serveur, `null` avant `world_welcome`. */
   readonly world: WorldInfo | null;
   readonly lastError: WorldError | null;
+}
+
+/** Ce qu'il faut pour expédier un manifeste vers une autre case. */
+export interface CaravanDeparture {
+  readonly fromTile: number;
+  readonly toTile: number;
+  /** Octets postcard produits par le sim, opaques pour le serveur. */
+  readonly manifest: Uint8Array;
+  readonly summary: CaravanSummary;
 }
 
 export interface WorldClientOptions {
@@ -69,6 +88,17 @@ export interface WorldClientOptions {
   readonly onState?: (state: WorldClientState) => void;
   /** Réponse à `settle` comme à `visit` : où aller pour jouer la case. */
   readonly onSettled?: (settled: SettledMessage) => void;
+  /**
+   * Une caravane est arrivée sur la case d'une salle dont nous sommes l'hôte.
+   * À charge de l'appelant d'émettre `ArriveCaravan` en lockstep **puis** de
+   * confirmer par `deliverCaravan` (§12.7). Le message est réémis tant qu'il
+   * n'est pas confirmé : recevoir deux fois la même arrivée est possible.
+   *
+   * Le serveur l'adresse à l'hôte **par la connexion de la salle** : dans
+   * notre client c'est celle du Worker, et ce rappel-ci ne sert donc qu'à un
+   * client à connexion unique (voir `LockstepClient.onCaravanArrive`).
+   */
+  readonly onCaravanArrive?: (arrival: CaravanArriveMessage) => void;
   /** Refus du serveur. Un message à l'écran, jamais une déconnexion (§11.7). */
   readonly onError?: (error: WorldError) => void;
 }
@@ -78,6 +108,7 @@ export class WorldClient {
   private readonly expected: WorldInfo;
   private readonly onState: ((state: WorldClientState) => void) | null;
   private readonly onSettled: ((settled: SettledMessage) => void) | null;
+  private readonly onCaravanArrive: ((arrival: CaravanArriveMessage) => void) | null;
   private readonly onError: ((error: WorldError) => void) | null;
 
   private phase: WorldPhase = "connecting";
@@ -85,6 +116,7 @@ export class WorldClient {
   private playerId: PlayerId | null = null;
   private settlements: readonly Settlement[] = [];
   private players: readonly string[] = [];
+  private caravans: readonly Caravan[] = Object.freeze([]);
   private worldInfo: WorldInfo | null = null;
   private lastError: WorldError | null = null;
 
@@ -94,6 +126,7 @@ export class WorldClient {
     this.playerName = options.name;
     this.onState = options.onState ?? null;
     this.onSettled = options.onSettled ?? null;
+    this.onCaravanArrive = options.onCaravanArrive ?? null;
     this.onError = options.onError ?? null;
     this.transport.onMessage((text) => this.receive(text));
     this.transport.onClose(() => {
@@ -111,6 +144,11 @@ export class WorldClient {
   /** La colonie posée sur une case, ou `undefined` si la case est libre. */
   settlementAt(tile: number): Settlement | undefined {
     return this.settlements.find((settlement) => settlement.tile === tile);
+  }
+
+  /** Une caravane par son identifiant, ou `undefined` si elle est inconnue. */
+  caravanById(id: string): Caravan | undefined {
+    return this.caravans.find((caravan) => caravan.id === id);
   }
 
   // --- Actions ---
@@ -139,6 +177,43 @@ export class WorldClient {
   /** Quitter le monde sans fermer la connexion. */
   leave(): void {
     this.send({ type: "world_leave" });
+  }
+
+  /**
+   * Expédier un manifeste. L'émetteur doit être **dans la salle** de
+   * `fromTile` : le serveur le vérifie et refuse par `caravan_not_in_room`
+   * sinon (`docs/protocol.md` §12.5).
+   *
+   * Notre client ouvre deux connexions — le monde ici, la salle dans le Worker
+   * — et c'est celle du Worker qui est dans la salle : `App.tsx` passe donc
+   * par `SimBridge.caravanDepart`. Cette méthode reste le chemin d'un client à
+   * connexion unique, tel que le protocole le décrit.
+   */
+  sendDepart(departure: CaravanDeparture): void {
+    this.send({
+      type: "caravan_depart",
+      fromTile: departure.fromTile,
+      toTile: departure.toTile,
+      manifest: departure.manifest,
+      summary: departure.summary,
+    });
+  }
+
+  /** Rappeler une de nos caravanes, tant qu'elle n'a pas fait la moitié du trajet. */
+  cancelCaravan(id: string): void {
+    this.send({ type: "caravan_cancel", id });
+  }
+
+  /**
+   * Confirmer l'injection d'une arrivée. À envoyer **après** avoir émis la
+   * commande `ArriveCaravan` : tant que le serveur n'a pas ce message, il
+   * garde l'arrivée et la réémettra (§12.5).
+   *
+   * Même remarque que `sendDepart` : il faut être dans la salle de la case
+   * d'arrivée, donc `App.tsx` passe par `SimBridge.caravanDelivered`.
+   */
+  deliverCaravan(id: string): void {
+    this.send({ type: "caravan_delivered", id });
   }
 
   close(): void {
@@ -186,6 +261,16 @@ export class WorldClient {
         this.players = Object.freeze([...message.players]);
         this.emit();
         return;
+      case "world_caravans":
+        // Liste complète, comme `world_settlements` : on remplace (§12.4).
+        this.caravans = Object.freeze([...message.caravans]);
+        this.emit();
+        return;
+      case "caravan_arrive":
+        // Adressé au seul hôte de la salle d'arrivée. À l'appelant de vérifier
+        // qu'il joue bien cette case avant d'injecter quoi que ce soit.
+        this.onCaravanArrive?.(message);
+        return;
       case "settled":
         this.onSettled?.(message);
         return;
@@ -228,6 +313,7 @@ export class WorldClient {
       name: this.playerName,
       settlements: this.settlements,
       players: this.players,
+      caravans: this.caravans,
       world: this.worldInfo,
       lastError: this.lastError,
     });

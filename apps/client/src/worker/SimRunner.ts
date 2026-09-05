@@ -60,6 +60,8 @@ export interface RunnerSim extends SimLike {
   health(): Int32Array;
   /** Nom du pawn, chaîne vide si l'id est inconnu. */
   pawnName(id: number): string;
+  /** Manifestes de caravane en attente d'expédition. */
+  departuresCount(): number;
   storedTotals(): Uint32Array;
   weather(): number;
   timeOfDay(): number;
@@ -286,6 +288,7 @@ export class SimRunner {
       health: sim.health(),
       names: this.namesFor(sim, pawns),
       stored: sim.storedTotals(),
+      departures: sim.departuresCount(),
       lag: this.lag,
       tps: this.tpsValue,
     };

@@ -135,6 +135,10 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
       return `${who} a été secouru`;
     case 10:
       return `${who} a été soigné`;
+    case 11:
+      return `Une caravane est partie (${arg} colon${arg > 1 ? "s" : ""})`;
+    case 12:
+      return `Une caravane est arrivée (${arg} colon${arg > 1 ? "s" : ""})`;
     default:
       return "";
   }

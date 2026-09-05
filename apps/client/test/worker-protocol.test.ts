@@ -53,6 +53,7 @@ function frame(): FrameMessage {
     health: new Int32Array([1, 1000, 100, 0]),
     names: { 1: "Alice" },
     stored: new Uint32Array([9, 8, 7, 6, 5, 4]),
+    departures: 1,
     lag: 3,
     tps: 60,
   };
@@ -85,6 +86,16 @@ const fromMain: MainToWorker[] = [
   { type: "setPaused", paused: true },
   { type: "setSpeed", speed: 3 },
   { type: "startGame", seed: 7, width: 32, height: 32 },
+  {
+    type: "caravanDepart",
+    departure: {
+      fromTile: 1732,
+      toTile: 1810,
+      manifest: new Uint8Array([5, 0, 3]),
+      summary: { pawns: 3, items: [[0, 40]] },
+    },
+  },
+  { type: "caravanDelivered", id: "c7" },
   { type: "save" },
   { type: "load", bytes: new Uint8Array([9]) },
   { type: "debug", id: 1, method: "step", args: [5] },
@@ -95,6 +106,16 @@ const toMain: WorkerToMain[] = [
   overlays(),
   frame(),
   { type: "net", state: netState },
+  {
+    type: "caravanArrive",
+    arrival: {
+      type: "caravan_arrive",
+      id: "c7",
+      tile: 1810,
+      manifest: new Uint8Array([5, 0, 3]),
+      summary: { pawns: 3, items: [[0, 40]] },
+    },
+  },
   { type: "saved", bytes: new Uint8Array([4, 5, 6]) },
   { type: "loaded" },
   { type: "error", message: "boum" },
@@ -107,10 +128,21 @@ describe("protocole du Worker de simulation", () => {
       expect(typeof message.type).toBe("string");
     }
     expect(new Set(fromMain.map((m) => m.type))).toEqual(
-      new Set(["init", "issue", "setPaused", "setSpeed", "startGame", "save", "load", "debug"]),
+      new Set([
+        "init",
+        "issue",
+        "setPaused",
+        "setSpeed",
+        "startGame",
+        "caravanDepart",
+        "caravanDelivered",
+        "save",
+        "load",
+        "debug",
+      ]),
     );
     expect(new Set(toMain.map((m) => m.type))).toEqual(
-      new Set(["map", "overlays", "frame", "net", "saved", "loaded", "error", "debugResult"]),
+      new Set(["map", "overlays", "frame", "net", "caravanArrive", "saved", "loaded", "error", "debugResult"]),
     );
   });
 

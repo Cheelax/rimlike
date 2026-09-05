@@ -15,7 +15,8 @@
  * `ArrayBuffer` sont transférés, jamais clonés.
  */
 
-import type { LockstepState } from "../net/LockstepClient";
+import type { CaravanArriveMessage } from "@rimlike/protocol";
+import type { LockstepState, RoomCaravanDeparture } from "../net/LockstepClient";
 
 /** Un `frame` sur `HASH_EVERY_FRAMES` porte le hash : il coûte une sérialisation complète. */
 export const HASH_EVERY_FRAMES = 30;
@@ -50,6 +51,15 @@ export type MainToWorker =
   | { readonly type: "setSpeed"; readonly speed: number }
   /** Réservé à l'hôte, en lobby. */
   | { readonly type: "startGame"; readonly seed: number; readonly width: number; readonly height: number }
+  /**
+   * Expédie un manifeste de caravane. Il part par la connexion **de salle**,
+   * qui vit ici : le serveur exige que l'auteur d'un `caravan_depart` soit
+   * dans la salle de `fromTile` (`docs/protocol.md` §12.5), et la connexion
+   * monde du thread principal n'y est pas.
+   */
+  | { readonly type: "caravanDepart"; readonly departure: RoomCaravanDeparture }
+  /** Confirme une arrivée injectée, sur la même connexion, pour la même raison. */
+  | { readonly type: "caravanDelivered"; readonly id: string }
   /** Demande un snapshot : `localStorage` n'existe pas dans un Worker. */
   | { readonly type: "save" }
   | { readonly type: "load"; readonly bytes: Uint8Array }
@@ -104,6 +114,14 @@ export interface FrameMessage {
    */
   readonly names: Record<number, string>;
   readonly stored: Uint32Array;
+  /**
+   * Manifestes de caravane en attente d'expédition (`Sim::departures`). C'est
+   * le déclencheur de l'hôte : tant qu'il est non nul, il reste des départs à
+   * envoyer au serveur monde puis à retirer de la file (`docs/protocol.md`
+   * §12.7). Le manifeste lui-même se lit par `rpc("departure", i)` : il n'a
+   * rien à faire dans un `frame` émis soixante fois par seconde.
+   */
+  readonly departures: number;
   /** Retard du lockstep en ticks. Toujours 0 en solo. */
   readonly lag: number;
   /** Ticks par seconde mesurés dans le Worker. */
@@ -116,6 +134,12 @@ export type WorkerToMain =
   | FrameMessage
   /** À chaque changement d'état du `LockstepClient` (lobby, joueurs, désync…). */
   | { readonly type: "net"; readonly state: LockstepState }
+  /**
+   * Une caravane est arrivée sur la case de notre salle et nous en sommes
+   * l'hôte. Le thread principal émet `ArriveCaravan` puis renvoie un
+   * `caravanDelivered` : c'est lui qui possède le WASM d'encodage.
+   */
+  | { readonly type: "caravanArrive"; readonly arrival: CaravanArriveMessage }
   | { readonly type: "saved"; readonly bytes: Uint8Array }
   /** Fin d'un `load`. `error` non vide si la sauvegarde était illisible. */
   | { readonly type: "loaded"; readonly error?: string }
@@ -150,7 +174,8 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
     case "saved":
       return [message.bytes.buffer as ArrayBuffer];
     default:
-      // `net`, `loaded`, `error`, `debugResult` : rien de gros à transférer.
+      // `net`, `caravanArrive`, `loaded`, `error`, `debugResult` : rien de gros
+      // à transférer (un manifeste pèse quelques centaines d'octets).
       // Un `debugResult` porte des copies, clonées comme n'importe quelle valeur.
       return [];
   }
