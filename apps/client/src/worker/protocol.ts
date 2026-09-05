@@ -77,6 +77,19 @@ export interface OverlaysMessage {
 }
 
 /**
+ * Couche « intérieur » (`sim-wasm::indoor_ptr`, un octet par case : 0 dehors,
+ * sinon le numéro de la pièce). Émis seulement quand `indoorVersion` change,
+ * comme `overlays` pour `overlayVersion` : c'est un calque à part, pas une
+ * zone ou une désignation, et il change à un rythme différent (posé un mur,
+ * pas dessiné une zone).
+ */
+export interface IndoorMessage {
+  readonly type: "indoor";
+  readonly indoorVersion: number;
+  readonly indoor: Uint8Array;
+}
+
+/**
  * État à afficher, après un lot de ticks. Au plus un par intervalle du Worker,
  * et jamais si aucun tick n'a été exécuté — sauf le premier, juste après
  * l'adoption d'un sim, pour que l'écran ne reste pas vide en pause.
@@ -87,6 +100,14 @@ export interface FrameMessage {
   readonly timeOfDay: number;
   readonly ticksPerDay: number;
   readonly weather: number;
+  /** Température extérieure, en **dixièmes de degré** (`sim::outdoor_temperature`). */
+  readonly temperature: number;
+  /** Saison courante, suivant `sim::climate::Season` (0 printemps … 3 hiver). */
+  readonly season: number;
+  /** Jour de l'année courant, dans `0..yearDays`. */
+  readonly dayOfYear: number;
+  /** Jours d'une année de jeu (quatre saisons), constant (`sim::climate::YEAR_DAYS`). */
+  readonly yearDays: number;
   /** `null` sauf un `frame` sur `HASH_EVERY_FRAMES`. */
   readonly hash: string | null;
   readonly pawns: Int32Array;
@@ -129,6 +150,7 @@ export interface FrameMessage {
 export type WorkerToMain =
   | MapMessage
   | OverlaysMessage
+  | IndoorMessage
   | FrameMessage
   /** À chaque changement d'état du `LockstepClient` (lobby, joueurs, désync…). */
   | { readonly type: "net"; readonly state: LockstepState }
@@ -152,6 +174,8 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
       return [message.tiles.buffer as ArrayBuffer, message.features.buffer as ArrayBuffer];
     case "overlays":
       return [message.zones.buffer as ArrayBuffer, message.designations.buffer as ArrayBuffer];
+    case "indoor":
+      return [message.indoor.buffer as ArrayBuffer];
     case "frame":
       return [
         message.pawns.buffer as ArrayBuffer,

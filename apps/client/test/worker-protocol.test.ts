@@ -13,6 +13,7 @@ import type { LockstepState } from "../src/net/LockstepClient";
 import {
   transferablesOf,
   type FrameMessage,
+  type IndoorMessage,
   type MainToWorker,
   type MapMessage,
   type OverlaysMessage,
@@ -35,6 +36,10 @@ const netState: LockstepState = Object.freeze({
   desync: null,
   lastError: null,
   frozenTicks: 0,
+  outliers: Object.freeze([]),
+  isOutlier: false,
+  roomDesynced: false,
+  lastResyncTick: null,
 });
 
 function frame(): FrameMessage {
@@ -44,6 +49,10 @@ function frame(): FrameMessage {
     timeOfDay: 120,
     ticksPerDay: 14400,
     weather: 2,
+    temperature: 120,
+    season: 1,
+    dayOfYear: 20,
+    yearDays: 60,
     hash: "deadbeef",
     pawns: new Int32Array([1, 256, 512, 0, 800, 900, 700, 0, -1, 0, 0, 1000]),
     items: new Int32Array([1, 0, 5, 2, 2]),
@@ -82,6 +91,14 @@ function overlays(): OverlaysMessage {
   };
 }
 
+function indoorMessage(): IndoorMessage {
+  return {
+    type: "indoor",
+    indoorVersion: 4,
+    indoor: new Uint8Array([0, 1, 1, 0]),
+  };
+}
+
 const fromMain: MainToWorker[] = [
   { type: "init", mode: "solo", seed: 42, width: 128, height: 128 },
   { type: "init", mode: "multi", server: "ws://localhost:8787", room: "demo", name: "alice" },
@@ -97,6 +114,7 @@ const fromMain: MainToWorker[] = [
 const toMain: WorkerToMain[] = [
   map(),
   overlays(),
+  indoorMessage(),
   frame(),
   { type: "net", state: netState },
   { type: "saved", bytes: new Uint8Array([4, 5, 6]) },
@@ -114,7 +132,7 @@ describe("protocole du Worker de simulation", () => {
       new Set(["init", "issue", "setPaused", "setSpeed", "startGame", "save", "load", "debug"]),
     );
     expect(new Set(toMain.map((m) => m.type))).toEqual(
-      new Set(["map", "overlays", "frame", "net", "saved", "loaded", "error", "debugResult"]),
+      new Set(["map", "overlays", "indoor", "frame", "net", "saved", "loaded", "error", "debugResult"]),
     );
   });
 
@@ -134,18 +152,28 @@ describe("protocole du Worker de simulation", () => {
     expect(clone.pawns[0]).toBe(1);
     expect(clone.hash).toBe("deadbeef");
     expect(clone.tps).toBe(60);
+    // Climat, saisons et température : de simples nombres, clonés tels quels.
+    expect(clone.temperature).toBe(120);
+    expect(clone.season).toBe(1);
+    expect(clone.dayOfYear).toBe(20);
+    expect(clone.yearDays).toBe(60);
     // `names` est un simple objet : cloné en donnée, pas en tampon.
     expect(clone.names).toEqual({ 1: "Alice" });
     expect(clone.names).not.toBe(original.names);
   });
 
-  it("fait arriver la carte et les calques copiés", () => {
+  it("fait arriver la carte, les calques et l'intérieur copiés", () => {
     const clonedMap = structuredClone(map());
     expect(Array.from(clonedMap.tiles)).toEqual([3, 3, 4, 1]);
     expect(Array.from(clonedMap.features)).toEqual([0, 1, 0, 2]);
     const clonedOverlays = structuredClone(overlays());
     expect(Array.from(clonedOverlays.zones)).toEqual([0, 1, 1, 0]);
     expect(Array.from(clonedOverlays.designations)).toEqual([0, 0, 2, 0]);
+    const original = indoorMessage();
+    const clonedIndoor = structuredClone(original);
+    expect(clonedIndoor.indoorVersion).toBe(4);
+    expect(Array.from(clonedIndoor.indoor)).toEqual([0, 1, 1, 0]);
+    expect(clonedIndoor.indoor).not.toBe(original.indoor);
   });
 
   it("clone l'état réseau, gelé côté lockstep, en simple donnée", () => {
@@ -173,6 +201,7 @@ describe("protocole du Worker de simulation", () => {
   it("n'annonce que les tampons qui existent", () => {
     expect(transferablesOf(map()).length).toBe(2);
     expect(transferablesOf(overlays()).length).toBe(2);
+    expect(transferablesOf(indoorMessage()).length).toBe(1);
     expect(transferablesOf({ type: "saved", bytes: new Uint8Array([1]) }).length).toBe(1);
     expect(transferablesOf({ type: "net", state: netState })).toEqual([]);
     expect(transferablesOf({ type: "loaded" })).toEqual([]);

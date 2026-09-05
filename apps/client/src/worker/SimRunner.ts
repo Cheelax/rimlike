@@ -18,6 +18,7 @@ import type { SimLike } from "../net/SimLike";
 import {
   HASH_EVERY_FRAMES,
   type FrameMessage,
+  type IndoorMessage,
   type MapMessage,
   type OverlaysMessage,
 } from "./protocol";
@@ -70,6 +71,18 @@ export interface RunnerSim extends SimLike {
   weather(): number;
   timeOfDay(): number;
   ticksPerDay(): number;
+  /** Saison courante, suivant `sim::climate::Season` (0 printemps … 3 hiver). */
+  season(): number;
+  /** Jour de l'année courant, dans `0..yearDays()`. */
+  dayOfYear(): number;
+  /** Jours d'une année de jeu (quatre saisons), constant. */
+  yearDays(): number;
+  /** Température extérieure, en dixièmes de degré. */
+  outdoorTemperature(): number;
+  /** Change à chaque recalcul effectif de la couche « intérieur ». */
+  indoorVersion(): number;
+  /** Couche « intérieur » : un octet par case, 0 dehors, sinon le numéro de pièce. */
+  indoor(): Uint8Array;
   dispose(): void;
 }
 
@@ -95,10 +108,11 @@ export interface RunnerOutput {
   readonly ticks: number;
   readonly map: MapMessage | null;
   readonly overlays: OverlaysMessage | null;
+  readonly indoor: IndoorMessage | null;
   readonly frame: FrameMessage | null;
 }
 
-const NOTHING: RunnerOutput = { ticks: 0, map: null, overlays: null, frame: null };
+const NOTHING: RunnerOutput = { ticks: 0, map: null, overlays: null, indoor: null, frame: null };
 
 export class SimRunner {
   private readonly lockstep: LockstepLike | null;
@@ -117,6 +131,7 @@ export class SimRunner {
   private last: number | null = null;
   private knownMapVersion = -1;
   private knownOverlayVersion = -1;
+  private knownIndoorVersion = -1;
   /** Force un `frame` juste après l'adoption d'un sim, même sans tick. */
   private needFirstFrame = false;
   private frameCount = 0;
@@ -169,6 +184,7 @@ export class SimRunner {
     this.current = next;
     this.knownMapVersion = -1;
     this.knownOverlayVersion = -1;
+    this.knownIndoorVersion = -1;
     this.knownIds = new Set();
     this.knownNames = {};
     this.acc = 0;
@@ -272,6 +288,12 @@ export class SimRunner {
         designations: sim.designations().slice(),
       };
     }
+    let indoor: IndoorMessage | null = null;
+    const indoorVersion = sim.indoorVersion();
+    if (indoorVersion !== this.knownIndoorVersion) {
+      this.knownIndoorVersion = indoorVersion;
+      indoor = { type: "indoor", indoorVersion, indoor: sim.indoor().slice() };
+    }
 
     const withHash = this.frameCount % this.hashEveryFrames === 0;
     this.frameCount += 1;
@@ -282,6 +304,10 @@ export class SimRunner {
       timeOfDay: sim.timeOfDay(),
       ticksPerDay: sim.ticksPerDay(),
       weather: sim.weather(),
+      temperature: sim.outdoorTemperature(),
+      season: sim.season(),
+      dayOfYear: sim.dayOfYear(),
+      yearDays: sim.yearDays(),
       hash: withHash ? sim.hash() : null,
       pawns,
       items: sim.items(),
@@ -298,7 +324,7 @@ export class SimRunner {
       lag: this.lag,
       tps: this.tpsValue,
     };
-    return { ticks, map, overlays, frame };
+    return { ticks, map, overlays, indoor, frame };
   }
 
   /** Le pas de temps proprement dit. Renvoie le nombre de ticks exécutés. */

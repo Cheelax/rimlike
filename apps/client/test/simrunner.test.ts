@@ -25,6 +25,7 @@ class FakeSim implements RunnerSim {
   ticks = 0;
   mapV = 1;
   overlayV = 1;
+  indoorV = 1;
   hashCalls = 0;
   disposed = false;
   applied: string[] = [];
@@ -56,6 +57,14 @@ class FakeSim implements RunnerSim {
 
   overlayVersion(): number {
     return this.overlayV;
+  }
+
+  indoorVersion(): number {
+    return this.indoorV;
+  }
+
+  indoor(): Uint8Array {
+    return this.cells(0);
   }
 
   private cells(fill: number): Uint8Array {
@@ -147,6 +156,22 @@ class FakeSim implements RunnerSim {
 
   ticksPerDay(): number {
     return 14400;
+  }
+
+  season(): number {
+    return 1;
+  }
+
+  dayOfYear(): number {
+    return 20;
+  }
+
+  yearDays(): number {
+    return 60;
+  }
+
+  outdoorTemperature(): number {
+    return 120;
   }
 
   dispose(): void {
@@ -264,6 +289,23 @@ describe("SimRunner en solo", () => {
     expect(overlaid.overlays?.overlayVersion).toBe(7);
   });
 
+  it("n'émet la couche intérieure qu'au changement de version, séparément des calques", () => {
+    const runner = new SimRunner();
+    const sim = new FakeSim();
+    runner.setSim(sim);
+    const first = runner.advance(0);
+    expect(first.indoor?.indoorVersion).toBe(1);
+    expect(first.indoor?.indoor).toEqual(sim.indoor());
+
+    const same = runner.advance(100);
+    expect(same.indoor).toBeNull();
+    // Un mur posé (overlayV inchangé) ne rebâtit que l'intérieur, pas les calques.
+    sim.indoorV = 3;
+    const changed = runner.advance(200);
+    expect(changed.indoor?.indoorVersion).toBe(3);
+    expect(changed.overlays).toBeNull();
+  });
+
   it("ne porte le hash qu'un `frame` sur trente", () => {
     const { runner, sim } = soloStarted();
     // Le `frame` initial comptait pour un : le prochain hash est trente plus loin.
@@ -322,7 +364,7 @@ describe("SimRunner en solo", () => {
   it("ne fait rien tant qu'aucun sim n'est adopté", () => {
     const runner = new SimRunner();
     const out = runner.advance(1000);
-    expect(out).toEqual({ ticks: 0, map: null, overlays: null, frame: null });
+    expect(out).toEqual({ ticks: 0, map: null, overlays: null, indoor: null, frame: null });
   });
 });
 

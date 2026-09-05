@@ -14,7 +14,7 @@ import { WebSocketTransport } from "./net/Transport";
 import { WorldClient, type WorldClientState } from "./net/WorldClient";
 import { fetchWorld, type WorldProgress } from "./net/worldFetch";
 import { WorldScreen, type CaravanOrder } from "./WorldScreen";
-import { PAWN_FLAGS, PAWN_STRIDE, Renderer, type TilePos, type TileRect } from "./render/Renderer";
+import { HEAT_COLD, HEAT_HOT, PAWN_FLAGS, PAWN_STRIDE, Renderer, type TilePos, type TileRect } from "./render/Renderer";
 import {
   BLUEPRINT_STRIDE,
   BUILD_KIND,
@@ -24,11 +24,13 @@ import {
   eventLabel,
   FEATURE,
   formatInjury,
+  formatTemperature,
   HEALTH_STRIDE,
   ITEM_NAMES,
   JOB_LABELS,
   MATERIAL_NAMES,
   PRIORITY_STRIDE,
+  SEASON_LABELS,
   SKILL_STRIDE,
   WEAPON_NAMES,
   WEATHER_LABELS,
@@ -174,6 +176,8 @@ interface PawnInfo {
   meleeXp: number;
   rangedLevel: number;
   rangedXp: number;
+  /** Température ressentie, en dixièmes de degré, rafraîchie par `rpc("pawnComfort", id)` au même rythme. */
+  comfort: number;
 }
 
 interface Stats {
@@ -186,6 +190,14 @@ interface Stats {
   speed: number;
   paused: boolean;
   weather: number;
+  /** Saison courante, suivant `sim::climate::Season` (0 printemps … 3 hiver). */
+  season: number;
+  /** Jour de l'année courant, dans `0..yearDays`. */
+  dayOfYear: number;
+  /** Jours d'une année de jeu (quatre saisons), constant. */
+  yearDays: number;
+  /** Température extérieure, en dixièmes de degré (`frame.temperature`). */
+  temperature: number;
   stored: number[];
   blueprints: number;
   colonists: number;
@@ -217,6 +229,10 @@ const INITIAL: Stats = {
   speed: 1,
   paused: false,
   weather: 0,
+  season: 0,
+  dayOfYear: 0,
+  yearDays: 60,
+  temperature: 120,
   stored: [0, 0, 0, 0, 0, 0, 0, 0, 0],
   blueprints: 0,
   colonists: 0,
@@ -324,6 +340,15 @@ export function App() {
   const [showWork, setShowWork] = useState(false);
   const [showCraft, setShowCraft] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Mode d'affichage des températures (touche I, bouton « Chaleur »). */
+  const [heatMode, setHeatMode] = useState(false);
+  /**
+   * Vrai entre le clic sur « Resynchroniser » (ou une réparation automatique
+   * déjà en cours) et la confirmation qui nous concerne : affiche
+   * « resynchronisation… » à la place du bouton, remis à faux dès qu'on n'est
+   * plus déviant ou que la demande est refusée (`docs/protocol.md` §7).
+   */
+  const [resyncPending, setResyncPending] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<JoinForm>(() => joinFromUrl() ?? { server: DEFAULT_SERVER, room: "demo", name: "joueur" });
@@ -524,6 +549,8 @@ export function App() {
     let lastEventSeq = -1;
     /** Dernier `frozenTicks` déjà annoncé par toast, pour ne le dire qu'une fois. */
     let lastFrozenTicksNotified = 0;
+    /** Dernier `lastResyncTick` déjà annoncé par toast, pour ne le dire qu'une fois. */
+    let lastResyncNotified: number | null = null;
     /**
      * Vrai jusqu'au premier `frame` d'un sim neuf, chargé ou restauré : rien à
      * interpoler depuis l'état d'avant, et ses événements sont du passé.
@@ -545,6 +572,9 @@ export function App() {
      */
     let selectedCombat = { meleeLevel: 0, meleeXp: 0, rangedLevel: 0, rangedXp: 0 };
     let selectedCombatId: number | null = null;
+    /** Ressenti du colon sélectionné, rafraîchi par `rpc("pawnComfort", id)` au même rythme. */
+    let selectedComfort = 0;
+    let selectedComfortId: number | null = null;
     let lastRenderAt = performance.now();
     let framesInWindow = 0;
     let windowStart = lastRenderAt;
@@ -610,6 +640,7 @@ export function App() {
         craftingSpotCount = spots;
       },
       onOverlays: (m) => renderer.setOverlays(m.zones, m.designations),
+      onIndoor: (m) => renderer.setIndoor(m.indoor),
       onFrame: (f) => {
         const now = performance.now();
         if (freshSim) {
@@ -658,6 +689,11 @@ export function App() {
         if (state.lastError !== null && state.lastError !== netError) {
           netError = state.lastError;
           pushToast(`Serveur : ${state.lastError.message}`);
+          // Un refus muet, pas une resynchronisation en cours (§7) : on peut
+          // reproposer le bouton tout de suite plutôt que d'attendre en vain.
+          if (state.lastError.code === "host_cannot_resync" || state.lastError.code === "resync_cooldown") {
+            setResyncPending(false);
+          }
         }
         // Réouverture d'une colonie gelée (§11.6) : annoncé dès reçu, avant
         // même que l'hôte n'ait émis l'avance rapide. L'événement 13 du sim
@@ -666,6 +702,13 @@ export function App() {
           lastFrozenTicksNotified = state.frozenTicks;
           const days = Math.floor(state.frozenTicks / TICKS_PER_DAY);
           pushToast(`Colonie rouverte : ${days} jour${days > 1 ? "s" : ""} ont passé`);
+        }
+        // On n'est plus déviant : la réparation (manuelle ou automatique) a
+        // abouti, il n'y a plus rien « en cours » à afficher.
+        if (!state.isOutlier) setResyncPending(false);
+        if (state.lastResyncTick !== null && state.lastResyncTick !== lastResyncNotified) {
+          lastResyncNotified = state.lastResyncTick;
+          pushToast(`Resynchronisé au tick ${state.lastResyncTick}`);
         }
       },
       onSaved: (bytes) => {
@@ -946,6 +989,10 @@ export function App() {
         setShowCraft((v) => !v);
         return;
       }
+      if (k === "I") {
+        setHeatMode((v) => !v);
+        return;
+      }
       switch (k) {
         case "Q":
           renderer.rotate(-1);
@@ -1114,11 +1161,12 @@ export function App() {
           ...(selectedCombatId === id
             ? selectedCombat
             : { meleeLevel: 0, meleeXp: 0, rangedLevel: 0, rangedXp: 0 }),
+          comfort: selectedComfortId === id ? selectedComfort : 0,
         };
       }
-      // Blessures et compétences de combat du colon sélectionné : rafraîchies
-      // ici (2 fois par seconde), affichées à la prochaine passe pour ne pas
-      // attendre l'aller-retour.
+      // Blessures, compétences de combat et ressenti du colon sélectionné :
+      // rafraîchis ici (2 fois par seconde), affichés à la prochaine passe
+      // pour ne pas attendre l'aller-retour.
       if (info !== null) {
         if (selectedInjuriesId !== info.id) {
           selectedInjuriesId = info.id;
@@ -1127,6 +1175,10 @@ export function App() {
         if (selectedCombatId !== info.id) {
           selectedCombatId = info.id;
           selectedCombat = { meleeLevel: 0, meleeXp: 0, rangedLevel: 0, rangedXp: 0 };
+        }
+        if (selectedComfortId !== info.id) {
+          selectedComfortId = info.id;
+          selectedComfort = 0;
         }
         const id = info.id;
         void bridge
@@ -1154,10 +1206,20 @@ export function App() {
           .catch(() => {
             /* colon disparu entre-temps : rien à afficher au prochain tour */
           });
+        void bridge
+          .rpc("pawnComfort", id)
+          .then((raw) => {
+            if (selectedComfortId !== id) return; // sélection changée entre-temps
+            selectedComfort = raw as number;
+          })
+          .catch(() => {
+            /* colon disparu entre-temps : rien à afficher au prochain tour */
+          });
       } else {
         selectedInjuriesId = null;
         selectedInjuries = [];
         selectedCombatId = null;
+        selectedComfortId = null;
       }
       setStats({
         tick: f.tick,
@@ -1170,6 +1232,10 @@ export function App() {
         speed,
         paused,
         weather: f.weather,
+        season: f.season,
+        dayOfYear: f.dayOfYear,
+        yearDays: f.yearDays,
+        temperature: f.temperature,
         stored: Array.from(f.stored),
         blueprints: f.blueprints.length / BLUEPRINT_STRIDE,
         colonists,
@@ -1200,6 +1266,37 @@ export function App() {
       isHostRef.current = false;
     };
   }, [session]);
+
+  /**
+   * Mode chaleur (touche I, bouton « Chaleur ») : colore les cases par
+   * température. `tileTemperatures()` scrute toute la grille côté sim (16 384
+   * appels WASM sur 128×128) : on ne l'appelle qu'à ce rythme (2×/s), et
+   * seulement pendant que le mode est actif — jamais à chaque frame.
+   */
+  useEffect(() => {
+    rendererRef.current?.setHeatMode(heatMode);
+    if (!heatMode) return;
+    let cancelled = false;
+    const poll = () => {
+      const bridge = bridgeRef.current;
+      if (bridge === null || cancelled) return;
+      void bridge
+        .rpc("tileTemperatures")
+        .then((raw) => {
+          if (cancelled || !(raw instanceof Int32Array)) return;
+          rendererRef.current?.setHeatData(raw);
+        })
+        .catch(() => {
+          // Worker fermé ou partie pas encore démarrée : on retentera au prochain battement.
+        });
+    };
+    poll();
+    const id = window.setInterval(poll, 500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [heatMode]);
 
   /**
    * Itinéraire prévisualisé vers la destination retenue. `findRoute` est le
@@ -1320,6 +1417,10 @@ export function App() {
   if (error) return <div className="error">{error}</div>;
 
   const sel = stats.selected;
+  // Saison affichée « j.X/Y » : X = jour dans la saison (1-indexé, comme
+  // `stats.day`), Y = longueur d'une saison (`sim::climate::SEASON_DAYS`).
+  const seasonDays = Math.max(1, Math.floor(stats.yearDays / 4));
+  const dayInSeason = (stats.dayOfYear % seasonDays) + 1;
   const workRows: { id: number; prio: number[] }[] = [];
   for (let o = 0; o + PRIORITY_STRIDE <= stats.priorities.length; o += PRIORITY_STRIDE) {
     workRows.push({ id: stats.priorities[o], prio: stats.priorities.slice(o + 1, o + PRIORITY_STRIDE) });
@@ -1417,7 +1518,9 @@ export function App() {
         <>
           <div className="hud">
             <div>
-              jour <b>{stats.day}</b> · <b>{stats.hour}</b> · {WEATHER_LABELS[stats.weather] ?? "?"} · tick {stats.tick}
+              jour <b>{stats.day}</b> · <b>{stats.hour}</b> · {SEASON_LABELS[stats.season] ?? "?"} j.{dayInSeason}/
+              {seasonDays} · {formatTemperature(stats.temperature)} · {WEATHER_LABELS[stats.weather] ?? "?"} · tick{" "}
+              {stats.tick}
               {multi ? "" : stats.paused ? <b> · PAUSE</b> : ` · x${stats.speed}`}
             </div>
             {multi && net !== null && (
@@ -1463,6 +1566,9 @@ export function App() {
               </div>
               <div className="panel-job">{sel.job}{sel.carrying ? ` · porte ${sel.carrying}` : ""}</div>
               <div className="panel-weapon">Arme : {sel.weapon >= 0 ? WEAPON_NAMES[sel.weapon] ?? "?" : "à mains nues"}</div>
+              <div className={`panel-comfort${sel.comfort < 50 ? " cold" : ""}`}>
+                Ressenti : {formatTemperature(sel.comfort)}
+              </div>
 
               {!sel.hostile && (
                 <>
@@ -1564,6 +1670,13 @@ export function App() {
               Fabrication <span className="key">K</span>
             </button>
             <button
+              className={heatMode ? "active" : ""}
+              onClick={() => setHeatMode((v) => !v)}
+              title="Touche I : colore les cases par température"
+            >
+              Chaleur <span className="key">I</span>
+            </button>
+            <button
               className={caravanOpen ? "active" : ""}
               disabled={roomTile === null}
               onClick={() => {
@@ -1595,6 +1708,13 @@ export function App() {
               </button>
             )}
           </div>
+          {heatMode && (
+            <div className="heat-legend">
+              <span>{formatTemperature(HEAT_COLD)}</span>
+              <span className="heat-legend-bar" />
+              <span>{formatTemperature(HEAT_HOT)}</span>
+            </div>
+          )}
           {tool !== "select" && (
             <div className="tool-hint">
               {tool === "stockpile"
@@ -1686,7 +1806,24 @@ export function App() {
           )}
         </>
       )}
-      {net?.desync && <div className="banner">Désynchronisation détectée au tick {net.desync.tick}</div>}
+      {net?.roomDesynced && (
+        <div className="banner">
+          Désynchronisation détectée au tick {net.desync?.tick ?? "?"}
+          {net.isOutlier ? " · votre copie diverge" : ""}
+          {resyncPending ? (
+            " · resynchronisation…"
+          ) : (
+            <button
+              onClick={() => {
+                bridgeRef.current?.rpc("lockstep.requestResync");
+                setResyncPending(true);
+              }}
+            >
+              Resynchroniser
+            </button>
+          )}
+        </div>
+      )}
       {toasts.length > 0 && (
         <div className="toasts">
           {toasts.map((t) => (

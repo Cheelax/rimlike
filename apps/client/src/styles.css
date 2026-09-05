@@ -9,6 +9,8 @@ canvas.scene { display: block; width: 100%; height: 100%; }
 .panel-title { font-weight: 600; color: #ffe066; }
 .panel-job { opacity: .85; margin-bottom: 6px; text-transform: capitalize; }
 .panel-weapon { opacity: .8; margin-bottom: 6px; }
+.panel-comfort { opacity: .8; margin-bottom: 6px; }
+.panel-comfort.cold { opacity: 1; color: #ff6b6b; font-weight: 600; }
 .bar { display: grid; grid-template-columns: 56px 1fr 38px; gap: 6px; align-items: center; margin: 3px 0; }
 .bar-track { height: 8px; background: rgba(255,255,255,.12); border-radius: 4px; overflow: hidden; }
 .bar-fill { display: block; height: 100%; background: #6ab04c; transition: width .3s; }
@@ -71,6 +73,12 @@ canvas.scene { display: block; width: 100%; height: 100%; }
 .toolbar button:disabled:hover { background: rgba(255,255,255,.08); }
 /* Bandeau de désync : au-dessus de la barre d'outils et de l'aide d'outil. */
 .banner { position: fixed; bottom: 96px; left: 0; right: 0; padding: 8px 12px; text-align: center; background: rgba(150,25,25,.92); border-top: 1px solid rgba(255,120,120,.5); border-bottom: 1px solid rgba(255,120,120,.5); font: 13px system-ui, sans-serif; pointer-events: none; }
+.banner button { margin-left: 10px; pointer-events: auto; background: rgba(255,255,255,.14); color: #fff; border: 1px solid rgba(255,255,255,.35); border-radius: 5px; padding: 3px 10px; font: 12px system-ui, sans-serif; cursor: pointer; }
+.banner button:hover { background: rgba(255,255,255,.24); }
+
+/* --- Mode chaleur : légende bleu froid → rouge chaud --- */
+.heat-legend { position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: rgba(0,0,0,.6); border-radius: 6px; font: 11px system-ui, sans-serif; pointer-events: none; }
+.heat-legend-bar { width: 140px; height: 10px; border-radius: 5px; background: linear-gradient(to right, hsl(223, 85%, 50%), hsl(112, 85%, 50%), hsl(0, 85%, 50%)); }
 
 /* --- Écran Monde : le globe, son infobulle et son panneau latéral --- */
 canvas.globe { position: fixed; inset: 0; display: block; width: 100%; height: 100%; touch-action: none; }

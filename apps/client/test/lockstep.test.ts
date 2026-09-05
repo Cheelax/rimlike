@@ -99,6 +99,8 @@ interface Session {
   readonly states: LockstepState[];
   readonly errors: LockstepError[];
   fake(): FakeSim;
+  /** Nombre de fois où `restoreSim` a été appelé (rejoint initial ou resync). */
+  restoreCount(): number;
 }
 
 let server: RunningServer;
@@ -108,10 +110,14 @@ async function join(room: string, name: string, salt = ""): Promise<Session> {
   const transport = await WsTransport.connect(server.url);
   const states: LockstepState[] = [];
   const errors: LockstepError[] = [];
+  let restores = 0;
   const client = new LockstepClient({
     transport,
     createSim: (seed) => Promise.resolve(FakeSim.fresh(seed, salt)),
-    restoreSim: (data) => Promise.resolve(FakeSim.fromSnapshot(data, salt)),
+    restoreSim: (data) => {
+      restores += 1;
+      return Promise.resolve(FakeSim.fromSnapshot(data, salt));
+    },
     onState: (state) => states.push(state),
     onError: (error) => errors.push(error),
   });
@@ -127,6 +133,7 @@ async function join(room: string, name: string, salt = ""): Promise<Session> {
       }
       return sim as FakeSim;
     },
+    restoreCount: () => restores,
   };
   sessions.push(session);
   client.join(room, name);
@@ -261,6 +268,49 @@ describe("lockstep contre le vrai serveur", () => {
     expect(bob.fake().hash()).toBe(alice.fake().hash());
     for (const session of all) {
       expect(session.errors).toEqual([]);
+    }
+  });
+
+  it("resynchronise un joueur en cours de partie, sans attendre un point de contrôle", async () => {
+    // Contrairement au rejoint (le sim n'existe pas encore côté carol), bob a
+    // déjà un sim qui tourne depuis un moment : le `snapshot` de resync doit
+    // être accepté **en cours de partie**, pas seulement à la connexion
+    // initiale (docs/protocol.md §7 : `resetTo` doit vider la file de bundles
+    // déjà appliqués, sans quoi d'anciens bundles seraient rejoués sur le
+    // nouvel état).
+    const alice = await join("demo", "alice");
+    await waitFor("alice en lobby", () => alice.client.state.phase === "lobby");
+    const bob = await join("demo", "bob");
+    await waitFor("deux joueurs annoncés", () => alice.client.state.players.length === 2);
+
+    alice.client.startGame(11, 32, 32);
+    await waitFor("les deux sims créés", () => alice.client.sim !== null && bob.client.sim !== null);
+
+    const both = [alice, bob] as const;
+    alice.client.issue(bytes(0xa1));
+    await pumpUntil(both, "tick 30 atteint", reachedTick(both, 30));
+
+    // Aucun écart de hash ici : c'est une resynchronisation **manuelle**,
+    // demandée sans raison particulière (le pire cas documenté est un
+    // rattrapage inutile depuis un état déjà bon, §7).
+    const restoresBefore = bob.restoreCount();
+    bob.client.requestResync();
+    await pumpUntil(
+      both,
+      "bob restauré par un nouveau snapshot (resync)",
+      () => bob.restoreCount() > restoresBefore,
+    );
+
+    // La partie continue normalement après coup : pas de trou signalé, et les
+    // deux convergent toujours vers la même suite de commandes.
+    bob.client.issue(bytes(0xb1));
+    const target = Math.max(alice.client.tick, bob.client.tick) + 30;
+    await pumpUntil(both, `tick ${target} atteint`, reachedTick(both, target));
+
+    expect(bob.fake().trace()).toEqual(alice.fake().trace());
+    expect(bob.fake().hash()).toBe(alice.fake().hash());
+    for (const session of both) {
+      expect(session.errors.map((e) => e.code)).not.toContain("history_gap");
     }
   });
 
@@ -469,5 +519,85 @@ describe("file de bundles", () => {
     const state = client.state;
     expect(Object.isFrozen(state)).toBe(true);
     expect(Object.isFrozen(state.players)).toBe(true);
+  });
+
+  it("un `desync` avec `outliers` marque `isOutlier` selon qu'on y figure ou non", async () => {
+    // `ready()` nous donne `playerId: 1` (voir la `welcome` livrée).
+    const { transport, client } = await ready();
+    transport.deliver({
+      type: "desync",
+      tick: 300,
+      hashes: { 1: "aaaa", 2: "zzzz", 3: "aaaa" },
+      outliers: [2],
+    });
+    expect(client.state.desync?.tick).toBe(300);
+    expect(client.state.outliers).toEqual([2]);
+    expect(client.state.isOutlier).toBe(false); // le déviant, c'est 2, pas nous
+    expect(client.state.roomDesynced).toBe(true);
+  });
+
+  it("un `desync` qui nous inclut dans `outliers` marque `isOutlier` vrai", async () => {
+    const { transport, client } = await ready();
+    transport.deliver({
+      type: "desync",
+      tick: 300,
+      hashes: { 1: "zzzz", 2: "aaaa", 3: "aaaa" },
+      outliers: [1],
+    });
+    expect(client.state.isOutlier).toBe(true);
+    expect(client.state.roomDesynced).toBe(true);
+  });
+
+  it("un `desync` sans `outliers` (pas de majorité) garde `roomDesynced` vrai indéfiniment", async () => {
+    // Cas systématique à deux joueurs (`docs/protocol.md` §7) : sans majorité
+    // jamais connue, impossible de prouver que la salle s'est rétablie.
+    const { transport, client } = await ready();
+    transport.deliver({ type: "desync", tick: 300, hashes: { 1: "aaaa", 2: "zzzz" } });
+    expect(client.state.outliers).toEqual([]);
+    expect(client.state.isOutlier).toBe(false);
+    expect(client.state.roomDesynced).toBe(true);
+  });
+
+  it("un `resynced` nous concernant retire notre propre état de déviant", async () => {
+    const { transport, client } = await ready();
+    transport.deliver({
+      type: "desync",
+      tick: 300,
+      hashes: { 1: "zzzz", 2: "aaaa", 3: "aaaa" },
+      outliers: [1],
+    });
+    expect(client.state.isOutlier).toBe(true);
+
+    transport.deliver({ type: "resynced", player: 1, tick: 600 });
+    expect(client.state.isOutlier).toBe(false);
+    // Plus personne connu comme déviant : la salle n'est plus désynchronisée.
+    expect(client.state.roomDesynced).toBe(false);
+    expect(client.state.lastResyncTick).toBe(600);
+  });
+
+  it("un `resynced` d'un autre joueur ne nous concerne pas et laisse la salle désynchronisée", async () => {
+    const { transport, client } = await ready();
+    transport.deliver({
+      type: "desync",
+      tick: 300,
+      hashes: { 1: "zzzz", 2: "yyyy", 3: "aaaa" },
+      outliers: [1, 2],
+    });
+    transport.deliver({ type: "resynced", player: 2, tick: 600 });
+    expect(client.state.isOutlier).toBe(true); // toujours déviant, ce `resynced` ne parlait pas de nous
+    expect(client.state.roomDesynced).toBe(true); // il reste un déviant (nous)
+    expect(client.state.lastResyncTick).toBeNull();
+
+    transport.deliver({ type: "resynced", player: 1, tick: 900 });
+    expect(client.state.isOutlier).toBe(false);
+    expect(client.state.roomDesynced).toBe(false);
+    expect(client.state.lastResyncTick).toBe(900);
+  });
+
+  it("`requestResync` envoie `resync`", async () => {
+    const { transport, client } = await ready();
+    transport.sent.length = 0;
+    client.requestResync();
+    expect(transport.sent.map((t) => JSON.parse(t) as { type: string })).toEqual([{ type: "resync" }]);
   });
 });

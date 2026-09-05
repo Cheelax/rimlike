@@ -222,6 +222,73 @@ export class SimHandle implements SimLike {
     return this.inner.weather();
   }
 
+  /**
+   * Impose le climat de la carte (moyenne annuelle et écart saisonnier, en
+   * dixièmes de degré). Outil de dev/console : en multi, cette commande doit
+   * passer par un `encode*` puis `issue`, jamais être appliquée directement
+   * (comme `triggerRaid`, elle pousse dans la file locale du sim).
+   */
+  setClimate(baseTemperature: number, amplitude: number): void {
+    this.inner.set_climate(baseTemperature, amplitude);
+  }
+
+  /** Saison courante, suivant `sim::climate::Season` (0 printemps … 3 hiver). */
+  season(): number {
+    return this.inner.season();
+  }
+
+  /** Jour de l'année courant, dans `0..yearDays()`. */
+  dayOfYear(): number {
+    return this.inner.day_of_year();
+  }
+
+  /** Jours d'une année de jeu (quatre saisons). */
+  yearDays(): number {
+    return this.inner.year_days();
+  }
+
+  /** Température extérieure de la carte, en dixièmes de degré. */
+  outdoorTemperature(): number {
+    return this.inner.outdoor_temperature();
+  }
+
+  /** Température d'une case, en dixièmes de degré (extérieure, plus l'intérieur). */
+  tileTemperature(x: number, y: number): number {
+    return this.inner.tile_temperature(x, y);
+  }
+
+  /**
+   * Température de chaque case de la carte, en dixièmes de degré : un appel
+   * `tile_temperature` par case. Coûteux (16 384 appels WASM sur une carte
+   * 128×128) : réservé au mode d'affichage « Chaleur », à appeler au plus
+   * quelques fois par seconde (voir `App.tsx`), jamais à chaque frame.
+   */
+  tileTemperatures(): Int32Array {
+    const out = new Int32Array(this.width * this.height);
+    let i = 0;
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        out[i++] = this.inner.tile_temperature(x, y);
+      }
+    }
+    return out;
+  }
+
+  /** Température ressentie par un pawn, en dixièmes de degré. 0 si l'id est inconnu. */
+  pawnComfort(id: number): number {
+    return this.inner.pawn_comfort(id);
+  }
+
+  /** Change à chaque recalcul effectif de la couche « intérieur » (`indoor`). */
+  indoorVersion(): number {
+    return this.inner.indoor_version();
+  }
+
+  /** Couche « intérieur » : un octet par case, 0 dehors, sinon le numéro de pièce. */
+  indoor(): Uint8Array {
+    return this.view8(this.inner.indoor_ptr());
+  }
+
   hash(): string {
     return this.inner.hash();
   }

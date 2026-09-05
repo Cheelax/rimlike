@@ -5,7 +5,15 @@
 
 import { describe, expect, it } from "vitest";
 
-import { clampCraftTarget, eventLabel, formatInjury, WEAPON_NAMES } from "../src/render/terrain";
+import {
+  clampCraftTarget,
+  eventLabel,
+  formatInjury,
+  formatTemperature,
+  SEASON_LABELS,
+  WEAPON_NAMES,
+  WEATHER_LABELS,
+} from "../src/render/terrain";
 
 describe("eventLabel", () => {
   it("nomme le colon quand son nom est connu", () => {
@@ -52,6 +60,44 @@ describe("eventLabel", () => {
     expect(eventLabel(14, 8)).toBe("Un arc a été fabriqué");
     // Un nom connu ne doit pas s'y glisser : ce n'est pas un id de pawn.
     expect(eventLabel(14, 6, { 6: "Alice" })).toBe("Un gourdin a été fabriqué");
+  });
+
+  it("annonce le changement de saison avec l'article qui va bien, `arg` suivant `sim::climate::Season`", () => {
+    // Contrat avec `sim::EventKind::SeasonChanged` (15).
+    expect(eventLabel(15, 0)).toBe("Le printemps commence");
+    expect(eventLabel(15, 1)).toBe("L'été commence");
+    expect(eventLabel(15, 2)).toBe("L'automne commence");
+    expect(eventLabel(15, 3)).toBe("L'hiver commence");
+    // Un nom connu ne doit pas s'y glisser : ce n'est pas un id de pawn.
+    expect(eventLabel(15, 3, { 3: "Alice" })).toBe("L'hiver commence");
+  });
+
+  it("annonce la première gelée de l'automne, sans dépendre de `arg`", () => {
+    // Contrat avec `sim::EventKind::FirstFrost` (16) : `arg` = jour de l'année.
+    expect(eventLabel(16, 45)).toBe("Premières gelées");
+  });
+});
+
+describe("SEASON_LABELS", () => {
+  it("suit `sim::climate::Season` (0 printemps … 3 hiver)", () => {
+    expect(SEASON_LABELS).toEqual(["printemps", "été", "automne", "hiver"]);
+  });
+});
+
+describe("WEATHER_LABELS", () => {
+  it("suit `sim::Weather`, la neige en dernier (3 : la pluie qui gèle)", () => {
+    expect(WEATHER_LABELS).toEqual(["Clair", "Pluie", "Orage", "Neige"]);
+  });
+});
+
+describe("formatTemperature", () => {
+  it("affiche des dixièmes de degré arrondis, avec l'unité", () => {
+    expect(formatTemperature(120)).toBe("12 °C");
+    expect(formatTemperature(0)).toBe("0 °C");
+    expect(formatTemperature(-50)).toBe("-5 °C");
+    // Arrondi, pas troncature : 126 dixièmes = 12,6 °C → 13.
+    expect(formatTemperature(126)).toBe("13 °C");
+    expect(formatTemperature(-126)).toBe("-13 °C");
   });
 });
 

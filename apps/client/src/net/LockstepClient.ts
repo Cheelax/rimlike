@@ -37,6 +37,13 @@ export type LockstepPhase = "connecting" | "lobby" | "running" | "closed";
 export interface DesyncInfo {
   readonly tick: number;
   readonly hashes: Readonly<Record<PlayerId, string>>;
+  /**
+   * Joueurs déviants au sens de la majorité, à l'instant de l'alarme (§7).
+   * Absent quand aucune majorité n'était connue (moins de trois hashes pour ce
+   * tick, ou cas systématique à deux joueurs) : record figé de la première et
+   * unique diffusion `desync` d'une salle, jamais réémis ensuite.
+   */
+  readonly outliers?: readonly PlayerId[];
 }
 
 /** Une erreur du serveur, ou un trou dans la suite des bundles. */
@@ -70,6 +77,33 @@ export interface LockstepState {
    * quel ; `consumeFrozenTicks` est le seul chemin qui le met à profit.
    */
   readonly frozenTicks: number;
+  /**
+   * Joueurs actuellement connus comme déviants (§7) : `desync.outliers` au
+   * départ, réduit à chaque `resynced` reçu. Vide tant qu'aucune majorité n'a
+   * jamais été connue (salle à deux joueurs, ou moins de trois hashes) : dans
+   * ce cas `isOutlier` et `roomDesynced` ne peuvent pas mieux faire que rester
+   * conservateurs (voir leur documentation).
+   */
+  readonly outliers: readonly PlayerId[];
+  /** Notre propre `playerId` figure dans `outliers` : notre copie diverge. */
+  readonly isOutlier: boolean;
+  /**
+   * La salle a déjà signalé un `desync` et n'est pas connue comme rétablie.
+   * Un `resynced` nous concernant ne suffit pas à le retirer si d'autres
+   * joueurs (ou l'hôte, jamais resynchronisable) divergent encore — ni si
+   * aucune majorité n'a jamais permis de savoir qui divergeait (`docs/protocol.md`
+   * §7, cas à deux joueurs) : dans ce cas le doute profite à la prudence, le
+   * champ reste vrai tant que la salle n'a pas prouvé son rétablissement.
+   */
+  readonly roomDesynced: boolean;
+  /**
+   * Tick du dernier `resynced` nous concernant, `null` avant le premier.
+   * Jamais remis à `null` ensuite : c'est un simple repère pour afficher un
+   * toast une fois (comparer à la valeur précédemment vue, comme
+   * `frozenTicks`/`consumeFrozenTicks` sert d'avance rapide, en plus simple
+   * puisqu'il n'y a rien à consommer ici).
+   */
+  readonly lastResyncTick: number | null;
 }
 
 export interface LockstepOptions {
@@ -120,6 +154,12 @@ export class LockstepClient {
   private lastError: LockstepError | null = null;
   /** Voir `LockstepState.frozenTicks` et `consumeFrozenTicks`. */
   private frozenTicksValue = 0;
+  /** Voir `LockstepState.outliers` : réduit par `resynced`, jamais réétendu que par `desync`. */
+  private deviating = new Set<PlayerId>();
+  /** Vrai dès qu'un `desync` a porté des `outliers` : sans ça, `deviating` vide ne prouve rien. */
+  private outliersKnown = false;
+  /** Voir `LockstepState.lastResyncTick`. */
+  private lastResyncTick: number | null = null;
 
   constructor(options: LockstepOptions) {
     this.transport = options.transport;
@@ -176,6 +216,17 @@ export class LockstepClient {
    */
   issue(bytes: Uint8Array): void {
     this.send({ type: "command", payload: bytes });
+  }
+
+  /**
+   * Demande explicite d'une resynchronisation fraîche (`docs/protocol.md` §7) :
+   * le serveur relance pour nous le mécanisme d'un rejoignant, sans attendre
+   * un point de contrôle. Refusée pour l'hôte (`host_cannot_resync`) ou trop
+   * tôt après la précédente (`resync_cooldown`) : ces deux codes arrivent par
+   * `onError`, à traiter comme des refus non bloquants, pas des erreurs.
+   */
+  requestResync(): void {
+    this.send({ type: "resync" });
   }
 
   /**
@@ -301,7 +352,27 @@ export class LockstepClient {
         this.serveSnapshot(message.forPlayer);
         return;
       case "desync":
-        this.desyncInfo = Object.freeze({ tick: message.tick, hashes: Object.freeze({ ...message.hashes }) });
+        this.desyncInfo = Object.freeze({
+          tick: message.tick,
+          hashes: Object.freeze({ ...message.hashes }),
+          ...(message.outliers ? { outliers: Object.freeze([...message.outliers]) } : {}),
+        });
+        // `desync` n'est diffusé qu'une fois pour la vie de la salle (§7) :
+        // c'est ici, et seulement ici, que `deviating` se peuple.
+        if (message.outliers) {
+          this.outliersKnown = true;
+          this.deviating = new Set(message.outliers);
+        }
+        this.emit();
+        return;
+      case "resynced":
+        // Retire ce joueur des déviants connus, que ce soit nous ou un autre :
+        // `roomDesynced` (dérivé de `deviating`) ne redevient faux que si plus
+        // personne n'y figure (`docs/protocol.md` §7).
+        this.deviating.delete(message.player);
+        if (message.player === this.playerId) {
+          this.lastResyncTick = message.tick;
+        }
         this.emit();
         return;
       case "caravan_arrive":
@@ -435,6 +506,10 @@ export class LockstepClient {
       desync: this.desyncInfo,
       lastError: this.lastError,
       frozenTicks: this.frozenTicksValue,
+      outliers: Object.freeze([...this.deviating]),
+      isOutlier: this.playerId !== null && this.deviating.has(this.playerId),
+      roomDesynced: this.desyncInfo !== null && !(this.outliersKnown && this.deviating.size === 0),
+      lastResyncTick: this.lastResyncTick,
     });
   }
 }

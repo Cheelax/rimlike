@@ -9,6 +9,7 @@
 import type { LockstepState } from "../net/LockstepClient";
 import type {
   FrameMessage,
+  IndoorMessage,
   InitMessage,
   MainToWorker,
   MapMessage,
@@ -19,6 +20,7 @@ import type {
 export interface SimBridgeHandlers {
   readonly onMap: (message: MapMessage) => void;
   readonly onOverlays: (message: OverlaysMessage) => void;
+  readonly onIndoor: (message: IndoorMessage) => void;
   readonly onFrame: (message: FrameMessage) => void;
   readonly onNet: (state: LockstepState) => void;
   readonly onSaved: (bytes: Uint8Array) => void;
@@ -122,6 +124,9 @@ export class SimBridge {
         return;
       case "overlays":
         this.handlers.onOverlays(message);
+        return;
+      case "indoor":
+        this.handlers.onIndoor(message);
         return;
       case "frame":
         this.handlers.onFrame(message);

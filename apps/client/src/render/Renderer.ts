@@ -29,8 +29,8 @@ const MAX_ITEMS = 2048;
 const ITEM_CORPSE = 5;
 const MAX_BLUEPRINTS = 2048;
 
-/** Contrat avec `sim::Weather`. */
-const WEATHER = { Clear: 0, Rain: 1, Storm: 2 } as const;
+/** Contrat avec `sim::Weather` (3 : la pluie qui gèle). */
+const WEATHER = { Clear: 0, Rain: 1, Storm: 2, Snow: 3 } as const;
 /** Gouttes de pluie instanciées. Purement décoratif : `Math.random` est permis ici. */
 const RAIN_DROPS = 600;
 /** Demi-largeur de la zone de pluie autour du centre de la vue, en cases. */
@@ -38,10 +38,31 @@ const RAIN_SPREAD = 30;
 const RAIN_HEIGHT = 12;
 const RAIN_SPEED = 14;
 const STORM_RAIN_SPEED = 20;
+/** Chute de neige : plus lente que la pluie (cases/s). */
+const SNOW_SPEED = 4;
+/** Couleur des gouttes de pluie, remise en place au dégel. */
+const RAIN_COLOR = 0xa8c8ff;
+/** Couleur des flocons de neige : blancs plutôt que bleutés. */
+const SNOW_COLOR = 0xffffff;
+/**
+ * Passe le mesh de pluie (une boîte fine 0.02×0.5×0.02) à une taille de
+ * flocon ~0.06 par un facteur d'échelle, sans reconstruire la géométrie.
+ */
+const SNOW_DROP_SCALE = new THREE.Vector3(3, 0.12, 3);
+const IDENTITY_QUAT = new THREE.Quaternion();
 /** Frames pendant lesquelles un éclair sur-éclaire la scène. */
 const FLASH_FRAMES = 2;
 /** Teinte vers laquelle le fond tire par mauvais temps. */
 const OVERCAST = new THREE.Color(0x2a3038);
+/** Mélange du sol vers le blanc quand il neige (60 %, `docs` mission climat). */
+const SNOW_GROUND_MIX = 0.6;
+/**
+ * Bornes d'affichage du mode chaleur, en dixièmes de degré (-30 °C à 40 °C).
+ * Exportées pour que la légende du HUD (`App.tsx`) affiche les mêmes bornes
+ * que la grille qu'elle légende.
+ */
+export const HEAT_COLD = -300;
+export const HEAT_HOT = 400;
 
 const PAWN_COLORS = [0xd94f4f, 0x4f8fd9, 0xe0b040, 0x8f4fd9, 0x3fb08f, 0xd97f2f];
 const SKIN = 0xf1c9a5;
@@ -115,6 +136,19 @@ export class Renderer {
   private readonly rainPos = new Float32Array(RAIN_DROPS * 3);
   private mapMeshes: THREE.Object3D[] = [];
   private overlayMeshes: THREE.Object3D[] = [];
+  /** Sol instancié, gardé à part de `mapMeshes` : `updateSnowCover` le recolore sans le reconstruire. */
+  private floorMesh: THREE.InstancedMesh | null = null;
+  /** Terrain de chaque case (`sim::map::Terrain`), gardé pour recolorer le sol au dégel. */
+  private tileTerrain: Uint8Array = new Uint8Array(0);
+  /** Dernière couche « intérieur » reçue (0 dehors, sinon numéro de pièce). */
+  private indoorCells: Uint8Array = new Uint8Array(0);
+  /** Quads d'assombrissement des pièces, reconstruits quand `indoor_version` change. */
+  private indoorMeshes: THREE.Object3D[] = [];
+  /** Vrai pendant que la météo est Neige : pilote le blanchiment du sol. */
+  private snowing = false;
+  /** Grille du mode chaleur (touche I), reconstruite à chaque `setHeatData`. */
+  private heatMeshes: THREE.Object3D[] = [];
+  private heatActive = false;
   /** Nom de chaque pawn vivant, par id (voir `worker/protocol.ts::FrameMessage.names`). */
   private names: Record<number, string> = {};
   /** Arme équipée par id (`frame.weapons`), absent des mains nues. */
@@ -196,7 +230,7 @@ export class Renderer {
 
     this.rain = new THREE.InstancedMesh(
       new THREE.BoxGeometry(0.02, 0.5, 0.02),
-      new THREE.MeshBasicMaterial({ color: 0xa8c8ff, transparent: true, opacity: 0.5, depthWrite: false }),
+      new THREE.MeshBasicMaterial({ color: RAIN_COLOR, transparent: true, opacity: 0.5, depthWrite: false }),
       RAIN_DROPS,
     );
     this.rain.castShadow = false;
@@ -214,8 +248,16 @@ export class Renderer {
   setMap(width: number, height: number, tiles: Uint8Array, features: Uint8Array): void {
     for (const m of this.mapMeshes) this.scene.remove(m);
     this.mapMeshes = [];
+    // Une nouvelle carte invalide la couche intérieure et la grille de chaleur
+    // affichées : elles seront reconstruites par le prochain `setIndoor` /
+    // `setHeatData`, à la bonne taille.
+    for (const m of this.indoorMeshes) this.scene.remove(m);
+    this.indoorMeshes = [];
+    for (const m of this.heatMeshes) this.scene.remove(m);
+    this.heatMeshes = [];
     this.mapW = width;
     this.mapH = height;
+    this.tileTerrain = tiles;
 
     const floor = new THREE.InstancedMesh(
       new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
@@ -223,6 +265,7 @@ export class Renderer {
       width * height,
     );
     floor.receiveShadow = true;
+    this.floorMesh = floor;
 
     let rocks = 0;
     let trees = 0;
@@ -432,6 +475,10 @@ export class Renderer {
 
     this.mapMeshes = [floor, ...featureMeshes, ...lights];
     this.scene.add(...this.mapMeshes);
+    // Une carte neuve arrive avec les couleurs de base : si on est en pleine
+    // neige (reconnexion, rejeu), blanchit tout de suite sans attendre le
+    // prochain changement de météo.
+    this.updateSnowCover();
     if (!this.framed) {
       this.frame();
       this.framed = true;
@@ -466,6 +513,111 @@ export class Renderer {
     build((i) => zones[i] === ZONE.Growing, 0x5cc25c, 0.3, 0.012);
     build((i) => designations[i] !== DESIGNATION.None, 0xff9a2e, 0.45, 0.014);
     if (this.overlayMeshes.length) this.scene.add(...this.overlayMeshes);
+  }
+
+  /**
+   * Couche « intérieur » (`sim-wasm::indoor`, un octet par case : 0 dehors,
+   * sinon le numéro de pièce) : un très léger assombrissement de chaque case
+   * intérieure, pour qu'on voie « dedans ». Reconstruit à chaque appel, donc
+   * seulement quand `indoor_version` change côté Worker — jamais à chaque frame.
+   */
+  setIndoor(indoor: Uint8Array): void {
+    this.indoorCells = indoor;
+    for (const m of this.indoorMeshes) this.scene.remove(m);
+    this.indoorMeshes = [];
+    let n = 0;
+    for (let i = 0; i < indoor.length; i++) if (indoor[i] !== 0) n++;
+    if (n > 0) {
+      const mesh = new THREE.InstancedMesh(
+        new THREE.PlaneGeometry(0.98, 0.98).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color: 0x1a1a1a, transparent: true, opacity: 0.15, depthWrite: false }),
+        n,
+      );
+      const mat = new THREE.Matrix4();
+      let k = 0;
+      for (let i = 0; i < indoor.length; i++) {
+        if (indoor[i] === 0) continue;
+        const x = i % this.mapW;
+        const y = Math.floor(i / this.mapW);
+        mesh.setMatrixAt(k++, mat.makeTranslation(x + 0.5, 0.01, y + 0.5));
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      this.indoorMeshes = [mesh];
+      this.scene.add(mesh);
+    }
+    // Une pièce qui se ferme ou s'ouvre change ce qui doit rester blanchi.
+    this.updateSnowCover();
+  }
+
+  /** Vrai si la case `i` (index à plat) est dans une pièce fermée. */
+  private isIndoorAt(i: number): boolean {
+    return i < this.indoorCells.length && this.indoorCells[i] !== 0;
+  }
+
+  /**
+   * Recolore le sol instancié : mélangé vers le blanc à 60 % sous la neige,
+   * sauf dans les pièces fermées (la neige ne tombe pas dedans). Recolore
+   * l'instance existante, ne reconstruit jamais le mesh (`docs` mission climat).
+   */
+  private updateSnowCover(): void {
+    const floor = this.floorMesh;
+    if (!floor) return;
+    const color = new THREE.Color();
+    for (let i = 0; i < this.tileTerrain.length; i++) {
+      color.setHex(TERRAIN_COLORS[this.tileTerrain[i]] ?? 0xff00ff);
+      if (this.snowing && !this.isIndoorAt(i)) {
+        color.lerp(WHITE, SNOW_GROUND_MIX);
+      }
+      floor.setColorAt(i, color);
+    }
+    if (floor.instanceColor) floor.instanceColor.needsUpdate = true;
+  }
+
+  /**
+   * Mode d'affichage des températures (touche I, bouton « Chaleur »). Se
+   * contente d'activer/désactiver : les couleurs elles-mêmes arrivent par
+   * `setHeatData`, qu'il n'appartient pas au Renderer d'aller chercher (le
+   * tampon vient d'un `rpc("tileTemperatures")` côté `App.tsx`).
+   */
+  setHeatMode(active: boolean): void {
+    this.heatActive = active;
+    if (!active) {
+      for (const m of this.heatMeshes) this.scene.remove(m);
+      this.heatMeshes = [];
+    }
+  }
+
+  /**
+   * Recolore la grille de chaleur depuis un tampon de températures en
+   * dixièmes de degré, une valeur par case dans l'ordre `y * largeur + x`
+   * (`SimHandle.tileTemperatures`). Sans effet si le mode n'est pas actif :
+   * l'appelant n'a pas à s'en soucier avant d'envoyer les données.
+   */
+  setHeatData(temperatures: Int32Array): void {
+    if (!this.heatActive) return;
+    for (const m of this.heatMeshes) this.scene.remove(m);
+    this.heatMeshes = [];
+    const n = Math.min(temperatures.length, this.mapW * this.mapH);
+    if (n === 0) return;
+    const mesh = new THREE.InstancedMesh(
+      new THREE.PlaneGeometry(0.98, 0.98).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.55, depthWrite: false }),
+      n,
+    );
+    const mat = new THREE.Matrix4();
+    const color = new THREE.Color();
+    for (let i = 0; i < n; i++) {
+      const x = i % this.mapW;
+      const y = Math.floor(i / this.mapW);
+      mesh.setMatrixAt(i, mat.makeTranslation(x + 0.5, 0.02, y + 0.5));
+      // Bleu froid → rouge chaud : la teinte HSL décroît de 0.62 (bleu) à 0.
+      const t = Math.max(0, Math.min(1, (temperatures[i] - HEAT_COLD) / (HEAT_HOT - HEAT_COLD)));
+      mesh.setColorAt(i, color.setHSL(0.62 * (1 - t), 0.85, 0.5));
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    this.heatMeshes = [mesh];
+    this.scene.add(mesh);
   }
 
   /** Piles d'objets au sol : cubes colorés par genre, taille selon la quantité. */
@@ -571,12 +723,18 @@ export class Renderer {
     return texture;
   }
 
-  /** Météo courante (`sim::Weather`) : pilote la pluie, les éclairs et la lumière. */
+  /** Météo courante (`sim::Weather`) : pilote la pluie, la neige, les éclairs et la lumière. */
   setWeather(kind: number): void {
     if (kind === this.weather) return;
     // Le premier éclair attend son tour comme les suivants.
     if (kind === WEATHER.Storm) this.nextFlash = 4 + Math.random() * 5;
+    const wasSnowing = this.weather === WEATHER.Snow;
     this.weather = kind;
+    // Neige : particules blanches, réutilise le système de pluie (couleur et
+    // vitesse changées dans `updateWeather`, sans reconstruire le mesh).
+    (this.rain.material as THREE.MeshBasicMaterial).color.setHex(kind === WEATHER.Snow ? SNOW_COLOR : RAIN_COLOR);
+    this.snowing = kind === WEATHER.Snow;
+    if (this.snowing !== wasSnowing) this.updateSnowCover();
   }
 
   /** Répartit les gouttes autour du centre de la vue, à des hauteurs variées. */
@@ -603,8 +761,9 @@ export class Renderer {
       this.nextFlash = 0;
       return;
     }
-    const speed = this.weather === WEATHER.Storm ? STORM_RAIN_SPEED : RAIN_SPEED;
+    const speed = this.weather === WEATHER.Storm ? STORM_RAIN_SPEED : this.weather === WEATHER.Snow ? SNOW_SPEED : RAIN_SPEED;
     const mat = new THREE.Matrix4();
+    const pos = new THREE.Vector3();
     for (let i = 0; i < RAIN_DROPS; i++) {
       let y = this.rainPos[i * 3 + 1] - speed * dt;
       if (y < 0) {
@@ -614,7 +773,14 @@ export class Renderer {
       } else {
         this.rainPos[i * 3 + 1] = y;
       }
-      this.rain.setMatrixAt(i, mat.makeTranslation(this.rainPos[i * 3], y, this.rainPos[i * 3 + 2]));
+      pos.set(this.rainPos[i * 3], y, this.rainPos[i * 3 + 2]);
+      if (this.snowing) {
+        // Flocon : la boîte fine de la pluie devient un petit cube ~0.06.
+        mat.compose(pos, IDENTITY_QUAT, SNOW_DROP_SCALE);
+      } else {
+        mat.makeTranslation(pos.x, pos.y, pos.z);
+      }
+      this.rain.setMatrixAt(i, mat);
     }
     this.rain.instanceMatrix.needsUpdate = true;
     if (this.weather !== WEATHER.Storm) return;

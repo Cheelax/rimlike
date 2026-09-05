@@ -100,10 +100,22 @@ const SIM_API: ReadonlySet<string> = new Set([
   "pawnWeapon",
   "pawnCombatSkills",
   "weapons",
+  // Climat, saisons et température (`crates/sim/src/climate.rs`).
+  "setClimate",
+  "pawnComfort",
+  "tileTemperatures",
 ]);
 
 /** Idem pour le `LockstepClient`, préfixé `lockstep.` côté appelant. */
-const LOCKSTEP_API: ReadonlySet<string> = new Set(["issue", "pump", "lag", "state", "tick", "startGame"]);
+const LOCKSTEP_API: ReadonlySet<string> = new Set([
+  "issue",
+  "pump",
+  "lag",
+  "state",
+  "tick",
+  "startGame",
+  "requestResync",
+]);
 
 /** Vrai pour les tampons qu'il faut copier avant de les renvoyer. */
 function isTypedArray(value: unknown): value is { slice(): unknown } {
@@ -149,6 +161,7 @@ function beat(): void {
   }
   if (output.map) post(output.map);
   if (output.overlays) post(output.overlays);
+  if (output.indoor) post(output.indoor);
   if (output.frame) post(output.frame);
 }
 

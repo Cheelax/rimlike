@@ -107,8 +107,24 @@ export function formatInjury(part: number, severity: number, bleeding: number, t
   return `${label} · ${pct} % · ${state}`;
 }
 
-/** Contrat avec `sim::Weather` : index = valeur de l'enum. */
-export const WEATHER_LABELS = ["Clair", "Pluie", "Orage"] as const;
+/** Contrat avec `sim::Weather` : index = valeur de l'enum (3 : la pluie qui gèle). */
+export const WEATHER_LABELS = ["Clair", "Pluie", "Orage", "Neige"] as const;
+
+/** Contrat avec `sim::climate::Season` : index = valeur de l'enum. */
+export const SEASON_LABELS = ["printemps", "été", "automne", "hiver"] as const;
+
+/**
+ * Saison avec son article défini, pour un texte du genre « Le printemps
+ * commence » : élidé (« L'été », « L'automne », « L'hiver ») devant les trois
+ * saisons qui commencent par une voyelle, plein (« Le printemps ») pour la
+ * seule qui n'en commence pas.
+ */
+const SEASON_WITH_ARTICLE = ["Le printemps", "L'été", "L'automne", "L'hiver"] as const;
+
+/** « 12 °C » à partir de dixièmes de degré, arrondi à l'entier. */
+export function formatTemperature(tenths: number): string {
+  return `${Math.round(tenths / 10)} °C`;
+}
 
 export const JOB_LABELS = [
   "inactif",
@@ -179,6 +195,12 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
       const name = WEAPON_NAMES[arg] ?? "objet";
       return `Un ${name} a été fabriqué`;
     }
+    case 15:
+      // `arg` = la saison qui commence (`sim::climate::Season`).
+      return `${SEASON_WITH_ARTICLE[arg] ?? "La saison"} commence`;
+    case 16:
+      // `arg` = le jour de l'année de la première gelée, pas un id de pawn.
+      return "Premières gelées";
     default:
       return "";
   }
