@@ -1083,3 +1083,77 @@ describe("reconnexion (docs/protocol.md §4, §8)", () => {
     expect(client.state.attempts).toBe(0);
   });
 });
+
+describe("reportGoodwill (docs/protocol.md §14.2)", () => {
+  /** Rejoint une salle donnée, hôte ou non, jusqu'à ce que le sim existe. */
+  async function readyInRoom(room: string, isHost: boolean): Promise<{ transport: FakeTransport; client: LockstepClient }> {
+    const transport = new FakeTransport();
+    const client = new LockstepClient({
+      transport,
+      createSim: (seed) => Promise.resolve(FakeSim.fresh(seed)),
+      restoreSim: (data) => Promise.resolve(FakeSim.fromSnapshot(data)),
+    });
+    client.join(room, isHost ? "alice" : "bob");
+    transport.deliver({
+      type: "welcome",
+      protocol: 2,
+      playerId: 1,
+      isHost,
+      players: [{ id: 1, name: isHost ? "alice" : "bob" }],
+      state: "lobby",
+      tick: 0,
+    });
+    transport.deliver({ type: "start", seed: 5, width: 16, height: 16, tick: 0 });
+    await waitFor("sim créé", () => client.sim !== null);
+    return { transport, client };
+  }
+
+  /** Les `goodwill_report` envoyés, décodés. */
+  function goodwillReportsSent(transport: FakeTransport): { type: string; values: number[] }[] {
+    return transport.sent
+      .map((t) => JSON.parse(t) as { type: string; values?: number[] })
+      .filter((m): m is { type: string; values: number[] } => m.type === "goodwill_report");
+  }
+
+  it("un invité n'envoie rien : ce n'est pas sa colonie à remonter", async () => {
+    const { transport, client } = await readyInRoom("tile-1732", false);
+    transport.sent.length = 0;
+
+    client.reportGoodwill([-45, 12, 55]);
+
+    expect(goodwillReportsSent(transport)).toEqual([]);
+  });
+
+  it("l'hôte d'une salle de case envoie", async () => {
+    const { transport, client } = await readyInRoom("tile-1732", true);
+    transport.sent.length = 0;
+
+    client.reportGoodwill([-45, 12, 55]);
+
+    expect(goodwillReportsSent(transport)).toEqual([{ type: "goodwill_report", values: [-45, 12, 55] }]);
+  });
+
+  it("pas de doublon si la réputation n'a pas changé depuis le dernier rapport", async () => {
+    const { transport, client } = await readyInRoom("tile-1732", true);
+    transport.sent.length = 0;
+
+    client.reportGoodwill([-45, 12, 55]);
+    client.reportGoodwill([-45, 12, 55]);
+    client.reportGoodwill([-45, 12, 55]);
+    expect(goodwillReportsSent(transport)).toHaveLength(1);
+
+    // Une valeur différente relance bien un rapport.
+    client.reportGoodwill([-45, 12, 60]);
+    expect(goodwillReportsSent(transport)).toHaveLength(2);
+    expect(goodwillReportsSent(transport)[1]).toEqual({ type: "goodwill_report", values: [-45, 12, 60] });
+  });
+
+  it("salle simple (hors monde) : même hôte, aucune émission", async () => {
+    const { transport, client } = await readyInRoom("demo", true);
+    transport.sent.length = 0;
+
+    client.reportGoodwill([-45, 12, 55]);
+
+    expect(goodwillReportsSent(transport)).toEqual([]);
+  });
+});

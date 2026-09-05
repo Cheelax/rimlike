@@ -20,6 +20,7 @@ import {
   encodeSetCalendar,
   encodeSetClimate,
   encodeSetDifficulty,
+  encodeSetGoodwill,
   encodeTriggerTraderVisit,
 } from "../sim/commands";
 import { SimHandle } from "../sim/SimHandle";
@@ -28,12 +29,24 @@ import { fastForwardOnReopen } from "./fastForward";
 import { setCalendarOnStart } from "./startCalendar";
 import { setClimateOnStart } from "./startClimate";
 import { setDifficultyOnStart } from "./startDifficulty";
+import { goodwillCommands } from "./startGoodwill";
 import { pendingTraderCommands } from "./startTraders";
 import { SimRunner, type RunnerOutput, type RunnerSim } from "./SimRunner";
 import { transferablesOf, type MainToWorker, type WorkerToMain } from "./protocol";
 
 /** Période du battement du Worker. Le pas de temps reste calculé sur l'horloge réelle. */
 const INTERVAL_MS = 16;
+
+/**
+ * Période du rapport de réputation au serveur monde (`docs/protocol.md`
+ * §14.4 : « une fois par minute suffit largement, le serveur n'en accepte de
+ * toute façon qu'un toutes les dix secondes »). Vit ici, dans le Worker, et
+ * non dans `LockstepClient` : ce dernier reste sans timer ni horloge (voir son
+ * en-tête), exactement comme le battement principal (`beat`) ci-dessous — un
+ * onglet masqué ne suspend pas les timers d'un Worker dédié, contrairement à
+ * `requestAnimationFrame`.
+ */
+const GOODWILL_REPORT_MS = 60_000;
 
 /**
  * Le minimum de la portée globale d'un Worker dédié. Le `lib` du projet est
@@ -197,11 +210,33 @@ function callOn(target: object, method: string, args: readonly unknown[]): unkno
 let runner: SimRunner | null = null;
 let lockstep: LockstepClient | null = null;
 let timer: ReturnType<typeof setInterval> | null = null;
+let goodwillTimer: ReturnType<typeof setInterval> | null = null;
 let started = false;
 
 function stopTimer(): void {
   if (timer !== null) clearInterval(timer);
   timer = null;
+  if (goodwillTimer !== null) clearInterval(goodwillTimer);
+  goodwillTimer = null;
+}
+
+/**
+ * Remonte au serveur la réputation que porte le sim courant
+ * (`LockstepClient.reportGoodwill`, `docs/protocol.md` §14.2). Sans effet en
+ * solo (`lockstep` nul), sans sim, pour un invité, hors salle « case », ou si
+ * la valeur n'a pas changé depuis le dernier rapport : toutes ces conditions
+ * sont déjà celles de `reportGoodwill` lui-même, ici on se contente d'appeler.
+ *
+ * Appelée par l'horloge périodique ci-dessous et par la fermeture propre de la
+ * salle (`case "leave"`) : la même fonction pour les deux, pas de logique
+ * dupliquée.
+ */
+function reportGoodwill(): void {
+  if (lockstep === null) return;
+  const sim = runner?.sim;
+  if (!sim) return;
+  const g = sim.goodwill();
+  lockstep.reportGoodwill([g[0] ?? 0, g[1] ?? 0, g[2] ?? 0]);
 }
 
 /** Un battement : on avance, puis on émet ce qui a changé. */
@@ -291,6 +326,16 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
         const frozen = lockstep?.consumeFrozenTicks() ?? 0;
         const bytes = fastForwardOnReopen(lockstep?.state.isHost ?? false, frozen, encodeFastForward);
         if (bytes) lockstep?.issue(bytes);
+        // Réputation imposée par le serveur monde (§14) : après l'avance
+        // rapide (elle adoucit les rancunes d'un point par jour, la valeur
+        // imposée est déjà celle de l'instant présent) et avant les marchands
+        // (leurs prix dépendent de la réputation de la Guilde).
+        // `consumeGoodwill` remet la valeur à `null`, donc un deuxième sim
+        // adopté sans nouveau `goodwill` n'émettra rien.
+        const goodwill = lockstep?.consumeGoodwill() ?? null;
+        for (const goodwillBytes of goodwillCommands(goodwill, lockstep?.state.isHost ?? false, encodeSetGoodwill)) {
+          lockstep?.issue(goodwillBytes);
+        }
         // Marchands en attente (§13.5) : en tout dernier, une visite se jouant
         // dans le présent de la colonie, pas dans le temps qu'elle vient de
         // rattraper. `consumePendingTraders` remet la valeur à 0, donc un
@@ -308,6 +353,10 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
     transport.onReconnect(() => lockstep?.reconnect());
     runner = new SimRunner({ lockstep });
     lockstep.join(message.room, message.name);
+    // Rapport périodique de réputation (§14.4) : seulement en multi, `reportGoodwill`
+    // se charge lui-même de ne rien envoyer hors salle « case », pour un invité,
+    // ou sans changement depuis le dernier rapport.
+    goodwillTimer = setInterval(reportGoodwill, GOODWILL_REPORT_MS);
   }
   timer = setInterval(beat, INTERVAL_MS);
 }
@@ -354,6 +403,15 @@ function handle(message: MainToWorker): void {
       return;
     case "debug":
       debug(message);
+      return;
+    case "leave":
+      // Fermeture propre de la salle (retour au globe, changement de session) :
+      // dernière occasion de remonter la réputation avant que le thread
+      // principal ne termine ce Worker (`SimBridge.dispose`, §14.4). Best
+      // effort : rien ne garantit que ce message soit traité avant la
+      // terminaison, mais le rapport périodique aura de toute façon couvert
+      // le plus gros dans les `GOODWILL_REPORT_MS` précédentes.
+      reportGoodwill();
       return;
   }
 }

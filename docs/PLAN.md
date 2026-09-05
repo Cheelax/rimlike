@@ -500,12 +500,16 @@ d'alice arrivé chez bob).
   construite à partir des mêmes constantes que la barre d'outils et le clavier
   (`tools.ts`, `shortcuts.ts`, test d'unicité des touches), rappel à la première partie.
 
+- **Réputation partagée sur le monde** (2026-09-06, sim + serveur + client) : `SetGoodwill`
+  imposée par l'hôte après `FastForward` et avant les marchands en attente, réputation par
+  joueur côté serveur (`start.goodwill`, `snapshot.goodwill`, `goodwill_report` de l'hôte toutes
+  les 60 s et à la fermeture, dernier rapport gagnant, persistance v4). Vérifié : tribut dans
+  une colonie, la suivante démarre avec la réputation obtenue.
+
 **Reste**
 
 - Mods de contenu : pas commencés.
 - Toits et métal (matériau de construction) : absents.
-- Réputation partagée : `SetGoodwill` côté sim et réputation par joueur côté serveur en
-  cours (2026-09-06), câblage client à suivre.
 - Faune : coût par tick qui suit le nombre de pawns, bêtes comprises — à surveiller,
   pas encore mesuré ni optimisé.
 - Vêtements : pas de gestion de la chaleur excessive (le colon garde son manteau même

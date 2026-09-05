@@ -401,6 +401,10 @@ aperçu (« ≈ +N de réputation ») avant de cliquer Offrir, grisé si le stoc
 suit pas. La quantité qui compte est sa valeur, pas le nombre de piles : un
 manteau de cuir vaut nettement plus que le même poids de bois.
 
+Sur le monde partagé, la réputation est celle du joueur : elle vous suit
+d'une colonie à l'autre, jamais figée sur la case où elle a été gagnée ou
+perdue.
+
 ### Famine, froid et chaleur
 
 Un colon qui ne mange plus meurt en deux jours environ. Sous 5 °C ressentis,
@@ -518,6 +522,8 @@ S'installer fonde une colonie ; visiter entre dans celle d'un autre joueur
 sans rien y changer d'office. Dans les deux cas, ça ouvre la salle de cette
 case exactement comme une salle nommée, avec une graine imposée par le
 serveur. Voir §5 pour les caravanes ; ci-dessous pour les colonies gelées.
+Votre réputation envers les factions PNJ (§4) suit le joueur, pas la case :
+fonder ou rouvrir une autre colonie du même globe la retrouve telle quelle.
 
 ### Colonies gelées et avance rapide
 

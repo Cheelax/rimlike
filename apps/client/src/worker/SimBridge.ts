@@ -121,6 +121,18 @@ export class SimBridge {
     });
   }
 
+  /**
+   * Fermeture propre de la salle : à appeler juste avant `dispose()` (voir
+   * `App.tsx`), pour laisser au Worker une dernière chance de remonter la
+   * réputation de la colonie (`docs/protocol.md` §14.4). Best-effort seulement :
+   * `dispose()` termine le Worker juste après, sans attendre d'accusé de
+   * réception — le rapport périodique aura de toute façon couvert le plus
+   * gros dans la minute précédente.
+   */
+  leave(): void {
+    this.post({ type: "leave" });
+  }
+
   dispose(): void {
     this.disposed = true;
     for (const { reject } of this.pending.values()) reject(new Error("Worker de simulation fermé"));

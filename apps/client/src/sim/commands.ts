@@ -230,3 +230,17 @@ export function encodeIgnite(x: number, y: number): Uint8Array {
 export function encodeGift(faction: number, kind: number, count: number): Uint8Array {
   return WasmSim.encode_gift(faction, kind, count);
 }
+
+/**
+ * Réputation imposée par le serveur monde à l'ouverture d'une colonie
+ * (`docs/protocol.md` §14 « Réputation partagée ») : remplace les trois
+ * réputations du sim d'un coup, sans rien annoncer ni déclencher de
+ * représailles — un état de départ, pas un franchissement de seuil. `a`/`b`/`c`
+ * viennent de `start.goodwill` (colonie neuve) ou `snapshot.goodwill` (colonie
+ * gelée qui rouvre) : à n'émettre qu'une fois, par l'hôte, après `FastForward`
+ * et avant les marchands en attente (voir `worker/sim.worker.ts`,
+ * `worker/startGoodwill.ts` et `LockstepClient.consumeGoodwill`).
+ */
+export function encodeSetGoodwill(a: number, b: number, c: number): Uint8Array {
+  return WasmSim.encode_set_goodwill(a, b, c);
+}

@@ -2298,6 +2298,9 @@ export function App() {
       clearInterval(interval);
       for (const t of toastTimers) clearTimeout(t);
       for (const c of cleanups) c();
+      // Fermeture propre de la salle : dernière chance de remonter la
+      // réputation avant que `dispose()` ne termine le Worker (§14.4).
+      bridge.leave();
       bridge.dispose();
       // Rend les ressources de cet écran, **pas** le contexte partagé : c'est
       // `release` qui décompte, et il ne détruit jamais le renderer.

@@ -19,6 +19,7 @@ import {
   encodeMessage,
   type Bundle,
   type ClientMessage,
+  type GoodwillValues,
   type PlayerId,
   type PlayerInfo,
   type ServerMessage,
@@ -102,6 +103,18 @@ export interface LockstepState {
    * `consumePendingTraders` — même schéma que `frozenTicks`/`consumeFrozenTicks`.
    */
   readonly pendingTraders: number;
+  /**
+   * Réputation envers les trois factions PNJ, imposée par le serveur monde à
+   * l'ouverture d'une colonie (`docs/protocol.md` §14), reçue par
+   * `start.goodwill` (colonie neuve) ou `snapshot.goodwill` (colonie gelée qui
+   * rouvre) — jamais les deux à la fois. `null` en salle simple (pas de case)
+   * ou une fois consommé par `consumeGoodwill` — même schéma que
+   * `climate`/`consumeStartClimate`, à ceci près que `goodwill` n'est **jamais**
+   * omis dans une salle « case » : contrairement à `pendingTraders`, `null`
+   * n'y signifie donc jamais « rien à faire », seulement « pas encore reçu »
+   * ou « déjà consommé ».
+   */
+  readonly goodwill: GoodwillValues | null;
   /**
    * Marchands accueillis en jeu depuis le début de cette session client, un
    * par `trader_arrival` reçu (`docs/protocol.md` §13.3) — qu'on soit l'hôte
@@ -246,6 +259,16 @@ export class LockstepClient {
   private dayOfYearValue: number | null = null;
   /** Voir `LockstepState.pendingTraders` et `consumePendingTraders`. */
   private pendingTradersValue = 0;
+  /** Voir `LockstepState.goodwill` et `consumeGoodwill`. */
+  private goodwillValue: GoodwillValues | null = null;
+  /**
+   * Dernière réputation effectivement remontée par `reportGoodwill`, `null`
+   * avant le premier rapport de cette salle : sert à ne pas répéter un rapport
+   * pour une valeur inchangée (`docs/protocol.md` §14.4). Le serveur n'en
+   * accepterait de toute façon qu'un par salle et par dix secondes, mais
+   * inutile de le solliciter pour ne rien dire de neuf.
+   */
+  private lastReportedGoodwill: GoodwillValues | null = null;
   /** Voir `LockstepState.traderArrivals`. */
   private traderArrivalsValue = 0;
   /**
@@ -443,6 +466,50 @@ export class LockstepClient {
   }
 
   /**
+   * Lit la réputation imposée par le serveur monde et la remet à `null` :
+   * deux appels ne la renvoient qu'une fois. C'est ce qui garantit qu'un seul
+   * `SetGoodwill` part par sim adopté, même si l'appelant se trompe et appelle
+   * deux fois (`docs/protocol.md` §14, même garantie que `consumeFrozenTicks`).
+   */
+  consumeGoodwill(): GoodwillValues | null {
+    const value = this.goodwillValue;
+    this.goodwillValue = null;
+    return value;
+  }
+
+  /**
+   * Remonte au serveur la réputation courante du sim (`goodwill_report`,
+   * `docs/protocol.md` §14.2), si ce client en a la charge :
+   *
+   * - il est l'**hôte** de la salle (un invité verrait la même réputation,
+   *   mais elle n'est pas la sienne à remonter — le serveur la refuserait de
+   *   toute façon par `error not_host`) ;
+   * - la salle est une **case du monde** (`tile-<id>`) : une salle simple n'a
+   *   pas de joueur dont la réputation suivrait, et le serveur la refuserait
+   *   là aussi ;
+   * - la valeur a **changé** depuis le dernier rapport envoyé par ce client :
+   *   le serveur n'accepterait de toute façon qu'un rapport par salle et par
+   *   dix secondes, mais inutile de le solliciter pour répéter une valeur
+   *   inchangée.
+   *
+   * Pensée pour être appelée sans condition par l'appelant (le Worker, à
+   * intervalle régulier et à la fermeture de la salle, `sim.worker.ts`) :
+   * c'est cette méthode qui décide si un message part, pas lui — même
+   * répartition des rôles que `issue`/`reconnect` vis-à-vis de leurs propres
+   * conditions.
+   */
+  reportGoodwill(values: GoodwillValues): void {
+    if (this.playerId === null || this.playerId !== this.hostId) return;
+    if (!this.roomName.startsWith("tile-")) return;
+    const previous = this.lastReportedGoodwill;
+    if (previous !== null && previous[0] === values[0] && previous[1] === values[1] && previous[2] === values[2]) {
+      return;
+    }
+    this.lastReportedGoodwill = values;
+    this.send({ type: "goodwill_report", values });
+  }
+
+  /**
    * Lit la difficulté choisie par l'hôte au moment de `startGame` et la
    * remet à `null` : deux appels ne la renvoient qu'une fois, même garantie
    * que `consumeFrozenTicks`/`consumeStartClimate`. `null` pour un non-hôte,
@@ -571,6 +638,12 @@ export class LockstepClient {
         // seul chemin qui le consomme, dès que le sim neuf est adopté (voir le
         // Worker), après tout le reste (une visite se joue dans le présent).
         this.pendingTradersValue = message.pendingTraders ?? 0;
+        // Réputation imposée par le serveur monde (§14) : stockée, jamais
+        // appliquée ici. `consumeGoodwill` est le seul chemin qui la consomme,
+        // dès que le sim neuf est adopté (voir le Worker), après `FastForward`
+        // et avant les marchands en attente. Toujours présente dans une salle
+        // « case » (contrairement à `pendingTraders`), absente en salle simple.
+        this.goodwillValue = message.goodwill ?? null;
         this.adopt(this.createSim(message.seed, message.width, message.height));
         this.emit();
         return;
@@ -586,6 +659,10 @@ export class LockstepClient {
         // mutuellement exclusifs, jamais les deux à la fois pour une même
         // ouverture.
         this.pendingTradersValue = message.pendingTraders ?? 0;
+        // Le pendant de `start.goodwill` pour une réouverture (§14.1) : c'est
+        // la valeur **du joueur**, pas celle que le sim restauré porte dans
+        // `data` (déjà périmée par construction, voir `docs/protocol.md` §14).
+        this.goodwillValue = message.goodwill ?? null;
         this.adopt(this.restoreSim(message.data));
         this.emit();
         return;
@@ -771,6 +848,7 @@ export class LockstepClient {
       climate: this.climateValue,
       dayOfYear: this.dayOfYearValue,
       pendingTraders: this.pendingTradersValue,
+      goodwill: this.goodwillValue,
       traderArrivals: this.traderArrivalsValue,
       outliers: Object.freeze([...this.deviating]),
       isOutlier: this.playerId !== null && this.deviating.has(this.playerId),

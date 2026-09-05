@@ -67,7 +67,16 @@ export type MainToWorker =
   | { readonly type: "save" }
   | { readonly type: "load"; readonly bytes: Uint8Array }
   /** Crochet de dev : appelle une méthode du sim ou du lockstep. Voir `sim.worker.ts`. */
-  | { readonly type: "debug"; readonly id: number; readonly method: string; readonly args: readonly unknown[] };
+  | { readonly type: "debug"; readonly id: number; readonly method: string; readonly args: readonly unknown[] }
+  /**
+   * Fermeture propre de la salle, envoyée juste avant que le thread principal
+   * ne termine ce Worker (`SimBridge.dispose`, `docs/protocol.md` §14.4) :
+   * dernière occasion pour l'hôte de remonter sa réputation, pour ne pas
+   * perdre le dernier raid repoussé ou le dernier tribut versé en attendant le
+   * prochain rapport périodique. Sans effet en solo ou pour un invité (voir
+   * `LockstepClient.reportGoodwill`, appelée sans condition côté Worker).
+   */
+  | { readonly type: "leave" };
 
 // --- Worker → thread principal ---
 
