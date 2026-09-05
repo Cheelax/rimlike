@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { PropBatch, PropLibrary, WALL_HEIGHT, blueprintKey, doorRotation } from "../src/render/props";
+import { PropBatch, PropLibrary, WALL_HEIGHT, blueprintKey, doorRotation, featureVisibleAtDensity } from "../src/render/props";
 import { BUILD_KIND, FEATURE, ITEM_NAMES, TERRAIN } from "../src/render/terrain";
 
 describe("catalogue de props modulaires", () => {
@@ -77,6 +77,42 @@ describe("catalogue de props modulaires", () => {
     const sprung = library.geometry(`feature:${FEATURE.SpikeTrapSprung}`).boundingBox!;
     expect(sprung.max.y).toBeGreaterThan(armed.max.y);
     library.dispose();
+  });
+
+  it("densité des props (menu Options → Graphismes) : haute garde tout, moyenne retire rochers et buissons, basse retire aussi les cultures", () => {
+    const meaningful = [
+      FEATURE.Tree,
+      FEATURE.WallWood,
+      FEATURE.WallStone,
+      FEATURE.DoorWood,
+      FEATURE.DoorStone,
+      FEATURE.Bed,
+      FEATURE.Campfire,
+      FEATURE.CraftingSpot,
+      FEATURE.Grave,
+      FEATURE.GraveFilled,
+      FEATURE.ResearchBench,
+      FEATURE.SpikeTrap,
+      FEATURE.SpikeTrapSprung,
+    ];
+    const decorativeAtMedium = [FEATURE.Rock, FEATURE.Bush, FEATURE.BushUnripe];
+    const decorativeOnlyAtLow = [FEATURE.Crop, FEATURE.CropRipe];
+
+    for (const f of [...meaningful, ...decorativeAtMedium, ...decorativeOnlyAtLow]) {
+      expect(featureVisibleAtDensity(f, "haute"), `haute, feature ${f}`).toBe(true);
+    }
+    for (const f of meaningful) {
+      expect(featureVisibleAtDensity(f, "moyenne"), `moyenne, feature ${f}`).toBe(true);
+      expect(featureVisibleAtDensity(f, "basse"), `basse, feature ${f}`).toBe(true);
+    }
+    for (const f of decorativeAtMedium) {
+      expect(featureVisibleAtDensity(f, "moyenne"), `moyenne, feature ${f}`).toBe(false);
+      expect(featureVisibleAtDensity(f, "basse"), `basse, feature ${f}`).toBe(false);
+    }
+    for (const f of decorativeOnlyAtLow) {
+      expect(featureVisibleAtDensity(f, "moyenne"), `moyenne, feature ${f}`).toBe(true);
+      expect(featureVisibleAtDensity(f, "basse"), `basse, feature ${f}`).toBe(false);
+    }
   });
 
   it("réutilise les instances, ne tronque pas 3000 plans et actualise leurs bornes", () => {

@@ -27,6 +27,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
 import { acquireGl, disposeTree, setGlBackendForTests, type GlBackend } from "../src/render/gl";
+import { saveGraphics } from "../src/settings";
 
 /** Un nœud DOM minimal : parenté, taille, écouteurs. Le strict nécessaire de `gl.ts`. */
 class FakeNode {
@@ -250,6 +251,49 @@ describe("contexte WebGL partagé", () => {
     gl.resize(320, 240);
     expect(sizes.at(-1)).toEqual([640, 480]);
     expect(fakes.renderer.sizes.at(-1)).toEqual([320, 240]);
+  });
+
+  it("lit le réglage « ombres » du menu Options avant de créer le renderer", () => {
+    // Pas de `localStorage` sous Node : on en pose un faux le temps du test,
+    // comme `settings.test.ts`.
+    const globalWithStorage = globalThis as unknown as { localStorage?: unknown };
+    const previous = globalWithStorage.localStorage;
+    const store = new Map<string, string>();
+    globalWithStorage.localStorage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+    };
+    try {
+      saveGraphics({ pixelRatio: "auto", propDensity: "haute", shadows: false });
+      const fakes = useFakeGl();
+      acquireGl();
+      // Rebasculer `shadowMap.enabled` à chaud recompilerait tous les
+      // matériaux (voir l'en-tête de `gl.ts`) : le réglage doit être lu au
+      // tout premier `acquireGl`, avant la construction du renderer.
+      expect(fakes.renderer.shadowMap.enabled).toBe(false);
+    } finally {
+      globalWithStorage.localStorage = previous;
+    }
+  });
+
+  it("pose le rapport de pixels puis redimensionne, abonnés compris (menu Options)", () => {
+    const fakes = useFakeGl();
+    const gl = acquireGl();
+    const container = host();
+    container.clientWidth = 1024;
+    container.clientHeight = 768;
+    gl.attach(asElement(container));
+
+    const sizes: number[] = [];
+    gl.onResize((w) => sizes.push(w));
+    gl.setPixelRatio(1.5);
+
+    expect(fakes.renderer.pixelRatio).toBe(1.5);
+    // `resize()` a été rappelé : le tampon retrouve la taille du conteneur et
+    // les abonnés (la caméra de chaque écran) sont prévenus, comme pour tout
+    // autre redimensionnement.
+    expect(fakes.renderer.sizes.at(-1)).toEqual([1024, 768]);
+    expect(sizes.at(-1)).toBe(1024);
   });
 
   it("ne retaille rien tant qu'aucun écran ne porte le canevas", () => {

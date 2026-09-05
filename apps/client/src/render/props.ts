@@ -317,6 +317,29 @@ function floorDetail(m: Model, wood: boolean): void {
   }
 }
 
+/** Densité des props (menu Options → Graphismes) : mêmes valeurs que `GraphicsSettings.propDensity`. */
+export type PropDensity = "haute" | "moyenne" | "basse";
+
+/**
+ * Vrai si la feature `f` (`FEATURE`, voir `terrain.ts`) s'instancie à la
+ * densité `density` — utilisé par `Renderer.setPropDensity` pour alléger le
+ * rendu sur une machine modeste. `haute` garde tout ce que le sim envoie.
+ * `moyenne` retire les rochers et les buissons (mûrs ou non) : un détail
+ * décoratif pur, sans information de jeu — la désignation de coupe se lit
+ * sur l'overlay orange, pas sur la silhouette du buisson. `basse` retire en
+ * plus les cultures : la zone de culture (overlay brun) suffit à savoir où
+ * elles poussent. Arbres, murs, portes, lits, feux de camp, établis, tombes
+ * et pièges — les constructions au sens de `BUILD_KIND`, plus l'arbre —
+ * restent dessinés à toute densité, comme les objets (`itemProps`) et les
+ * chantiers (`blueprintProps`), jamais filtrés ici.
+ */
+export function featureVisibleAtDensity(f: number, density: PropDensity): boolean {
+  if (density === "haute") return true;
+  if (f === FEATURE.Rock || f === FEATURE.Bush || f === FEATURE.BushUnripe) return false;
+  if (density === "basse" && (f === FEATURE.Crop || f === FEATURE.CropRipe)) return false;
+  return true;
+}
+
 export function blueprintKey(kind: number, material: number): string {
   switch (kind) {
     case BUILD_KIND.Wall: return `feature:${material === 1 ? FEATURE.WallStone : FEATURE.WallWood}`;

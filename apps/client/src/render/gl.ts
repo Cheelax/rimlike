@@ -48,6 +48,7 @@
  */
 
 import * as THREE from "three";
+import { loadGraphics } from "../settings";
 
 /** Rapport de pixels maximal : au-delà, on paie du remplissage pour rien. */
 const MAX_PIXEL_RATIO = 2;
@@ -94,6 +95,13 @@ export interface SharedGl {
   detach(container?: HTMLElement): void;
   /** Retaille le tampon de rendu. Sans argument, reprend la taille du conteneur. */
   resize(width?: number, height?: number): void;
+  /**
+   * Change le rapport de pixels à la volée (menu Options → Graphismes), et
+   * redimensionne aussitôt : `WebGLRenderer.setPixelRatio` retaille déjà son
+   * tampon interne, mais seul `resize()` prévient les abonnés de `onResize`
+   * (la caméra de chaque écran).
+   */
+  setPixelRatio(value: number): void;
   /** S'abonne aux changements de taille. Renvoie de quoi se désabonner. */
   onResize(callback: (width: number, height: number) => void): () => void;
   /** S'abonne à la restauration du contexte. Renvoie de quoi se désabonner. */
@@ -138,7 +146,11 @@ class Gl implements SharedGl {
     this.renderer.setPixelRatio(Math.min(devicePixelRatio(), MAX_PIXEL_RATIO));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.NoToneMapping;
-    this.renderer.shadowMap.enabled = true;
+    // Réglage « ombres » du menu Options : lu ici, une bonne fois pour toutes.
+    // Le rebasculer en cours de route obligerait Three.js à recompiler tous
+    // les matériaux (voir l'en-tête du module) : le menu prévient qu'il ne
+    // s'applique qu'au prochain chargement.
+    this.renderer.shadowMap.enabled = loadGraphics().shadows;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.setClearColor(CLEAR_COLOR, 1);
 
@@ -215,6 +227,13 @@ class Gl implements SharedGl {
   onResize(callback: (width: number, height: number) => void): () => void {
     this.resizeListeners.add(callback);
     return () => this.resizeListeners.delete(callback);
+  }
+
+  setPixelRatio(value: number): void {
+    this.renderer.setPixelRatio(value);
+    // Reprend le chemin de `resize()` : mêmes abonnés prévenus qu'un
+    // redimensionnement de fenêtre, aucun besoin de dupliquer la logique.
+    this.resize();
   }
 
   onRestored(callback: () => void): () => void {

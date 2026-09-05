@@ -35,7 +35,8 @@ import {
   type TilePos,
   type TileRect,
 } from "./render/Renderer";
-import { acquireGl } from "./render/gl";
+import { acquireGl, type SharedGl } from "./render/gl";
+import { DEFAULT_GRAPHICS, effectivePixelRatio, loadGraphics, saveGraphics, type GraphicsSettings } from "./settings";
 import {
   ANIMAL_FLAG,
   ANIMAL_STRIDE,
@@ -150,6 +151,10 @@ const MULTI_DISABLED = "indisponible en multijoueur";
 const ROOMS_POLL_MS = 5000;
 /** Attente avant de resonder `GET /rooms` après un changement d'adresse de serveur. */
 const ROOMS_SERVER_DEBOUNCE_MS = 500;
+
+/** Boutons du menu Options → Graphismes (`GraphicsSettings`, voir `settings.ts`). */
+const PIXEL_RATIO_OPTIONS: readonly GraphicsSettings["pixelRatio"][] = ["auto", 1, 1.5, 2];
+const PROP_DENSITY_OPTIONS: readonly GraphicsSettings["propDensity"][] = ["haute", "moyenne", "basse"];
 
 /** Étiquette d'humeur, en pourcentage. */
 function moodLabel(mood: number): string {
@@ -349,6 +354,8 @@ interface Stats {
   hash: string;
   tps: number;
   fps: number;
+  /** Tirages du dernier rendu (`Renderer.drawCalls`), pour le menu Options → Graphismes. */
+  drawCalls: number;
   speed: number;
   paused: boolean;
   weather: number;
@@ -452,6 +459,7 @@ const INITIAL: Stats = {
   hash: "",
   tps: 0,
   fps: 0,
+  drawCalls: 0,
   speed: 1,
   paused: false,
   weather: 0,
@@ -627,6 +635,8 @@ export function App() {
   const toolRef = useRef<Tool>("select");
   const materialRef = useRef<number>(0);
   const rendererRef = useRef<Renderer | null>(null);
+  /** Contexte WebGL partagé de la partie en cours (`render/gl.ts`), pour le menu Options → Graphismes (`setPixelRatio`). */
+  const glRef = useRef<SharedGl | null>(null);
   const actionsRef = useRef<Actions | null>(null);
   const bridgeRef = useRef<SimBridge | null>(null);
   const minimapRef = useRef<MinimapHandle | null>(null);
@@ -670,6 +680,26 @@ export function App() {
   const setShowOptions = (v: boolean) => {
     showOptionsRef.current = v;
     setShowOptionsState(v);
+  };
+  /**
+   * Réglages graphiques (menu Options → Graphismes, §settings.ts) : relus au
+   * premier rendu, sauvés à chaque changement. `pixelRatio` et `propDensity`
+   * s'appliquent à la volée (`gl.ts::setPixelRatio`,
+   * `Renderer.setPropDensity`) ; `shadows` ne s'applique qu'au prochain
+   * chargement (`gl.ts` lit `loadGraphics().shadows` avant de créer le
+   * renderer), le panneau le rappelle.
+   */
+  const [graphics, setGraphicsState] = useState<GraphicsSettings>(() => loadGraphics());
+  const updateGraphics = (patch: Partial<GraphicsSettings>) => {
+    const next: GraphicsSettings = { ...graphics, ...patch };
+    setGraphicsState(next);
+    saveGraphics(next);
+    if (patch.pixelRatio !== undefined) {
+      glRef.current?.setPixelRatio(effectivePixelRatio(next.pixelRatio, window.devicePixelRatio));
+    }
+    if (patch.propDensity !== undefined) {
+      rendererRef.current?.setPropDensity(next.propDensity);
+    }
   };
   /**
    * Armé par le bouton « Mettre le feu (débogage) » (dev uniquement) : le
@@ -1002,6 +1032,14 @@ export function App() {
     const gl = acquireGl();
     const renderer = new Renderer(gl, host);
     rendererRef.current = renderer;
+    glRef.current = gl;
+    // Réglages graphiques mémorisés, appliqués dès le lancement de la partie
+    // (pas seulement à l'ouverture du menu Options) : densité des props et
+    // rapport de pixels. Les ombres, elles, sont déjà tranchées par
+    // `acquireGl` avant même la création de ce renderer (voir `gl.ts`).
+    const savedGraphics = loadGraphics();
+    renderer.setPropDensity(savedGraphics.propDensity);
+    gl.setPixelRatio(effectivePixelRatio(savedGraphics.pixelRatio, window.devicePixelRatio));
     renderer.setLeftDragPans(toolRef.current === "select");
 
     // --- État vu du thread principal. Le sim, lui, vit dans le Worker ---
@@ -1960,7 +1998,7 @@ export function App() {
       windowStart = now;
       const f = lastFrame;
       if (f === null) {
-        setStats((prev) => ({ ...prev, tps: 0, fps, lag: netState?.lag ?? 0 }));
+        setStats((prev) => ({ ...prev, tps: 0, fps, drawCalls: renderer.drawCalls, lag: netState?.lag ?? 0 }));
         return;
       }
       const tod = f.timeOfDay / f.ticksPerDay;
@@ -2241,6 +2279,8 @@ export function App() {
         // Ticks par seconde mesurés dans le Worker, images par seconde ici.
         tps: f.tps,
         fps,
+        // Échantillonné à la cadence du HUD (voir `Renderer.drawCalls`), jamais par frame.
+        drawCalls: renderer.drawCalls,
         speed,
         paused,
         weather: f.weather,
@@ -2293,6 +2333,7 @@ export function App() {
       gl.release();
       actionsRef.current = null;
       rendererRef.current = null;
+      glRef.current = null;
       bridgeRef.current = null;
       dispatcherRef.current = null;
       isHostRef.current = false;
@@ -3206,6 +3247,47 @@ export function App() {
               {stats.difficulty === DIFFICULTY.Peaceful && (
                 <div className="help">paisible : plus aucun raid, le reste de la vie de la colonie continue</div>
               )}
+              <div className="panel-section">Graphismes</div>
+              <div className="help">Rapport de pixels</div>
+              <div className="options-row">
+                {PIXEL_RATIO_OPTIONS.map((value) => (
+                  <button
+                    key={String(value)}
+                    className={graphics.pixelRatio === value ? "active" : ""}
+                    onClick={() => updateGraphics({ pixelRatio: value })}
+                  >
+                    {value === "auto" ? "Auto" : `×${value}`}
+                  </button>
+                ))}
+              </div>
+              <div className="help">Densité des props</div>
+              <div className="options-row">
+                {PROP_DENSITY_OPTIONS.map((value) => (
+                  <button
+                    key={value}
+                    className={graphics.propDensity === value ? "active" : ""}
+                    onClick={() => updateGraphics({ propDensity: value })}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+              <div className="help">Ombres</div>
+              <div className="options-row">
+                <button className={graphics.shadows ? "active" : ""} onClick={() => updateGraphics({ shadows: true })}>
+                  Activées
+                </button>
+                <button className={!graphics.shadows ? "active" : ""} onClick={() => updateGraphics({ shadows: false })}>
+                  Désactivées
+                </button>
+              </div>
+              <div className="help">ombres : appliqué au prochain chargement</div>
+              <div className="help">
+                {stats.fps} fps · {stats.drawCalls} draw calls
+              </div>
+              <button className="wide" onClick={() => updateGraphics(DEFAULT_GRAPHICS)}>
+                Réinitialiser les graphismes
+              </button>
               <button className="wide" onClick={() => setShowOptions(false)}>
                 Fermer
               </button>

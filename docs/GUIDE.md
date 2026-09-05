@@ -125,10 +125,14 @@ côté client.
 | I | Chaleur | colore les cases par température |
 | N | Journal | événements de la partie, filtrables (Tout / Menaces / Colonie) |
 | V | Caravane | former une caravane (seulement dans une colonie du monde partagé, voir §5) |
-| — | Options (bouton dans la barre, `Échap` pour fermer) | change la difficulté en cours de partie ; en multi, réservé à l'hôte |
+| — | Options (bouton dans la barre, `Échap` pour fermer) | change la difficulté en cours de partie (en multi, réservé à l'hôte) ; section Graphismes : résolution, densité des props et ombres |
 | — | Troc (bouton grisé sans marchand de passage, voir §5) | négocier avec le marchand présent |
 | — | Factions | réputation auprès des trois factions PNJ et tribut (voir « Factions et réputation », §4) |
 | — | Mini-carte (coin bas droit, bouton « − » pour la replier) | vue d'ensemble de la carte 128×128 : colons, bêtes, pillards, marchand et cases en feu en pastilles colorées, rectangle blanc pour la vue caméra ; clic ou glisser dessus pour s'y déplacer |
+
+Les réglages Graphismes sont mémorisés dans le navigateur : résolution et
+densité des props s'appliquent aussitôt, les ombres seulement au prochain
+chargement (le panneau le rappelle) ; « Réinitialiser » revient au défaut.
 
 Un toast ou une ligne du Journal repérée d'un ⌖ se clique pour recentrer la
 caméra sur l'événement (un raid mène au premier pillard, un incendie à la

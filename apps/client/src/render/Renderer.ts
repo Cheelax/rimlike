@@ -14,7 +14,18 @@ import {
   ZONE,
 } from "./terrain";
 
-import { PropBatch, PropLibrary, blueprintKey, doorRotation, surfaceTexture, placementTexture, visualSeed, type PropInstance } from "./props";
+import {
+  PropBatch,
+  PropLibrary,
+  blueprintKey,
+  doorRotation,
+  featureVisibleAtDensity,
+  surfaceTexture,
+  placementTexture,
+  visualSeed,
+  type PropDensity,
+  type PropInstance,
+} from "./props";
 import { disposeTree, type SharedGl } from "./gl";
 
 /** Contrat avec `items::ItemKind` (armes seulement) : gourdin, épieu, arc. */
@@ -297,6 +308,16 @@ export class Renderer {
   private nextFlash = 0;
   /** Désabonnements du contexte partagé, rendus par `dispose`. */
   private readonly offGl: Array<() => void> = [];
+  /**
+   * Densité des props (menu Options → Graphismes) : `haute` instancie tout,
+   * `moyenne` retire les petits détails décoratifs purs (rochers, buissons,
+   * joints de sol), `basse` ne garde que les éléments porteurs de sens
+   * (arbres, murs, portes, mobilier, constructions, objets, chantiers) — voir
+   * `isFeatureVisible`. Change à la volée via `setPropDensity`, sans nouveau
+   * tampon depuis le sim : reconstruction depuis `tileFeatures`/`floorDetails`
+   * déjà en mémoire, le même chemin qu'un changement de `map_version`.
+   */
+  private propDensity: PropDensity = "haute";
 
   /**
    * `gl` est le contexte unique de l'onglet (`gl.ts`), `host` le conteneur de
@@ -397,16 +418,8 @@ export class Renderer {
       const y = t === TERRAIN.DeepWater ? -0.12 : t === TERRAIN.ShallowWater ? -0.06 : 0;
       floor.setMatrixAt(i, matrix.makeTranslation(x + 0.5, y, z + 0.5));
       if (t === TERRAIN.WoodFloor || t === TERRAIN.StoneFloor) this.floorDetails.push({ key: `floor:${t}`, x: x + 0.5, z: z + 0.5 });
-      if (f === FEATURE.None) continue;
-      const seed = visualSeed(x, z);
-      const natural = f <= FEATURE.BushUnripe;
-      const isDoor = f === FEATURE.DoorWood || f === FEATURE.DoorStone;
-      entries.push({
-        key: `feature:${f}`, x: x + 0.5, z: z + 0.5,
-        rotation: isDoor ? doorRotation(x, z, width, height, isWall) : natural ? seed % 4 * Math.PI / 2 : 0,
-        scale: natural ? 0.9 + seed % 10 / 100 : 1,
-        tint: natural ? new THREE.Color().setScalar(0.94 + seed % 7 / 100).getHex() : 0xffffff,
-      });
+      const entry = this.featureEntry(x, z, width, height, features, isWall);
+      if (entry) entries.push(entry);
       if (f === FEATURE.Campfire && lights.length < 8) {
         const light = new THREE.PointLight(0xff9a40, 6, 9, 2);
         light.position.set(x + 0.5, 1.1, z + 0.5);
@@ -419,6 +432,66 @@ export class Renderer {
     this.scene.add(...this.mapMeshes);
     this.updateSnowCover();
     if (!this.framed) { this.frame(); this.framed = true; }
+  }
+
+  /**
+   * Entrée de prop pour la feature en `(x, z)`, ou `null` si la case est vide
+   * (`FEATURE.None`) ou masquée par la densité courante (`isFeatureVisible`).
+   * Partagée par `setMap` (une seule case de la boucle carte) et
+   * `syncFeatureProps` (reconstruction sur simple changement de densité,
+   * sans nouveau tampon depuis le sim).
+   */
+  private featureEntry(
+    x: number,
+    z: number,
+    width: number,
+    height: number,
+    features: Uint8Array,
+    isWall: (i: number) => boolean,
+  ): PropInstance | null {
+    const f = features[z * width + x];
+    if (f === FEATURE.None || !this.isFeatureVisible(f)) return null;
+    const seed = visualSeed(x, z);
+    const natural = f <= FEATURE.BushUnripe;
+    const isDoor = f === FEATURE.DoorWood || f === FEATURE.DoorStone;
+    return {
+      key: `feature:${f}`, x: x + 0.5, z: z + 0.5,
+      rotation: isDoor ? doorRotation(x, z, width, height, isWall) : natural ? seed % 4 * Math.PI / 2 : 0,
+      scale: natural ? 0.9 + seed % 10 / 100 : 1,
+      tint: natural ? new THREE.Color().setScalar(0.94 + seed % 7 / 100).getHex() : 0xffffff,
+    };
+  }
+
+  /** Vrai si la feature `f` s'instancie à la densité courante : voir `featureVisibleAtDensity` (`props.ts`). */
+  private isFeatureVisible(f: number): boolean {
+    return featureVisibleAtDensity(f, this.propDensity);
+  }
+
+  /** Reconstruit les props de la carte depuis `tileFeatures` déjà en mémoire, sans tampon neuf du sim. */
+  private syncFeatureProps(): void {
+    const width = this.mapW, height = this.mapH, features = this.tileFeatures;
+    const isWall = (i: number) => features[i] === FEATURE.WallWood || features[i] === FEATURE.WallStone;
+    const entries: PropInstance[] = [];
+    for (let z = 0; z < height; z++) for (let x = 0; x < width; x++) {
+      const entry = this.featureEntry(x, z, width, height, features, isWall);
+      if (entry) entries.push(entry);
+    }
+    this.featureProps.sync(entries);
+  }
+
+  /**
+   * Densité des props (menu Options → Graphismes), appliquée à la volée :
+   * reconstruit les props et les détails de sol depuis les tampons déjà en
+   * mémoire (`tileFeatures`, `floorDetails`), le même chemin qu'un
+   * changement de `map_version` mais sans redemander la carte au sim. Sans
+   * effet avant le premier `setMap`, ou si la densité ne change pas.
+   */
+  setPropDensity(density: PropDensity): void {
+    if (this.propDensity === density) return;
+    this.propDensity = density;
+    if (this.mapW === 0 || this.mapH === 0) return;
+    this.syncFeatureProps();
+    this.syncFloorProps();
   }
 
   /** Les géométries de catalogue appartiennent à PropLibrary, les overlays à leur couche. */
@@ -623,7 +696,21 @@ export class Renderer {
       floor.setColorAt(i, color);
     }
     if (floor.instanceColor) floor.instanceColor.needsUpdate = true;
-    this.floorProps.sync(this.floorDetails.filter((entry) => !this.snowing || this.isIndoorAt(Math.floor(entry.z) * this.mapW + Math.floor(entry.x))));
+    this.syncFloorProps();
+  }
+
+  /**
+   * Synchronise `floorProps` (joints de planches/dallage) selon la neige
+   * courante et la densité (`propDensity`) : un détail décoratif pur, retiré
+   * dès « moyenne » — voir `isFeatureVisible` pour le même principe côté
+   * features. Appelé par `updateSnowCover` (dégel/neige) et `setPropDensity`.
+   */
+  private syncFloorProps(): void {
+    this.floorProps.sync(
+      this.propDensity === "haute"
+        ? this.floorDetails.filter((entry) => !this.snowing || this.isIndoorAt(Math.floor(entry.z) * this.mapW + Math.floor(entry.x)))
+        : [],
+    );
   }
 
   /**
@@ -1455,6 +1542,15 @@ export class Renderer {
       maxY = Math.max(maxY, this.viewCornerHit.z);
     }
     return { x0: minX, y0: minY, x1: maxX, y1: maxY };
+  }
+
+  /**
+   * Tirages du tout dernier rendu (`renderer.info.render.calls`, partagé
+   * entre les deux écrans — `gl.ts`). Compteur du menu Options → Graphismes :
+   * l'appelant l'échantillonne à la cadence du HUD, jamais par frame.
+   */
+  get drawCalls(): number {
+    return this.gl.renderer.info.render.calls;
   }
 
   /** `t` dans `[0, 1)` : 0 minuit, 0.25 lever, 0.5 midi, 0.75 coucher. */

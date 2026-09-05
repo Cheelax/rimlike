@@ -483,7 +483,11 @@ lignes du journal cliquables (Sonnet, 2026-09-05) : une table pure `eventTarget`
 `EventKind` un pawn, une case en feu ou rien ; le clic recentre la caméra sur la position courante
 et sélectionne le pawn. Sélection multiple (Sonnet, 2026-09-05) : Maj + clic, Maj + rectangle,
 Ctrl/Cmd + A, clic droit qui répartit les colons sur des cases voisines distinctes (spirale
-déterministe) ou les fait tous attaquer la même cible ; module `selection.ts` pur. Marchands itinérants côté serveur
+déterministe) ou les fait tous attaquer la même cible ; module `selection.ts` pur. Réglages
+graphiques (Sonnet, 2026-09-05) : rapport de pixels et densité des props appliqués à chaud, ombres
+lues au démarrage (jamais basculées à chaud), compteur fps et draw calls, mémorisés en
+`localStorage` ; densité « moyenne » sans rochers ni buissons ni joints de sol, « basse » sans
+cultures en plus. Marchands itinérants côté serveur
 livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
 caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;
