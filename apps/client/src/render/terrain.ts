@@ -83,6 +83,36 @@ export const ITEM_NAMES = [
   "tuniques",
   "manteaux",
 ] as const;
+/**
+ * Cinq genres de base (bois, pierre, baies, légumes, repas), toujours
+ * présents dans une colonie neuve : le HUD stock les affiche même à 0. Tout
+ * le reste (armes, dépouilles, viande, cuir, habits, cadavres) n'apparaît que
+ * s'il y en a en stock (voir `visibleStock`).
+ */
+export const BASE_STOCK_COUNT = 5;
+
+/** Une ligne du HUD stock : un genre (`ITEM_NAMES`) et sa quantité. */
+export interface StockLine {
+  readonly name: string;
+  readonly count: number;
+}
+
+/**
+ * Ligne du HUD stock à afficher pour `stored` (`sim-wasm::stored_totals`,
+ * indexé par `ItemKind`) : les cinq genres de base toujours, tout autre genre
+ * seulement si son stock est positif. Une seule règle, pure, plutôt qu'une
+ * liste à maintenir à la main à chaque genre ajouté (armes, dépouilles,
+ * viande, cuir, puis habits : voir `docs/PLAN.md`, journal des décisions).
+ */
+export function visibleStock(stored: readonly number[]): StockLine[] {
+  const lines: StockLine[] = [];
+  for (let i = 0; i < ITEM_NAMES.length; i++) {
+    const count = stored[i] ?? 0;
+    if (i < BASE_STOCK_COUNT || count > 0) lines.push({ name: ITEM_NAMES[i], count });
+  }
+  return lines;
+}
+
 export const ITEM_COLORS: readonly number[] = [
   0x9c6b3c, 0x8d8d8d, 0xc9304a, 0x5aa02c, 0xf0c070, 0x5c4a3a,
   0x5a3d22 /* gourdin : bois sombre */, 0x8a8f94 /* épieu : gris acier */, 0xd9b273 /* arc : bois clair */,
@@ -111,6 +141,47 @@ export const APPAREL_NAMES: Readonly<Record<number, string>> = { 14: "tunique", 
 
 /** Vrai pour un habit féminin (« une tunique ») : accord de `eventLabel` (20). */
 const APPAREL_FEMININE: Readonly<Record<number, boolean>> = { 14: true, 15: false };
+
+/**
+ * Contrat avec `sim::Trait` (`crates/sim/src/traits.rs`) : index = valeur de
+ * l'enum, deux tirages non contradictoires par colon à la création (voyageurs
+ * compris, jamais les pillards ni les bêtes). Pour la ligne « Traits : » du
+ * panneau du colon et l'infobulle enrichie de `ColonistBar`.
+ */
+export const TRAIT_LABELS = [
+  "travailleur",
+  "paresseux",
+  "optimiste",
+  "pessimiste",
+  "bagarreur",
+  "lâche",
+  "gourmand",
+  "ascète",
+  "noctambule",
+  "robuste",
+  "fragile",
+  "sociable",
+] as const;
+
+/**
+ * Une phrase d'infobulle par trait (`title`), reprise des constantes d'effet
+ * de `traits.rs` : c'est le seul endroit à modifier pour rééquilibrer un
+ * trait, donc le seul que ces phrases doivent suivre.
+ */
+export const TRAIT_HINTS = [
+  "travaille 15 % plus vite",
+  "travaille 15 % plus lentement",
+  "humeur en hausse permanente",
+  "humeur en baisse permanente",
+  "frappe plus fort au corps à corps, vise moins bien à l'arc",
+  "ne se défend jamais seul ; humeur en baisse tant qu'un pillard traîne sur la carte",
+  "a plus vite faim, mais un repas cuisiné lui remonte plus le moral",
+  "dormir au sol ou manger cru ne lui coûte rien à l'humeur",
+  "travaille plus vite la nuit, moins vite le jour",
+  "encaisse moins de dégâts",
+  "encaisse plus de dégâts",
+  "humeur en hausse avec la compagnie, s'effondre livré à lui-même",
+] as const;
 
 /** Borne d'affichage d'un objectif de fabrication (le sim, lui, accepte n'importe quel entier). */
 export function clampCraftTarget(n: number): number {

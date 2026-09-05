@@ -37,6 +37,7 @@ const netState: LockstepState = Object.freeze({
   lastError: null,
   frozenTicks: 0,
   climate: null,
+  dayOfYear: null,
   outliers: Object.freeze([]),
   isOutlier: false,
   roomDesynced: false,
@@ -68,6 +69,7 @@ function frame(): FrameMessage {
     craftTargets: new Uint32Array([0, 0, 0, 0, 0, 0, 3, 0, 1]),
     weapons: new Int32Array([1, 6]),
     apparel: new Int32Array([1, 15]),
+    traits: new Int32Array([1, 0, 2]),
     departures: 1,
     lag: 3,
     tps: 60,
@@ -146,7 +148,7 @@ describe("protocole du Worker de simulation", () => {
     const clone = structuredClone(original);
     for (const key of [
       "pawns", "items", "blueprints", "events", "priorities", "skills", "health", "animals", "stored",
-      "craftTargets", "weapons", "apparel",
+      "craftTargets", "weapons", "apparel", "traits",
     ] as const) {
       expect(clone[key]).toEqual(original[key]);
       expect(clone[key]).not.toBe(original[key]);
@@ -195,9 +197,9 @@ describe("protocole du Worker de simulation", () => {
   it("annonce des tampons distincts, transférables sans copie", () => {
     const original = frame();
     const transfer = transferablesOf(original);
-    // Douze tampons, tous différents : un tampon transféré deux fois lèverait.
-    expect(transfer.length).toBe(12);
-    expect(new Set(transfer).size).toBe(12);
+    // Treize tampons, tous différents : un tampon transféré deux fois lèverait.
+    expect(transfer.length).toBe(13);
+    expect(new Set(transfer).size).toBe(13);
 
     const clone = structuredClone(original, { transfer });
     expect(Array.from(clone.stored)).toEqual([9, 8, 7, 6, 5, 4, 0, 0, 0]);

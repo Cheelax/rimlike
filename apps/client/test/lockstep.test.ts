@@ -493,6 +493,29 @@ describe("file de bundles", () => {
     expect(client.consumeFrozenTicks()).toBe(0);
   });
 
+  it("stocke dayOfYear reçu par un start, consommé une seule fois", async () => {
+    // `ready()` a déjà livré un premier `start` sans `dayOfYear` (salle hors
+    // monde) : celui-ci simule une salle « case » du monde, avec le champ.
+    // `dayOfYearValue` est posé de façon synchrone par `handle()`, avant même
+    // que le sim (re)créé ne soit résolu.
+    const { transport, client } = await ready();
+    transport.deliver({ type: "start", seed: 7, width: 16, height: 16, tick: 0, dayOfYear: 45 });
+
+    expect(client.state.dayOfYear).toBe(45);
+    // Idempotence : le deuxième appel ne renvoie plus la valeur.
+    expect(client.consumeStartDayOfYear()).toBe(45);
+    expect(client.consumeStartDayOfYear()).toBeNull();
+    expect(client.state.dayOfYear).toBeNull();
+  });
+
+  it("sans le champ dayOfYear, l'état reste à null", async () => {
+    // `ready()` livre déjà un `start` sans `dayOfYear` (salle hors monde).
+    const { client } = await ready();
+
+    expect(client.state.dayOfYear).toBeNull();
+    expect(client.consumeStartDayOfYear()).toBeNull();
+  });
+
   it("répond à une demande de snapshot avec son tick courant", async () => {
     const { transport, client } = await ready();
     transport.deliver({ type: "bundle", from: 0, to: 2, ticks: [] });

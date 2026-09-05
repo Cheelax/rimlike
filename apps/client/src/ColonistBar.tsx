@@ -5,7 +5,7 @@
  * tampons du `frame` — jamais un second état qui dériverait.
  */
 
-import { moodIcon } from "./render/terrain";
+import { moodIcon, TRAIT_LABELS } from "./render/terrain";
 
 export interface ColonistBadge {
   readonly id: number;
@@ -26,6 +26,8 @@ export interface ColonistBadge {
   readonly mood: number;
   /** Libellé du job courant (`JOB_LABELS`), pour l'infobulle. */
   readonly job: string;
+  /** Traits de caractère (`sim::Trait`, 0 à 11), 0 à 2 valeurs, pour l'infobulle. */
+  readonly traits: readonly number[];
 }
 
 export interface ColonistBarProps {
@@ -49,7 +51,9 @@ export function ColonistBar({ colonists, selected, onSelect, onFocus }: Colonist
           style={{ borderColor: c.color }}
           onClick={() => onSelect(c.id)}
           onDoubleClick={() => onFocus(c.id)}
-          title={`${c.name || `Colon ${c.id}`} · ${c.job}`}
+          title={`${c.name || `Colon ${c.id}`} · ${c.job}${
+            c.traits.length > 0 ? ` · ${c.traits.map((t) => TRAIT_LABELS[t] ?? "?").join(", ")}` : ""
+          }`}
         >
           <span className="colonist-initial" style={{ background: c.color }}>
             {c.initial}

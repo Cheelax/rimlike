@@ -53,6 +53,9 @@ import {
   SKILL_STRIDE,
   SPECIES_LABELS,
   SPECIES_MAX_HP,
+  TRAIT_HINTS,
+  TRAIT_LABELS,
+  visibleStock,
   WEAPON_NAMES,
   WEATHER_LABELS,
   WORK_LABELS,
@@ -159,18 +162,6 @@ const BUILD_TOOL_KIND: Partial<Record<Tool, number>> = {
   craftingSpot: BUILD_KIND.CraftingSpot,
 };
 const WOOD_ONLY: ReadonlySet<Tool> = new Set<Tool>(["bed", "campfire", "craftingSpot"]);
-/** HUD stock : comme les cadavres, les armes, la viande, le cuir et les dépouilles n'apparaissent que si on en a. */
-const HIDE_STOCK_WHEN_EMPTY: ReadonlySet<string> = new Set([
-  "cadavres",
-  "gourdins",
-  "épieux",
-  "arcs",
-  "dépouilles de cerf",
-  "dépouilles de lapin",
-  "dépouilles de sanglier",
-  "viande",
-  "cuir",
-]);
 
 /** Une ligne de blessure du panneau Santé, depuis `pawn_injuries` (voir `pawnInjuries`). */
 interface InjuryInfo {
@@ -221,6 +212,8 @@ interface PawnInfo {
   weapon: number;
   /** Genre d'habit porté (`sim::ItemKind` 14 tunique, 15 manteau), -1 le dos nu. Lu dans `frame.apparel`. */
   apparel: number;
+  /** Traits de caractère (`sim::Trait`, 0 à 11), 0 à 2 valeurs. Lus dans `frame.traits`. */
+  traits: number[];
   /** Niveaux de combat, rafraîchis à part par `rpc("pawnCombatSkills", id)`, même rythme que les blessures. */
   meleeLevel: number;
   meleeXp: number;
@@ -1361,6 +1354,15 @@ export function App() {
       for (let a = 0; a + 2 <= f.apparel.length; a += 2) {
         apparelById.set(f.apparel[a], f.apparel[a + 1]);
       }
+      // Traits par id, depuis `frame.traits` (stride 3, `-1` filtré) : même
+      // contrat que `weaponById`/`apparelById`, sans RPC.
+      const traitsById = new Map<number, number[]>();
+      for (let t = 0; t + 3 <= f.traits.length; t += 3) {
+        traitsById.set(
+          f.traits[t],
+          [f.traits[t + 1], f.traits[t + 2]].filter((v) => v >= 0),
+        );
+      }
       // Espèce et marquage gibier par id, depuis `frame.animals` : pas de RPC non plus.
       const animalById = new Map<number, { species: number; hunted: boolean }>();
       for (let a = 0; a + ANIMAL_STRIDE <= f.animals.length; a += ANIMAL_STRIDE) {
@@ -1398,6 +1400,7 @@ export function App() {
             mood: curPawns[o + 6] / 10,
             job: JOB_LABELS[curPawns[o + 7]] ?? "?",
             sick: (sickById.get(pid) ?? 0) > 0,
+            traits: traitsById.get(pid) ?? [],
           });
         }
         if (curPawns[o] !== selected) continue;
@@ -1449,6 +1452,7 @@ export function App() {
           skills,
           weapon: weaponById.get(id) ?? -1,
           apparel: apparelById.get(id) ?? -1,
+          traits: traitsById.get(id) ?? [],
           ...(selectedCombatId === id
             ? selectedCombat
             : { meleeLevel: 0, meleeXp: 0, rangedLevel: 0, rangedXp: 0 }),
@@ -1913,9 +1917,8 @@ export function App() {
             </div>
             <div>
               stock :{" "}
-              {ITEM_NAMES.map((n, i) => [n, stats.stored[i] ?? 0] as const)
-                .filter(([n, v]) => !HIDE_STOCK_WHEN_EMPTY.has(n) || v > 0)
-                .map(([n, v]) => `${v} ${n}`)
+              {visibleStock(stats.stored)
+                .map(({ name, count }) => `${count} ${name}`)
                 .join(" · ")}
               {stats.blueprints > 0 ? ` · ${stats.blueprints} chantier${stats.blueprints > 1 ? "s" : ""}` : ""}
               {" · richesse "}
@@ -1968,6 +1971,19 @@ export function App() {
               <div className="panel-job">{sel.job}{sel.carrying ? ` · porte ${sel.carrying}` : ""}</div>
               <div className="panel-weapon">Arme : {sel.weapon >= 0 ? WEAPON_NAMES[sel.weapon] ?? "?" : "à mains nues"}</div>
               <div className="panel-apparel">Habit : {sel.apparel >= 0 ? APPAREL_NAMES[sel.apparel] ?? "?" : "rien"}</div>
+              {sel.traits.length > 0 && (
+                <div className="panel-traits">
+                  Traits :{" "}
+                  {sel.traits.map((t, i) => (
+                    <span key={t}>
+                      {i > 0 ? ", " : ""}
+                      <span className="panel-trait" title={TRAIT_HINTS[t] ?? ""}>
+                        {TRAIT_LABELS[t] ?? "?"}
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className={`panel-comfort${sel.comfort < 50 ? " cold" : ""}`}>
                 Ressenti : {formatTemperature(sel.comfort)}
               </div>

@@ -104,7 +104,9 @@ côté client.
 Le panneau d'un colon sélectionné montre son travail en cours, son arme et son
 habit, la température ressentie, ses besoins (PV, faim, repos, humeur), sa
 santé (sang, conscience, blessures détaillées, heures de maladie restantes
-s'il y a lieu) et ses compétences.
+s'il y a lieu) et ses compétences. Chaque colon a aussi jusqu'à deux traits de
+caractère visibles dans son panneau (infobulle à l'appui), qui modulent son
+travail, son humeur et son combat.
 
 ## 3. Boucle de survie
 

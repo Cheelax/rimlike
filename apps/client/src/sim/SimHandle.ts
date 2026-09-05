@@ -224,6 +224,35 @@ export class SimHandle implements SimLike {
   }
 
   /**
+   * Traits de caractère d'un pawn, suivant `sim::Trait` (0 à 11). 0, 1 ou 2
+   * valeurs ; vide si l'id est inconnu ou le pawn n'en a pas (pillards,
+   * bêtes).
+   */
+  pawnTraits(id: number): Int32Array {
+    return this.inner.pawn_traits(id);
+  }
+
+  /**
+   * Traits de chaque colon, aplatis : `[id, t0, t1]` par pawn du tampon
+   * `pawns` (`-1` quand un trait est absent). Même limite que
+   * `weapons`/`apparel` : pas de méthode dédiée côté sim-wasm, une recherche
+   * par id suffit tant que le nombre de pawns reste petit. Contrairement à
+   * `weapons`/`apparel`, une ligne existe pour chaque pawn (stride fixe de 3),
+   * pas seulement pour ceux qui portent quelque chose : un colon sans trait
+   * doit rester distinguable d'un pillard ou d'une bête absent du tampon.
+   */
+  traits(): Int32Array {
+    const pawns = this.pawns();
+    const out: number[] = [];
+    for (let o = 0; o + PAWN_STRIDE <= pawns.length; o += PAWN_STRIDE) {
+      const id = pawns[o];
+      const t = this.inner.pawn_traits(id);
+      out.push(id, t.length > 0 ? t[0]! : -1, t.length > 1 ? t[1]! : -1);
+    }
+    return Int32Array.from(out);
+  }
+
+  /**
    * Avance rapide abstraite d'une colonie gelée (`docs/protocol.md` §11.6).
    * Réservée au solo et au crochet de dev : en multi la commande passe par
    * `encodeFastForward` puis `issue`, jamais appliquée localement.
@@ -304,6 +333,16 @@ export class SimHandle implements SimLike {
    */
   setClimate(baseTemperature: number, amplitude: number): void {
     this.inner.set_climate(baseTemperature, amplitude);
+  }
+
+  /**
+   * Impose le jour de l'année de la carte (`docs/protocol.md` §11.6 « Le
+   * calendrier, hérité une fois »). Outil de dev/console, comme `setClimate` :
+   * en multi, cette commande doit passer par `encodeSetCalendar` puis
+   * `issue`, jamais être appliquée directement.
+   */
+  setCalendar(dayOfYear: number): void {
+    this.inner.set_calendar(dayOfYear);
   }
 
   /** Saison courante, suivant `sim::climate::Season` (0 printemps … 3 hiver). */

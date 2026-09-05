@@ -155,6 +155,14 @@ export interface FrameMessage {
    */
   readonly apparel: Int32Array;
   /**
+   * Traits de caractère de chaque colon, aplatis : `[id, t0, t1]×n`
+   * (`sim::Trait`, 0 à 11), `-1` quand un trait est absent. Contrairement à
+   * `weapons`/`apparel`, une ligne existe pour chaque pawn (recalculé chaque
+   * frame depuis le tampon `pawns`, `SimHandle.traits`), pas seulement pour
+   * ceux qui en portent un.
+   */
+  readonly traits: Int32Array;
+  /**
    * Manifestes de caravane en attente d'expédition (`Sim::departures`). C'est
    * le déclencheur de l'hôte : tant qu'il est non nul, il reste des départs à
    * envoyer au serveur monde puis à retirer de la file (`docs/protocol.md`
@@ -215,6 +223,7 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
         message.craftTargets.buffer as ArrayBuffer,
         message.weapons.buffer as ArrayBuffer,
         message.apparel.buffer as ArrayBuffer,
+        message.traits.buffer as ArrayBuffer,
       ];
     case "saved":
       return [message.bytes.buffer as ArrayBuffer];

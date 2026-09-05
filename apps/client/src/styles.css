@@ -10,6 +10,8 @@ canvas.scene { display: block; width: 100%; height: 100%; }
 .panel-job { opacity: .85; margin-bottom: 6px; text-transform: capitalize; }
 .panel-weapon { opacity: .8; margin-bottom: 6px; }
 .panel-apparel { opacity: .8; margin-bottom: 6px; }
+.panel-traits { opacity: .8; margin-bottom: 6px; }
+.panel-trait { pointer-events: auto; border-bottom: 1px dotted rgba(255,255,255,.4); cursor: help; }
 .panel-comfort { opacity: .8; margin-bottom: 6px; }
 .panel-comfort.cold { opacity: 1; color: #ff6b6b; font-weight: 600; }
 .bar { display: grid; grid-template-columns: 56px 1fr 38px; gap: 6px; align-items: center; margin: 3px 0; }

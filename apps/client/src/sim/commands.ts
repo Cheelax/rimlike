@@ -148,3 +148,16 @@ export function encodeSetClimate(baseTemperature: number, amplitude: number): Ui
 export function encodeSetDifficulty(level: number): Uint8Array {
   return WasmSim.encode_set_difficulty(level);
 }
+
+/**
+ * Jour de l'année hérité du monde à la fondation d'une colonie neuve
+ * (`docs/protocol.md` §11.6 « Le calendrier, hérité une fois »).
+ * `dayOfYear` vient de `ServerStartMessage.dayOfYear` (`@rimlike/protocol`,
+ * dans `0..YEAR_DAYS`) : à n'émettre qu'une fois, par l'hôte, en deuxième
+ * commande après le `start`, juste après `encodeSetClimate` (voir
+ * `worker/sim.worker.ts`, `worker/startCalendar.ts` et
+ * `LockstepClient.consumeStartDayOfYear`).
+ */
+export function encodeSetCalendar(dayOfYear: number): Uint8Array {
+  return WasmSim.encode_set_calendar(dayOfYear);
+}

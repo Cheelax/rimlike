@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   APPAREL_NAMES,
+  BASE_STOCK_COUNT,
   clampCraftTarget,
   DIFFICULTY_LABELS,
   eventCategory,
@@ -16,10 +17,14 @@ import {
   formatTemperature,
   formatWealth,
   hKeyAction,
+  ITEM_NAMES,
   moodIcon,
   SEASON_LABELS,
   sickHoursRemaining,
   SPECIES_LABELS,
+  TRAIT_HINTS,
+  TRAIT_LABELS,
+  visibleStock,
   WEAPON_NAMES,
   WEATHER_LABELS,
 } from "../src/render/terrain";
@@ -310,5 +315,74 @@ describe("sickHoursRemaining", () => {
 
   it("ne renvoie jamais un nombre négatif", () => {
     expect(sickHoursRemaining(-100)).toBe(0);
+  });
+});
+
+describe("TRAIT_LABELS et TRAIT_HINTS", () => {
+  it("couvrent les douze traits de `sim::Trait`", () => {
+    expect(TRAIT_LABELS.length).toBe(12);
+    expect(TRAIT_HINTS.length).toBe(12);
+    expect(TRAIT_LABELS).toEqual([
+      "travailleur",
+      "paresseux",
+      "optimiste",
+      "pessimiste",
+      "bagarreur",
+      "lâche",
+      "gourmand",
+      "ascète",
+      "noctambule",
+      "robuste",
+      "fragile",
+      "sociable",
+    ]);
+  });
+
+  it("donne une phrase non vide par trait, dans le même ordre que les libellés", () => {
+    for (const hint of TRAIT_HINTS) {
+      expect(typeof hint).toBe("string");
+      expect(hint.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("visibleStock", () => {
+  it("affiche toujours les cinq genres de base, même à 0", () => {
+    const stored = new Array(ITEM_NAMES.length).fill(0);
+    const lines = visibleStock(stored);
+    expect(lines.length).toBe(BASE_STOCK_COUNT);
+    expect(lines).toEqual([
+      { name: "bois", count: 0 },
+      { name: "pierre", count: 0 },
+      { name: "baies", count: 0 },
+      { name: "légumes", count: 0 },
+      { name: "repas", count: 0 },
+    ]);
+  });
+
+  it("n'affiche un autre genre que si son stock est positif", () => {
+    const stored = new Array(ITEM_NAMES.length).fill(0);
+    stored[5] = 3; // cadavres
+    stored[13] = 2; // cuir
+    stored[14] = 1; // tuniques
+    const names = visibleStock(stored).map((l) => l.name);
+    expect(names).toEqual(["bois", "pierre", "baies", "légumes", "repas", "cadavres", "cuir", "tuniques"]);
+  });
+
+  it("porte les manteaux comme n'importe quel genre au-delà des cinq de base", () => {
+    // Régression : les habits (ajoutés après les armes et la faune) doivent
+    // suivre la même règle que le reste, pas rester affichés à 0.
+    const stored = new Array(ITEM_NAMES.length).fill(0);
+    const withoutCoat = visibleStock(stored).map((l) => l.name);
+    expect(withoutCoat).not.toContain("manteaux");
+    stored[15] = 1; // manteaux
+    const withCoat = visibleStock(stored).map((l) => l.name);
+    expect(withCoat).toContain("manteaux");
+  });
+
+  it("traite un stock manquant (indice hors tableau) comme 0", () => {
+    const lines = visibleStock([9, 8, 7, 6, 5]); // les cinq genres de base seulement
+    expect(lines.length).toBe(BASE_STOCK_COUNT);
+    expect(lines[0]).toEqual({ name: "bois", count: 9 });
   });
 });

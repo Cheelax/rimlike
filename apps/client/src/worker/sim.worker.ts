@@ -15,10 +15,11 @@
 
 import { LockstepClient } from "../net/LockstepClient";
 import { WebSocketTransport } from "../net/Transport";
-import { encodeFastForward, encodeSetClimate, encodeSetDifficulty } from "../sim/commands";
+import { encodeFastForward, encodeSetCalendar, encodeSetClimate, encodeSetDifficulty } from "../sim/commands";
 import { SimHandle } from "../sim/SimHandle";
 import { DIFFICULTY } from "../render/terrain";
 import { fastForwardOnReopen } from "./fastForward";
+import { setCalendarOnStart } from "./startCalendar";
 import { setClimateOnStart } from "./startClimate";
 import { setDifficultyOnStart } from "./startDifficulty";
 import { SimRunner, type RunnerOutput, type RunnerSim } from "./SimRunner";
@@ -112,8 +113,11 @@ const SIM_API: ReadonlySet<string> = new Set([
   "apparel",
   // Climat, saisons et température (`crates/sim/src/climate.rs`).
   "setClimate",
+  "setCalendar",
   "pawnComfort",
   "tileTemperatures",
+  // Traits de caractère (`crates/sim/src/traits.rs`).
+  "pawnTraits",
   // Storyteller : dose de menace, richesse de la colonie, maladie
   // (`crates/sim/src/storyteller.rs`).
   "setDifficulty",
@@ -199,10 +203,15 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
       // tampons, que `SimLike` n'expose pas.
       onSim: (sim) => {
         runner?.setSim(sim as RunnerSim);
-        // Ordre imposé par §11.6 : le climat d'abord, l'avance rapide ensuite
-        // (elle fait tourner des formules de rattrapage qui en dépendent).
-        // Aujourd'hui mutuellement exclusifs (`start` neuf vs `restore` gelé),
-        // mais l'ordre est câblé comme si les deux pouvaient survenir.
+        // Ordre imposé par §11.6 : climat → calendrier → difficulté → avance
+        // rapide. Le climat et le calendrier d'abord (l'avance rapide fait
+        // tourner des formules de rattrapage qui en dépendent) ; entre les
+        // deux, l'ordre ne change rien au résultat (deux champs indépendants
+        // de `Sim`) mais reste fixe pour ne rien laisser d'implicite. La
+        // difficulté n'est pas dans le protocole (§11.6 ne la mentionne pas),
+        // câblée ici après les deux par cohérence avec l'ordre déjà en place.
+        // Aujourd'hui `start` (neuf) et `restore` (gelé) sont mutuellement
+        // exclusifs, mais l'ordre est câblé comme si tout pouvait survenir.
         //
         // Climat hérité de la case (§11.6) : le sim neuf vient d'être adopté,
         // c'est le seul moment où émettre. `consumeStartClimate` remet la
@@ -211,6 +220,12 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
         const climate = lockstep?.consumeStartClimate() ?? null;
         const climateBytes = setClimateOnStart(lockstep?.state.isHost ?? false, climate, encodeSetClimate);
         if (climateBytes) lockstep?.issue(climateBytes);
+        // Calendrier hérité du monde (§11.6) : même schéma que le climat,
+        // juste après lui. `consumeStartDayOfYear` remet la valeur à `null`,
+        // même garantie d'émission unique.
+        const dayOfYear = lockstep?.consumeStartDayOfYear() ?? null;
+        const calendarBytes = setCalendarOnStart(lockstep?.state.isHost ?? false, dayOfYear, encodeSetCalendar);
+        if (calendarBytes) lockstep?.issue(calendarBytes);
         // Dose de menace choisie par l'hôte (voir `App.tsx` et
         // `worker/startDifficulty.ts`) : jamais sur le réseau, mémorisée par
         // `LockstepClient.startGame` et lue une seule fois ici, juste après le

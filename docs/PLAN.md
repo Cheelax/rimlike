@@ -385,10 +385,12 @@ le panneau, événements 21-25 libellés et classés ; vérifié : Difficile →
 en archers. Traits livrés le 2026-09-05 (Sonnet, sim) : douze traits en six paires opposées (travailleur /
 paresseux, optimiste / pessimiste, bagarreur / lâche, gourmand / ascète, noctambule, robuste /
 fragile, sociable), deux par colon tirés sans contradiction, effets sur vitesse de travail,
-humeur, dégâts donnés et reçus, défense automatique ; interface à faire. Calendrier partagé
-(Sonnet) : `SetCalendar` décale le jour de l'année sans toucher au tick, le serveur impose le
-jour du monde à la fondation (`start.dayOfYear`), l'avance rapide garde l'alignement au gel ;
-client à brancher. À venir : recherche, relations, factions PNJ et commerce, mods de
+humeur, dégâts donnés et reçus, défense automatique ; interface livrée le 2026-09-05 (Sonnet : traits
+et infobulles dans le panneau et sur les pastilles). Calendrier partagé (Sonnet) : `SetCalendar`
+décale le jour de l'année sans toucher au tick, le serveur impose le jour du monde à la
+fondation (`start.dayOfYear`), l'hôte l'émet après le climat et avant la difficulté,
+l'avance rapide garde l'alignement au gel ; vérifié : une colonie fondée sur un monde de douze
+jours démarre au jour 12. Ligne de stock unifiée (cinq genres de base, le reste si > 0). À venir : recherche, relations, factions PNJ et commerce, mods de
 contenu, événements monde.
 
 ## 7. Risques identifiés

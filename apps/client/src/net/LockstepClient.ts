@@ -87,6 +87,14 @@ export interface LockstepState {
    */
   readonly climate: StartClimate | null;
   /**
+   * Jour de l'année hérité du monde, reçu par `start.dayOfYear` à la
+   * fondation d'une colonie neuve (`docs/protocol.md` §11.6 « Le calendrier,
+   * hérité une fois »). `null` en salle simple (pas de case) ou une fois
+   * consommé par `consumeStartDayOfYear` — même schéma que
+   * `climate`/`consumeStartClimate`.
+   */
+  readonly dayOfYear: number | null;
+  /**
    * Joueurs actuellement connus comme déviants (§7) : `desync.outliers` au
    * départ, réduit à chaque `resynced` reçu. Vide tant qu'aucune majorité n'a
    * jamais été connue (salle à deux joueurs, ou moins de trois hashes) : dans
@@ -165,6 +173,8 @@ export class LockstepClient {
   private frozenTicksValue = 0;
   /** Voir `LockstepState.climate` et `consumeStartClimate`. */
   private climateValue: StartClimate | null = null;
+  /** Voir `LockstepState.dayOfYear` et `consumeStartDayOfYear`. */
+  private dayOfYearValue: number | null = null;
   /**
    * Dose de menace choisie par l'hôte pour la partie qui démarre, mémorisée
    * par `startGame` (jamais par le réseau : la difficulté n'est pas dans le
@@ -280,6 +290,19 @@ export class LockstepClient {
   }
 
   /**
+   * Lit le jour de l'année hérité du monde et le remet à `null` : deux appels
+   * ne le renvoient qu'une fois. C'est ce qui garantit qu'un seul
+   * `SetCalendar` part par colonie neuve, même si l'appelant se trompe et
+   * appelle deux fois (`docs/protocol.md` §11.6, même garantie que
+   * `consumeStartClimate`).
+   */
+  consumeStartDayOfYear(): number | null {
+    const value = this.dayOfYearValue;
+    this.dayOfYearValue = null;
+    return value;
+  }
+
+  /**
    * Lit la difficulté choisie par l'hôte au moment de `startGame` et la
    * remet à `null` : deux appels ne la renvoient qu'une fois, même garantie
    * que `consumeFrozenTicks`/`consumeStartClimate`. `null` pour un non-hôte,
@@ -386,6 +409,10 @@ export class LockstepClient {
         // `consumeStartClimate` est le seul chemin qui le consomme, dès que le
         // sim neuf est adopté (voir le Worker) — même schéma que `frozenTicks`.
         this.climateValue = message.climate ?? null;
+        // Calendrier hérité du monde (§11.6) : même schéma que le climat,
+        // stocké jusqu'à ce que `consumeStartDayOfYear` le consomme (voir le
+        // Worker), une fois le sim neuf adopté.
+        this.dayOfYearValue = message.dayOfYear ?? null;
         this.adopt(this.createSim(message.seed, message.width, message.height));
         this.emit();
         return;
@@ -561,6 +588,7 @@ export class LockstepClient {
       lastError: this.lastError,
       frozenTicks: this.frozenTicksValue,
       climate: this.climateValue,
+      dayOfYear: this.dayOfYearValue,
       outliers: Object.freeze([...this.deviating]),
       isOutlier: this.playerId !== null && this.deviating.has(this.playerId),
       roomDesynced: this.desyncInfo !== null && !(this.outliersKnown && this.deviating.size === 0),
