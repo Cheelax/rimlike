@@ -13,6 +13,7 @@
 #![deny(clippy::disallowed_types)]
 #![deny(clippy::disallowed_methods)]
 
+pub mod animals;
 pub mod build;
 pub mod caravan;
 pub mod climate;
@@ -37,6 +38,7 @@ pub mod work;
 
 use serde::{Deserialize, Serialize};
 
+pub use animals::{MAX_ANIMALS, Species};
 pub use build::{Blueprint, BuildKind, Material};
 pub use caravan::{CaravanManifest, MANIFEST_VERSION};
 pub use climate::{Climate, Season, YEAR_DAYS};
@@ -99,6 +101,12 @@ pub enum EventKind {
     /// Première gelée de l'automne : la première fois de la saison que la
     /// température extérieure passe sous 0 °C. `arg` : le jour de l'année.
     FirstFrost = 16,
+    /// Un troupeau vient d'entrer sur la carte. `arg` : le nombre de bêtes.
+    AnimalsArrived = 17,
+    /// Une bête vient de mourir. `arg` : son espèce (`animals::Species`).
+    AnimalHunted = 18,
+    /// Un sanglier charge celui qui l'a blessé. `arg` : l'id du sanglier.
+    BoarAttacks = 19,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -194,6 +202,13 @@ pub enum Command {
         base_temperature: i32,
         amplitude: i32,
     },
+    /// Marque (`on`) ou démarque un animal comme gibier. La chasse est un
+    /// ordre **par bête**, pas par case : `Command::Designate` travaille au
+    /// rectangle et ne saurait viser un cerf qui court. Un colon armé et libre
+    /// prend le gibier marqué le plus proche (`Job::Hunt`) ; démarquer arrête
+    /// les chasseurs en route. Un id qui n'est pas celui d'un animal vivant
+    /// est ignoré.
+    Hunt { animal: u32, on: bool },
 }
 
 #[derive(Debug)]
@@ -253,6 +268,8 @@ pub struct Sim {
     /// déjà passée, soit ce n'est pas l'automne. Reposé à chaque changement de
     /// saison (voir `Sim::tick_climate`).
     frost_announced: bool,
+    /// Tick d'entrée du prochain troupeau (voir `animals`).
+    next_herd_at: u64,
 }
 
 impl Sim {
@@ -304,12 +321,15 @@ impl Sim {
             weather_noise: 0,
             // La partie commence au printemps : rien à guetter avant l'automne.
             frost_announced: true,
+            next_herd_at: 0,
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
         sim.map.refresh_indoor();
         sim.spawn_starting_pawns(3);
+        sim.spawn_starting_animals();
         sim.schedule_first_raid();
+        sim.schedule_first_herd();
         // La première journée reste claire un moment, le temps de s'installer.
         sim.weather_until = u64::from(TICKS_PER_DAY / 2 + sim.rng.below(TICKS_PER_DAY / 2));
         sim.next_wanderer_at = u64::from(4 * TICKS_PER_DAY + sim.rng.below(TICKS_PER_DAY));
@@ -484,7 +504,11 @@ impl Sim {
                 else {
                     return;
                 };
-                if self.pawns[i].faction == self.pawns[k].faction {
+                // On ne commande pas la faune : un sanglier décide seul de
+                // charger (voir `animals`), et un lapin ne charge jamais.
+                if self.pawns[i].faction == self.pawns[k].faction
+                    || self.pawns[i].faction == Faction::Animal
+                {
                     return;
                 }
                 self.abandon_job(i);
@@ -498,7 +522,8 @@ impl Sim {
                 let Some(p) = self.pawns.iter_mut().find(|p| p.id == pawn) else {
                     return;
                 };
-                if p.faction == Faction::Raider {
+                // Ni les pillards ni les bêtes n'ont de tableau de travail.
+                if p.faction != Faction::Colony {
                     return;
                 }
                 p.priorities[work as usize] = priority.min(4);
@@ -528,6 +553,7 @@ impl Sim {
                 }
                 .sanitized();
             }
+            Command::Hunt { animal, on } => self.set_hunted(animal, on),
         }
     }
 
@@ -605,11 +631,15 @@ impl Sim {
 
     /// Blesse un pawn à l'endroit voulu, comme le ferait un coup : le
     /// saignement vaut `severity / health::BLEED_FRACTION`. Sert aux tests et
-    /// au futur mode debug ; le jeu blesse par le combat et la famine.
+    /// au futur mode debug ; le jeu blesse par le combat et la famine. Une
+    /// bête réagit comme à un vrai coup, mais sans agresseur à charger : elle
+    /// détale, sanglier compris.
     pub fn inflict_injury(&mut self, pawn: u32, part: BodyPart, severity: u32) {
-        if let Some(p) = self.pawns.iter_mut().find(|p| p.id == pawn) {
-            p.add_injury(part, severity, severity / health::BLEED_FRACTION);
-        }
+        let Some(k) = self.pawns.iter().position(|p| p.id == pawn) else {
+            return;
+        };
+        self.pawns[k].add_injury(part, severity, severity / health::BLEED_FRACTION);
+        self.animal_hit(k, None);
     }
 
     pub fn items(&self) -> &[ItemStack] {

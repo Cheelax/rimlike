@@ -7,6 +7,7 @@
 
 use core::cmp::Reverse;
 
+use crate::animals::Species;
 use crate::build;
 use crate::climate;
 use crate::craft::{self, CraftStage};
@@ -65,6 +66,11 @@ impl Sim {
                 Job::Flee => self.do_flee(i),
                 _ => self.raider_ai(i),
             }
+            return;
+        }
+        // La faune : boucle courte elle aussi, sans besoin ni recherche de job.
+        if self.pawns[i].faction == Faction::Animal {
+            self.animal_ai(i);
             return;
         }
         self.decay_needs(i);
@@ -133,6 +139,13 @@ impl Sim {
                 stage,
             } => self.do_craft(i, spot, recipe, stage),
             Job::Equip { item } => self.do_equip(i, item),
+            Job::Hunt { target } => self.do_hunt(i, target),
+            Job::Butcher {
+                spot,
+                item,
+                picked,
+                progress,
+            } => self.do_butcher(i, spot, item, picked, progress),
             // Traité plus haut : un pawn à terre ne passe jamais par ici.
             Job::Downed => {}
         }
@@ -304,8 +317,13 @@ impl Sim {
             // priorité et la même compétence, après les chantiers en cours.
             WorkType::Build => self.try_start_build(i) || self.try_start_craft(i),
             WorkType::Deliver => self.try_start_deliver(i),
-            WorkType::Cook => self.try_start_cook(i),
-            WorkType::Designated => self.try_start_work(i),
+            // Le dépeçage suit la cuisine : même compétence, même urgence
+            // (la viande se gâte), mais après les repas déjà lancés.
+            WorkType::Cook => self.try_start_cook(i) || self.try_start_butcher(i),
+            // La chasse est du travail désigné : le joueur la demande bête par
+            // bête (`Command::Hunt`) plutôt que case par case, mais c'est la
+            // même priorité et la même place dans le tableau de travail.
+            WorkType::Designated => self.try_start_work(i) || self.try_start_hunt(i),
             WorkType::Farm => self.try_start_farm(i),
             WorkType::Haul => self.try_start_haul(i),
         }
@@ -1628,6 +1646,209 @@ impl Sim {
         if let Some(old) = self.pawns[i].weapon.replace(kind) {
             self.spawn_item(old, 1, here.0, here.1);
         }
+        self.pawns[i].job = Job::Idle;
+    }
+
+    // ------------------------------------------------------------------
+    // Chasse et dépeçage
+    // ------------------------------------------------------------------
+
+    /// Le gibier est-il déjà pris en charge par un autre chasseur ?
+    fn hunted_by_other(&self, i: usize, target: u32) -> bool {
+        self.pawns
+            .iter()
+            .enumerate()
+            .any(|(k, p)| k != i && matches!(p.job, Job::Hunt { target: t } if t == target))
+    }
+
+    /// Part chasser le gibier marqué le plus proche. **Un colon à mains nues
+    /// ne chasse pas** : on ne court pas après un cerf pour l'étrangler.
+    fn try_start_hunt(&mut self, i: usize) -> bool {
+        // Deux court-circuits : pas d'arme, ou rien de marqué sur la carte.
+        if self.pawns[i].weapon.is_none()
+            || !self
+                .pawns
+                .iter()
+                .any(|p| p.hunted && p.faction == Faction::Animal && p.is_alive())
+        {
+            return false;
+        }
+        let from = self.pawns[i].tile();
+        let mut candidates: Vec<(u32, u32, u32, u32)> = Vec::new();
+        for p in &self.pawns {
+            if !p.hunted || p.faction != Faction::Animal || !p.is_alive() {
+                continue;
+            }
+            if self.hunted_by_other(i, p.id) {
+                continue;
+            }
+            let (x, y) = p.tile();
+            candidates.push((chebyshev(from, (x, y)), x, y, p.id));
+        }
+        candidates.sort_unstable();
+        for &(d, x, y, target) in candidates.iter().take(PATH_ATTEMPTS) {
+            // La bête bouge : le chemin sera refait à chaque tick par
+            // `engage`. Ici on vérifie seulement qu'elle est atteignable, pour
+            // qu'un chasseur ne parte pas après un lapin de l'autre rive.
+            if d <= 1 || self.path_adjacent(from, (x, y)).is_some() {
+                self.pawns[i].path.clear();
+                self.pawns[i].job = Job::Hunt { target };
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Poursuit et abat le gibier. Contrairement aux pillards face à un colon
+    /// écroulé, **le chasseur achève une bête à terre** : la laisser agoniser
+    /// n'aurait aucun sens.
+    fn do_hunt(&mut self, i: usize, target: u32) {
+        let hunted = self
+            .pawns
+            .iter()
+            .any(|p| p.id == target && p.is_alive() && p.hunted);
+        if !hunted {
+            // Bête morte, partie, ou chasse annulée par le joueur.
+            self.abandon_job(i);
+            return;
+        }
+        if self.engage(i, target) != crate::combat::EngageOutcome::Engaged {
+            self.abandon_job(i);
+        }
+    }
+
+    /// Dépèce s'il y a un poste libre et une dépouille au sol. Aucun objectif à
+    /// régler : dès qu'une bête est morte, on la débite (voir
+    /// `craft::BUTCHER_TICKS`).
+    fn try_start_butcher(&mut self, i: usize) -> bool {
+        // Deux court-circuits avant tout balayage : pas de poste, pas de
+        // dépouille. Le premier est un compteur, le second un test sur les piles.
+        if self.map.crafting_spot_count() == 0
+            || !self
+                .items
+                .iter()
+                .any(|s| s.kind.is_animal_corpse() && s.reserved_by.is_none() && s.count > 0)
+        {
+            return false;
+        }
+        let mut spots: Vec<(u32, u32)> = Vec::new();
+        for y in 0..self.map.height() {
+            for x in 0..self.map.width() {
+                if self.map.feature(x, y) == Feature::CraftingSpot && !self.is_reserved(x, y) {
+                    spots.push((x, y));
+                }
+            }
+        }
+        if spots.is_empty() {
+            return false;
+        }
+        let from = self.pawns[i].tile();
+        let mut stacks: Vec<(u32, u32, u32, usize)> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.kind.is_animal_corpse() && s.reserved_by.is_none() && s.count > 0)
+            .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
+            .collect();
+        stacks.sort_unstable();
+        for &(_, sx, sy, k) in stacks.iter().take(PATH_ATTEMPTS) {
+            // Le poste le plus proche de la dépouille, pas du colon : c'est
+            // elle qu'il va falloir porter.
+            let Some(&(_, fx, fy)) = spots
+                .iter()
+                .map(|&(x, y)| (chebyshev((sx, sy), (x, y)), x, y))
+                .min()
+                .as_ref()
+            else {
+                return false;
+            };
+            if let Some(p) = path::find_path(&self.map, from, (sx, sy)) {
+                let pawn = self.pawns[i].id;
+                self.items[k].reserved_by = Some(pawn);
+                self.reservations.push(Reservation { x: fx, y: fy, pawn });
+                let item = self.items[k].id;
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Butcher {
+                    spot: (fx, fy),
+                    item,
+                    picked: false,
+                    progress: 0,
+                };
+                return true;
+            }
+        }
+        false
+    }
+
+    fn do_butcher(&mut self, i: usize, spot: (u32, u32), item: u32, picked: bool, progress: u32) {
+        if self.map.feature(spot.0, spot.1) != Feature::CraftingSpot {
+            self.abandon_job(i);
+            return;
+        }
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        let here = self.pawns[i].tile();
+        if !picked {
+            let Some(j) = self.items.iter().position(|s| s.id == item) else {
+                self.abandon_job(i);
+                return;
+            };
+            if (self.items[j].x, self.items[j].y) != here || !self.items[j].kind.is_animal_corpse()
+            {
+                self.abandon_job(i);
+                return;
+            }
+            // Une dépouille se porte à l'unité, comme une arme.
+            let kind = self.items[j].kind;
+            self.items[j].count -= 1;
+            self.items[j].reserved_by = None;
+            if self.items[j].count == 0 {
+                self.items.remove(j);
+            }
+            self.pawns[i].carrying = Some((kind, 1));
+            match self.path_adjacent(here, spot) {
+                Some(p) => {
+                    self.pawns[i].set_path(p);
+                    self.pawns[i].job = Job::Butcher {
+                        spot,
+                        item,
+                        picked: true,
+                        progress: 0,
+                    };
+                }
+                None => self.abandon_job(i),
+            }
+            return;
+        }
+        let Some((kind, _)) = self.pawns[i].carrying else {
+            self.abandon_job(i);
+            return;
+        };
+        if chebyshev(here, spot) > 1 {
+            self.abandon_job(i);
+            return;
+        }
+        let progress = progress + self.pawns[i].work_step(WorkType::Cook);
+        self.gain_xp(i, WorkType::Cook);
+        if progress < craft::BUTCHER_TICKS * 100 {
+            self.pawns[i].job = Job::Butcher {
+                spot,
+                item,
+                picked: true,
+                progress,
+            };
+            return;
+        }
+        // La dépouille est consommée ; viande et cuir tombent au pied du poste.
+        self.pawns[i].carrying = None;
+        if let Some(species) = Species::from_corpse(kind) {
+            self.spawn_item(ItemKind::Meat, species.meat(), here.0, here.1);
+            self.spawn_item(ItemKind::Leather, species.leather(), here.0, here.1);
+        }
+        let id = self.pawns[i].id;
+        self.reservations.retain(|r| r.pawn != id);
         self.pawns[i].job = Job::Idle;
     }
 

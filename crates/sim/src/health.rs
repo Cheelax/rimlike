@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::TICKS_PER_DAY;
-use crate::pawn::{HP_MAX, Job, Pawn};
+use crate::pawn::{Job, Pawn};
 
 /// Partie du corps touchée par une blessure. Les valeurs sont un contrat avec
 /// le client (`pawn_injuries` en expose l'entier).
@@ -174,17 +174,20 @@ impl Pawn {
 
     /// Recalcule les points de vie à partir des blessures et du sang. `hp`
     /// n'est plus la source de vérité : il est gardé pour les tampons de rendu
-    /// et vaut exactement 0 quand le pawn meurt.
+    /// et vaut exactement 0 quand le pawn meurt. Le plafond dépend de
+    /// l'espèce (`Pawn::max_hp`) : un lapin tombe en deux coups, un sanglier
+    /// encaisse plus qu'un humain.
     pub fn recompute_hp(&mut self) {
         let lethal = self.blood == 0
             || self
                 .injuries
                 .iter()
                 .any(|i| i.part.is_vital() && i.severity >= SEVERITY_MAX);
+        let max = self.max_hp();
         self.hp = if lethal {
             0
         } else {
-            HP_MAX.saturating_sub(self.total_severity().min(HP_MAX))
+            max.saturating_sub(self.total_severity().min(max))
         };
     }
 

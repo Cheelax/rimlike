@@ -354,6 +354,13 @@ isolation et chaleur des feux par pièce ; gel qui arrête les cultures et peut 
 buissons qui ne repoussent pas sous zéro, neige ; froid qui pèse sur l'humeur, hypothermie par
 blessures « froid » dont la cicatrisation est bloquée sous −5 °C, chaleur excessive. Pas encore
 de vêtements ni de toits explicites. Interface à faire (température, saison, neige, pièces).
+Faune, chasse et dépeçage livrés le 2026-09-05 (Opus, sim) : cerfs, lapins et sangliers qui
+paissent, fuient et parfois quittent la carte, hardes qui arrivent tous les 2 à 4 jours
+(12 bêtes au plus), sanglier qui riposte ; chasse par bête marquée (`Hunt`), réservée aux
+colons armés, avec XP de tir ou de mêlée ; dépeçage automatique au poste (viande selon
+l'espèce, cuir), viande crue ou cuisinée. Perf : le coût par tick suit le nombre de pawns
+(les bêtes comptent), à surveiller ; `u64::isqrt` remplace la racine maison. Interface à
+faire (bêtes, marquage de chasse, viande et cuir).
 À venir : recherche, traits et relations, storyteller adaptatif, factions PNJ et commerce,
 mods de contenu, événements monde.
 
@@ -386,6 +393,10 @@ mods de contenu, événements monde.
 - 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
   par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
   libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
+- 2026-09-05 : faune (sim). Les bêtes sont des `Pawn` de faction Animal : même santé, même
+  déplacement, IA courte. La chasse se marque par bête (une commande, pas une désignation de
+  case) et reste rattachée au type de travail « désignations ». Paître et fuir marchent en
+  ligne droite plutôt qu'en A*, qui allouait trois grilles pour quatre pas.
 - 2026-09-05 : garde-fous serveur (Sonnet) : tailles, débit, connexions par IP (refus à
   l'upgrade en 429), salles, noms ; tout configurable, exposé dans `/health`. Préalable à
   tout hébergement public.

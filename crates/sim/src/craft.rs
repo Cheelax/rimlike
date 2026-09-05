@@ -55,6 +55,18 @@ pub fn recipe_for(kind: ItemKind) -> Option<&'static Recipe> {
     RECIPES.iter().find(|r| r.output == kind)
 }
 
+/// Durée d'un dépeçage au poste, en ticks à vitesse nominale.
+///
+/// Le dépeçage n'est **pas** une recette de `RECIPES` : son ingrédient est
+/// n'importe quel genre de dépouille et sa production dépend de l'espèce
+/// (`animals::Species::meat` et `leather`), deux choses que `Recipe`, qui a des
+/// genres fixes, ne sait pas dire. Il n'a pas non plus d'objectif réglable
+/// (`Command::SetCraftTarget` ne s'y applique pas) : dès qu'une dépouille
+/// existe et qu'un poste est libre, on débite — la viande se gâte vite.
+/// C'est du travail de cuisine (`WorkType::Cook`), juste après la cuisine
+/// elle-même.
+pub const BUTCHER_TICKS: u32 = 120;
+
 /// Où en est une fabrication. Remplace le couple `picked`/`progress` de la
 /// cuisine : avec deux ingrédients, il faut savoir lequel on va chercher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -23,6 +23,10 @@ pub const SKILL_STRIDE: usize = 1 + 2 * sim::WORK_TYPES;
 /// Entiers par pawn dans le tampon de santé : id, sang, conscience %,
 /// nombre de blessures. Toutes factions confondues, comme `pawns()`.
 pub const HEALTH_STRIDE: usize = 4;
+/// Entiers par bête dans le tampon de la faune : id, espèce (`sim::Species`),
+/// chassée (0/1). Le tampon des pawns ne bouge pas (`PAWN_STRIDE` = 12) : la
+/// faction 2 y suffit à distinguer un animal, celui-ci dit lequel.
+pub const ANIMAL_STRIDE: usize = 3;
 
 const FLAG_MOVING: i32 = 1;
 const FLAG_SLEEPING: i32 = 2;
@@ -95,6 +99,7 @@ pub struct WasmSim {
     priority_buffer: Vec<i32>,
     skill_buffer: Vec<i32>,
     health_buffer: Vec<i32>,
+    animal_buffer: Vec<i32>,
 }
 
 #[wasm_bindgen]
@@ -232,6 +237,14 @@ impl WasmSim {
         });
     }
 
+    /// Marque (`on`) ou démarque un animal comme gibier. La chasse se désigne
+    /// **par bête**, pas par rectangle : le client passe l'id lu dans le
+    /// tampon `animals`. Un id qui n'est pas celui d'un animal vivant est
+    /// ignoré par le sim.
+    pub fn hunt(&mut self, animal: u32, on: bool) {
+        self.pending.push(sim::Command::Hunt { animal, on });
+    }
+
     // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
     //
     // Fonctions **associées** : le client doit pouvoir encoder avant même
@@ -341,6 +354,11 @@ impl WasmSim {
             base_temperature,
             amplitude,
         })
+    }
+
+    /// Ordre de chasse sur une bête. Voir `hunt`.
+    pub fn encode_hunt(animal: u32, on: bool) -> Vec<u8> {
+        encode(&sim::Command::Hunt { animal, on })
     }
 
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
@@ -630,6 +648,32 @@ impl WasmSim {
         self.health_buffer.len()
     }
 
+    pub fn animal_stride(&self) -> usize {
+        ANIMAL_STRIDE
+    }
+
+    /// Tampon de la faune : `[id, espèce, chassée]` par bête vivante, dans
+    /// l'ordre des pawns. Le rendu y lit quoi dessiner et quoi marquer ; la
+    /// position, elle, reste dans le tampon des pawns.
+    pub fn animals_ptr(&self) -> *const i32 {
+        self.animal_buffer.as_ptr()
+    }
+
+    pub fn animals_len(&self) -> usize {
+        self.animal_buffer.len()
+    }
+
+    /// Espèce d'un pawn, suivant `sim::Species` (0 cerf, 1 lapin, 2 sanglier).
+    /// −1 : ce n'est pas un animal, ou l'id est inconnu.
+    pub fn pawn_species(&self, id: u32) -> i32 {
+        self.inner
+            .pawns()
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.species)
+            .map_or(-1, |s| s as i32)
+    }
+
     /// Blessures d'un pawn, à plat : `[partie, sévérité, saignement, pansée]`
     /// par blessure. Copie ponctuelle, pour le panneau du colon.
     pub fn pawn_injuries(&self, id: u32) -> Vec<i32> {
@@ -702,6 +746,7 @@ impl WasmSim {
             priority_buffer: Vec::new(),
             skill_buffer: Vec::new(),
             health_buffer: Vec::new(),
+            animal_buffer: Vec::new(),
         };
         s.refresh_buffers();
         s
@@ -809,6 +854,17 @@ impl WasmSim {
                 p.blood as i32,
                 p.consciousness_percent() as i32,
                 p.injuries.len() as i32,
+            ]);
+        }
+        self.animal_buffer.clear();
+        for p in self.inner.pawns() {
+            let Some(species) = p.species else {
+                continue;
+            };
+            self.animal_buffer.extend_from_slice(&[
+                p.id as i32,
+                species as i32,
+                i32::from(p.hunted),
             ]);
         }
         let _ = ItemKind::COUNT;
@@ -932,6 +988,13 @@ mod tests {
                 Command::SetClimate {
                     base_temperature: -80,
                     amplitude: 220,
+                },
+            ),
+            (
+                WasmSim::encode_hunt(12, true),
+                Command::Hunt {
+                    animal: 12,
+                    on: true,
                 },
             ),
         ];
@@ -1132,6 +1195,52 @@ mod tests {
             "la couche n'a pas été refaite"
         );
         assert!(s.tile_temperature(3, 3) > s.outdoor_temperature());
+    }
+
+    /// Contrat de la faune avec le client : tampon `animals` (stride 3),
+    /// espèce par accesseur, et ordre de chasse qui pose le marqueur.
+    #[test]
+    fn le_tampon_de_la_faune_suit_les_betes() {
+        let mut s = fresh();
+        assert_eq!(s.animal_stride(), ANIMAL_STRIDE);
+        // Une bête posée à la main s'ajoute à celles du départ : on la
+        // retrouve par son id, pas par sa place.
+        let deer = s.inner.spawn_animal(6, 6, sim::Species::Deer);
+        s.step(1);
+        assert_eq!(
+            s.animals_len(),
+            s.inner.animal_count() as usize * ANIMAL_STRIDE,
+            "une entrée par bête vivante"
+        );
+        let row = s
+            .animal_buffer
+            .chunks(ANIMAL_STRIDE)
+            .find(|r| r[0] == deer as i32)
+            .expect("le cerf est dans le tampon")
+            .to_vec();
+        assert_eq!(row[1], sim::Species::Deer as i32);
+        assert_eq!(row[2], 0, "pas encore chassée");
+        assert_eq!(s.pawn_species(deer), sim::Species::Deer as i32);
+        assert_eq!(s.pawn_species(9_999), -1, "id inconnu");
+        let colonist = s.inner.pawns()[0].id;
+        assert_eq!(s.pawn_species(colonist), -1, "un colon n'a pas d'espèce");
+        // Le camp suffit au rendu pour distinguer une bête : faction 2.
+        let k = s
+            .inner
+            .pawns()
+            .iter()
+            .position(|p| p.id == deer)
+            .expect("la bête est dans la liste");
+        assert_eq!(s.pawn_buffer[k * PAWN_STRIDE + 10], Faction::Animal as i32);
+
+        s.hunt(deer, true);
+        s.step(1);
+        let hunted = s
+            .animal_buffer
+            .chunks(ANIMAL_STRIDE)
+            .find(|r| r[0] == deer as i32)
+            .map(|r| r[2]);
+        assert_eq!(hunted, Some(1), "le marqueur de chasse n'est pas posé");
     }
 
     #[test]

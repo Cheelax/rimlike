@@ -69,6 +69,7 @@ impl Sim {
         // sinon le retour déclencherait une rafale de raids en attente.
         self.next_raid_at = self.next_raid_at.saturating_add(elapsed);
         self.next_wanderer_at = self.next_wanderer_at.saturating_add(elapsed);
+        self.next_herd_at = self.next_herd_at.saturating_add(elapsed);
         // La météo d'il y a deux mois ne veut plus rien dire : on retire.
         self.weather_until = self.tick;
         self.tick_weather();
@@ -106,10 +107,15 @@ impl Sim {
     /// Les pillards présents quittent la carte : ils n'ont pas attendu deux
     /// mois devant la porte. Ils partent **sans cadavre** (`gone`), donc
     /// `remove_dead` émet un `RaiderLeft` par pillard, comme une fuite.
+    ///
+    /// Les bêtes s'en vont pour la même raison : un troupeau ne broute pas la
+    /// même clairière pendant deux mois. Elles partent en silence — pas de
+    /// dépouille, pas d'événement — et de nouveaux troupeaux entreront quand
+    /// l'échéance décalée arrivera.
     fn raiders_leave(&mut self) {
         let mut leaving = false;
         for p in &mut self.pawns {
-            if p.faction == Faction::Raider {
+            if matches!(p.faction, Faction::Raider | Faction::Animal) {
                 p.gone = true;
                 leaving = true;
             }

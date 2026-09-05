@@ -18,10 +18,23 @@ pub enum ItemKind {
     Spear = 7,
     /// Arc : tire à distance (voir `combat::BOW_RANGE`), médiocre en mêlée.
     Bow = 8,
+    /// Dépouilles de bêtes. **Un genre par espèce** : `ItemStack` ne porte
+    /// aucune métadonnée, c'est donc le genre qui dit ce qu'on dépèce (voir
+    /// `animals::Species::corpse_kind`). Contrairement au cadavre humain,
+    /// elles se transportent : on les range avant de les débiter.
+    DeerCorpse = 9,
+    RabbitCorpse = 10,
+    BoarCorpse = 11,
+    /// Viande crue, tirée d'un dépeçage. Se mange telle quelle (mal) ou se
+    /// cuisine comme les autres crus.
+    Meat = 12,
+    /// Cuir : ni comestible ni périssable. Sans usage tant que les vêtements
+    /// ne sont pas là ; il se range en attendant.
+    Leather = 13,
 }
 
 impl ItemKind {
-    pub const COUNT: usize = 9;
+    pub const COUNT: usize = 14;
 
     pub fn from_u8(v: u8) -> ItemKind {
         match v {
@@ -33,6 +46,11 @@ impl ItemKind {
             6 => ItemKind::Club,
             7 => ItemKind::Spear,
             8 => ItemKind::Bow,
+            9 => ItemKind::DeerCorpse,
+            10 => ItemKind::RabbitCorpse,
+            11 => ItemKind::BoarCorpse,
+            12 => ItemKind::Meat,
+            13 => ItemKind::Leather,
             _ => ItemKind::Corpse,
         }
     }
@@ -43,12 +61,17 @@ impl ItemKind {
             ItemKind::Berries => Some(200_000),
             ItemKind::Vegetables => Some(150_000),
             ItemKind::Meal => Some(900_000),
+            ItemKind::Meat => Some(180_000),
             ItemKind::Wood
             | ItemKind::Stone
             | ItemKind::Corpse
             | ItemKind::Club
             | ItemKind::Spear
-            | ItemKind::Bow => None,
+            | ItemKind::Bow
+            | ItemKind::DeerCorpse
+            | ItemKind::RabbitCorpse
+            | ItemKind::BoarCorpse
+            | ItemKind::Leather => None,
         }
     }
 
@@ -56,28 +79,46 @@ impl ItemKind {
         self.nutrition().is_some()
     }
 
-    /// Un colon peut-il ranger cette pile ? Les cadavres restent où ils tombent.
+    /// Un colon peut-il ranger cette pile ? Seul le cadavre **humain** reste
+    /// où il tombe ; une dépouille de bête part au stockage, puis au poste.
     pub fn haulable(self) -> bool {
         self != ItemKind::Corpse
     }
 
-    /// Nourriture crue, transformable en repas au feu de camp.
-    pub fn is_raw_food(self) -> bool {
-        matches!(self, ItemKind::Berries | ItemKind::Vegetables)
+    /// Dépouille de bête, matière première du dépeçage.
+    pub fn is_animal_corpse(self) -> bool {
+        matches!(
+            self,
+            ItemKind::DeerCorpse | ItemKind::RabbitCorpse | ItemKind::BoarCorpse
+        )
     }
 
-    /// Ordre de préférence quand un colon a faim : plus petit = meilleur.
+    /// Nourriture crue, transformable en repas au feu de camp.
+    pub fn is_raw_food(self) -> bool {
+        matches!(
+            self,
+            ItemKind::Berries | ItemKind::Vegetables | ItemKind::Meat
+        )
+    }
+
+    /// Ordre de préférence quand un colon a faim : plus petit = meilleur. La
+    /// viande crue passe après les légumes : c'est le dernier recours.
     pub fn food_rank(self) -> u32 {
         match self {
             ItemKind::Meal => 0,
             ItemKind::Berries => 1,
             ItemKind::Vegetables => 2,
+            ItemKind::Meat => 3,
             ItemKind::Wood
             | ItemKind::Stone
             | ItemKind::Corpse
             | ItemKind::Club
             | ItemKind::Spear
-            | ItemKind::Bow => u32::MAX,
+            | ItemKind::Bow
+            | ItemKind::DeerCorpse
+            | ItemKind::RabbitCorpse
+            | ItemKind::BoarCorpse
+            | ItemKind::Leather => u32::MAX,
         }
     }
 
@@ -109,11 +150,12 @@ impl ItemKind {
         }
     }
 
-    /// Effet sur l'humeur du dernier repas : repas cuisiné bon, légumes crus mauvais.
+    /// Effet sur l'humeur du dernier repas : repas cuisiné bon, légumes crus
+    /// et viande crue mauvais.
     pub fn meal_quality(self) -> i8 {
         match self {
             ItemKind::Meal => 1,
-            ItemKind::Vegetables => -1,
+            ItemKind::Vegetables | ItemKind::Meat => -1,
             _ => 0,
         }
     }
@@ -133,9 +175,18 @@ impl ItemKind {
             ItemKind::Vegetables => Some(TICKS_PER_DAY * 4),
             ItemKind::Meal => Some(TICKS_PER_DAY * 2),
             ItemKind::Corpse => Some(TICKS_PER_DAY * 3),
-            ItemKind::Wood | ItemKind::Stone | ItemKind::Club | ItemKind::Spear | ItemKind::Bow => {
-                None
-            }
+            // Une dépouille se dépèce vite ou se perd ; la viande crue suit
+            // le repas cuisiné. Le cuir, lui, ne se gâte pas.
+            ItemKind::DeerCorpse
+            | ItemKind::RabbitCorpse
+            | ItemKind::BoarCorpse
+            | ItemKind::Meat => Some(TICKS_PER_DAY * 2),
+            ItemKind::Wood
+            | ItemKind::Stone
+            | ItemKind::Club
+            | ItemKind::Spear
+            | ItemKind::Bow
+            | ItemKind::Leather => None,
         }
     }
 }

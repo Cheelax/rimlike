@@ -4,6 +4,7 @@
 //! `(distance, x, y, id)` avant de tenter un chemin : l'ordre est total, donc
 //! identique sur tous les clients.
 
+use crate::animals::BOAR_DAMAGE;
 use crate::health::{
     self, BLEED_INTERVAL, BLOOD_MAX, BLOOD_REGEN_INTERVAL, DOWNED_BLOOD, DOWNED_CONSCIOUSNESS,
     UP_BLOOD, UP_CONSCIOUSNESS,
@@ -11,7 +12,7 @@ use crate::health::{
 use crate::items::ItemKind;
 use crate::map::{Feature, Map, chebyshev};
 use crate::path;
-use crate::pawn::{Faction, Job, NEED_MAX};
+use crate::pawn::{Faction, Job, NEED_MAX, Pawn};
 use crate::work;
 use crate::{EventKind, Sim, TICKS_PER_DAY};
 
@@ -130,6 +131,19 @@ pub const GRACE_DAYS: u32 = 3;
 pub const GRIEF_TICKS: u32 = TICKS_PER_DAY * 2;
 /// Taille maximale d'un raid.
 pub const MAX_RAIDERS: u32 = 6;
+
+/// Ce qu'a donné un tour d'approche-et-frappe (`Sim::engage`). L'appelant
+/// décide quoi faire d'un échec : un pillard repart, un chasseur abandonne son
+/// gibier, un sanglier détale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EngageOutcome {
+    /// La cible n'existe plus : morte, partie, ou id inconnu.
+    Gone,
+    /// Aucun chemin jusqu'à elle (les murs comptent).
+    Unreachable,
+    /// En cours : on avance, on frappe, ou on attend la fin du cooldown.
+    Engaged,
+}
 
 /// Nombre de cibles pour lesquelles on tente un chemin par recherche.
 const MELEE_TARGETS: usize = 3;
@@ -275,6 +289,13 @@ impl Sim {
             let three_days = u64::from(TICKS_PER_DAY) * 3;
             self.next_wanderer_at =
                 self.tick + three_days + u64::from(self.rng.below(TICKS_PER_DAY * 2));
+        }
+        // Avant la sortie rapide du raid : sinon un troupeau n'entrerait
+        // jamais tant qu'un raid est en attente, c'est-à-dire presque toujours.
+        if self.tick >= self.next_herd_at {
+            self.spawn_herd();
+            let two_days = u64::from(TICKS_PER_DAY) * 2;
+            self.next_herd_at = self.tick + two_days + u64::from(self.rng.below(TICKS_PER_DAY * 2));
         }
         if self.tick < self.next_raid_at {
             return;
@@ -455,7 +476,7 @@ impl Sim {
         out
     }
 
-    fn is_edge_tile(&self, t: (u32, u32)) -> bool {
+    pub(crate) fn is_edge_tile(&self, t: (u32, u32)) -> bool {
         t.0 == 0 || t.1 == 0 || t.0 + 1 >= self.map.width() || t.1 + 1 >= self.map.height()
     }
 
@@ -510,6 +531,20 @@ impl Sim {
         }
     }
 
+    /// Une bête compte-t-elle comme ennemi qu'on prend de soi-même ? Non :
+    /// un raid ne se détourne pas sur un lapin, et un colon ne lâche pas son
+    /// chantier pour un cerf qui passe (c'est la chasse, pas la défense). La
+    /// seule exception est le sanglier lancé à la charge : celui-là est une
+    /// menace, et les colons se défendent.
+    fn is_auto_target(&self, p: &Pawn, seeker: Faction) -> bool {
+        if p.faction != Faction::Animal {
+            return true;
+        }
+        seeker == Faction::Colony
+            && matches!(p.job, Job::Attack { .. })
+            && p.species.is_some_and(|s| s.aggressive())
+    }
+
     /// Id de l'ennemi vivant le plus proche dans `radius`, parmi les
     /// `MELEE_TARGETS` premiers pour lesquels un chemin existe. Les pawns à
     /// terre ne sont jamais visés d'eux-mêmes : les pillards passent devant un
@@ -521,7 +556,12 @@ impl Sim {
         let mut enemies: Vec<(u32, u32, u32, u32)> = self
             .pawns
             .iter()
-            .filter(|p| p.is_alive() && p.faction != faction && !p.is_downed())
+            .filter(|p| {
+                p.is_alive()
+                    && p.faction != faction
+                    && !p.is_downed()
+                    && self.is_auto_target(p, faction)
+            })
             .map(|p| {
                 let (x, y) = p.tile();
                 (chebyshev(me, (x, y)), x, y, p.id)
@@ -540,28 +580,19 @@ impl Sim {
     // Exécution
     // ------------------------------------------------------------------
 
-    pub(crate) fn do_attack(&mut self, i: usize, target: u32) {
-        if self.pawns[i].faction == Faction::Raider && self.pawns[i].hp < FLEE_HP {
-            self.pawns[i].path.clear();
-            self.pawns[i].job = Job::Flee;
-            return;
-        }
+    /// Approcher et frapper (ou tirer). Le cœur du combat, partagé par
+    /// l'attaque (`Job::Attack`), la chasse (`Job::Hunt`) et la charge d'un
+    /// sanglier : mêmes portées, mêmes cooldowns, même XP. Ce qui diffère —
+    /// qui décroche, qui achève un corps à terre, ce qu'on fait après un
+    /// échec — reste chez l'appelant.
+    pub(crate) fn engage(&mut self, i: usize, target: u32) -> EngageOutcome {
         let Some(k) = self
             .pawns
             .iter()
             .position(|p| p.id == target && p.is_alive())
         else {
-            self.pawns[i].path.clear();
-            self.pawns[i].job = Job::Idle;
-            return;
+            return EngageOutcome::Gone;
         };
-        // Un pillard ne s'acharne pas sur un corps à terre : il cherche une
-        // autre cible debout, ou repart.
-        if self.pawns[i].faction == Faction::Raider && self.pawns[k].is_downed() {
-            self.pawns[i].path.clear();
-            self.pawns[i].job = Job::Idle;
-            return;
-        }
         let me = self.pawns[i].tile();
         let them = self.pawns[k].tile();
         let distance = chebyshev(me, them);
@@ -570,7 +601,7 @@ impl Sim {
             if self.pawns[i].attack_cooldown == 0 {
                 self.melee_strike(i, k);
             }
-            return;
+            return EngageOutcome::Engaged;
         }
         // Un tireur garde ses distances : cible en vue et à portée, il s'arrête
         // là où il est et décoche.
@@ -582,7 +613,7 @@ impl Sim {
             if self.pawns[i].attack_cooldown == 0 {
                 self.shoot(i, k, distance);
             }
-            return;
+            return EngageOutcome::Engaged;
         }
         // Le chemin est stocké inversé : `first()` est la destination.
         let stale = self.pawns[i]
@@ -592,32 +623,62 @@ impl Sim {
         if stale {
             match self.path_adjacent(me, them) {
                 Some(p) => self.pawns[i].set_path(p),
-                None => {
-                    self.pawns[i].path.clear();
-                    self.pawns[i].job = Job::Idle;
-                    return;
-                }
+                None => return EngageOutcome::Unreachable,
             }
         }
         self.pawns[i].advance(&self.map);
+        EngageOutcome::Engaged
+    }
+
+    pub(crate) fn do_attack(&mut self, i: usize, target: u32) {
+        if self.pawns[i].faction == Faction::Raider && self.pawns[i].hp < FLEE_HP {
+            self.pawns[i].path.clear();
+            self.pawns[i].job = Job::Flee;
+            return;
+        }
+        // Un pillard ne s'acharne pas sur un corps à terre : il cherche une
+        // autre cible debout, ou repart.
+        if self.pawns[i].faction == Faction::Raider
+            && self
+                .pawns
+                .iter()
+                .any(|p| p.id == target && p.is_alive() && p.is_downed())
+        {
+            self.pawns[i].path.clear();
+            self.pawns[i].job = Job::Idle;
+            return;
+        }
+        if self.engage(i, target) != EngageOutcome::Engaged {
+            self.pawns[i].path.clear();
+            self.pawns[i].job = Job::Idle;
+        }
     }
 
     /// Un coup au corps à corps : deux tirages dans un ordre fixe, les dégâts
     /// puis la partie du corps touchée. Le coup laisse une plaie qui saigne.
     fn melee_strike(&mut self, i: usize, k: usize) {
-        let (lo, hi) = if self.pawns[i].faction == Faction::Colony {
-            COLONIST_DAMAGE
-        } else {
-            RAIDER_DAMAGE
+        let faction = self.pawns[i].faction;
+        let (lo, hi) = match faction {
+            Faction::Colony => COLONIST_DAMAGE,
+            Faction::Raider => RAIDER_DAMAGE,
+            Faction::Animal => BOAR_DAMAGE,
         };
         let roll = self.rng.range_i32(lo, hi) as u32;
-        let percent = self.pawns[i].weapon.map_or(100, |w| w.melee_percent())
-            * melee_skill_percent(self.pawns[i].melee.level)
-            / 100;
+        // Une bête ne tient pas d'arme et n'apprend rien du combat : ses
+        // dégâts sont ceux de son espèce, sans facteur.
+        let percent = if faction == Faction::Animal {
+            100
+        } else {
+            self.pawns[i].weapon.map_or(100, |w| w.melee_percent())
+                * melee_skill_percent(self.pawns[i].melee.level)
+                / 100
+        };
         let damage = (roll * percent / 100).max(1);
         let part = health::part_for_roll(self.rng.below(health::HIT_WEIGHT_TOTAL));
         self.pawns[k].add_injury(part, damage, damage / health::BLEED_FRACTION);
         self.pawns[i].attack_cooldown = ATTACK_COOLDOWN;
+        let attacker = self.pawns[i].id;
+        self.animal_hit(k, Some(attacker));
         self.gain_combat_xp(i, false);
     }
 
@@ -630,6 +691,10 @@ impl Sim {
             let damage = self.rng.range_i32(RANGED_DAMAGE.0, RANGED_DAMAGE.1) as u32;
             let part = health::part_for_roll(self.rng.below(health::HIT_WEIGHT_TOTAL));
             self.pawns[k].add_injury(part, damage, damage / health::BLEED_FRACTION);
+            // Une flèche qui porte déclenche la fuite (ou la charge) de la
+            // bête ; une flèche perdue ne l'inquiète pas.
+            let attacker = self.pawns[i].id;
+            self.animal_hit(k, Some(attacker));
         }
         self.pawns[i].attack_cooldown = RANGED_COOLDOWN;
         self.gain_combat_xp(i, true);
@@ -639,6 +704,10 @@ impl Sim {
     /// flèche tirée. Mêmes seuils que les compétences de travail, mais hors du
     /// tableau `skills` — et seuls les colons montent en grade au journal.
     fn gain_combat_xp(&mut self, i: usize, ranged: bool) {
+        // Une bête ne progresse pas : ses coups ne dépendent pas d'un niveau.
+        if self.pawns[i].faction == Faction::Animal {
+            return;
+        }
         let colonist = self.pawns[i].faction == Faction::Colony;
         let id = self.pawns[i].id;
         let skill = if ranged {
@@ -723,23 +792,33 @@ impl Sim {
                 self.spawn_item(kind, count, x, y);
             }
             if p.hp == 0 {
-                // L'arme du mort tombe là : butin pour la colonie quand c'est
-                // un pillard, arme à ramasser quand c'est un des siens. Un
-                // fuyard, lui, repart avec la sienne.
-                if let Some(weapon) = p.weapon {
-                    self.spawn_item(weapon, 1, x, y);
-                }
-                self.spawn_item(ItemKind::Corpse, 1, x, y);
-                match p.faction {
-                    Faction::Colony => {
-                        for q in &mut self.pawns {
-                            if q.faction == Faction::Colony {
-                                q.grief_ticks = GRIEF_TICKS;
-                            }
-                        }
-                        self.push_event(EventKind::ColonistDied, p.id);
+                match (p.faction, p.species) {
+                    // Une bête laisse sa dépouille, pas un cadavre humain :
+                    // celle-là se transporte et se dépèce.
+                    (Faction::Animal, Some(species)) => {
+                        self.spawn_item(species.corpse_kind(), 1, x, y);
+                        self.push_event(EventKind::AnimalHunted, species as u32);
                     }
-                    Faction::Raider => self.push_event(EventKind::RaiderDied, p.id),
+                    (Faction::Animal, None) => {}
+                    (faction, _) => {
+                        // L'arme du mort tombe là : butin pour la colonie quand
+                        // c'est un pillard, arme à ramasser quand c'est un des
+                        // siens. Un fuyard, lui, repart avec la sienne.
+                        if let Some(weapon) = p.weapon {
+                            self.spawn_item(weapon, 1, x, y);
+                        }
+                        self.spawn_item(ItemKind::Corpse, 1, x, y);
+                        if faction == Faction::Colony {
+                            for q in &mut self.pawns {
+                                if q.faction == Faction::Colony {
+                                    q.grief_ticks = GRIEF_TICKS;
+                                }
+                            }
+                            self.push_event(EventKind::ColonistDied, p.id);
+                        } else {
+                            self.push_event(EventKind::RaiderDied, p.id);
+                        }
+                    }
                 }
             } else if p.faction == Faction::Raider {
                 self.push_event(EventKind::RaiderLeft, p.id);

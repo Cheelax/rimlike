@@ -28,8 +28,10 @@ const RAIDER_NAMES: [&str; 40] = [
 /// Tire un prénom pour un pawn du camp donné.
 pub fn pick(rng: &mut Rng, faction: Faction) -> String {
     let list = match faction {
-        Faction::Colony => &COLONIST_NAMES,
         Faction::Raider => &RAIDER_NAMES,
+        // Une bête ne passe jamais par ici : son nom est son espèce
+        // (`animals::Species::label`), et `spawn_animal` ne tire rien.
+        Faction::Colony | Faction::Animal => &COLONIST_NAMES,
     };
     list[rng.below(list.len() as u32) as usize].to_string()
 }

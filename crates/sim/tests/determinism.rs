@@ -169,6 +169,17 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             target: 1,
         });
     }
+    if t == 9500 {
+        // La chasse touche au combat, aux morts et aux dépouilles : elle a sa
+        // place dans le scénario de référence. Sans animal (carte pauvre),
+        // rien n'est émis, et le scénario reste identique des deux côtés.
+        if let Some(a) = sim.pawns().iter().find(|p| p.faction == Faction::Animal) {
+            cmds.push(Command::Hunt {
+                animal: a.id,
+                on: true,
+            });
+        }
+    }
     if t % 900 == 0 {
         for (k, p) in sim.pawns().iter().enumerate() {
             cmds.push(Command::MoveTo {
@@ -274,7 +285,14 @@ fn map_has_main_terrains_and_features() {
 #[test]
 fn starting_pawns_exist_on_passable_tiles() {
     let s = Sim::new(5, 64, 64);
-    assert_eq!(s.pawns().len(), 3);
+    // Trois colons, plus la faune de départ (`animals::spawn_starting_animals`).
+    assert_eq!(
+        s.pawns()
+            .iter()
+            .filter(|p| p.faction == Faction::Colony)
+            .count(),
+        3
+    );
     for p in s.pawns() {
         let (x, y) = p.tile();
         assert!(s.map().passable(x, y));

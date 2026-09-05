@@ -24,18 +24,17 @@ pub const fn div(a: Fx, b: Fx) -> Fx {
     (((a as i64) << FX_SHIFT) / (b as i64)) as Fx
 }
 
-/// Racine carrée entière (plancher) sur `u64`, par Newton.
+/// Racine carrée entière (plancher) sur `u64`.
+///
+/// `u64::isqrt` est **exact** (plancher, par contrat de la bibliothèque
+/// standard) et donc identique à l'octet près sur toutes les cibles : le
+/// lockstep n'y perd rien. Elle remplace la boucle de Newton maison, qui
+/// partait de `n` et payait une dizaine de divisions 64 bits par appel —
+/// c'est-à-dire à chaque pas de chaque pawn (`Pawn::advance`). Mesuré au
+/// `bench` du 2026-09-05 : environ un quart du temps du scénario `demo`.
+#[inline]
 pub fn isqrt(n: u64) -> u64 {
-    if n < 2 {
-        return n;
-    }
-    let mut x = n;
-    let mut y = x.div_ceil(2);
-    while y < x {
-        x = y;
-        y = (x + n / x) / 2;
-    }
-    x
+    n.isqrt()
 }
 
 /// Racine carrée en virgule fixe.
@@ -63,6 +62,19 @@ mod tests {
         for n in 0..10_000u64 {
             let r = isqrt(n);
             assert!(r * r <= n && (r + 1) * (r + 1) > n);
+        }
+        // Le plancher tient aussi tout en haut de la plage : c'est le contrat
+        // sur lequel repose le lockstep depuis le passage à `u64::isqrt`.
+        for n in [
+            u64::from(u32::MAX),
+            1 << 40,
+            (1 << 40) - 1,
+            u64::MAX - 1,
+            u64::MAX,
+        ] {
+            let r = isqrt(n);
+            assert!(r.checked_mul(r).is_some_and(|s| s <= n));
+            assert!((r + 1).checked_mul(r + 1).is_none_or(|s| s > n));
         }
     }
 }

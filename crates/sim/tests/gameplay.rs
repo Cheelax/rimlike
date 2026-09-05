@@ -11,8 +11,8 @@ use sim::pawn::{
 use sim::testmap::map_from;
 use sim::{
     BodyPart, BuildKind, CaravanManifest, Command, Designation, EventKind, Faction, Feature,
-    ItemKind, Job, MAX_FAST_FORWARD, Material, Pawn, Sim, TICKS_PER_DAY, Terrain, Weather,
-    WorkType, Zone,
+    ItemKind, Job, MAX_ANIMALS, MAX_FAST_FORWARD, Material, Pawn, Sim, Species, TICKS_PER_DAY,
+    Terrain, Weather, WorkType, Zone,
 };
 
 const DAY: u64 = sim::TICKS_PER_DAY as u64;
@@ -581,21 +581,22 @@ fn raid_spawns_hostiles_and_colony_defends() {
     // Trois colons donnent deux pillards.
     assert_eq!(raiders(&s), 2, "pillards : {:?}", s.pawns());
     assert!(has_event(&s, EventKind::Raid));
-    let colonists_before = s.pawns().len() - raiders(&s);
+    let colonists_before = colonists(&s);
 
     assert!(
         run_until(&mut s, 2 * DAY, |s| raiders(s) == 0),
         "pillards encore là : {:?}",
         s.pawns()
     );
+    // Il ne reste que des vivants, et personne d'hostile (la faune reste).
     assert!(
         s.pawns()
             .iter()
-            .all(|p| p.faction == Faction::Colony && p.is_alive())
+            .all(|p| p.faction != Faction::Raider && p.is_alive())
     );
-    assert!(!s.pawns().is_empty(), "la colonie a été anéantie");
+    assert!(colonists(&s) > 0, "la colonie a été anéantie");
     assert!(
-        s.pawns().len() <= colonists_before,
+        colonists(&s) <= colonists_before,
         "des colons sont apparus de nulle part"
     );
     assert!(
@@ -630,7 +631,13 @@ fn starvation_wounds_then_kills_and_leaves_a_corpse() {
         "événements : {:?}",
         s.events()
     );
-    assert!(s.pawns().iter().all(|p| p.grief_ticks > 0));
+    // Le deuil est celui de la colonie : les bêtes ne pleurent personne.
+    assert!(
+        s.pawns()
+            .iter()
+            .filter(|p| p.faction == Faction::Colony)
+            .all(|p| p.grief_ticks > 0)
+    );
 }
 
 #[test]
@@ -964,9 +971,9 @@ fn wanderer_joins_after_a_few_days() {
 #[test]
 fn starting_pawns_have_names_and_random_skill_levels() {
     let a = Sim::new(5, 64, 64);
-    assert_eq!(a.pawns().len(), 3);
+    assert_eq!(colonists(&a), 3);
     for p in a.pawns() {
-        assert!(!p.name.is_empty(), "colon sans nom : {p:?}");
+        assert!(!p.name.is_empty(), "pawn sans nom : {p:?}");
         for skill in &p.skills {
             assert!(skill.level <= 8, "niveau hors bornes : {}", skill.level);
         }
@@ -1594,7 +1601,10 @@ fn bow_needs_line_of_sight_and_range() {
 fn armed_raiders_drop_weapons() {
     // Carte pleine taille : sur la clairière de douze cases de large, un
     // pillard qui décroche atteint le bord avant de succomber à ses plaies.
-    let mut s = Sim::new(1, 32, 32);
+    // La graine est choisie pour qu'un pillard y laisse sa peau : sur la
+    // graine 1 les deux décrochent à temps et repartent avec leurs armes,
+    // ce qui est un déroulement légitime mais ne prouve rien sur le butin.
+    let mut s = Sim::new(2, 32, 32);
     let (bx, by) = s
         .map()
         .nearest_passable(16, 16)
@@ -2444,4 +2454,288 @@ fn climate_is_configurable_and_bounded() {
         (sim::climate::TEMPERATURE_MIN..=sim::climate::TEMPERATURE_MAX).contains(&cold),
         "température hors bornes : {cold}"
     );
+}
+
+// ----------------------------------------------------------------------
+// Faune, chasse et dépeçage
+// ----------------------------------------------------------------------
+
+/// Bêtes vivantes sur la carte.
+fn animals(s: &Sim) -> Vec<u32> {
+    s.pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Animal && p.is_alive())
+        .map(|p| p.id)
+        .collect()
+}
+
+/// Total d'un genre possédé par la colonie, au sol comme rangé.
+fn owned(s: &Sim, kind: ItemKind) -> u32 {
+    s.colony_total(kind)
+}
+
+/// Garde tout le monde en vie sans poser de nourriture sur la carte : la
+/// chasse doit rester le seul repas disponible quand on veut l'observer.
+fn top_up_hunger(s: &mut Sim) {
+    let ids: Vec<u32> = s
+        .pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Colony)
+        .map(|p| p.id)
+        .collect();
+    for id in ids {
+        if let Some(p) = s.pawn_mut(id) {
+            p.hunger = NEED_MAX;
+        }
+    }
+}
+
+#[test]
+fn animals_spawn_graze_and_flee() {
+    let mut s = Sim::new(3, 48, 48);
+    let herd = animals(&s);
+    assert!(!herd.is_empty(), "aucune bête au départ");
+    assert!(herd.len() <= 4, "troupeau de départ trop gros : {herd:?}");
+    let center = (24u32, 24u32);
+    for p in s.pawns().iter().filter(|p| p.faction == Faction::Animal) {
+        let species = p.species.expect("une bête a une espèce");
+        assert_ne!(species, Species::Boar, "pas de sanglier au premier jour");
+        assert_eq!(p.name, species.label(), "le nom d'une bête est son espèce");
+        assert_eq!(p.flee_until, 0, "une bête démarre calme");
+        assert_eq!(p.hp, species.max_hp(), "PV de départ de l'espèce");
+        assert!(
+            sim::map::chebyshev(center, p.tile()) >= 12,
+            "bête posée sur la colonie : {:?}",
+            p.tile()
+        );
+    }
+
+    // Elles paissent : au bout de quelques pas de pâture, au moins une a bougé.
+    let start: Vec<(u32, u32)> = s
+        .pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Animal)
+        .map(|p| p.tile())
+        .collect();
+    assert!(
+        run_until(&mut s, 1000, |s| {
+            let now: Vec<(u32, u32)> = s
+                .pawns()
+                .iter()
+                .filter(|p| p.faction == Faction::Animal)
+                .map(|p| p.tile())
+                .collect();
+            now != start
+        }),
+        "la faune est restée plantée"
+    );
+
+    // Un coup reçu et la bête détale.
+    let victim = animals(&s)[0];
+    s.inflict_injury(victim, BodyPart::Torso, 20);
+    let tick = s.tick();
+    let fleeing = find_pawn(&s, victim).expect("la bête est vivante");
+    assert!(
+        fleeing.flee_until > tick,
+        "la bête frappée ne fuit pas : flee_until = {}, tick = {tick}",
+        fleeing.flee_until
+    );
+
+    // Un raid ne se détourne pas sur le gibier : les PV de la faune ne bougent
+    // pas d'un coup de pillard.
+    let mut r = Sim::new(4, 48, 48);
+    let before: Vec<(u32, u32)> = r
+        .pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Animal)
+        .map(|p| (p.id, p.hp))
+        .collect();
+    assert!(!before.is_empty(), "aucune bête à observer");
+    r.spawn_item(ItemKind::Berries, 200, 24, 24);
+    r.step(&[Command::TriggerRaid]);
+    for _ in 0..2 * DAY {
+        r.step(&[]);
+        for &(id, hp) in &before {
+            if let Some(p) = find_pawn(&r, id) {
+                assert_eq!(p.hp, hp, "un pillard s'en est pris à une bête");
+                assert!(p.injuries.is_empty());
+            }
+        }
+    }
+    assert!(
+        animals(&r).len() <= MAX_ANIMALS as usize,
+        "plafond de faune dépassé"
+    );
+}
+
+/// La chaîne complète : un colon armé abat le gibier marqué, la dépouille est
+/// rangée puis débitée au poste, viande et cuir en sortent, la viande crue se
+/// mange (mal) et se cuisine.
+#[test]
+fn armed_colonist_hunts_and_carcass_is_butchered() {
+    let mut s = clearing();
+    s.step(&[Command::SetZone {
+        zone: Zone::Stockpile,
+        x0: 8,
+        y0: 5,
+        x1: 9,
+        y1: 6,
+    }]);
+    // Une massue plutôt qu'un arc : un cerf court plus vite qu'un colon, mais
+    // la clairière est petite et il s'y retrouve acculé.
+    s.spawn_item(ItemKind::Club, 1, 8, 5);
+    s.map_mut().set_feature(8, 3, Feature::CraftingSpot);
+    let deer = s.spawn_animal(2, 6, Species::Deer);
+
+    assert!(
+        run_until(&mut s, DAY, |s| s
+            .pawns()
+            .iter()
+            .any(|p| p.weapon.is_some())),
+        "personne ne s'est armé"
+    );
+    s.step(&[Command::Hunt {
+        animal: deer,
+        on: true,
+    }]);
+    assert!(
+        find_pawn(&s, deer).is_some_and(|p| p.hunted),
+        "le marqueur de chasse n'est pas posé"
+    );
+
+    let mut hunted = false;
+    let mut saw_carcass = false;
+    let mut dead = false;
+    for _ in 0..DAY {
+        top_up_hunger(&mut s);
+        s.step(&[]);
+        hunted |= s
+            .pawns()
+            .iter()
+            .any(|p| matches!(p.job, Job::Hunt { target } if target == deer));
+        dead |= find_pawn(&s, deer).is_none();
+        saw_carcass |= s.items().iter().any(|i| i.kind.is_animal_corpse());
+        if owned(&s, ItemKind::Meat) > 0 && owned(&s, ItemKind::Leather) > 0 {
+            break;
+        }
+    }
+    assert!(hunted, "aucun colon n'a pris le job de chasse");
+    assert!(dead, "le cerf a survécu à la journée");
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::AnimalHunted && e.arg == Species::Deer as u32),
+        "pas d'événement de chasse : {:?}",
+        s.events()
+    );
+    assert!(saw_carcass, "aucune dépouille n'est tombée");
+    assert!(
+        !s.items().iter().any(|i| i.kind.is_animal_corpse()),
+        "la dépouille n'a pas été débitée : {:?}",
+        s.items()
+    );
+    assert_eq!(
+        owned(&s, ItemKind::Leather),
+        Species::Deer.leather(),
+        "cuir du cerf"
+    );
+    let meat = owned(&s, ItemKind::Meat);
+    assert!(
+        meat > 0 && meat <= Species::Deer.meat(),
+        "viande = {meat} (des colons ont pu en manger)"
+    );
+
+    // Un colon affamé se rabat sur la viande crue, et le fait savoir.
+    s.spawn_item(ItemKind::Meat, 40, 8, 6);
+    let glutton = s.pawns()[0].id;
+    s.pawn_mut(glutton).expect("le colon existe").hunger = HUNGRY - 1;
+    assert!(
+        run_until(&mut s, DAY, |s| find_pawn(s, glutton)
+            .is_some_and(|p| p.last_meal_quality == -1 && p.hunger > HUNGRY)),
+        "personne n'a mangé de viande crue"
+    );
+
+    // Avec un feu, la viande devient repas comme n'importe quel cru.
+    s.map_mut().set_feature(4, 2, Feature::Campfire);
+    s.spawn_item(ItemKind::Meat, 40, 8, 6);
+    assert!(
+        run_until(&mut s, 2 * DAY, |s| owned(s, ItemKind::Meal) > 0),
+        "aucun repas cuisiné à partir de viande : {:?}",
+        s.items()
+    );
+}
+
+/// À mains nues, on ne court pas après un cerf.
+#[test]
+fn unarmed_colonists_do_not_hunt() {
+    let mut s = clearing();
+    let deer = s.spawn_animal(2, 6, Species::Deer);
+    s.spawn_item(ItemKind::Berries, 200, 6, 6);
+    s.step(&[Command::Hunt {
+        animal: deer,
+        on: true,
+    }]);
+    assert!(
+        s.pawns().iter().all(|p| p.weapon.is_none()),
+        "un colon est armé, le test ne prouve rien"
+    );
+    for _ in 0..DAY / 4 {
+        s.step(&[]);
+        assert!(
+            !s.pawns().iter().any(|p| matches!(p.job, Job::Hunt { .. })),
+            "un colon désarmé est parti chasser au tick {}",
+            s.tick()
+        );
+    }
+    assert!(
+        find_pawn(&s, deer).is_some(),
+        "le cerf est mort sans chasseur"
+    );
+}
+
+/// Le sanglier ne détale pas : il charge celui qui l'a piqué.
+#[test]
+fn boar_fights_back() {
+    let mut s = clearing();
+    s.step(&[Command::SetZone {
+        zone: Zone::Stockpile,
+        x0: 8,
+        y0: 5,
+        x1: 9,
+        y1: 6,
+    }]);
+    s.spawn_item(ItemKind::Club, 1, 8, 5);
+    s.spawn_item(ItemKind::Berries, 200, 6, 6);
+    let boar = s.spawn_animal(3, 5, Species::Boar);
+    assert!(
+        run_until(&mut s, DAY, |s| s
+            .pawns()
+            .iter()
+            .any(|p| p.weapon.is_some())),
+        "personne ne s'est armé"
+    );
+    s.step(&[Command::Hunt {
+        animal: boar,
+        on: true,
+    }]);
+
+    let mut charged = false;
+    let mut wounded = false;
+    for _ in 0..DAY {
+        s.step(&[]);
+        charged |= find_pawn(&s, boar).is_some_and(|p| matches!(p.job, Job::Attack { .. }));
+        charged |= s
+            .events()
+            .iter()
+            .any(|e| e.kind == EventKind::BoarAttacks && e.arg == boar);
+        wounded |= s
+            .pawns()
+            .iter()
+            .any(|p| p.faction == Faction::Colony && !p.injuries.is_empty());
+        if charged && wounded {
+            break;
+        }
+    }
+    assert!(charged, "le sanglier n'a pas riposté : {:?}", s.events());
+    assert!(wounded, "le sanglier n'a blessé personne");
 }

@@ -10,7 +10,7 @@ use sim::{
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 15;
+pub const VARIANT_COUNT: usize = 16;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -30,6 +30,7 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "FastForward",
     "SetCraftTarget",
     "SetClimate",
+    "Hunt",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -341,12 +342,19 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
                 _ => rng.below(6),
             },
         },
-        _ => Command::SetClimate {
+        14 => Command::SetClimate {
             // Climats plausibles (du désert à la banquise), mais surtout des
             // valeurs qui n'ont aucun sens en degrés : `Climate::sanitized`
             // doit les borner, et aucune température ne doit déborder ensuite.
             base_temperature: random_temperature(rng),
             amplitude: random_temperature(rng),
+        },
+        _ => Command::Hunt {
+            // Le plus souvent un id de pawn réel : le sim doit refuser tout ce
+            // qui n'est pas un animal vivant (colon, pillard, mort, id
+            // inventé) sans jamais poser de `Job::Hunt` dans le vide.
+            animal: random_pawn_id(rng, sim),
+            on: rng.chance(1, 2),
         },
     };
     (cmd, variant)

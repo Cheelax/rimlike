@@ -54,6 +54,9 @@ pub const HP_BADLY_WOUNDED: u32 = HP_MAX / 4;
 pub enum Faction {
     Colony = 0,
     Raider = 1,
+    /// Faune sauvage (voir `animals`). Ni alliée ni ennemie : les pillards
+    /// l'ignorent et la défense automatique aussi, sauf sanglier qui charge.
+    Animal = 2,
 }
 
 /// Ce que fait un colon. Le chemin courant vit dans `Pawn::path`.
@@ -142,6 +145,23 @@ pub enum Job {
     Equip {
         item: u32,
     },
+    /// Chasse un animal marqué : même approche et mêmes coups qu'une attaque
+    /// (`Sim::engage`), mais la cible est du gibier, pas un ennemi — et on
+    /// achève une bête à terre au lieu de l'épargner.
+    ///
+    /// **Ajouté en fin d'énumération** : postcard encode l'indice, et les
+    /// snapshots existants en dépendent.
+    Hunt {
+        target: u32,
+    },
+    /// Dépèce une dépouille au poste de fabrication : va la chercher, la
+    /// rapporte, puis débite (voir `craft::BUTCHER_TICKS`).
+    Butcher {
+        spot: (u32, u32),
+        item: u32,
+        picked: bool,
+        progress: u32,
+    },
 }
 
 impl Job {
@@ -175,6 +195,8 @@ impl Job {
             Job::Tend { .. } => 17,
             Job::Craft { .. } => 18,
             Job::Equip { .. } => 19,
+            Job::Hunt { .. } => 20,
+            Job::Butcher { .. } => 21,
         }
     }
 }
@@ -244,6 +266,21 @@ pub struct Pawn {
     pub comfort: i32,
     /// Il neige sur la carte. Recopié du sim à chaque tick.
     pub in_snow: bool,
+    /// Espèce, pour un pawn de `Faction::Animal` ; `None` pour un humain.
+    /// Elle décide de la vitesse, du plafond de PV et de ce que donne le
+    /// dépeçage (voir `animals::Species`). **Champs ajoutés en fin de
+    /// structure** : un vieux snapshot est refusé net plutôt que relu de travers.
+    pub species: Option<crate::animals::Species>,
+    /// Tick jusqu'auquel la bête détale ; 0 quand elle est calme.
+    pub flee_until: u64,
+    /// La bête est marquée comme gibier (`Command::Hunt`).
+    pub hunted: bool,
+    /// Tick du prochain pas de pâture.
+    pub graze_at: u64,
+    /// La bête a décidé, en prenant peur, de quitter la carte pour de bon :
+    /// elle disparaît en atteignant un bord. Tiré une fois par fuite et lu
+    /// seulement pendant celle-ci (voir `animals::ESCAPE_CHANCE`).
+    pub leaving: bool,
 }
 
 impl Pawn {
@@ -283,6 +320,21 @@ impl Pawn {
             // dire 0 °C, et un pawn tout juste créé grelotterait pour rien.
             comfort: Climate::TEMPERATE_BASE,
             in_snow: false,
+            species: None,
+            flee_until: 0,
+            hunted: false,
+            graze_at: 0,
+            leaving: false,
+        }
+    }
+
+    /// Points de vie d'un pawn entier. Un humain vaut `HP_MAX` ; une bête vaut
+    /// ce que vaut son espèce, du lapin au sanglier. C'est le plafond que
+    /// `recompute_hp` entame, donc aussi ce qui décide quand elle meurt.
+    pub fn max_hp(&self) -> u32 {
+        match self.species {
+            Some(s) => s.max_hp(),
+            None => HP_MAX,
         }
     }
 
@@ -383,17 +435,22 @@ impl Pawn {
 
     /// Vitesse en pourcentage de la nominale. Les malus globaux de blessure ne
     /// se cumulent pas entre eux (on garde le plus sévère) ; la mobilité, elle,
-    /// vient s'y multiplier : des jambes abîmées ralentissent en plus.
+    /// vient s'y multiplier : des jambes abîmées ralentissent en plus. Les
+    /// seuils sont **relatifs au plafond** : un lapin à 150 PV serait sinon
+    /// « grièvement blessé » en pleine forme (`HP_WOUNDED` vaut 500).
     pub fn speed_percent(&self) -> u32 {
         let base = if self.is_starving() { 60 } else { 100 };
-        let wounded = if self.hp < HP_BADLY_WOUNDED {
+        let max = self.max_hp();
+        let wounded = if self.hp * (HP_MAX / HP_BADLY_WOUNDED) < max {
             base * 50 / 100
-        } else if self.hp < HP_WOUNDED {
+        } else if self.hp * (HP_MAX / HP_WOUNDED) < max {
             base * 70 / 100
         } else {
             base
         };
-        wounded * self.mobility_percent() / 100
+        // Le lapin détale, le sanglier pèse : c'est le dernier facteur.
+        let species = self.species.map_or(100, |s| s.speed_percent());
+        wounded * self.mobility_percent() / 100 * species / 100
     }
 
     /// Remplace le chemin courant. `path` est dans l'ordre de parcours.

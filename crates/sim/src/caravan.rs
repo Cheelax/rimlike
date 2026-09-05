@@ -118,6 +118,13 @@ fn sanitize(p: &mut Pawn) {
     p.idle_ticks = 0;
     p.gone = false;
     p.outdoor_storm = false;
+    // Une caravane débarque des colons, pas du bétail : rien de la faune ne
+    // survit au voyage (une espèce ferait un colon au plafond de PV d'un lapin).
+    p.species = None;
+    p.flee_until = 0;
+    p.hunted = false;
+    p.graze_at = 0;
+    p.leaving = false;
     // `hp` est dérivé : on le recalcule plutôt que de croire le manifeste.
     p.recompute_hp();
 }
@@ -353,7 +360,12 @@ impl Sim {
     /// Jusqu'à `count` cases franchissables autour de `entry`, par anneaux
     /// croissants et dans l'ordre fixe de `spawn_raid`. `free_of_pawns` écarte
     /// en plus les cases déjà occupées.
-    fn ring_tiles(&self, entry: (u32, u32), count: usize, free_of_pawns: bool) -> Vec<(u32, u32)> {
+    pub(crate) fn ring_tiles(
+        &self,
+        entry: (u32, u32),
+        count: usize,
+        free_of_pawns: bool,
+    ) -> Vec<(u32, u32)> {
         let mut out: Vec<(u32, u32)> = Vec::new();
         let mut r: i32 = 0;
         while out.len() < count && r < PLACE_RINGS {
