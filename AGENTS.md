@@ -160,6 +160,13 @@ chantiers les émet divisés par 100. Le client rebâtit ses meshes quand `map_v
 onglets, retard proche de 0, et une action faite dans l'un visible dans l'autre, y compris
 onglet masqué (le Worker tient la cadence).
 
+## Publication du client
+
+Le workflow `.github/workflows/pages.yml` publie `apps/client/dist` sur GitHub Pages à chaque
+push sur `main` (https://cheelax.github.io/rimlike/), avec `VITE_BASE=/rimlike/`. Le solo y
+est complet ; multi et monde se branchent sur l'adresse de serveur saisie dans l'accueil
+(`wss://` derrière un reverse proxy en production, voir `deploy/README.md`).
+
 ## Héberger le serveur
 
 `apps/server/Dockerfile` (contexte = racine du dépôt) compile serveur et paquets partagés en

@@ -3,6 +3,9 @@
 Jeu de gestion de colonie à la RimWorld, multijoueur sur un globe partagé.
 Sim déterministe en Rust (WASM + natif), client Three.js/React, serveur Node.
 
+**Jouer sans rien installer** : https://cheelax.github.io/rimlike/ (solo complet dans le
+navigateur ; le multijoueur et le monde partagé demandent un serveur, voir plus bas).
+
 Plan complet et journal des décisions : [docs/PLAN.md](docs/PLAN.md).
 Guide du joueur (contrôles, survie, dangers, monde partagé) : [docs/GUIDE.md](docs/GUIDE.md).
 
