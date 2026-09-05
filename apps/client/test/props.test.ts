@@ -64,6 +64,21 @@ describe("catalogue de props modulaires", () => {
     library.dispose();
   });
 
+  it("piège à pointes : bois forcé (contrat sim), posé déjà armé", () => {
+    const library = new PropLibrary();
+    expect(blueprintKey(BUILD_KIND.SpikeTrap, 0)).toBe(`feature:${FEATURE.SpikeTrap}`);
+    expect(blueprintKey(BUILD_KIND.SpikeTrap, 0)).toBe(blueprintKey(BUILD_KIND.SpikeTrap, 1));
+    library.dispose();
+  });
+
+  it("distingue le piège armé du piège déclenché, pointes dressées plus haut", () => {
+    const library = new PropLibrary();
+    const armed = library.geometry(`feature:${FEATURE.SpikeTrap}`).boundingBox!;
+    const sprung = library.geometry(`feature:${FEATURE.SpikeTrapSprung}`).boundingBox!;
+    expect(sprung.max.y).toBeGreaterThan(armed.max.y);
+    library.dispose();
+  });
+
   it("réutilise les instances, ne tronque pas 3000 plans et actualise leurs bornes", () => {
     const library = new PropLibrary(), batch = new PropBatch(library, true);
     const entries = Array.from({ length: 3000 }, (_, i) => ({ key: `feature:${FEATURE.WallWood}`, x: i, z: 0 }));

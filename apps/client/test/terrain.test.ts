@@ -205,6 +205,24 @@ describe("eventLabel", () => {
     expect(eventLabel(34, 3, { 3: "Alice" })).toBe("Alice a perdu un ami");
     expect(eventLabel(34, 5)).toBe("Un colon a perdu un ami");
   });
+
+  it("nomme la victime d'un piège à pointes, `arg` étant son id", () => {
+    // Contrat avec `sim::EventKind::TrapSprung` (35) : pillard, marchand
+    // hostile ou bête.
+    expect(eventLabel(35, 9, { 9: "Rex" })).toBe("Rex s'est pris dans un piège");
+    expect(eventLabel(35, 9, { 9: "Zara" })).toBe("Zara s'est pris dans un piège");
+    // Sans nom connu (id absent du dictionnaire), phrase générique.
+    expect(eventLabel(35, 9)).toBe("Une bête s'est prise dans un piège");
+  });
+
+  it("distingue une bête (nommée d'après son espèce) d'un pillard ou d'un marchand", () => {
+    // Une bête porte son espèce comme « nom » (`animals::Species::label`,
+    // capitalisé) : ce n'est pas un prénom, `eventLabel` ne doit pas
+    // l'afficher comme tel.
+    expect(eventLabel(35, 4, { 4: "Cerf" })).toBe("Une bête s'est prise dans un piège");
+    expect(eventLabel(35, 4, { 4: "Lapin" })).toBe("Une bête s'est prise dans un piège");
+    expect(eventLabel(35, 4, { 4: "Sanglier" })).toBe("Une bête s'est prise dans un piège");
+  });
 });
 
 describe("BUILD_KIND et FEATURE : établi de recherche", () => {
@@ -213,6 +231,15 @@ describe("BUILD_KIND et FEATURE : établi de recherche", () => {
     expect(FEATURE.ResearchBench).toBe(16);
     expect(BUILD_KIND.Grave).toBe(6);
     expect(FEATURE.GraveFilled).toBe(15);
+  });
+});
+
+describe("BUILD_KIND et FEATURE : piège à pointes", () => {
+  it("ajoute le piège à la suite de l'établi de recherche, sans renuméroter le reste", () => {
+    expect(BUILD_KIND.SpikeTrap).toBe(8);
+    expect(FEATURE.SpikeTrap).toBe(17);
+    expect(FEATURE.SpikeTrapSprung).toBe(18);
+    expect(BUILD_KIND.ResearchBench).toBe(7);
   });
 });
 
@@ -373,6 +400,7 @@ describe("eventCategory", () => {
     expect(eventCategory(19)).toBe("threat"); // BoarAttacks
     expect(eventCategory(21)).toBe("threat"); // RaidIncoming
     expect(eventCategory(23)).toBe("threat"); // Illness
+    expect(eventCategory(35)).toBe("threat"); // TrapSprung
   });
 
   it("classe le reste en colonie", () => {
@@ -400,6 +428,12 @@ describe("JOB_LABELS", () => {
     // Contrat avec `pawn::Job::code()` (`crates/sim/src/social.rs`) : deux
     // colons désœuvrés et voisins qui s'arrêtent pour discuter.
     expect(JOB_LABELS[25]).toBe("bavarde");
+  });
+
+  it("nomme le job RearmTrap (code 26) « réarme un piège »", () => {
+    // Contrat avec `pawn::Job::code()` : un colon libre qui remet en état un
+    // piège à pointes déclenché.
+    expect(JOB_LABELS[26]).toBe("réarme un piège");
   });
 });
 

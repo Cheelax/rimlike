@@ -280,6 +280,32 @@ function researchBench(m: Model): void {
   m.rod(0.22, 0.53, -0.1, 0.012, 0.16, 0x8a6a4a, 0.6);
 }
 
+/**
+ * Piège à pointes (`Feature::SpikeTrap` = 17 armé, `SpikeTrapSprung` = 18
+ * déclenché) : une case entière, matériau bois imposé comme pour l'établi de
+ * recherche. Armé, la plaque de planches reste presque affleurante et les
+ * pointes à peine sorties — discret pour un pillard, qui ne le voit jamais
+ * venir, mais reconnaissable de près pour le joueur. Déclenché, une planche
+ * sur deux a sauté et les pointes se dressent, sans ambiguïté possible.
+ */
+function spikeTrap(m: Model, sprung: boolean): void {
+  for (let i = 0; i < 4; i++) {
+    // Déclenché, une rangée sur deux a été arrachée par la détente : ce qui
+    // reste est plus étroit, pas juste plus haut.
+    if (sprung && i % 2 === 0) continue;
+    const z = -0.33 + i * 0.22;
+    m.box(sprung ? 0.5 : 0.86, 0.026, 0.2, i % 2 ? 0x7a6142 : C.wood, 0, 0.013, z);
+  }
+  // Pointes de fer : à peine sorties tant que le piège est armé, dressées
+  // pleinement une fois déclenché.
+  for (let i = 0; i < 5; i++) {
+    const a = i * 2.51;
+    const x = Math.cos(a) * 0.22, z = Math.sin(a) * 0.22;
+    const h = sprung ? 0.3 : 0.05;
+    m.add(new THREE.ConeGeometry(0.034, h, 5), 0x6d6f68, x, 0.026 + h / 2, z);
+  }
+}
+
 function floorDetail(m: Model, wood: boolean): void {
   // Dessins à plat : overlays de zone/intérieur restent au-dessus du sol.
   for (let i = 0; i < (wood ? 5 : 4); i++) {
@@ -304,6 +330,8 @@ export function blueprintKey(kind: number, material: number): string {
     case BUILD_KIND.Grave: return `feature:${FEATURE.Grave}`;
     // Matériau bois imposé, même contrat que la tombe : une seule géométrie.
     case BUILD_KIND.ResearchBench: return `feature:${FEATURE.ResearchBench}`;
+    // Matériau bois imposé, même contrat ; posé, le piège est armé d'emblée.
+    case BUILD_KIND.SpikeTrap: return `feature:${FEATURE.SpikeTrap}`;
     default: return "item:unknown";
   }
 }
@@ -352,6 +380,8 @@ export class PropLibrary {
       case FEATURE.Grave: grave(m, false); break;
       case FEATURE.GraveFilled: grave(m, true); break;
       case FEATURE.ResearchBench: researchBench(m); break;
+      case FEATURE.SpikeTrap: spikeTrap(m, false); break;
+      case FEATURE.SpikeTrapSprung: spikeTrap(m, true); break;
       default: m.box(0.3, 0.3, 0.3, C.wood);
     }
     const g = m.finish();

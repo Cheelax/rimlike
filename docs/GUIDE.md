@@ -80,6 +80,7 @@ Constructions (posées en plans, matériau réglé par `T`) :
 | A | Poste de fabrication | 10, bois seulement |
 | — | Établi de recherche (bouton, pas de raccourci) | 15, bois seulement |
 | — | Tombe (bouton, pas de raccourci) | 5, pierre seulement |
+| — | Piège à pointes (bouton, pas de raccourci) | 5, bois seulement, franchissable |
 
 `T` bascule le matériau (bois/pierre) des murs, portes et sols. Les plans
 apparaissent en bleu, puis en jaune quand les matériaux livrés suffisent ; un
@@ -255,6 +256,21 @@ Facile et Difficile resserrent ou espacent le délai entre deux bandes et leur
 budget autour des valeurs ci-dessus, Normal est la référence. Choisie à
 l'accueil ou dans le lobby avant de démarrer, modifiable ensuite à tout
 moment par ce même menu (réservé à l'hôte en multijoueur).
+
+### Défense : pièges à pointes
+
+Un piège à pointes (bouton dédié de la barre d'outils, 5 bois, une case,
+franchissable) blesse à la jambe le premier pillard, marchand hostile ou bête
+qui marche dessus — les colons de la colonie le connaissent et le contournent
+d'instinct, jamais les intrus. À poser à l'entrée de l'enceinte plutôt qu'au
+hasard, en ligne d'au moins trois plutôt qu'isolé : franchissable, un piège
+seul se traverse comme n'importe quelle case, mais une ligne barrant l'unique
+passage force l'assaillant à en déclencher un avant d'atteindre les colons.
+Une fois déclenché, il ne blesse plus personne tant qu'un colon libre ne l'a
+pas réarmé (une tâche rapide, sans bois à fournir) ; le Journal note chaque
+déclenchement (« … s'est pris dans un piège »). Une bête prise au piège
+pendant une battue de chasse s'ajoute sans effort à la journée. Un piège armé
+pèse un peu dans la richesse de la colonie, comme toute autre construction.
 
 ### Blessures et santé
 

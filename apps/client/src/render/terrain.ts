@@ -59,6 +59,10 @@ export const FEATURE = {
   GraveFilled: 15,
   /** Établi de recherche (`crates/sim/src/research.rs`) : infranchissable, comme le poste de fabrication. */
   ResearchBench: 16,
+  /** Piège à pointes armé (`crates/sim/src/build.rs`) : franchissable, une case, matériau bois imposé. */
+  SpikeTrap: 17,
+  /** Piège déclenché, inoffensif : posé par le job `RearmTrap` (code 26) le temps qu'un colon le réarme. */
+  SpikeTrapSprung: 18,
 } as const;
 
 export const BUILD_KIND = {
@@ -70,6 +74,7 @@ export const BUILD_KIND = {
   CraftingSpot: 5,
   Grave: 6,
   ResearchBench: 7,
+  SpikeTrap: 8,
 } as const;
 export const MATERIAL = { Wood: 0, Stone: 1 } as const;
 export const MATERIAL_NAMES = ["bois", "pierre"] as const;
@@ -344,6 +349,7 @@ export const JOB_LABELS = [
   "enterre",
   "recherche",
   "bavarde",
+  "réarme un piège",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
@@ -467,10 +473,26 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
     case 34:
       // `arg` = l'id du colon survivant qui perd un ami (`sim::EventKind::FriendLost`).
       return `${who} a perdu un ami`;
+    case 35: {
+      // `arg` = l'id de la victime (`sim::EventKind::TrapSprung`) : pillard,
+      // marchand hostile ou bête. Une bête porte son espèce comme « nom »
+      // (`animals::Species::label`, tiré nulle part au hasard) : on ne l'affiche
+      // jamais comme si c'était un prénom.
+      const name = names?.[arg];
+      if (name && !ANIMAL_LABELS.has(name)) return `${name} s'est pris dans un piège`;
+      return "Une bête s'est prise dans un piège";
+    }
     default:
       return "";
   }
 }
+
+/**
+ * Capitalisées comme `animals::Species::label` (« Cerf », « Lapin », « Sanglier »),
+ * jamais tirées d'un des trois bassins de prénoms (`sim::names`) : sert à
+ * `eventLabel` (35) à reconnaître une bête plutôt qu'un pillard ou un marchand.
+ */
+const ANIMAL_LABELS = new Set(SPECIES_LABELS.map((s) => s.charAt(0).toUpperCase() + s.slice(1)));
 
 /**
  * « <nom> le marchand <suffixe> », ou « Le marchand <suffixe> » sans nom
@@ -552,6 +574,7 @@ export function eventCategory(kind: number): EventCategory {
     case 19: // BoarAttacks
     case 21: // RaidIncoming
     case 23: // Illness
+    case 35: // TrapSprung
       return "threat";
     default:
       return "colony";

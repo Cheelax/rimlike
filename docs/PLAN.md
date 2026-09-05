@@ -432,8 +432,10 @@ franchissable) qui blesse une jambe du premier pillard, marchand hostile ou anim
 se déclenche ; les colons le connaissent et le contournent (`path::Walker`, court-circuité sans
 piège) ; réarmement par un colon (100 ticks, sans bois) ; poids modeste dans la richesse ; sévérité
 250 mesurée sur 120 graines (un pillard piégé sur deux à terre ou tué, pertes de la colonie 741
-contre 1 210 sans pièges ; non monotone : à 300 le pillard fuit avant de saigner). Interface à
-faire (outil Piège, éléments 17/18, job 26, événement 35). Marchands itinérants côté serveur
+contre 1 210 sans pièges ; non monotone : à 300 le pillard fuit avant de saigner). Interface
+livrée le 2026-09-05 (Sonnet) : outil Piège (bois imposé), props armé / déclenché, job « réarme un
+piège », événement 35 classé menace ; vérifié : anneau de pièges autour des colons, un pillard
+s'y prend au premier raid. Marchands itinérants côté serveur
 livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
 caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;

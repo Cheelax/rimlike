@@ -148,6 +148,7 @@ type Tool =
   | "craftingSpot"
   | "researchBench"
   | "grave"
+  | "spikeTrap"
   | "cancel";
 
 const TOOLS: {
@@ -180,6 +181,13 @@ const TOOLS: {
   // Aucune lettre libre ne rappelle « tombe » (T, O, G... sont déjà pris) :
   // pas de raccourci clavier, un bouton suffit (mission tombes §1).
   { id: "grave", label: "Tombe", key: "", color: 0x4ad9ff, group: "build", hint: "5 pierre" },
+  // Aucune lettre libre ne rappelle « piège » (P est pris par la porte, T par
+  // le matériau) : pas de raccourci clavier, un bouton suffit, comme la tombe
+  // et l'établi de recherche ci-dessus.
+  {
+    id: "spikeTrap", label: "Piège à pointes", key: "", color: 0x4ad9ff, group: "build",
+    hint: "5 bois · blesse le premier ennemi qui marche dessus, vos colons le contournent",
+  },
   { id: "cancel", label: "Annuler", key: "X", color: 0xff4040, group: "orders" },
 ];
 
@@ -192,8 +200,9 @@ const BUILD_TOOL_KIND: Partial<Record<Tool, number>> = {
   craftingSpot: BUILD_KIND.CraftingSpot,
   researchBench: BUILD_KIND.ResearchBench,
   grave: BUILD_KIND.Grave,
+  spikeTrap: BUILD_KIND.SpikeTrap,
 };
-const WOOD_ONLY: ReadonlySet<Tool> = new Set<Tool>(["bed", "campfire", "craftingSpot", "researchBench"]);
+const WOOD_ONLY: ReadonlySet<Tool> = new Set<Tool>(["bed", "campfire", "craftingSpot", "researchBench", "spikeTrap"]);
 /** Les tombes n'existent qu'en pierre (contrat sim) : jamais le matériau courant du joueur. */
 const STONE_ONLY: ReadonlySet<Tool> = new Set<Tool>(["grave"]);
 
@@ -1322,6 +1331,12 @@ export function App() {
           // de toute façon) : jamais `materialRef.current`, pour ne pas
           // laisser croire que le choix du joueur y change quoi que ce soit.
           issue(encodeBuild(BUILD_KIND.Grave, MATERIAL.Stone, rect.x0, rect.y0, rect.x1, rect.y1));
+          break;
+        case "spikeTrap":
+          // Le piège n'existe qu'en bois (contrat sim, qui l'imposerait de
+          // toute façon) : jamais `materialRef.current`, même schéma que
+          // l'établi de recherche et la tombe ci-dessus.
+          issue(encodeBuild(BUILD_KIND.SpikeTrap, MATERIAL.Wood, rect.x0, rect.y0, rect.x1, rect.y1));
           break;
         case "cancel":
           issue(encodeDesignate(DESIGNATION.None, rect.x0, rect.y0, rect.x1, rect.y1));
