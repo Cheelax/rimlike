@@ -14,6 +14,7 @@ use crate::map::{Feature, Map, chebyshev};
 use crate::path;
 use crate::pawn::{Faction, Job, Pawn};
 use crate::research;
+use crate::social;
 use crate::traits::{self, Trait};
 use crate::work;
 use crate::{EventKind, Sim, TICKS_PER_DAY, Tech};
@@ -186,6 +187,10 @@ impl Sim {
         self.pawns[i].attack_cooldown = self.pawns[i].attack_cooldown.saturating_sub(1);
         self.pawns[i].grief_ticks = self.pawns[i].grief_ticks.saturating_sub(1);
         self.pawns[i].relief_ticks = self.pawns[i].relief_ticks.saturating_sub(1);
+        // Le souvenir d'une conversation, ou d'une dispute, s'estompe au même
+        // rythme (voir `social`).
+        self.pawns[i].social_ticks = self.pawns[i].social_ticks.saturating_sub(1);
+        self.pawns[i].quarrel_ticks = self.pawns[i].quarrel_ticks.saturating_sub(1);
     }
 
     /// Referme les plaies au bout de `BLEED_TICKS`, fait cicatriser d'un point
@@ -803,15 +808,29 @@ impl Sim {
                         }
                         self.spawn_item(ItemKind::Corpse, 1, x, y);
                         if faction == Faction::Colony {
+                            // Ceux qui l'aimaient (voir `social`) le pleurent
+                            // deux fois plus longtemps.
+                            let mut friends: Vec<u32> = Vec::new();
                             for q in &mut self.pawns {
-                                if q.faction == Faction::Colony {
-                                    q.grief_ticks = GRIEF_TICKS;
+                                if q.faction != Faction::Colony {
+                                    continue;
+                                }
+                                q.grief_ticks = GRIEF_TICKS;
+                                if q.opinion_of(p.id) >= social::FRIEND_OPINION {
+                                    q.grief_ticks = q
+                                        .grief_ticks
+                                        .saturating_mul(2)
+                                        .min(social::MAX_GRIEF_TICKS);
+                                    friends.push(q.id);
                                 }
                             }
                             // Une mort sous les coups d'un raid vaut un répit :
                             // le storyteller laisse passer un jour de plus.
                             self.grant_raid_respite();
                             self.push_event(EventKind::ColonistDied, p.id);
+                            for friend in friends {
+                                self.push_event(EventKind::FriendLost, friend);
+                            }
                         } else if faction == Faction::Trader {
                             // Sa réserve tombe là : butin, et réputation (voir
                             // `trade::trader_died`).
@@ -824,6 +843,9 @@ impl Sim {
             } else if p.faction == Faction::Raider {
                 self.push_event(EventKind::RaiderLeft, p.id);
             }
+            // Un absent ne pèse plus sur l'humeur de personne : les avis qu'on
+            // avait de lui s'effacent, et rendent leur place aux vivants.
+            self.forget_opinions_of(p.id);
         }
     }
 }

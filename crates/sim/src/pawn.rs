@@ -11,6 +11,7 @@ use crate::health::{BLOOD_MAX, Injury};
 use crate::items::ItemKind;
 use crate::map::{Designation, Map};
 use crate::path::Tile;
+use crate::social::Opinion;
 use crate::storyteller::{ILLNESS_MOBILITY_PERCENT, ILLNESS_MOOD_MALUS, ILLNESS_WORK_PERCENT};
 use crate::traits::{self, Trait};
 use crate::work::{self, Skill, WORK_TYPES, WorkType};
@@ -208,6 +209,16 @@ pub enum Job {
     Research {
         bench: (u32, u32),
     },
+    /// Bavarde avec un camarade (voir `social`). Les deux s'arrêtent et se font
+    /// face pendant `ticks` ticks, puis leur avis l'un sur l'autre bouge — en
+    /// bien le plus souvent, en dispute parfois. Ce n'est **pas** un travail :
+    /// aucun `WorkType`, aucune priorité, aucune compétence.
+    ///
+    /// **Ajouté en fin d'énumération** : postcard encode l'indice.
+    Chat {
+        with: u32,
+        ticks: u32,
+    },
 }
 
 impl Job {
@@ -246,6 +257,7 @@ impl Job {
             Job::Wait { .. } => 22,
             Job::Bury { .. } => 23,
             Job::Research { .. } => 24,
+            Job::Chat { .. } => 25,
         }
     }
 }
@@ -381,6 +393,18 @@ pub struct Pawn {
     /// ajouté en fin de structure : un vieux snapshot est refusé net plutôt
     /// que relu de travers.
     pub corpses_on_map: u32,
+    /// Ce que ce colon pense des autres (voir `social`), au plus
+    /// `social::MAX_OPINIONS` entrées, dans l'ordre où il les a rencontrés.
+    /// **Vide pour tout autre pawn** : ni les pillards, ni les bêtes, ni les
+    /// marchands n'ont d'avis sur qui que ce soit. **Champs ajoutés en fin de
+    /// structure** : un vieux snapshot est refusé net (fin de tampon) plutôt
+    /// que relu de travers.
+    pub opinions: Vec<Opinion>,
+    /// Ticks restants du bonus d'humeur qui suit une bonne conversation, sur le
+    /// modèle de `grief_ticks` et `relief_ticks`.
+    pub social_ticks: u32,
+    /// Ticks restants du malus d'humeur qui suit une dispute.
+    pub quarrel_ticks: u32,
 }
 
 impl Pawn {
@@ -437,6 +461,9 @@ impl Pawn {
             leaves_at: 0,
             hostile: false,
             corpses_on_map: 0,
+            opinions: Vec::new(),
+            social_ticks: 0,
+            quarrel_ticks: 0,
         }
     }
 
@@ -586,6 +613,10 @@ impl Pawn {
         if self.sick {
             m -= ILLNESS_MOOD_MALUS;
         }
+        // Les liens tissés avec les autres : le souvenir d'une conversation ou
+        // d'une dispute, les amis qui portent et les rivaux qui pèsent (voir
+        // `social::Pawn::social_mood`).
+        m += self.social_mood();
         if self.has_trait(Trait::Optimist) {
             m += traits::OPTIMIST_MOOD_BONUS;
         }

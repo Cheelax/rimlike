@@ -33,6 +33,7 @@ pub mod path;
 pub mod pawn;
 pub mod research;
 pub mod rng;
+pub mod social;
 pub mod storyteller;
 pub mod testmap;
 pub mod trade;
@@ -56,6 +57,7 @@ pub use map::{Designation, Feature, Map, ROOM_MAX_TILES, Rect, Terrain, Zone};
 pub use pawn::{Faction, Job, Pawn};
 pub use research::{ResearchState, Tech};
 pub use rng::Rng;
+pub use social::Opinion;
 pub use storyteller::{Difficulty, RaidKind};
 pub use trade::{TRADER_STAY, item_value, value_buy, value_sell};
 pub use traits::Trait;
@@ -154,6 +156,19 @@ pub enum EventKind {
     /// technologie (`research::Tech`). La colonie ne cherche plus rien tant
     /// que le joueur n'a pas choisi la suivante.
     ResearchDone = 31,
+    /// Une conversation a mal tourné (voir `social`) : les deux colons se sont
+    /// accrochés. `arg` : l'id du premier des deux, c'est-à-dire le plus petit
+    /// — le client va chercher l'autre dans les avis (`pawn_opinions`).
+    Quarrel = 32,
+    /// La dispute a dégénéré en rixe entre deux colons qui se détestaient déjà :
+    /// chacun a pris un coup, jamais mortel, et la vie reprend (personne ne
+    /// poursuit l'autre). `arg` : l'id du premier des deux, comme `Quarrel`.
+    /// Émis **après** le `Quarrel` de la même dispute.
+    Brawl = 33,
+    /// Un colon a perdu un ami (voir `social::FRIEND_OPINION`) : son deuil dure
+    /// deux fois plus longtemps. `arg` : l'id du **survivant**, pas du mort —
+    /// celui-là vient d'être annoncé par `ColonistDied`.
+    FriendLost = 34,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.

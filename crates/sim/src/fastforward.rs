@@ -189,6 +189,10 @@ impl Sim {
             p.rest = p.rest.max(FROZEN_REST);
             p.grief_ticks = p.grief_ticks.saturating_sub(ticks);
             p.relief_ticks = p.relief_ticks.saturating_sub(ticks);
+            // Les conversations et les disputes d'avant le gel sont oubliées
+            // depuis longtemps ; les amitiés, elles, tiennent (voir `social`).
+            p.social_ticks = p.social_ticks.saturating_sub(ticks);
+            p.quarrel_ticks = p.quarrel_ticks.saturating_sub(ticks);
             p.attack_cooldown = 0;
             p.idle_ticks = 0;
             p.outdoor_storm = false;

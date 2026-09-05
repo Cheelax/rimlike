@@ -704,6 +704,24 @@ impl WasmSim {
             .unwrap_or_default()
     }
 
+    /// Ce qu'un colon pense des autres (voir `sim::social`) :
+    /// `[id de l'autre, avis] × n`, **trié par id**, avec un avis dans
+    /// -100..=100. Vide si l'id est inconnu, si le pawn n'a d'avis sur
+    /// personne, ou s'il n'est pas de la colonie (pillards, bêtes et marchands
+    /// n'en ont jamais). Hors du tampon des pawns comme `pawn_traits` :
+    /// `PAWN_STRIDE` ne bouge pas.
+    pub fn pawn_opinions(&self, id: u32) -> Vec<i32> {
+        let Some(p) = self.inner.pawns().iter().find(|p| p.id == id) else {
+            return Vec::new();
+        };
+        let mut sorted: Vec<(u32, i32)> = p.opinions.iter().map(|o| (o.id, o.value)).collect();
+        sorted.sort_unstable();
+        sorted
+            .into_iter()
+            .flat_map(|(other, value)| [other as i32, value])
+            .collect()
+    }
+
     // --- Vues mémoire (zéro copie ; à recréer après tout appel au sim) ---
 
     pub fn tiles_ptr(&self) -> *const u8 {
@@ -1458,6 +1476,21 @@ mod tests {
             vec![sim::Trait::Tough as i32, sim::Trait::Sociable as i32]
         );
         assert!(s.pawn_traits(9999).is_empty(), "id inconnu");
+    }
+
+    #[test]
+    fn les_avis_sortent_tries_par_id() {
+        let mut s = fresh();
+        let id = s.inner.pawns()[0].id;
+        assert!(
+            s.pawn_opinions(id).is_empty(),
+            "un colon démarre sans avis sur personne"
+        );
+        // Posés dans le désordre : le tampon doit sortir trié par id.
+        s.inner.set_opinion_for_tests(id, 42, -30);
+        s.inner.set_opinion_for_tests(id, 7, 60);
+        assert_eq!(s.pawn_opinions(id), vec![7, 60, 42, -30]);
+        assert!(s.pawn_opinions(9999).is_empty(), "id inconnu");
     }
 
     #[test]

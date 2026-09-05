@@ -2965,6 +2965,14 @@ fn armed_colonist_hunts_and_carcass_is_butchered() {
     let mut dead = false;
     for _ in 0..DAY {
         top_up_hunger(&mut s);
+        // Ce cerf-là ne prend pas la poudre d'escampette : la débandade qui
+        // finit hors carte tient à un dé (`animals::ESCAPE_CHANCE`, un sur
+        // quatre), et ce test parle de chasse, de dépouille et de dépeçage —
+        // pas de fuite. Sans cette ligne, il tombe à pile ou face au premier
+        // décalage du flux d'aléa.
+        if let Some(quarry) = s.pawn_mut(deer) {
+            quarry.leaving = false;
+        }
         s.step(&[]);
         hunted |= s
             .pawns()

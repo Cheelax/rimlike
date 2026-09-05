@@ -23,6 +23,7 @@ use crate::health::{self, BLOOD_MAX, SEVERITY_MAX};
 use crate::items::{ItemKind, STACK_MAX};
 use crate::map::{Zone, chebyshev};
 use crate::pawn::{self, Faction, Job, NEED_MAX, Pawn};
+use crate::social;
 use crate::work;
 use crate::{EventKind, Sim, SnapshotError, combat};
 
@@ -120,6 +121,12 @@ fn sanitize(p: &mut Pawn) {
     p.attack_cooldown = p.attack_cooldown.min(combat::ATTACK_COOLDOWN);
     p.grief_ticks = p.grief_ticks.min(combat::GRIEF_TICKS);
     p.relief_ticks = p.relief_ticks.min(pawn::RELIEF_TICKS);
+    // Ses avis parlent de gens restés là-bas (voir `social`) : deux colonies
+    // numérotent leurs colons chacune de son côté, et un id recopié ici
+    // désignerait un inconnu. Le voyageur débarque sans a priori.
+    p.opinions.clear();
+    p.social_ticks = p.social_ticks.min(social::SOCIAL_TICKS);
+    p.quarrel_ticks = p.quarrel_ticks.min(social::QUARREL_TICKS);
     p.idle_ticks = 0;
     p.gone = false;
     p.outdoor_storm = false;
@@ -262,6 +269,9 @@ impl Sim {
     fn remove_for_caravan(&mut self, i: usize) -> Pawn {
         let mut p = self.pawns.remove(i);
         self.reservations.retain(|r| r.pawn != p.id);
+        // Comme à la mort d'un colon : ceux qui restent ne gardent pas d'avis
+        // sur un absent (voir `social`).
+        self.forget_opinions_of(p.id);
         for q in &mut self.pawns {
             if q.carrying_pawn == Some(p.id) {
                 q.carrying_pawn = None;

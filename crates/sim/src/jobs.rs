@@ -177,6 +177,7 @@ impl Sim {
                 picked,
             } => self.do_bury(i, corpse, grave, picked),
             Job::Research { bench } => self.do_research(i, bench),
+            Job::Chat { with, ticks } => self.do_chat(i, with, ticks),
             // Traité plus haut : un pawn à terre ne passe jamais par ici.
             Job::Downed => {}
             // Réservé aux assiégeants (traités plus haut) : un colon n'attend
@@ -360,6 +361,12 @@ impl Sim {
                     return;
                 }
             }
+        }
+        // Plus rien à faire : c'est le moment de bavarder. Le bavardage n'est
+        // pas un travail (aucun `WorkType`, aucune priorité) mais un besoin
+        // social, essayé juste avant de flâner (voir `social`).
+        if self.try_start_chat(i) {
+            return;
         }
         self.idle_wander(i);
     }

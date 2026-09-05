@@ -421,7 +421,15 @@ par tick modulés par humeur et compétence, séances de 600 ticks. Interface li
 (Sonnet) : outil Établi de recherche, panneau Recherche (touche R : cinq technologies, barre
 d'avancement, « Arrêter », avertissement sans établi), ligne HUD, événement 31 ; cadence
 corrigée après mesure (voir journal) ; vérifié : Médecine à 31 % après 6 000 ticks d'un
-chercheur. À venir : relations, factions PNJ avec réputation, mods de contenu, événements monde.
+chercheur. Relations entre colons livrées le 2026-09-05 (Opus, sim) : avis de −100 à +100 (seize au
+plus par colon), bavardage de 90 ticks entre voisins désœuvrés (+4 d'avis mutuel, +8 000 d'humeur
+un jour, délai de 1 200 ticks par paire, moitié pour un sociable), dispute une fois sur huit (un
+sur quatre avec un bagarreur : −10, −10 000), rixe non mortelle sous −60, amis (≥ 50) et rivaux
+(≤ −50) qui pèsent ±10 000 sur l'humeur (deux au plus), deuil doublé à la mort d'un ami ;
+événements 32-34, `pawn_opinions(id)`. Mesuré sur 20 graines : douze bavardages par paire et par
+jour, 12 % de disputes, avis final toujours positif. Interface à faire (avis dans le panneau du
+colon, événements au journal). À venir : factions PNJ avec réputation, mods de contenu,
+événements monde (marchands itinérants en cours côté serveur).
 
 ## 7. Risques identifiés
 
@@ -436,6 +444,14 @@ chercheur. À venir : relations, factions PNJ avec réputation, mods de contenu,
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-05 : le bavardage n'est pas un travail. Pas de `WorkType` ni de priorité : un colon ne
+  discute que quand il n'a rien d'autre à faire, juste avant de flâner, ce qui garde le tableau
+  des priorités intact et empêche le social de concurrencer la survie. Pas d'orientation dans
+  `Pawn` (le stride n'a pas bougé) : « se faire face » se traduit par un arrêt. Une rixe ne tue
+  jamais (sévérité rabotée pour laisser 200 points de vie). Un colon parti ou mort est oublié
+  des avis des autres : les ids d'une autre colonie ne désignent personne, et une caravane
+  arrive donc sans avis.
 
 - 2026-09-05 : cadence de la recherche mesurée, pas devinée. La consigne initiale (10 points par
   tick, coûts de 2 000 à 3 000) donnait une technologie en trois secondes. L'avancement se
