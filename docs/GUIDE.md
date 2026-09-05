@@ -4,9 +4,50 @@ Ce guide décrit ce que le jeu fait aujourd'hui, du point de vue de qui joue.
 Pour l'architecture et les décisions techniques, voir `docs/PLAN.md` ; pour le
 protocole réseau, `docs/protocol.md`.
 
-## 1. Démarrer
+## Table des matières
 
-### Partie solo
+1. [Prise en main](#1-prise-en-main)
+   - [Démarrer une partie](#démarrer-une-partie)
+   - [Caméra et sélection](#caméra-et-sélection)
+   - [Outils (glisser un rectangle pour les appliquer)](#outils-glisser-un-rectangle-pour-les-appliquer)
+   - [Pause, vitesse et sauvegarde](#pause-vitesse-et-sauvegarde)
+   - [Panneaux](#panneaux)
+2. [Survie](#2-survie)
+   - [Ressources et stockage](#ressources-et-stockage)
+   - [Nourriture](#nourriture)
+   - [Conserver les vivres](#conserver-les-vivres)
+   - [Lits, sommeil et humeur](#lits-sommeil-et-humeur)
+   - [Relations](#relations)
+   - [Blessures et santé](#blessures-et-santé)
+   - [Morts et tombes](#morts-et-tombes)
+   - [Incendies](#incendies)
+3. [Progrès](#3-progrès)
+   - [Chasse et dépeçage](#chasse-et-dépeçage)
+   - [Élevage](#élevage)
+   - [Vêtements et armes](#vêtements-et-armes)
+   - [Recherche](#recherche)
+4. [Dangers](#4-dangers)
+   - [Raids](#raids)
+   - [Pièges à pointes](#pièges-à-pointes)
+   - [Factions et réputation](#factions-et-réputation)
+   - [Famine, froid et chaleur](#famine-froid-et-chaleur)
+   - [Maladie et autres aléas](#maladie-et-autres-aléas)
+5. [Commerce](#5-commerce)
+   - [Marchands et troc](#marchands-et-troc)
+   - [Caravanes](#caravanes-touche-v-en-colonie-du-monde-uniquement)
+   - [Marchands itinérants](#marchands-itinérants)
+6. [Multijoueur et monde partagé](#6-multijoueur-et-monde-partagé)
+   - [Multijoueur (salle nommée)](#multijoueur-salle-nommée)
+   - [Désynchronisation](#désynchronisation)
+   - [Le monde partagé](#le-monde-partagé)
+   - [Colonies gelées et avance rapide](#colonies-gelées-et-avance-rapide)
+   - [Identité et profil local](#identité-et-profil-local)
+7. [Conseils de débutant](#7-conseils-de-débutant)
+8. [Limites connues](#8-limites-connues)
+
+## 1. Prise en main
+
+### Démarrer une partie
 
 Un sélecteur « Difficulté » (Paisible / Facile / Normal / Difficile, défaut
 Normal) précède le bouton « Partie solo » sur l'écran d'accueil : il règle la
@@ -14,54 +55,9 @@ dose de menace du storyteller pour la partie qui commence (voir §4). Une carte
 de 128×128 se génère aussitôt, sans réseau : pause et vitesses de jeu
 disponibles.
 
-### Multijoueur (salle nommée)
-
-Sur l'accueil : un serveur (`ws://…`), un nom, une salle, bouton « Rejoindre ».
-Ou directement par URL, pratique pour ouvrir deux onglets :
-
-```
-http://localhost:5173/?server=ws://localhost:8787&room=demo&name=alice
-```
-
-Le premier arrivé dans la salle est l'**hôte** : lui seul choisit la graine et
-la difficulté (à côté de la graine, même sélecteur qu'en solo) puis clique
-« Démarrer ». Une fois la partie lancée, chacun voit les actions des autres ;
-il n'y a plus ni pause ni choix de vitesse, l'horloge du serveur ne s'arrête
-jamais.
-
-### Désynchronisation
-
-Le HUD affiche le hash de la partie à côté d'une petite pastille — verte tant
-que votre copie concorde avec celle de la majorité, rouge si vous êtes
-signalé comme déviant. Dès que trois joueurs ou plus sont réunis, le serveur
-compare les hashes annoncés par chacun toutes les 300 ticks (§7 du
-protocole) : si une majorité se dégage, les copies minoritaires sont
-réparées **automatiquement** depuis l'état de l'hôte, sans rien à faire. Un
-bandeau apparaît le temps de la réparation, nommant les joueurs déviants
-(« vous » si c'est votre propre copie), avec un bouton **Resynchroniser** pour
-la déclencher soi-même sans attendre le
-prochain point de contrôle (utile si on soupçonne sa propre copie sans
-attendre que le serveur la désigne). Le bandeau disparaît de lui-même dès que
-tout le monde concorde de nouveau, avec un toast « Resynchronisé au tick N ».
-À deux joueurs, il n'y a jamais de majorité possible : le bouton reste le
-seul recours, en pariant sur l'un des deux.
-
-Un cas ne se répare jamais tout seul : si c'est l'**hôte** qui diverge, le
-bandeau l'indique (« L'hôte est en désaccord avec la majorité : la partie ne
-peut pas être réparée automatiquement ») sans bouton, parce que tout
-rattrapage part justement de l'état de l'hôte — personne ne peut le corriger
-depuis lui-même. La seule issue est de quitter la salle et de la rouvrir.
-
-### Monde partagé
-
-Bouton « Monde partagé » (ou `?server=…&name=…&world=1`). Le globe se
-télécharge une fois puis s'affiche : survoler et cliquer une case terrestre
-propose « S'installer ici » (case libre) ou « Visiter » / « Reprendre ma
-colonie » (case déjà occupée). S'installer ou visiter ouvre la salle de cette
-case exactement comme une salle nommée, avec une graine imposée par le
-serveur. Voir §5 pour la suite (caravanes, colonies gelées).
-
-## 2. Contrôles
+Le même écran d'accueil propose aussi le multijoueur (salle nommée) et le
+monde partagé ; voir §6 pour la suite (rejoindre une salle, désynchronisation,
+le globe, colonies gelées).
 
 ### Caméra et sélection
 
@@ -98,8 +94,8 @@ Constructions (posées en plans, matériau réglé par `T`) :
 | P | Porte | 10 (bois ou pierre) |
 | O | Sol | 3 (bois ou pierre) |
 | L | Lit | 12, bois seulement |
-| F | Feu de camp | 8, bois seulement |
-| A | Poste de fabrication | 10, bois seulement |
+| F | Feu | 8, bois seulement (feu de camp) |
+| A | Poste | 10, bois seulement (poste de fabrication) |
 | — | Établi de recherche (bouton, pas de raccourci) | 15, bois seulement |
 | — | Tombe (bouton, pas de raccourci) | 5, pierre seulement |
 | — | Piège à pointes (bouton, pas de raccourci) | 5, bois seulement, franchissable |
@@ -108,7 +104,7 @@ Constructions (posées en plans, matériau réglé par `T`) :
 apparaissent en bleu, puis en jaune quand les matériaux livrés suffisent ; un
 colon libre les construit alors.
 
-### Pause, vitesse et sauvegarde (solo seulement)
+### Pause, vitesse et sauvegarde
 
 `Espace` : pause. `1` / `2` / `3` : vitesse ×1/×2/×3. Boutons « Sauver » /
 « Charger » (une sauvegarde locale au navigateur). Indisponibles en
@@ -119,15 +115,15 @@ côté client.
 
 | Touche | Panneau | Contenu |
 |---|---|---|
-| J | Travail | priorités de chaque colon par type de travail (Construire, Livrer, Cuisiner, Désignations, Cultiver, Ranger) : clic pour la priorité suivante, clic droit pour la précédente. 1 = urgent, 4 = en dernier recours, — = jamais. |
+| J | Travail | priorités de chaque colon par type de travail (Construire, Livrer, Cuisiner, Désignations, Cultiver, Ranger, Rechercher) : clic pour la priorité suivante, clic droit pour la précédente. 1 = urgent, 4 = en dernier recours, — = jamais. |
 | K | Fabrication | objectif de stock (0 à 20) par arme et par vêtement ; nécessite un poste de fabrication posé sur la carte |
-| R | Recherche | choisir une des cinq technologies ; nécessite un établi de recherche posé sur la carte et un colon dont la priorité Rechercher est active (voir « Recherche » plus bas) |
+| R | Recherche | choisir une des cinq technologies ; nécessite un établi de recherche posé sur la carte et un colon dont la priorité Rechercher est active (voir « Recherche », §3) |
 | I | Chaleur | colore les cases par température |
 | N | Journal | événements de la partie, filtrables (Tout / Menaces / Colonie) |
 | V | Caravane | former une caravane (seulement dans une colonie du monde partagé, voir §5) |
 | — | Options (bouton dans la barre, `Échap` pour fermer) | change la difficulté en cours de partie ; en multi, réservé à l'hôte |
-| — | Troc (bouton grisé sans marchand de passage, voir §3) | négocier avec le marchand présent |
-| — | Factions | réputation auprès des trois factions PNJ et tribut (voir « Factions et réputation » plus bas) |
+| — | Troc (bouton grisé sans marchand de passage, voir §5) | négocier avec le marchand présent |
+| — | Factions | réputation auprès des trois factions PNJ et tribut (voir « Factions et réputation », §4) |
 
 Le panneau d'un colon sélectionné montre son travail en cours, son arme et son
 habit, la température ressentie, ses besoins (PV, faim, repos, humeur), sa
@@ -136,7 +132,7 @@ s'il y a lieu) et ses compétences. Chaque colon a aussi jusqu'à deux traits de
 caractère visibles dans son panneau (infobulle à l'appui), qui modulent son
 travail, son humeur et son combat.
 
-## 3. Boucle de survie
+## 2. Survie
 
 ### Ressources et stockage
 
@@ -172,6 +168,83 @@ chaque genre entamé, une pastille de fraîcheur (« · 72 % » : verte au-dessu
 de 50 %, orange de 20 à 50, rouge en dessous) reprenant la pile la plus
 proche de se perdre ; en dessous de 20 %, un message discret prévient que des
 vivres vont se perdre.
+
+### Lits, sommeil et humeur
+
+Un colon fatigué dort sur place ou, mieux, dans un lit libre (bonus
+d'humeur ; dormir au sol en donne un malus). L'humeur descend sous l'effet de
+la faim, de la fatigue, du froid, de l'orage, d'un mauvais repas, d'une
+blessure ou de la maladie ; en dessous de 20 %, un colon craque et erre une
+fraction de journée avant un jour de soulagement. Au-dessus de 70 %, il
+travaille 20 % plus vite ; en dessous de 40 %, 20 % plus lentement. Le
+panneau Travail (`J`) permet de réserver certains colons à certaines tâches
+plutôt que de les laisser tous égaux face à toutes les priorités.
+
+### Relations
+
+Deux colons désœuvrés et à deux cases l'un de l'autre au plus s'arrêtent pour
+bavarder (un travail à part entière : « bavarde » dans son panneau et la
+barre des colons, essayé seulement quand rien d'autre ne presse). La
+conversation dure une minute et demie de jeu, remonte l'avis de chacun sur
+l'autre et redonne un peu d'humeur pour la journée. Une fois sur huit environ
+(une sur quatre si l'un des deux est bagarreur) elle tourne à la dispute :
+l'avis baisse au lieu de monter, et l'humeur avec, pour la journée ; entre
+deux colons qui s'apprécient déjà très peu, la dispute dégénère en rixe (une
+bourrade chacun, jamais mortelle). Un ami (avis très bon, deux au plus
+comptés) remonte durablement l'humeur de la colonie ; un rival (avis très
+mauvais) la fait baisser d'autant ; perdre un ami double le deuil habituel.
+Les avis d'un colon se lisent dans la section « Relations » de son panneau :
+le nom de l'autre, l'avis chiffré et son qualificatif (ami, apprécié, toléré,
+mal vu, rival), triés du plus apprécié au moins apprécié — « Ne connaît
+personne encore » tant qu'il n'a parlé à personne.
+
+### Blessures et santé
+
+Un coup touche une partie du corps au hasard (torse et bras plus souvent que
+tête ou jambes) et peut faire saigner : une plaie non pansée se referme
+seule en quatre heures de jeu, sinon un camarade peut la panser. Le sang
+perdu remonte lentement de lui-même. Sous 30 % de sang ou de conscience, un
+colon s'écroule (« à terre ») : il ne fait plus rien, les pillards l'ignorent,
+et un camarade peut le porter jusqu'à un lit puis le soigner. Une blessure
+grave à la tête ou au torse, ou une perte de sang totale, est mortelle. Un
+mort laisse un cadavre (se décompose en trois jours) et un deuil de deux
+jours pèse sur le moral de la colonie.
+
+### Morts et tombes
+
+Un cadavre laissé au sol démoralise toute la colonie tant qu'il traîne, pas
+seulement le jour de la mort. Construire une tombe (bouton dédié de la barre
+d'outils, 5 pierre, une case) répare cela : un colon libre s'en charge de
+lui-même, sans ordre à donner, dès qu'une tombe vide et un chemin jusqu'au
+corps existent. L'inhumation apaise le deuil de la colonie. Les dépouilles
+animales, elles, ne s'enterrent pas : elles se dépècent au poste de
+fabrication (voir « Chasse et dépeçage », §3) pour leur viande et leur cuir.
+
+### Incendies
+
+Deux départs de feu : la foudre, qui peut tomber sur une case pendant un
+orage, et un feu de camp allumé par temps chaud et sec qui embrase l'herbe
+alentour. Le feu se propage aux arbres, buissons, plants, constructions en
+bois et piles inflammables (tout sauf la pierre) ; il gagne case par case
+tant qu'il trouve du combustible. La pluie l'éteint d'elle-même, orage
+compris — un incendie qui dure ne survit donc en général qu'au sec. Le HUD
+affiche en rouge « Feu : N case(s) » tant qu'il en reste une seule allumée,
+et le Journal note le départ de feu puis son extinction (nombre de cases
+brûlées).
+
+Les colons libres à moins de vingt-cinq cases d'un feu vont le combattre
+d'eux-mêmes (« combat le feu » dans leur panneau) ; tout le monde d'autre
+part le contourne en se déplaçant, comme un obstacle. Rien à ordonner : dès
+qu'il n'y a plus de combustible à portée ou que la pluie s'en charge, le feu
+s'éteint tout seul.
+
+Conseils : ne pas planter de feu de camp au milieu des herbes hautes, un feu
+de camp isolé sur du sol nu ou une dalle ne peut rien embraser autour de lui.
+Des murs en pierre coupent la propagation (la pierre ne brûle jamais) ; une
+réserve de vivres et de bois vaut mieux à l'abri dans une pièce aux murs de
+pierre, plutôt qu'entassée en plein air près d'un feu de camp en bois.
+
+## 3. Progrès
 
 ### Chasse et dépeçage
 
@@ -239,21 +312,44 @@ libère le colon pour autre chose sans perdre l'avancement déjà fait. Le HUD
 affiche la technologie en cours et son pourcentage tant qu'une recherche est
 lancée, et une notification annonce chaque technologie acquise.
 
-### Marchands et troc
+## 4. Dangers
 
-Un marchand arrive tous les quatre à sept jours de jeu, s'installe un jour
-près d'un étal improvisé puis reprend la route ; dès qu'il est là, le HUD
-affiche son nom suivi de « repart dans N h ». Il est neutre : ne pas
-l'attaquer, sinon il se défend et les visites suivantes s'espacent
-davantage. Le cliquer le sélectionne comme un colon (bouton Troc dans son
-panneau), ou le bouton Troc de la barre d'outils, actif seulement pendant sa
-visite, ouvre le panneau : à gauche ce qu'il vend (genre, quantité, prix
-unitaire), à droite ce que la colonie a en stockage. Pas de monnaie : le
-troc se juge en valeur, la colonie devant céder au moins autant qu'elle
-demande (prix d'achat du genre cédé × quantité, comparé au prix de vente du
-genre pris × quantité) ; en dessous, le bouton Proposer reste grisé et le
-motif du refus s'affiche. Les marchandises reçues sont déposées au sol près
-de l'étal, à ranger comme n'importe quel butin.
+### Raids
+
+Trois jours de tranquillité (douze minutes réelles) avant la première bande
+de pillards ; ensuite un raid tous les deux à quatre jours. Sa taille et son
+équipement dépendent de la colonie (nombre de colons, richesse accumulée,
+temps écoulé) : plus la colonie prospère, plus les bandes grossissent et
+s'arment. Une bande charge directement, ou arrive à moitié à l'arc, ou encore
+s'installe un moment près de son point d'entrée avant de charger (le temps de
+fermer une porte) — un toast et une entrée de Journal (« Raid en approche »)
+l'annoncent dès qu'elle apparaît sur la carte, avant qu'elle ne charge. Un
+pillard décroche et fuit sous 65 % de PV. Les colons se défendent seuls contre
+un ennemi à moins de huit cases ; un clic droit sur un ennemi, avec un colon
+sélectionné, ordonne l'attaque. Un tireur à l'arc porte à huit cases, à
+condition d'une ligne de vue dégagée (murs, portes et rochers bloquent).
+
+Le menu Options (§1) règle la dose de menace du storyteller : Paisible
+supprime les raids (le reste de la vie de la colonie continue sans eux),
+Facile et Difficile resserrent ou espacent le délai entre deux bandes et leur
+budget autour des valeurs ci-dessus, Normal est la référence. Choisie à
+l'accueil ou dans le lobby avant de démarrer, modifiable ensuite à tout
+moment par ce même menu (réservé à l'hôte en multijoueur).
+
+### Pièges à pointes
+
+Un piège à pointes (bouton dédié de la barre d'outils, 5 bois, une case,
+franchissable) blesse à la jambe le premier pillard, marchand hostile ou bête
+qui marche dessus — les colons de la colonie le connaissent et le contournent
+d'instinct, jamais les intrus. À poser à l'entrée de l'enceinte plutôt qu'au
+hasard, en ligne d'au moins trois plutôt qu'isolé : franchissable, un piège
+seul se traverse comme n'importe quelle case, mais une ligne barrant l'unique
+passage force l'assaillant à en déclencher un avant d'atteindre les colons.
+Une fois déclenché, il ne blesse plus personne tant qu'un colon libre ne l'a
+pas réarmé (une tâche rapide, sans bois à fournir) ; le Journal note chaque
+déclenchement (« … s'est pris dans un piège »). Une bête prise au piège
+pendant une battue de chasse s'ajoute sans effort à la journée. Un piège armé
+pèse un peu dans la richesse de la colonie, comme toute autre construction.
 
 ### Factions et réputation
 
@@ -272,7 +368,7 @@ Ce qui la fait monter ou descendre :
   un peu à l'autre tribu, ravie du sort de sa rivale ;
 - un troc conclu avec un marchand rapporte un peu à la Guilde ; frapper un
   marchand lui coûte cher, le tuer plus encore, et referme la porte à de
-  nouvelles visites (voir « Marchands et troc » plus haut) ;
+  nouvelles visites (voir « Marchands et troc », §5) ;
 - le temps adoucit d'un point par jour toute rancune (jamais l'inverse) ;
 - un tribut volontaire (bouton Offrir du panneau Factions) rapporte à
   proportion de sa valeur.
@@ -290,121 +386,6 @@ faction, choisir un genre disponible et une quantité fait apparaître un
 aperçu (« ≈ +N de réputation ») avant de cliquer Offrir, grisé si le stock ne
 suit pas. La quantité qui compte est sa valeur, pas le nombre de piles : un
 manteau de cuir vaut nettement plus que le même poids de bois.
-
-### Relations
-
-Deux colons désœuvrés et à deux cases l'un de l'autre au plus s'arrêtent pour
-bavarder (un travail à part entière : « bavarde » dans son panneau et la
-barre des colons, essayé seulement quand rien d'autre ne presse). La
-conversation dure une minute et demie de jeu, remonte l'avis de chacun sur
-l'autre et redonne un peu d'humeur pour la journée. Une fois sur huit environ
-(une sur quatre si l'un des deux est bagarreur) elle tourne à la dispute :
-l'avis baisse au lieu de monter, et l'humeur avec, pour la journée ; entre
-deux colons qui s'apprécient déjà très peu, la dispute dégénère en rixe (une
-bourrade chacun, jamais mortelle). Un ami (avis très bon, deux au plus
-comptés) remonte durablement l'humeur de la colonie ; un rival (avis très
-mauvais) la fait baisser d'autant ; perdre un ami double le deuil habituel.
-Les avis d'un colon se lisent dans la section « Relations » de son panneau :
-le nom de l'autre, l'avis chiffré et son qualificatif (ami, apprécié, toléré,
-mal vu, rival), triés du plus apprécié au moins apprécié — « Ne connaît
-personne encore » tant qu'il n'a parlé à personne.
-
-### Lits, sommeil et humeur
-
-Un colon fatigué dort sur place ou, mieux, dans un lit libre (bonus
-d'humeur ; dormir au sol en donne un malus). L'humeur descend sous l'effet de
-la faim, de la fatigue, du froid, de l'orage, d'un mauvais repas, d'une
-blessure ou de la maladie ; en dessous de 20 %, un colon craque et erre une
-fraction de journée avant un jour de soulagement. Au-dessus de 70 %, il
-travaille 20 % plus vite ; en dessous de 40 %, 20 % plus lentement. Le
-panneau Travail (`J`) permet de réserver certains colons à certaines tâches
-plutôt que de les laisser tous égaux face à toutes les priorités.
-
-## 4. Dangers
-
-### Raids
-
-Trois jours de tranquillité (douze minutes réelles) avant la première bande
-de pillards ; ensuite un raid tous les deux à quatre jours. Sa taille et son
-équipement dépendent de la colonie (nombre de colons, richesse accumulée,
-temps écoulé) : plus la colonie prospère, plus les bandes grossissent et
-s'arment. Une bande charge directement, ou arrive à moitié à l'arc, ou encore
-s'installe un moment près de son point d'entrée avant de charger (le temps de
-fermer une porte) — un toast et une entrée de Journal (« Raid en approche »)
-l'annoncent dès qu'elle apparaît sur la carte, avant qu'elle ne charge. Un
-pillard décroche et fuit sous 65 % de PV. Les colons se défendent seuls contre
-un ennemi à moins de huit cases ; un clic droit sur un ennemi, avec un colon
-sélectionné, ordonne l'attaque. Un tireur à l'arc porte à huit cases, à
-condition d'une ligne de vue dégagée (murs, portes et rochers bloquent).
-
-Le menu Options (§2) règle la dose de menace du storyteller : Paisible
-supprime les raids (le reste de la vie de la colonie continue sans eux),
-Facile et Difficile resserrent ou espacent le délai entre deux bandes et leur
-budget autour des valeurs ci-dessus, Normal est la référence. Choisie à
-l'accueil ou dans le lobby avant de démarrer, modifiable ensuite à tout
-moment par ce même menu (réservé à l'hôte en multijoueur).
-
-### Défense : pièges à pointes
-
-Un piège à pointes (bouton dédié de la barre d'outils, 5 bois, une case,
-franchissable) blesse à la jambe le premier pillard, marchand hostile ou bête
-qui marche dessus — les colons de la colonie le connaissent et le contournent
-d'instinct, jamais les intrus. À poser à l'entrée de l'enceinte plutôt qu'au
-hasard, en ligne d'au moins trois plutôt qu'isolé : franchissable, un piège
-seul se traverse comme n'importe quelle case, mais une ligne barrant l'unique
-passage force l'assaillant à en déclencher un avant d'atteindre les colons.
-Une fois déclenché, il ne blesse plus personne tant qu'un colon libre ne l'a
-pas réarmé (une tâche rapide, sans bois à fournir) ; le Journal note chaque
-déclenchement (« … s'est pris dans un piège »). Une bête prise au piège
-pendant une battue de chasse s'ajoute sans effort à la journée. Un piège armé
-pèse un peu dans la richesse de la colonie, comme toute autre construction.
-
-### Incendies
-
-Deux départs de feu : la foudre, qui peut tomber sur une case pendant un
-orage, et un feu de camp allumé par temps chaud et sec qui embrase l'herbe
-alentour. Le feu se propage aux arbres, buissons, plants, constructions en
-bois et piles inflammables (tout sauf la pierre) ; il gagne case par case
-tant qu'il trouve du combustible. La pluie l'éteint d'elle-même, orage
-compris — un incendie qui dure ne survit donc en général qu'au sec. Le HUD
-affiche en rouge « Feu : N case(s) » tant qu'il en reste une seule allumée,
-et le Journal note le départ de feu puis son extinction (nombre de cases
-brûlées).
-
-Les colons libres à moins de vingt-cinq cases d'un feu vont le combattre
-d'eux-mêmes (« combat le feu » dans leur panneau) ; tout le monde d'autre
-part le contourne en se déplaçant, comme un obstacle. Rien à ordonner : dès
-qu'il n'y a plus de combustible à portée ou que la pluie s'en charge, le feu
-s'éteint tout seul.
-
-Conseils : ne pas planter de feu de camp au milieu des herbes hautes, un feu
-de camp isolé sur du sol nu ou une dalle ne peut rien embraser autour de lui.
-Des murs en pierre coupent la propagation (la pierre ne brûle jamais) ; une
-réserve de vivres et de bois vaut mieux à l'abri dans une pièce aux murs de
-pierre, plutôt qu'entassée en plein air près d'un feu de camp en bois.
-
-### Blessures et santé
-
-Un coup touche une partie du corps au hasard (torse et bras plus souvent que
-tête ou jambes) et peut faire saigner : une plaie non pansée se referme
-seule en quatre heures de jeu, sinon un camarade peut la panser. Le sang
-perdu remonte lentement de lui-même. Sous 30 % de sang ou de conscience, un
-colon s'écroule (« à terre ») : il ne fait plus rien, les pillards l'ignorent,
-et un camarade peut le porter jusqu'à un lit puis le soigner. Une blessure
-grave à la tête ou au torse, ou une perte de sang totale, est mortelle. Un
-mort laisse un cadavre (se décompose en trois jours) et un deuil de deux
-jours pèse sur le moral de la colonie.
-
-### Morts et tombes
-
-Un cadavre laissé au sol démoralise toute la colonie tant qu'il traîne, pas
-seulement le jour de la mort. Construire une tombe (bouton dédié de la barre
-d'outils, 5 pierre, une case) répare cela : un colon libre s'en charge de
-lui-même, sans ordre à donner, dès qu'une tombe vide et un chemin jusqu'au
-corps existent. L'inhumation apaise le deuil de la colonie. Les dépouilles
-animales, elles, ne s'enterrent pas : elles se dépècent au poste de
-fabrication (voir « Chasse et dépeçage » ci-dessus) pour leur viande et leur
-cuir.
 
 ### Famine, froid et chaleur
 
@@ -428,15 +409,23 @@ peut durer une journée (toast « Coup de froid » ou « Canicule », avec
 l'écart de température) — ces deux-là continuent quelle que soit la
 difficulté choisie, seuls les raids en dépendent (voir plus haut).
 
-## 5. Le monde
+## 5. Commerce
 
-### Le globe
+### Marchands et troc
 
-Chaque case du globe partagé est une carte de colonie possible, avec son
-biome et son climat propres (température et amplitude saisonnière dérivées
-de la latitude). S'installer fonde une colonie ; visiter entre dans celle
-d'un autre joueur sans rien y changer d'office. Le globe ne se régénère
-jamais côté client : il vient du serveur, une fois pour toutes.
+Un marchand arrive tous les quatre à sept jours de jeu, s'installe un jour
+près d'un étal improvisé puis reprend la route ; dès qu'il est là, le HUD
+affiche son nom suivi de « repart dans N h ». Il est neutre : ne pas
+l'attaquer, sinon il se défend et les visites suivantes s'espacent
+davantage. Le cliquer le sélectionne comme un colon (bouton Troc dans son
+panneau), ou le bouton Troc de la barre d'outils, actif seulement pendant sa
+visite, ouvre le panneau : à gauche ce qu'il vend (genre, quantité, prix
+unitaire), à droite ce que la colonie a en stockage. Pas de monnaie : le
+troc se juge en valeur, la colonie devant céder au moins autant qu'elle
+demande (prix d'achat du genre cédé × quantité, comparé au prix de vente du
+genre pris × quantité) ; en dessous, le bouton Proposer reste grisé et le
+motif du refus s'affiche. Les marchandises reçues sont déposées au sol près
+de l'étal, à ranger comme n'importe quel butin.
 
 ### Caravanes (touche `V`, en colonie du monde uniquement)
 
@@ -460,6 +449,62 @@ un marchand fait venir par le storyteller local — même si personne ne jouait
 cette colonie à cet instant : les passages manqués sont livrés à la
 prochaine ouverture, trois au plus, les arrivées suivantes étant perdues au-delà.
 
+## 6. Multijoueur et monde partagé
+
+### Multijoueur (salle nommée)
+
+Sur l'accueil : un serveur (`ws://…`), un nom, une salle, bouton « Rejoindre ».
+Ou directement par URL, pratique pour ouvrir deux onglets :
+
+```
+http://localhost:5173/?server=ws://localhost:8787&room=demo&name=alice
+```
+
+Le premier arrivé dans la salle est l'**hôte** : lui seul choisit la graine et
+la difficulté (à côté de la graine, même sélecteur qu'en solo) puis clique
+« Démarrer ». Une fois la partie lancée, chacun voit les actions des autres ;
+il n'y a plus ni pause ni choix de vitesse, l'horloge du serveur ne s'arrête
+jamais.
+
+### Désynchronisation
+
+Le HUD affiche le hash de la partie à côté d'une petite pastille — verte tant
+que votre copie concorde avec celle de la majorité, rouge si vous êtes
+signalé comme déviant. Dès que trois joueurs ou plus sont réunis, le serveur
+compare les hashes annoncés par chacun toutes les 300 ticks (§7 du
+protocole) : si une majorité se dégage, les copies minoritaires sont
+réparées **automatiquement** depuis l'état de l'hôte, sans rien à faire. Un
+bandeau apparaît le temps de la réparation, nommant les joueurs déviants
+(« vous » si c'est votre propre copie), avec un bouton **Resynchroniser** pour
+la déclencher soi-même sans attendre le
+prochain point de contrôle (utile si on soupçonne sa propre copie sans
+attendre que le serveur la désigne). Le bandeau disparaît de lui-même dès que
+tout le monde concorde de nouveau, avec un toast « Resynchronisé au tick N ».
+À deux joueurs, il n'y a jamais de majorité possible : le bouton reste le
+seul recours, en pariant sur l'un des deux.
+
+Un cas ne se répare jamais tout seul : si c'est l'**hôte** qui diverge, le
+bandeau l'indique (« L'hôte est en désaccord avec la majorité : la partie ne
+peut pas être réparée automatiquement ») sans bouton, parce que tout
+rattrapage part justement de l'état de l'hôte — personne ne peut le corriger
+depuis lui-même. La seule issue est de quitter la salle et de la rouvrir.
+
+### Le monde partagé
+
+Bouton « Monde partagé » (ou `?server=…&name=…&world=1`) sur l'écran
+d'accueil. Le globe se télécharge une fois puis s'affiche : il ne se
+régénère jamais côté client, il vient du serveur, une fois pour toutes.
+Chaque case terrestre est une carte de colonie possible, avec son biome et
+son climat propres (température et amplitude saisonnière dérivées de la
+latitude).
+
+Survoler et cliquer une case terrestre propose « S'installer ici » (case
+libre) ou « Visiter » / « Reprendre ma colonie » (case déjà occupée).
+S'installer fonde une colonie ; visiter entre dans celle d'un autre joueur
+sans rien y changer d'office. Dans les deux cas, ça ouvre la salle de cette
+case exactement comme une salle nommée, avec une graine imposée par le
+serveur. Voir §5 pour les caravanes ; ci-dessous pour les colonies gelées.
+
 ### Colonies gelées et avance rapide
 
 Une colonie sans personne dessus ne tourne plus : à la réouverture, elle
@@ -474,7 +519,7 @@ navigateur pour ce serveur et ce nom. Deux onglets du même navigateur avec
 deux noms différents sont deux joueurs distincts ; un jeton perdu (stockage
 effacé) est une identité perdue, sans recours simple.
 
-## 6. Conseils de débutant
+## 7. Conseils de débutant
 
 - Poser le stockage à proximité des arbres et de la roche à exploiter :
   chaque trajet en moins compte.
@@ -493,8 +538,17 @@ effacé) est une identité perdue, sans recours simple.
   d'envoyer une caravane : l'itinéraire prévisualisé est indicatif, mais le
   demi-tour n'est plus possible passé la moitié du trajet.
 
-## 7. Limites connues
+## 8. Limites connues
 
-Pas de toits (tout le monde est dehors sous l'orage, la chaleur ne se gère pas
-encore) ; pas de compte joueur (identité par jeton local uniquement, sans
-recouvrement en cas de perte).
+- Pas de toits : la chaleur ne se gère pas encore (voir « Famine, froid et
+  chaleur », §4).
+- Pas de métal : bois et pierre sont les deux seuls matériaux, à construire
+  comme à fabriquer.
+- Pas de compte joueur : identité par jeton local uniquement, sans
+  recouvrement en cas de perte (voir « Identité et profil local », §6).
+- Réputation locale à la colonie : chaque colonie du monde partagé tient sa
+  propre réputation auprès des trois factions, sans lien avec les autres
+  colonies, même celles du même joueur.
+- Pas d'orientation des colons à l'écran : une position, jamais un sens de
+  déplacement figuré.
+- Pas de mods ni d'extensions : aucun contenu tiers ne se charge.
