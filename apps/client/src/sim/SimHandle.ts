@@ -477,6 +477,31 @@ export class SimHandle implements SimLike {
     return this.view8(this.inner.indoor_ptr());
   }
 
+  /** Change à chaque changement d'intensité du feu (`sim::fire`). */
+  fireVersion(): number {
+    return this.inner.fire_version();
+  }
+
+  /** Cases en feu, à zéro s'il n'y a aucun incendie : rien à dessiner. */
+  fireCount(): number {
+    return this.inner.fire_count();
+  }
+
+  /** Couche « feu » : un octet par case, 0 éteint, sinon l'intensité de 1 à 3. */
+  fire(): Uint8Array {
+    return this.view8(this.inner.fire_ptr());
+  }
+
+  /**
+   * Met le feu à une case (débogage et outil du joueur). Sans effet si la
+   * case est hors carte, brûle déjà, ou ne porte aucun combustible. Outil de
+   * dev/console, comme `hunt` : en multi, cette commande doit passer par
+   * `encodeIgnite` puis `issue`, jamais être appliquée directement.
+   */
+  ignite(x: number, y: number): void {
+    this.inner.ignite(x, y);
+  }
+
   hash(): string {
     return this.inner.hash();
   }

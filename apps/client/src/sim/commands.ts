@@ -188,3 +188,12 @@ export function encodeTrade(give: number, giveCount: number, take: number, takeC
 export function encodeSetResearch(tech: number): Uint8Array {
   return WasmSim.encode_set_research(tech);
 }
+
+/**
+ * Met le feu à une case (`sim::Command::Ignite`, débogage et outil du
+ * joueur, `EventKind::FireStarted` arg 2). Sans effet si la case ne porte
+ * aucun combustible ou brûle déjà : le sim l'ignore en silence.
+ */
+export function encodeIgnite(x: number, y: number): Uint8Array {
+  return WasmSim.encode_ignite(x, y);
+}

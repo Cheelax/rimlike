@@ -294,6 +294,30 @@ déclenchement (« … s'est pris dans un piège »). Une bête prise au piège
 pendant une battue de chasse s'ajoute sans effort à la journée. Un piège armé
 pèse un peu dans la richesse de la colonie, comme toute autre construction.
 
+### Incendies
+
+Deux départs de feu : la foudre, qui peut tomber sur une case pendant un
+orage, et un feu de camp allumé par temps chaud et sec qui embrase l'herbe
+alentour. Le feu se propage aux arbres, buissons, plants, constructions en
+bois et piles inflammables (tout sauf la pierre) ; il gagne case par case
+tant qu'il trouve du combustible. La pluie l'éteint d'elle-même, orage
+compris — un incendie qui dure ne survit donc en général qu'au sec. Le HUD
+affiche en rouge « Feu : N case(s) » tant qu'il en reste une seule allumée,
+et le Journal note le départ de feu puis son extinction (nombre de cases
+brûlées).
+
+Les colons libres à moins de vingt-cinq cases d'un feu vont le combattre
+d'eux-mêmes (« combat le feu » dans leur panneau) ; tout le monde d'autre
+part le contourne en se déplaçant, comme un obstacle. Rien à ordonner : dès
+qu'il n'y a plus de combustible à portée ou que la pluie s'en charge, le feu
+s'éteint tout seul.
+
+Conseils : ne pas planter de feu de camp au milieu des herbes hautes, un feu
+de camp isolé sur du sol nu ou une dalle ne peut rien embraser autour de lui.
+Des murs en pierre coupent la propagation (la pierre ne brûle jamais) ; une
+réserve de vivres et de bois vaut mieux à l'abri dans une pièce aux murs de
+pierre, plutôt qu'entassée en plein air près d'un feu de camp en bois.
+
 ### Blessures et santé
 
 Un coup touche une partie du corps au hasard (torse et bras plus souvent que

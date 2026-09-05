@@ -145,6 +145,12 @@ const SIM_API: ReadonlySet<string> = new Set([
   // Recherche (`crates/sim/src/research.rs`) : technologie cherchée et son avancement.
   "setResearch",
   "researchState",
+  // Incendies (`crates/sim/src/fire.rs`) : la couche et son compteur voyagent
+  // aussi par le `frame` (voir `SimRunner`), exposés ici pour le crochet de
+  // debug (`rpc("ignite", x, y)`, `rpc("fireCount")`).
+  "ignite",
+  "fire",
+  "fireCount",
 ]);
 
 /** Idem pour le `LockstepClient`, préfixé `lockstep.` côté appelant. */
@@ -203,6 +209,7 @@ function beat(): void {
   if (output.map) post(output.map);
   if (output.overlays) post(output.overlays);
   if (output.indoor) post(output.indoor);
+  if (output.fire) post(output.fire);
   if (output.frame) post(output.frame);
 }
 

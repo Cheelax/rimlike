@@ -17,6 +17,7 @@
 import type { SimLike } from "../net/SimLike";
 import {
   HASH_EVERY_FRAMES,
+  type FireMessage,
   type FrameMessage,
   type IndoorMessage,
   type MapMessage,
@@ -115,6 +116,12 @@ export interface RunnerSim extends SimLike {
   indoorVersion(): number;
   /** Couche « intérieur » : un octet par case, 0 dehors, sinon le numéro de pièce. */
   indoor(): Uint8Array;
+  /** Change à chaque changement d'intensité du feu (`sim-wasm::fire_version`). */
+  fireVersion(): number;
+  /** Cases en feu (`sim-wasm::fire_count`), à zéro s'il n'y a aucun incendie. */
+  fireCount(): number;
+  /** Couche « feu » : un octet par case, 0 éteint, sinon l'intensité de 1 à 3. */
+  fire(): Uint8Array;
   dispose(): void;
 }
 
@@ -141,10 +148,11 @@ export interface RunnerOutput {
   readonly map: MapMessage | null;
   readonly overlays: OverlaysMessage | null;
   readonly indoor: IndoorMessage | null;
+  readonly fire: FireMessage | null;
   readonly frame: FrameMessage | null;
 }
 
-const NOTHING: RunnerOutput = { ticks: 0, map: null, overlays: null, indoor: null, frame: null };
+const NOTHING: RunnerOutput = { ticks: 0, map: null, overlays: null, indoor: null, fire: null, frame: null };
 
 /**
  * Fraîcheur la plus basse par genre (`sim::ItemKind`), depuis le tampon
@@ -183,6 +191,7 @@ export class SimRunner {
   private knownMapVersion = -1;
   private knownOverlayVersion = -1;
   private knownIndoorVersion = -1;
+  private knownFireVersion = -1;
   /** Force un `frame` juste après l'adoption d'un sim, même sans tick. */
   private needFirstFrame = false;
   private frameCount = 0;
@@ -236,6 +245,7 @@ export class SimRunner {
     this.knownMapVersion = -1;
     this.knownOverlayVersion = -1;
     this.knownIndoorVersion = -1;
+    this.knownFireVersion = -1;
     this.knownIds = new Set();
     this.knownNames = {};
     this.acc = 0;
@@ -345,6 +355,12 @@ export class SimRunner {
       this.knownIndoorVersion = indoorVersion;
       indoor = { type: "indoor", indoorVersion, indoor: sim.indoor().slice() };
     }
+    let fire: FireMessage | null = null;
+    const fireVersion = sim.fireVersion();
+    if (fireVersion !== this.knownFireVersion) {
+      this.knownFireVersion = fireVersion;
+      fire = { type: "fire", fireVersion, fire: sim.fire().slice() };
+    }
 
     const withHash = this.frameCount % this.hashEveryFrames === 0;
     this.frameCount += 1;
@@ -377,6 +393,7 @@ export class SimRunner {
       apparel: sim.apparel(),
       traits: sim.traits(),
       departures: sim.departuresCount(),
+      fireCount: sim.fireCount(),
       lag: this.lag,
       tps: this.tpsValue,
       difficulty: sim.difficulty(),
@@ -387,7 +404,7 @@ export class SimRunner {
       buyPrices: sim.buyPrices(),
       researchState: sim.researchState(),
     };
-    return { ticks, map, overlays, indoor, frame };
+    return { ticks, map, overlays, indoor, fire, frame };
   }
 
   /** Le pas de temps proprement dit. Renvoie le nombre de ticks exécutés. */

@@ -80,6 +80,7 @@ import {
   encodeDesignate,
   encodeFormCaravan,
   encodeHunt,
+  encodeIgnite,
   encodeMoveTo,
   encodeSetCraftTarget,
   encodeSetDifficulty,
@@ -369,6 +370,13 @@ interface Stats {
    * `research.ts::decodeResearch` là où elle sert (HUD, `ResearchPanel`).
    */
   researchState: number[];
+  /**
+   * Cases en feu (`frame.fireCount`, lui-même `sim-wasm::fire_count`), à zéro
+   * s'il n'y a aucun incendie : pilote la ligne rouge « Feu : N case(s) » du
+   * HUD. La couche elle-même (les flammes) est portée au Renderer par
+   * `SimBridge.onFire`, pas par cet état.
+   */
+  fireCount: number;
 }
 
 const INITIAL: Stats = {
@@ -410,6 +418,7 @@ const INITIAL: Stats = {
   foodFreshness: new Array(ITEM_NAMES.length).fill(-1),
   // 255 = aucune recherche en cours, cinq technologies à 0/0/non acquise.
   researchState: [255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  fireCount: 0,
 };
 
 interface Actions {
@@ -547,6 +556,19 @@ export function App() {
   const setShowOptions = (v: boolean) => {
     showOptionsRef.current = v;
     setShowOptionsState(v);
+  };
+  /**
+   * Armé par le bouton « Mettre le feu (débogage) » (dev uniquement) : le
+   * prochain clic gauche sur la carte émet `encodeIgnite`, puis se désarme
+   * (un clic droit l'annule aussi). Pas de raccourci clavier. `igniteArmedRef`
+   * le rend lisible depuis le gestionnaire de `pointerup`, comme `toolRef` et
+   * `showOptionsRef` pour le même besoin.
+   */
+  const [igniteArmed, setIgniteArmedState] = useState(false);
+  const igniteArmedRef = useRef(false);
+  const setIgniteArmed = (v: boolean) => {
+    igniteArmedRef.current = v;
+    setIgniteArmedState(v);
   };
   const [notice, setNotice] = useState<string | null>(null);
   /** Mode d'affichage des températures (touche I, bouton « Chaleur »). */
@@ -1030,6 +1052,7 @@ export function App() {
       },
       onOverlays: (m) => renderer.setOverlays(m.zones, m.designations),
       onIndoor: (m) => renderer.setIndoor(m.indoor),
+      onFire: (m) => renderer.setFire(m.fire),
       onFrame: (f) => {
         const now = performance.now();
         if (freshSim) {
@@ -1381,6 +1404,18 @@ export function App() {
       renderer.setDragRect(null);
       if (!live()) return;
       const moved = Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_TOLERANCE_PX;
+      // Outil de débogage « Mettre le feu » : prend la main sur le clic quel
+      // que soit l'outil courant, puis se désarme (mission incendies §4).
+      // Clic droit : annule sans rien émettre, comme le reste des outils.
+      if (igniteArmedRef.current) {
+        if (start.button === 0) {
+          if (!moved && start.tile) issue(encodeIgnite(start.tile.x, start.tile.y));
+          setIgniteArmed(false);
+        } else if (start.button === 2) {
+          setIgniteArmed(false);
+        }
+        return;
+      }
       if (toolRef.current !== "select") {
         if (start.button === 0 && start.tile) {
           const end = renderer.pickTile(e.clientX, e.clientY) ?? start.tile;
@@ -1489,8 +1524,10 @@ export function App() {
           break;
         case "ESCAPE":
           // Le menu Options se ferme en premier : le reste (outil, sélection)
-          // n'a pas bougé pendant qu'il était ouvert.
+          // n'a pas bougé pendant qu'il était ouvert. L'outil « Mettre le
+          // feu » désarmé ensuite, avant l'outil courant.
           if (showOptionsRef.current) setShowOptions(false);
+          else if (igniteArmedRef.current) setIgniteArmed(false);
           else if (toolRef.current !== "select") setTool("select");
           else {
             selected = null;
@@ -1863,6 +1900,7 @@ export function App() {
         buyPrices: Array.from(f.buyPrices),
         foodFreshness: Array.from(f.foodFreshness),
         researchState: Array.from(f.researchState),
+        fireCount: f.fireCount,
       });
     }, 500);
 
@@ -2289,6 +2327,11 @@ export function App() {
                 {researchPercent(currentTechInfo.progress, currentTechInfo.cost)} %
               </div>
             )}
+            {stats.fireCount > 0 && (
+              <div className="fire-warning">
+                Feu : <b>{stats.fireCount}</b> case{stats.fireCount > 1 ? "s" : ""}
+              </div>
+            )}
             <div className="help">
               {stats.tps} tps · {stats.fps} fps · hash {stats.hash}
               {multi && net !== null && (
@@ -2553,6 +2596,15 @@ export function App() {
             {import.meta.env.DEV && (
               <button onClick={() => actionsRef.current?.triggerRaid()} title="Déclencher un raid (dev)">
                 Raid
+              </button>
+            )}
+            {import.meta.env.DEV && (
+              <button
+                className={igniteArmed ? "active" : ""}
+                onClick={() => setIgniteArmed(!igniteArmed)}
+                title="Prochain clic gauche sur la carte : met le feu à la case (dev)"
+              >
+                Mettre le feu (débogage)
               </button>
             )}
           </div>

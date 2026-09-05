@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import type { LockstepState } from "../src/net/LockstepClient";
 import {
   transferablesOf,
+  type FireMessage,
   type FrameMessage,
   type IndoorMessage,
   type MainToWorker,
@@ -81,6 +82,7 @@ function frame(): FrameMessage {
     buyPrices: new Uint32Array([3, 4, 2, 2, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
     foodFreshness: new Int32Array([-1, -1, 800, -1, -1, -1, -1, -1, -1, -1, -1, -1, 400, -1, -1, -1]),
     researchState: new Uint32Array([255, 0, 2000, 0, 0, 2500, 0, 0, 2500, 0, 0, 3000, 0, 0, 3000, 0]),
+    fireCount: 2,
   };
 }
 
@@ -112,6 +114,14 @@ function indoorMessage(): IndoorMessage {
   };
 }
 
+function fireMessage(): FireMessage {
+  return {
+    type: "fire",
+    fireVersion: 6,
+    fire: new Uint8Array([0, 2, 0, 1]),
+  };
+}
+
 const fromMain: MainToWorker[] = [
   { type: "init", mode: "solo", seed: 42, width: 128, height: 128, difficulty: 2 },
   { type: "init", mode: "multi", server: "ws://localhost:8787", room: "demo", name: "alice" },
@@ -128,6 +138,7 @@ const toMain: WorkerToMain[] = [
   map(),
   overlays(),
   indoorMessage(),
+  fireMessage(),
   frame(),
   { type: "net", state: netState },
   { type: "saved", bytes: new Uint8Array([4, 5, 6]) },
@@ -145,7 +156,7 @@ describe("protocole du Worker de simulation", () => {
       new Set(["init", "issue", "setPaused", "setSpeed", "startGame", "save", "load", "debug"]),
     );
     expect(new Set(toMain.map((m) => m.type))).toEqual(
-      new Set(["map", "overlays", "indoor", "frame", "net", "saved", "loaded", "error", "debugResult"]),
+      new Set(["map", "overlays", "indoor", "fire", "frame", "net", "saved", "loaded", "error", "debugResult"]),
     );
   });
 
@@ -184,6 +195,9 @@ describe("protocole du Worker de simulation", () => {
     // `names` est un simple objet : cloné en donnée, pas en tampon.
     expect(clone.names).toEqual({ 1: "Alice" });
     expect(clone.names).not.toBe(original.names);
+    // Cases en feu (`sim-wasm::fire_count`) : un simple nombre, comme `wealth`
+    // ou `difficulty` — la couche elle-même voyage à part (`FireMessage`).
+    expect(clone.fireCount).toBe(2);
   });
 
   it("fait arriver la carte, les calques et l'intérieur copiés", () => {
@@ -198,6 +212,15 @@ describe("protocole du Worker de simulation", () => {
     expect(clonedIndoor.indoorVersion).toBe(4);
     expect(Array.from(clonedIndoor.indoor)).toEqual([0, 1, 1, 0]);
     expect(clonedIndoor.indoor).not.toBe(original.indoor);
+  });
+
+  it("fait arriver la couche de feu copiée", () => {
+    const original = fireMessage();
+    const clone = structuredClone(original);
+    expect(clone.fireVersion).toBe(6);
+    expect(Array.from(clone.fire)).toEqual([0, 2, 0, 1]);
+    expect(clone.fire).not.toBe(original.fire);
+    expect(clone.fire.buffer).not.toBe(original.fire.buffer);
   });
 
   it("clone l'état réseau, gelé côté lockstep, en simple donnée", () => {
@@ -226,6 +249,7 @@ describe("protocole du Worker de simulation", () => {
     expect(transferablesOf(map()).length).toBe(2);
     expect(transferablesOf(overlays()).length).toBe(2);
     expect(transferablesOf(indoorMessage()).length).toBe(1);
+    expect(transferablesOf(fireMessage()).length).toBe(1);
     expect(transferablesOf({ type: "saved", bytes: new Uint8Array([1]) }).length).toBe(1);
     expect(transferablesOf({ type: "net", state: netState })).toEqual([]);
     expect(transferablesOf({ type: "loaded" })).toEqual([]);

@@ -27,6 +27,7 @@ class FakeSim implements RunnerSim {
   mapV = 1;
   overlayV = 1;
   indoorV = 1;
+  fireV = 1;
   hashCalls = 0;
   disposed = false;
   applied: string[] = [];
@@ -66,6 +67,22 @@ class FakeSim implements RunnerSim {
 
   indoor(): Uint8Array {
     return this.cells(0);
+  }
+
+  /** Cases en feu simulées ; `fire()` renvoie tout éteint par défaut, écrasable par les tests. */
+  fireCountValue = 0;
+  fireBuf: Uint8Array | null = null;
+
+  fireVersion(): number {
+    return this.fireV;
+  }
+
+  fireCount(): number {
+    return this.fireCountValue;
+  }
+
+  fire(): Uint8Array {
+    return this.fireBuf ?? this.cells(0);
   }
 
   private cells(fill: number): Uint8Array {
@@ -366,6 +383,32 @@ describe("SimRunner en solo", () => {
     expect(changed.overlays).toBeNull();
   });
 
+  it("n'émet la couche de feu qu'au changement de version, et porte son compteur dans chaque `frame`", () => {
+    const runner = new SimRunner();
+    const sim = new FakeSim();
+    sim.fireCountValue = 2;
+    sim.fireBuf = new Uint8Array([0, 2, 0, 1]);
+    runner.setSim(sim);
+    const first = runner.advance(0);
+    expect(first.fire?.fireVersion).toBe(1);
+    expect(first.fire?.fire).toEqual(sim.fire());
+    // Le compteur, lui, voyage à chaque `frame`, indépendamment de la version.
+    expect(first.frame?.fireCount).toBe(2);
+
+    const same = runner.advance(100);
+    expect(same.fire).toBeNull();
+    expect(same.frame?.fireCount).toBe(2);
+
+    // Un changement d'intensité (version bougée) rebâtit la couche seule.
+    sim.fireV = 5;
+    sim.fireCountValue = 0;
+    const changed = runner.advance(200);
+    expect(changed.fire?.fireVersion).toBe(5);
+    expect(changed.overlays).toBeNull();
+    expect(changed.indoor).toBeNull();
+    expect(changed.frame?.fireCount).toBe(0);
+  });
+
   it("ne porte le hash qu'un `frame` sur trente", () => {
     const { runner, sim } = soloStarted();
     // Le `frame` initial comptait pour un : le prochain hash est trente plus loin.
@@ -424,7 +467,7 @@ describe("SimRunner en solo", () => {
   it("ne fait rien tant qu'aucun sim n'est adopté", () => {
     const runner = new SimRunner();
     const out = runner.advance(1000);
-    expect(out).toEqual({ ticks: 0, map: null, overlays: null, indoor: null, frame: null });
+    expect(out).toEqual({ ticks: 0, map: null, overlays: null, indoor: null, fire: null, frame: null });
   });
 
   it("porte la fraîcheur la plus basse par genre dans le `frame`", () => {

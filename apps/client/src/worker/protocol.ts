@@ -103,6 +103,20 @@ export interface IndoorMessage {
 }
 
 /**
+ * Couche « feu » (`sim-wasm::fire_ptr`, un octet par case : 0 éteint, sinon
+ * l'intensité de 1 à 3, voir `crates/sim/src/fire.rs`). Émise seulement
+ * quand `fireVersion` change, comme `indoor` pour `indoorVersion` : le rendu
+ * ne rebâtit ses flammes qu'à ce moment, jamais à chaque frame. Le compteur
+ * de cases en feu, lui, voyage dans chaque `frame` (`FrameMessage.fireCount`) :
+ * c'est un simple nombre, pas une couche à reconstruire.
+ */
+export interface FireMessage {
+  readonly type: "fire";
+  readonly fireVersion: number;
+  readonly fire: Uint8Array;
+}
+
+/**
  * État à afficher, après un lot de ticks. Au plus un par intervalle du Worker,
  * et jamais si aucun tick n'a été exécuté — sauf le premier, juste après
  * l'adoption d'un sim, pour que l'écran ne reste pas vide en pause.
@@ -170,6 +184,13 @@ export interface FrameMessage {
    * rien à faire dans un `frame` émis soixante fois par seconde.
    */
   readonly departures: number;
+  /**
+   * Cases en feu (`sim-wasm::fire_count`), à zéro s'il n'y a aucun incendie.
+   * Un simple nombre, recalculé chaque frame comme `wealth` ou `difficulty` :
+   * la couche elle-même (`FireMessage`) ne voyage, elle, que quand
+   * `fireVersion` change.
+   */
+  readonly fireCount: number;
   /** Retard du lockstep en ticks. Toujours 0 en solo. */
   readonly lag: number;
   /** Ticks par seconde mesurés dans le Worker. */
@@ -219,6 +240,7 @@ export type WorkerToMain =
   | MapMessage
   | OverlaysMessage
   | IndoorMessage
+  | FireMessage
   | FrameMessage
   /** À chaque changement d'état du `LockstepClient` (lobby, joueurs, désync…). */
   | { readonly type: "net"; readonly state: LockstepState }
@@ -244,6 +266,8 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
       return [message.zones.buffer as ArrayBuffer, message.designations.buffer as ArrayBuffer];
     case "indoor":
       return [message.indoor.buffer as ArrayBuffer];
+    case "fire":
+      return [message.fire.buffer as ArrayBuffer];
     case "frame":
       return [
         message.pawns.buffer as ArrayBuffer,

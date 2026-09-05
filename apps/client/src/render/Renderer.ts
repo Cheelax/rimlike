@@ -101,6 +101,24 @@ const HP_BAR_FULL = new THREE.Color(0x6ab04c);
 /** Vers quoi la couleur d'un pawn tire quand il est à terre. */
 const WHITE = new THREE.Color(0xffffff);
 
+// --- Feu (`sim::fire`, un octet par case, 0 éteint, 1 à 3 = intensité) ---
+/** Décalage (x, z) de chaque flamme d'une case, jusqu'à trois (intensité 1 à 3). */
+const FIRE_FLAME_OFFSETS: readonly [number, number][] = [
+  [0, 0],
+  [-0.16, 0.14],
+  [0.17, -0.12],
+];
+const FIRE_OUTER_COLOR = 0xdb8139;
+const FIRE_INNER_COLOR = 0xffc668;
+const FIRE_GLOW_COLOR = 0xff7a1f;
+const FIRE_OUTER_RADIUS = 0.11;
+const FIRE_OUTER_HEIGHT = 0.34;
+const FIRE_INNER_RADIUS = 0.06;
+const FIRE_INNER_HEIGHT = 0.22;
+const FIRE_GLOW_RADIUS = 0.55;
+/** Axe de rotation des flammes (autour de la verticale) : jamais recréé par case. */
+const FIRE_UP = new THREE.Vector3(0, 1, 0);
+
 interface PawnView {
   group: THREE.Group;
   carry: THREE.Mesh;
@@ -192,6 +210,13 @@ export class Renderer {
   private indoorCells: Uint8Array = new Uint8Array(0);
   /** Quads d'assombrissement des pièces, reconstruits quand `indoor_version` change. */
   private indoorMeshes: THREE.Object3D[] = [];
+  /** Flammes et lueur au sol, reconstruites seulement quand `fire_version` change. */
+  private fireMeshes: THREE.Object3D[] = [];
+  /** Vrai tant qu'au moins une case brûle : anime les flammes à chaque frame (voir `render`, `updateFire`). */
+  private fireActive = false;
+  private fireOuter: THREE.InstancedMesh | null = null;
+  private fireInner: THREE.InstancedMesh | null = null;
+  private fireGlow: THREE.InstancedMesh | null = null;
   /** Vrai pendant que la météo est Neige : pilote le blanchiment du sol. */
   private snowing = false;
   /** Grille du mode chaleur (touche I), reconstruite à chaque `setHeatData`. */
@@ -301,6 +326,11 @@ export class Renderer {
     this.clearMeshes(this.mapMeshes);
     this.clearMeshes(this.indoorMeshes);
     this.clearMeshes(this.heatMeshes);
+    this.clearMeshes(this.fireMeshes);
+    this.fireActive = false;
+    this.fireOuter = null;
+    this.fireInner = null;
+    this.fireGlow = null;
     this.mapW = width;
     this.mapH = height;
     this.tileTerrain = tiles;
@@ -424,6 +454,108 @@ export class Renderer {
   /** Vrai si la case `i` (index à plat) est dans une pièce fermée. */
   private isIndoorAt(i: number): boolean {
     return i < this.indoorCells.length && this.indoorCells[i] !== 0;
+  }
+
+  /**
+   * Couche « feu » (`sim-wasm::fire`, un octet par case : 0 éteint, sinon
+   * l'intensité de 1 à 3) : une à trois petites flammes par case en feu
+   * (autant que l'intensité), plus une lueur au sol. Reconstruite
+   * **seulement** quand `fire_version` change (voir `Worker/SimRunner`),
+   * jamais à chaque frame ; l'animation (vacillement, lueur) est portée par
+   * `render` via `updateFire`, sans reparcourir les cases.
+   */
+  setFire(fire: Uint8Array): void {
+    this.clearMeshes(this.fireMeshes);
+    this.fireOuter = null;
+    this.fireInner = null;
+    this.fireGlow = null;
+    let flameCount = 0;
+    let cellCount = 0;
+    for (let i = 0; i < fire.length; i++) {
+      const intensity = fire[i];
+      if (intensity <= 0) continue;
+      cellCount++;
+      flameCount += Math.min(intensity, FIRE_FLAME_OFFSETS.length);
+    }
+    this.fireActive = flameCount > 0;
+    if (!this.fireActive) return; // rien à dessiner (`fire_count` à 0, contrat AGENTS.md)
+
+    // Deux tons superposés (comme le feu de camp de `props.ts::fire`), sans
+    // ombre : des flammes n'en projettent pas de crédible à ce coût.
+    const outer = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(FIRE_OUTER_RADIUS, FIRE_OUTER_HEIGHT, 6).translate(0, FIRE_OUTER_HEIGHT / 2, 0),
+      new THREE.MeshBasicMaterial({ color: FIRE_OUTER_COLOR, transparent: true, opacity: 0.88, depthWrite: false }),
+      flameCount,
+    );
+    const inner = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(FIRE_INNER_RADIUS, FIRE_INNER_HEIGHT, 6).translate(0, FIRE_INNER_HEIGHT / 2, 0),
+      new THREE.MeshBasicMaterial({ color: FIRE_INNER_COLOR, transparent: true, opacity: 0.92, depthWrite: false }),
+      flameCount,
+    );
+    const glow = new THREE.InstancedMesh(
+      new THREE.CircleGeometry(FIRE_GLOW_RADIUS, 12).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: FIRE_GLOW_COLOR, transparent: true, opacity: 0.3, depthWrite: false }),
+      cellCount,
+    );
+    outer.castShadow = false;
+    inner.castShadow = false;
+
+    const matrix = new THREE.Matrix4();
+    const quat = new THREE.Quaternion();
+    const pos = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+    let flameIndex = 0;
+    let glowIndex = 0;
+    for (let i = 0; i < fire.length; i++) {
+      const intensity = fire[i];
+      if (intensity <= 0) continue;
+      const x = i % this.mapW;
+      const z = Math.floor(i / this.mapW);
+      const seed = visualSeed(x, z);
+      // Base des cônes à `y = 0` en local (géométrie translatée) : leur
+      // position au sol ne bouge donc pas quand `updateFire` change l'échelle.
+      const n = Math.min(intensity, FIRE_FLAME_OFFSETS.length);
+      for (let k = 0; k < n; k++) {
+        const [ox, oz] = FIRE_FLAME_OFFSETS[k];
+        pos.set(x + 0.5 + ox, 0, z + 0.5 + oz);
+        quat.setFromAxisAngle(FIRE_UP, ((seed + k * 37) % 8) * (Math.PI / 4));
+        // Un aléa purement visuel (stable, tiré de `visualSeed`), jamais du RNG du sim.
+        const s = 0.7 + (intensity - 1) * 0.16 + ((seed + k * 11) % 5) / 40;
+        scale.setScalar(s);
+        matrix.compose(pos, quat, scale);
+        outer.setMatrixAt(flameIndex, matrix);
+        inner.setMatrixAt(flameIndex, matrix);
+        flameIndex++;
+      }
+      pos.set(x + 0.5, 0.012, z + 0.5);
+      scale.setScalar(0.45 + intensity * 0.22);
+      matrix.compose(pos, IDENTITY_QUAT, scale);
+      glow.setMatrixAt(glowIndex++, matrix);
+    }
+    outer.instanceMatrix.needsUpdate = true;
+    inner.instanceMatrix.needsUpdate = true;
+    glow.instanceMatrix.needsUpdate = true;
+    this.fireOuter = outer;
+    this.fireInner = inner;
+    this.fireGlow = glow;
+    this.fireMeshes = [outer, inner, glow];
+    this.scene.add(outer, inner, glow);
+  }
+
+  /**
+   * Anime les flammes et leur lueur sans reparcourir les cases : une seule
+   * échelle verticale, partagée par toutes les flammes (leur base est à
+   * `y = 0` en repère local, elle ne bouge donc pas — seule la hauteur
+   * vacille), et une seule opacité pour la lueur au sol. Coût constant,
+   * indépendant du nombre de cases en feu.
+   */
+  private updateFire(): void {
+    const flicker = 1 + Math.sin(this.clock * 9) * 0.12 + Math.sin(this.clock * 5.3 + 1.7) * 0.06;
+    if (this.fireOuter) this.fireOuter.scale.y = flicker;
+    if (this.fireInner) this.fireInner.scale.y = flicker * 1.08;
+    if (this.fireGlow) {
+      (this.fireGlow.material as THREE.MeshBasicMaterial).opacity = 0.26 + Math.sin(this.clock * 6) * 0.06;
+    }
   }
 
   /**
@@ -1242,6 +1374,7 @@ export class Renderer {
     if (this.gl.contextLost || this.gl.container !== this.host) return;
     this.clock += dtSeconds;
     this.updateWeather(dtSeconds);
+    if (this.fireActive) this.updateFire();
     if (Math.abs(this.targetAzimuth - this.azimuth) > 1e-4) {
       this.azimuth += (this.targetAzimuth - this.azimuth) * 0.18;
       if (Math.abs(this.targetAzimuth - this.azimuth) < 1e-3) this.azimuth = this.targetAzimuth;
@@ -1276,6 +1409,7 @@ export class Renderer {
     this.overlayMeshes.length = 0;
     this.indoorMeshes.length = 0;
     this.heatMeshes.length = 0;
+    this.fireMeshes.length = 0;
     // Toute la scène d'un coup : colons, pluie, calques, chantiers, lumières.
     disposeTree(this.scene);
     this.scene.clear();

@@ -350,6 +350,7 @@ export const JOB_LABELS = [
   "recherche",
   "bavarde",
   "réarme un piège",
+  "combat le feu",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
@@ -482,10 +483,28 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
       if (name && !ANIMAL_LABELS.has(name)) return `${name} s'est pris dans un piège`;
       return "Une bête s'est prise dans un piège";
     }
+    case 36:
+      // `arg` = la cause (`sim::EventKind::FireStarted`, `crates/sim/src/fire.rs`) :
+      // 0 foudre, 1 feu de camp, 2 ordre du joueur (`Command::Ignite`).
+      return FIRE_STARTED_LABELS[arg] ?? "Un incendie a été allumé";
+    case 37:
+      // `arg` = le nombre de cases qui ont brûlé (`sim::EventKind::FireOut`).
+      return `Incendie éteint : ${arg} case${arg > 1 ? "s" : ""} brûlée${arg > 1 ? "s" : ""}`;
     default:
       return "";
   }
 }
+
+/**
+ * Phrase de l'événement 36 selon sa cause (`arg`, `sim::EventKind::FireStarted`) :
+ * 0 foudre (pendant un orage), 1 feu de camp (par temps chaud et sec),
+ * 2 ordre du joueur (`Command::Ignite`, débogage ou outil).
+ */
+const FIRE_STARTED_LABELS: Readonly<Record<number, string>> = {
+  0: "La foudre a mis le feu",
+  1: "Le feu de camp a mis le feu alentour",
+  2: "Un incendie a été allumé",
+};
 
 /**
  * Capitalisées comme `animals::Species::label` (« Cerf », « Lapin », « Sanglier »),
@@ -575,6 +594,8 @@ export function eventCategory(kind: number): EventCategory {
     case 21: // RaidIncoming
     case 23: // Illness
     case 35: // TrapSprung
+    case 36: // FireStarted
+    case 37: // FireOut
       return "threat";
     default:
       return "colony";

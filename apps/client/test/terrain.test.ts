@@ -392,7 +392,7 @@ describe("formatEventTime", () => {
 });
 
 describe("eventCategory", () => {
-  it("classe les menaces : raid, morts au combat, à terre, sanglier, raid en approche, maladie", () => {
+  it("classe les menaces : raid, morts au combat, à terre, sanglier, raid en approche, maladie, incendie", () => {
     expect(eventCategory(1)).toBe("threat"); // Raid
     expect(eventCategory(2)).toBe("threat"); // ColonistDied
     expect(eventCategory(3)).toBe("threat"); // RaiderDied
@@ -401,6 +401,8 @@ describe("eventCategory", () => {
     expect(eventCategory(21)).toBe("threat"); // RaidIncoming
     expect(eventCategory(23)).toBe("threat"); // Illness
     expect(eventCategory(35)).toBe("threat"); // TrapSprung
+    expect(eventCategory(36)).toBe("threat"); // FireStarted
+    expect(eventCategory(37)).toBe("threat"); // FireOut
   });
 
   it("classe le reste en colonie", () => {
@@ -434,6 +436,27 @@ describe("JOB_LABELS", () => {
     // Contrat avec `pawn::Job::code()` : un colon libre qui remet en état un
     // piège à pointes déclenché.
     expect(JOB_LABELS[26]).toBe("réarme un piège");
+  });
+
+  it("nomme le job FightFire (code 27) « combat le feu »", () => {
+    // Contrat avec `pawn::Job::code()` (`crates/sim/src/fire.rs`) : un colon
+    // qui combat un incendie proche.
+    expect(JOB_LABELS[27]).toBe("combat le feu");
+  });
+});
+
+describe("eventLabel : incendies", () => {
+  it("nomme la cause de l'événement FireStarted (36), `arg` n'étant pas un id", () => {
+    expect(eventLabel(36, 0)).toBe("La foudre a mis le feu");
+    expect(eventLabel(36, 1)).toBe("Le feu de camp a mis le feu alentour");
+    expect(eventLabel(36, 2)).toBe("Un incendie a été allumé");
+    // Un nom connu ne doit pas s'y glisser : ce n'est pas un id de pawn.
+    expect(eventLabel(36, 0, { 0: "Alice" })).toBe("La foudre a mis le feu");
+  });
+
+  it("annonce l'extinction (FireOut, 37), `arg` étant le nombre de cases brûlées", () => {
+    expect(eventLabel(37, 1)).toBe("Incendie éteint : 1 case brûlée");
+    expect(eventLabel(37, 3)).toBe("Incendie éteint : 3 cases brûlées");
   });
 });
 

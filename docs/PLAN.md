@@ -448,8 +448,12 @@ consommation en 900 ticks (arbre → terre, bois bâti → rien), brûlures pour
 tout le monde contourne le feu ; lutte prioritaire des colons (`Firefight`, 80 ticks par cran, à
 25 cases du barycentre) qui conserve le combustible ; foudre pendant les orages (1,03 impact par
 orage mesuré sur 20 graines × 20 jours), feu de camp par temps chaud et sec (un départ par cinq
-jours d'été mesuré), `Ignite` pour le débogage ; événements 36-37, job 27. Interface à faire
-(flammes, événements, outil d'allumage de débogage). Marchands itinérants côté serveur
+jours d'été mesuré), `Ignite` pour le débogage ; événements 36-37, job 27. Interface livrée le
+2026-09-05 (Sonnet) : couche `fire` envoyée au changement de version comme `indoor`, flammes
+instanciées (cônes deux tons et lueur au sol, animation à coût constant), ligne HUD rouge, job
+« combat le feu », événements 36-37 classés menace, bouton de débogage « Mettre le feu » ;
+vérifié : un arbre allumé à six cases est éteint par les colons en moins de 600 ticks, un arbre
+à trente-deux cases brûle à intensité 3 avec ses flammes à l'écran. Marchands itinérants côté serveur
 livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
 caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;
