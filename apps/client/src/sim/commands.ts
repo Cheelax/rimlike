@@ -137,3 +137,14 @@ export function encodeHunt(animal: number, on: boolean): Uint8Array {
 export function encodeSetClimate(baseTemperature: number, amplitude: number): Uint8Array {
   return WasmSim.encode_set_climate(baseTemperature, amplitude);
 }
+
+/**
+ * Dose de menace du storyteller (`render/terrain.ts::DIFFICULTY` : 0 paisible,
+ * 1 facile, 2 normal, 3 difficile). Choisie à l'accueil (solo) ou dans le
+ * lobby (hôte, multi), et modifiable ensuite par le menu Options : dans les
+ * deux cas la commande passe par `issue`, jamais appliquée directement en
+ * multi (voir `worker/startDifficulty.ts`).
+ */
+export function encodeSetDifficulty(level: number): Uint8Array {
+  return WasmSim.encode_set_difficulty(level);
+}

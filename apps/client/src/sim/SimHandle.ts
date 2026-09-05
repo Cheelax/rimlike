@@ -111,6 +111,38 @@ export class SimHandle implements SimLike {
   }
 
   /**
+   * Règle la dose de menace du storyteller (`sim::storyteller::Difficulty` :
+   * 0 paisible, 1 facile, 2 normal, 3 difficile). Outil de dev/console : en
+   * multi, cette commande doit passer par `encodeSetDifficulty` puis `issue`,
+   * jamais être appliquée directement (comme `triggerRaid`).
+   */
+  setDifficulty(level: number): void {
+    this.inner.set_difficulty(level);
+  }
+
+  /** Dose de menace courante, suivant `sim::storyteller::Difficulty`. */
+  difficulty(): number {
+    return this.inner.difficulty();
+  }
+
+  /**
+   * Richesse de la colonie (`sim::Sim::wealth`), en cache côté sim : la lire
+   * ne coûte rien et ne désynchronise rien.
+   */
+  wealth(): number {
+    return this.inner.wealth();
+  }
+
+  /**
+   * Ticks de maladie restants pour un pawn ; 0 s'il va bien ou si l'id est
+   * inconnu. Hors du tampon des pawns, comme `pawnWeapon` : `PAWN_STRIDE` ne
+   * bouge pas.
+   */
+  pawnSick(id: number): number {
+    return this.inner.pawn_sick(id);
+  }
+
+  /**
    * Marque (`on`) ou démarque un animal comme gibier. Outil de dev/console,
    * comme `triggerRaid` : en multi, cette commande doit passer par
    * `encodeHunt` puis `issue`, jamais être appliquée directement.

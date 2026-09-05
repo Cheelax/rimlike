@@ -165,6 +165,12 @@ export class LockstepClient {
   private frozenTicksValue = 0;
   /** Voir `LockstepState.climate` et `consumeStartClimate`. */
   private climateValue: StartClimate | null = null;
+  /**
+   * Dose de menace choisie par l'hôte pour la partie qui démarre, mémorisée
+   * par `startGame` (jamais par le réseau : la difficulté n'est pas dans le
+   * protocole). Voir `consumeStartDifficulty`.
+   */
+  private pendingDifficultyValue: number | null = null;
   /** Voir `LockstepState.outliers` : réduit par `resynced`, jamais réétendu que par `desync`. */
   private deviating = new Set<PlayerId>();
   /** Vrai dès qu'un `desync` a porté des `outliers` : sans ça, `deviating` vide ne prouve rien. */
@@ -216,8 +222,17 @@ export class LockstepClient {
     this.emit();
   }
 
-  /** Réservé au host, en lobby. Fixe la graine et la taille pour tous. */
-  startGame(seed: number, width: number, height: number): void {
+  /**
+   * Réservé au host, en lobby. Fixe la graine et la taille pour tous.
+   *
+   * `difficulty` (`render/terrain.ts::DIFFICULTY`) ne part jamais sur le
+   * réseau : elle est mémorisée ici et lue une seule fois par
+   * `consumeStartDifficulty`, dès que ce client adopte son propre sim (voir
+   * `worker/startDifficulty.ts`) — c'est alors une commande ordinaire,
+   * comme n'importe quel ordre du lockstep, qui la propage à tous les autres.
+   */
+  startGame(seed: number, width: number, height: number, difficulty?: number): void {
+    this.pendingDifficultyValue = difficulty ?? null;
     this.send({ type: "start", seed, width, height });
   }
 
@@ -261,6 +276,18 @@ export class LockstepClient {
   consumeStartClimate(): StartClimate | null {
     const value = this.climateValue;
     this.climateValue = null;
+    return value;
+  }
+
+  /**
+   * Lit la difficulté choisie par l'hôte au moment de `startGame` et la
+   * remet à `null` : deux appels ne la renvoient qu'une fois, même garantie
+   * que `consumeFrozenTicks`/`consumeStartClimate`. `null` pour un non-hôte,
+   * qui n'appelle jamais `startGame`.
+   */
+  consumeStartDifficulty(): number | null {
+    const value = this.pendingDifficultyValue;
+    this.pendingDifficultyValue = null;
     return value;
   }
 

@@ -36,6 +36,7 @@ canvas.scene { display: block; width: 100%; height: 100%; }
 .panel-mood b { color: #ffb0b0; }
 .panel-section { margin-top: 8px; padding-bottom: 2px; font-weight: 600; opacity: .85; border-bottom: 1px solid rgba(255,255,255,.12); }
 .panel-downed { margin: 4px 0; color: #ff6b6b; font-weight: 600; }
+.panel-sick { margin: 4px 0; color: #8fd18f; font-weight: 600; }
 /* Le panneau lui-même ignore la souris (voir .panel) : ses boutons la reprennent. */
 .panel-action { pointer-events: auto; margin-top: 6px; width: 100%; background: rgba(255,255,255,.08); color: #e6e6e6; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 6px 10px; font: 12px system-ui, sans-serif; cursor: pointer; }
 .panel-action:hover { background: rgba(255,255,255,.16); }
@@ -64,6 +65,8 @@ canvas.scene { display: block; width: 100%; height: 100%; }
 .card label { display: grid; grid-template-columns: 64px 1fr; gap: 8px; align-items: center; opacity: .9; }
 .card input { background: rgba(0,0,0,.35); color: #e6e6e6; border: 1px solid rgba(255,255,255,.16); border-radius: 5px; padding: 5px 7px; font: 12px ui-monospace, Menlo, monospace; min-width: 0; }
 .card input:focus { outline: none; border-color: #4ad9ff; }
+.card select { background: rgba(0,0,0,.35); color: #e6e6e6; border: 1px solid rgba(255,255,255,.16); border-radius: 5px; padding: 5px 7px; font: 12px ui-monospace, Menlo, monospace; min-width: 0; }
+.card select:focus { outline: none; border-color: #4ad9ff; }
 .card button { background: rgba(255,255,255,.08); color: #e6e6e6; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 8px 12px; font: 13px system-ui, sans-serif; cursor: pointer; }
 .card button:hover:not(:disabled) { background: rgba(255,255,255,.16); }
 .card button.primary { background: #ffe066; color: #111; border-color: #ffe066; font-weight: 600; }
@@ -164,6 +167,7 @@ canvas.globe { position: fixed; inset: 0; display: block; width: 100%; height: 1
 .colonist-dot { position: absolute; left: 3px; width: 7px; height: 7px; border-radius: 50%; }
 .colonist-dot.downed { top: 2px; background: #ff4040; }
 .colonist-dot.sleeping { top: 11px; background: #4ad9ff; }
+.colonist-dot.sick { top: 20px; background: #6ab04c; }
 .colonist-hp-track { width: 30px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.16); overflow: hidden; }
 .colonist-hp-fill { display: block; height: 100%; background: #6ab04c; }
 
@@ -179,3 +183,12 @@ canvas.globe { position: fixed; inset: 0; display: block; width: 100%; height: 1
 .journal-time { opacity: .65; font-variant-numeric: tabular-nums; }
 .journal-panel button.wide { width: 100%; background: rgba(255,255,255,.08); color: #e6e6e6; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 7px 10px; font: 12px system-ui, sans-serif; cursor: pointer; }
 .journal-panel button.wide:hover { background: rgba(255,255,255,.16); }
+
+/* --- Options (dose de menace du storyteller) : petit menu, ferme sur Échap --- */
+.options-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 260px; z-index: 5; display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; background: rgba(0,0,0,.82); border: 1px solid rgba(255,255,255,.16); border-radius: 8px; font: 12px/1.45 system-ui, sans-serif; }
+.options-row { display: flex; gap: 4px; flex-wrap: wrap; }
+.options-row button { flex: 1; background: rgba(255,255,255,.08); color: #e6e6e6; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 6px 4px; font: 11px system-ui, sans-serif; cursor: pointer; }
+.options-row button:hover { background: rgba(255,255,255,.16); }
+.options-row button.active { background: #ffe066; color: #111; border-color: #ffe066; font-weight: 600; }
+.options-panel button.wide { width: 100%; background: rgba(255,255,255,.08); color: #e6e6e6; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 7px 10px; font: 12px system-ui, sans-serif; cursor: pointer; }
+.options-panel button.wide:hover { background: rgba(255,255,255,.16); }

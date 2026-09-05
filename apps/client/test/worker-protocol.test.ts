@@ -71,6 +71,8 @@ function frame(): FrameMessage {
     departures: 1,
     lag: 3,
     tps: 60,
+    difficulty: 2,
+    wealth: 1240,
   };
 }
 
@@ -103,12 +105,12 @@ function indoorMessage(): IndoorMessage {
 }
 
 const fromMain: MainToWorker[] = [
-  { type: "init", mode: "solo", seed: 42, width: 128, height: 128 },
+  { type: "init", mode: "solo", seed: 42, width: 128, height: 128, difficulty: 2 },
   { type: "init", mode: "multi", server: "ws://localhost:8787", room: "demo", name: "alice" },
   { type: "issue", bytes: new Uint8Array([1, 2]) },
   { type: "setPaused", paused: true },
   { type: "setSpeed", speed: 3 },
-  { type: "startGame", seed: 7, width: 32, height: 32 },
+  { type: "startGame", seed: 7, width: 32, height: 32, difficulty: 3 },
   { type: "save" },
   { type: "load", bytes: new Uint8Array([9]) },
   { type: "debug", id: 1, method: "step", args: [5] },
@@ -160,6 +162,10 @@ describe("protocole du Worker de simulation", () => {
     expect(clone.season).toBe(1);
     expect(clone.dayOfYear).toBe(20);
     expect(clone.yearDays).toBe(60);
+    // Dose de menace et richesse (`sim-wasm::difficulty`/`wealth`) : de simples
+    // nombres, clonés tels quels, comme la température ou la saison.
+    expect(clone.difficulty).toBe(2);
+    expect(clone.wealth).toBe(1240);
     // `names` est un simple objet : cloné en donnée, pas en tampon.
     expect(clone.names).toEqual({ 1: "Alice" });
     expect(clone.names).not.toBe(original.names);

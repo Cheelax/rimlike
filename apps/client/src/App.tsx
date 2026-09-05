@@ -34,11 +34,14 @@ import {
   BUILD_KIND,
   clampCraftTarget,
   DESIGNATION,
+  DIFFICULTY,
+  DIFFICULTY_LABELS,
   EVENT_STRIDE,
   eventLabel,
   FEATURE,
   formatInjury,
   formatTemperature,
+  formatWealth,
   hKeyAction,
   HEALTH_STRIDE,
   ITEM_NAMES,
@@ -46,6 +49,7 @@ import {
   MATERIAL_NAMES,
   PRIORITY_STRIDE,
   SEASON_LABELS,
+  sickHoursRemaining,
   SKILL_STRIDE,
   SPECIES_LABELS,
   SPECIES_MAX_HP,
@@ -66,6 +70,7 @@ import {
   encodeHunt,
   encodeMoveTo,
   encodeSetCraftTarget,
+  encodeSetDifficulty,
   encodeSetPriority,
   encodeSetZone,
   encodeTriggerRaid,
@@ -206,6 +211,12 @@ interface PawnInfo {
   injuries: InjuryInfo[];
   /** Vide pour un pillard : le tampon `skills` ne les concerne pas. */
   skills: SkillInfo[];
+  /**
+   * Heures de maladie restantes (`sim-wasm::pawn_sick`, converties par
+   * `sickHoursRemaining`), 0 si le colon va bien. Rafraîchie à part par
+   * `rpc("pawnSick", id)`, même rythme que les blessures.
+   */
+  sickHours: number;
   /** Genre d'arme équipée (`sim::ItemKind`), -1 à mains nues. Lu dans `frame.weapons`. */
   weapon: number;
   /** Genre d'habit porté (`sim::ItemKind` 14 tunique, 15 manteau), -1 le dos nu. Lu dans `frame.apparel`. */
@@ -268,6 +279,10 @@ interface Stats {
   colonistBadges: ColonistBadge[];
   /** Ticks d'un jour de jeu (`frame.ticksPerDay`), pour l'horodatage du Journal. */
   ticksPerDay: number;
+  /** Dose de menace courante, suivant `render/terrain.ts::DIFFICULTY` (`frame.difficulty`). */
+  difficulty: number;
+  /** Richesse de la colonie (`frame.wealth`), affichée dans le HUD stock. */
+  wealth: number;
 }
 
 const INITIAL: Stats = {
@@ -299,6 +314,8 @@ const INITIAL: Stats = {
   hasCraftingSpot: false,
   colonistBadges: [],
   ticksPerDay: TICKS_PER_DAY,
+  difficulty: DIFFICULTY.Normal,
+  wealth: 0,
 };
 
 interface Actions {
@@ -318,8 +335,15 @@ interface Toast {
   text: string;
 }
 
-/** Mode de jeu choisi à l'accueil. Rien ne démarre avant ce choix. */
-type Session = { mode: "solo" } | { mode: "multi"; server: string; room: string; name: string };
+/**
+ * Mode de jeu choisi à l'accueil. Rien ne démarre avant ce choix. La
+ * difficulté solo est choisie avant même de créer la session (accueil), donc
+ * elle y voyage plutôt que d'être relue d'un état qui pourrait changer entre
+ * le clic et l'effet qui démarre le Worker (voir `HomeScreen`).
+ */
+type Session =
+  | { mode: "solo"; difficulty: number }
+  | { mode: "multi"; server: string; room: string; name: string };
 
 /**
  * Session « monde partagé » : elle survit à l'entrée dans une colonie. Tant
@@ -407,6 +431,19 @@ export function App() {
   const [showCraft, setShowCraft] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
   const [journalFilter, setJournalFilter] = useState<JournalFilter>("all");
+  /**
+   * Menu « Options » (dose de menace, en cours de partie) : touche `O` est
+   * prise par l'outil Sol, donc bouton dans la barre pour l'ouvrir, `Échap`
+   * pour le fermer. `showOptionsRef` le rend lisible depuis le gestionnaire de
+   * `keydown`, fermé sur `[session]` et donc jamais à jour d'un état React lu
+   * directement (voir `toolRef`, même besoin).
+   */
+  const [showOptions, setShowOptionsState] = useState(false);
+  const showOptionsRef = useRef(false);
+  const setShowOptions = (v: boolean) => {
+    showOptionsRef.current = v;
+    setShowOptionsState(v);
+  };
   const [notice, setNotice] = useState<string | null>(null);
   /** Mode d'affichage des températures (touche I, bouton « Chaleur »). */
   const [heatMode, setHeatMode] = useState(false);
@@ -428,6 +465,10 @@ export function App() {
   });
   const [net, setNet] = useState<LockstepState | null>(null);
   const [seed, setSeed] = useState<number>(DEFAULT_SEED);
+  /** Dose de menace choisie à l'accueil, pour la prochaine partie solo. */
+  const [homeDifficulty, setHomeDifficulty] = useState<number>(DIFFICULTY.Normal);
+  /** Dose de menace choisie par l'hôte dans le lobby, pour la prochaine partie multi. */
+  const [multiDifficulty, setMultiDifficulty] = useState<number>(DIFFICULTY.Normal);
   // --- Salles ouvertes : sondage de `GET /rooms`, tant que l'accueil est affiché ---
   const [rooms, setRooms] = useState<readonly RoomInfo[]>([]);
   const [roomsTruncated, setRoomsTruncated] = useState(false);
@@ -710,6 +751,17 @@ export function App() {
     /** Ressenti du colon sélectionné, rafraîchi par `rpc("pawnComfort", id)` au même rythme. */
     let selectedComfort = 0;
     let selectedComfortId: number | null = null;
+    /** Ticks de maladie restants du colon sélectionné, rafraîchis au même rythme. */
+    let selectedSick = 0;
+    let selectedSickId: number | null = null;
+    /**
+     * Ticks de maladie restants par id, pour le point vert de `ColonistBar` :
+     * pas dans le tampon `pawns` (`sim-wasm::PAWN_STRIDE` ne bouge pas), donc
+     * rafraîchi ici par colon vivant, au rythme du HUD (2×/s) plutôt qu'à
+     * chaque frame. Un tick de retard entre le changement d'état et la
+     * pastille, comme les blessures ou le ressenti du colon sélectionné.
+     */
+    const sickById = new Map<number, number>();
     let lastRenderAt = performance.now();
     let framesInWindow = 0;
     let windowStart = lastRenderAt;
@@ -882,7 +934,7 @@ export function App() {
     eventLogRef.current = [];
     bridge.start(
       session.mode === "solo"
-        ? { mode: "solo", seed: DEFAULT_SEED, width: MAP_SIZE, height: MAP_SIZE }
+        ? { mode: "solo", seed: DEFAULT_SEED, width: MAP_SIZE, height: MAP_SIZE, difficulty: session.difficulty }
         : { mode: "multi", server: session.server, room: session.room, name: session.name },
     );
     // Les `encode*` sont des fonctions du WASM : le thread principal en garde
@@ -1207,7 +1259,10 @@ export function App() {
           }
           break;
         case "ESCAPE":
-          if (toolRef.current !== "select") setTool("select");
+          // Le menu Options se ferme en premier : le reste (outil, sélection)
+          // n'a pas bougé pendant qu'il était ouvert.
+          if (showOptionsRef.current) setShowOptions(false);
+          else if (toolRef.current !== "select") setTool("select");
           else {
             selected = null;
             renderer.setSelected(null);
@@ -1342,6 +1397,7 @@ export function App() {
             sleeping: (flags & PAWN_FLAGS.SLEEPING) !== 0,
             mood: curPawns[o + 6] / 10,
             job: JOB_LABELS[curPawns[o + 7]] ?? "?",
+            sick: (sickById.get(pid) ?? 0) > 0,
           });
         }
         if (curPawns[o] !== selected) continue;
@@ -1397,6 +1453,7 @@ export function App() {
             ? selectedCombat
             : { meleeLevel: 0, meleeXp: 0, rangedLevel: 0, rangedXp: 0 }),
           comfort: selectedComfortId === id ? selectedComfort : 0,
+          sickHours: selectedSickId === id ? sickHoursRemaining(selectedSick) : 0,
           animal: isAnimal,
           species,
           hunted: animalInfo?.hunted ?? false,
@@ -1417,6 +1474,10 @@ export function App() {
         if (selectedComfortId !== info.id) {
           selectedComfortId = info.id;
           selectedComfort = 0;
+        }
+        if (selectedSickId !== info.id) {
+          selectedSickId = info.id;
+          selectedSick = 0;
         }
         const id = info.id;
         void bridge
@@ -1453,11 +1514,34 @@ export function App() {
           .catch(() => {
             /* colon disparu entre-temps : rien à afficher au prochain tour */
           });
+        void bridge
+          .rpc("pawnSick", id)
+          .then((raw) => {
+            if (selectedSickId !== id) return; // sélection changée entre-temps
+            selectedSick = raw as number;
+          })
+          .catch(() => {
+            /* colon disparu entre-temps : rien à afficher au prochain tour */
+          });
       } else {
         selectedInjuriesId = null;
         selectedInjuries = [];
         selectedCombatId = null;
         selectedComfortId = null;
+        selectedSickId = null;
+      }
+      // Pastille « malade » de la barre des colons : un `pawnSick` par colon
+      // vivant, comme les autres accesseurs ponctuels ci-dessus (pas dans le
+      // tampon `pawns`, `PAWN_STRIDE` ne bouge pas). Rafraîchi ici, affiché à
+      // la prochaine passe du HUD (500 ms), sans bloquer `setStats` en attendant.
+      for (const c of colonistList) {
+        const pid = c.id;
+        void bridge
+          .rpc("pawnSick", pid)
+          .then((raw) => sickById.set(pid, raw as number))
+          .catch(() => {
+            /* colon disparu entre-temps : la pastille garde sa dernière valeur connue */
+          });
       }
       setStats({
         tick: f.tick,
@@ -1489,6 +1573,8 @@ export function App() {
         craftTargets: Array.from(f.craftTargets),
         hasCraftingSpot: craftingSpotCount > 0,
         ticksPerDay: f.ticksPerDay,
+        difficulty: f.difficulty,
+        wealth: f.wealth,
       });
     }, 500);
 
@@ -1752,7 +1838,9 @@ export function App() {
         <HomeScreen
           form={form}
           onChange={setForm}
-          onSolo={() => setSession({ mode: "solo" })}
+          difficulty={homeDifficulty}
+          onDifficultyChange={setHomeDifficulty}
+          onSolo={() => setSession({ mode: "solo", difficulty: homeDifficulty })}
           onJoin={() => setSession({ mode: "multi", ...form })}
           onWorld={() => {
             setInitialWorldTile(null);
@@ -1777,9 +1865,11 @@ export function App() {
             seed={seed}
             onSeed={setSeed}
             imposedSeed={imposedSeed}
+            difficulty={multiDifficulty}
+            onDifficulty={setMultiDifficulty}
             onBackToWorld={inWorld ? backToWorld : null}
             // Le serveur n'accepte qu'un entier positif comme graine.
-            onStart={() => bridgeRef.current?.startGame(startSeed, MAP_SIZE, MAP_SIZE)}
+            onStart={() => bridgeRef.current?.startGame(startSeed, MAP_SIZE, MAP_SIZE, multiDifficulty)}
           />
         )
       )}
@@ -1794,6 +1884,7 @@ export function App() {
               {seasonDays} · {formatTemperature(stats.temperature)} · {WEATHER_LABELS[stats.weather] ?? "?"} · tick{" "}
               {stats.tick}
               {multi ? "" : stats.paused ? <b> · PAUSE</b> : ` · x${stats.speed}`}
+              {stats.difficulty !== DIFFICULTY.Normal ? ` · ${DIFFICULTY_LABELS[stats.difficulty] ?? "?"}` : ""}
             </div>
             {multi && net !== null && (
               <div>
@@ -1827,6 +1918,8 @@ export function App() {
                 .map(([n, v]) => `${v} ${n}`)
                 .join(" · ")}
               {stats.blueprints > 0 ? ` · ${stats.blueprints} chantier${stats.blueprints > 1 ? "s" : ""}` : ""}
+              {" · richesse "}
+              {formatWealth(stats.wealth)}
             </div>
             <div className="help">
               {stats.tps} tps · {stats.fps} fps · hash {stats.hash}
@@ -1897,6 +1990,7 @@ export function App() {
               <Bar label="Sang" value={sel.blood} />
               <Bar label="Conscience" value={sel.consciousness} />
               {sel.downed && <div className="panel-downed">à terre</div>}
+              {sel.sickHours > 0 && <div className="panel-sick">Malade : encore {sel.sickHours} h</div>}
               {sel.injuries.length > 0 && (
                 <ul className="panel-injuries">
                   {sel.injuries.map((inj, i) => (
@@ -1991,6 +2085,13 @@ export function App() {
               title="Touche N : journal des événements"
             >
               Journal <span className="key">N</span>
+            </button>
+            <button
+              className={showOptions ? "active" : ""}
+              onClick={() => setShowOptions(!showOptions)}
+              title="Dose de menace du storyteller · Échap pour fermer"
+            >
+              Options
             </button>
             <button
               className={caravanOpen ? "active" : ""}
@@ -2102,6 +2203,33 @@ export function App() {
               onClose={() => setShowJournal(false)}
             />
           )}
+          {showOptions && (
+            <div className="options-panel" onContextMenu={(e) => e.preventDefault()}>
+              <div className="panel-title">Options</div>
+              <div className="panel-section">Dose de menace</div>
+              {!multi || (net?.isHost ?? false) ? (
+                <div className="options-row">
+                  {DIFFICULTY_LABELS.map((label, level) => (
+                    <button
+                      key={level}
+                      className={stats.difficulty === level ? "active" : ""}
+                      onClick={() => bridgeRef.current?.issue(encodeSetDifficulty(level))}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="help">réglée par l'hôte : {DIFFICULTY_LABELS[stats.difficulty] ?? "Normal"}</div>
+              )}
+              {stats.difficulty === DIFFICULTY.Peaceful && (
+                <div className="help">paisible : plus aucun raid, le reste de la vie de la colonie continue</div>
+              )}
+              <button className="wide" onClick={() => setShowOptions(false)}>
+                Fermer
+              </button>
+            </div>
+          )}
           {caravanOpen && roomTile !== null && !caravanPicking && (
             <CaravanPanel
               fromTile={roomTile}
@@ -2170,6 +2298,8 @@ export function App() {
 function HomeScreen({
   form,
   onChange,
+  difficulty,
+  onDifficultyChange,
   onSolo,
   onJoin,
   onWorld,
@@ -2184,6 +2314,9 @@ function HomeScreen({
 }: {
   form: JoinForm;
   onChange: (f: JoinForm) => void;
+  /** Dose de menace de la prochaine partie solo (`render/terrain.ts::DIFFICULTY`), défaut Normal. */
+  difficulty: number;
+  onDifficultyChange: (v: number) => void;
   onSolo: () => void;
   onJoin: () => void;
   onWorld: () => void;
@@ -2210,6 +2343,16 @@ function HomeScreen({
     <div className="overlay">
       <div className="card">
         <div className="card-title">rimlike</div>
+        <label>
+          Difficulté
+          <select value={difficulty} onChange={(e) => onDifficultyChange(Number(e.target.value))}>
+            {DIFFICULTY_LABELS.map((label, level) => (
+              <option key={level} value={level}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
         <button className="wide primary" onClick={onSolo}>
           Partie solo
         </button>
@@ -2351,6 +2494,8 @@ function Lobby({
   seed,
   onSeed,
   imposedSeed,
+  difficulty,
+  onDifficulty,
   onBackToWorld,
   onStart,
 }: {
@@ -2360,6 +2505,9 @@ function Lobby({
   onSeed: (v: number) => void;
   /** Graine dictée par la case du globe, `null` en salle simple. */
   imposedSeed: number | null;
+  /** Dose de menace choisie par l'hôte (`render/terrain.ts::DIFFICULTY`). */
+  difficulty: number;
+  onDifficulty: (v: number) => void;
   /** Présent en mode monde : de quoi ressortir sans recharger la page. */
   onBackToWorld: (() => void) | null;
   onStart: () => void;
@@ -2420,6 +2568,16 @@ function Lobby({
             {imposedSeed !== null && (
               <div className="help">Graine imposée par la case : {imposedSeed}</div>
             )}
+            <label>
+              Difficulté
+              <select value={difficulty} onChange={(e) => onDifficulty(Number(e.target.value))}>
+                {DIFFICULTY_LABELS.map((label, level) => (
+                  <option key={level} value={level}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button className="wide primary" onClick={onStart}>
               Démarrer
             </button>

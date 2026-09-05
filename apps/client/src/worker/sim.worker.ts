@@ -15,10 +15,12 @@
 
 import { LockstepClient } from "../net/LockstepClient";
 import { WebSocketTransport } from "../net/Transport";
-import { encodeFastForward, encodeSetClimate } from "../sim/commands";
+import { encodeFastForward, encodeSetClimate, encodeSetDifficulty } from "../sim/commands";
 import { SimHandle } from "../sim/SimHandle";
+import { DIFFICULTY } from "../render/terrain";
 import { fastForwardOnReopen } from "./fastForward";
 import { setClimateOnStart } from "./startClimate";
+import { setDifficultyOnStart } from "./startDifficulty";
 import { SimRunner, type RunnerOutput, type RunnerSim } from "./SimRunner";
 import { transferablesOf, type MainToWorker, type WorkerToMain } from "./protocol";
 
@@ -112,6 +114,12 @@ const SIM_API: ReadonlySet<string> = new Set([
   "setClimate",
   "pawnComfort",
   "tileTemperatures",
+  // Storyteller : dose de menace, richesse de la colonie, maladie
+  // (`crates/sim/src/storyteller.rs`).
+  "setDifficulty",
+  "difficulty",
+  "wealth",
+  "pawnSick",
 ]);
 
 /** Idem pour le `LockstepClient`, préfixé `lockstep.` côté appelant. */
@@ -176,7 +184,11 @@ function beat(): void {
 async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<void> {
   if (message.mode === "solo") {
     runner = new SimRunner();
-    runner.setSim(await SimHandle.create({ seed: BigInt(message.seed), width: message.width, height: message.height }));
+    const sim = await SimHandle.create({ seed: BigInt(message.seed), width: message.width, height: message.height });
+    // Choisie à l'accueil (voir `App.tsx`) : Normal est déjà le défaut du sim,
+    // inutile de pousser une commande de plus pour ne rien y changer.
+    if (message.difficulty !== DIFFICULTY.Normal) sim.setDifficulty(message.difficulty);
+    runner.setSim(sim);
   } else {
     lockstep = new LockstepClient({
       transport: new WebSocketTransport(message.server),
@@ -199,6 +211,15 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
         const climate = lockstep?.consumeStartClimate() ?? null;
         const climateBytes = setClimateOnStart(lockstep?.state.isHost ?? false, climate, encodeSetClimate);
         if (climateBytes) lockstep?.issue(climateBytes);
+        // Dose de menace choisie par l'hôte (voir `App.tsx` et
+        // `worker/startDifficulty.ts`) : jamais sur le réseau, mémorisée par
+        // `LockstepClient.startGame` et lue une seule fois ici, juste après le
+        // climat — l'ordre ne change rien (deux commandes indépendantes), mais
+        // reste fixe pour que les deux premières commandes soient toujours les
+        // mêmes d'une partie à l'autre.
+        const difficulty = lockstep?.consumeStartDifficulty() ?? null;
+        const difficultyBytes = setDifficultyOnStart(lockstep?.state.isHost ?? false, difficulty, encodeSetDifficulty);
+        if (difficultyBytes) lockstep?.issue(difficultyBytes);
         // Réouverture d'une colonie gelée (§11.6) : le sim restauré vient
         // d'être adopté, c'est le seul moment où émettre. `consumeFrozenTicks`
         // remet la valeur à 0, donc un deuxième sim adopté sans nouveau
@@ -234,7 +255,7 @@ function handle(message: MainToWorker): void {
       runner?.setSpeed(message.speed);
       return;
     case "startGame":
-      lockstep?.startGame(message.seed, message.width, message.height);
+      lockstep?.startGame(message.seed, message.width, message.height, message.difficulty);
       return;
     case "save": {
       const sim = runner?.sim;

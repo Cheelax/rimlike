@@ -20,6 +20,8 @@ export interface ColonistBadge {
   readonly downed: boolean;
   /** Drapeau `PAWN_FLAGS.SLEEPING`. */
   readonly sleeping: boolean;
+  /** Malade (`sim-wasm::pawn_sick` > 0), rafraîchi par `rpc("pawnSick", id)`. */
+  readonly sick: boolean;
   /** Pourcentage 0-100 (`Pawn::mood`), pour l'icône d'humeur. */
   readonly mood: number;
   /** Libellé du job courant (`JOB_LABELS`), pour l'infobulle. */
@@ -55,6 +57,7 @@ export function ColonistBar({ colonists, selected, onSelect, onFocus }: Colonist
           <span className="colonist-mood">{moodIcon(c.mood)}</span>
           {c.downed && <span className="colonist-dot downed" />}
           {c.sleeping && <span className="colonist-dot sleeping" />}
+          {c.sick && <span className="colonist-dot sick" />}
           <span className="colonist-hp-track">
             <span className="colonist-hp-fill" style={{ width: `${Math.max(0, Math.min(100, c.hp))}%` }} />
           </span>

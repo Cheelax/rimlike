@@ -8,8 +8,11 @@ protocole réseau, `docs/protocol.md`.
 
 ### Partie solo
 
-Bouton « Partie solo » sur l'écran d'accueil. Une carte de 128×128 se génère
-aussitôt, sans réseau : pause et vitesses de jeu disponibles.
+Un sélecteur « Difficulté » (Paisible / Facile / Normal / Difficile, défaut
+Normal) précède le bouton « Partie solo » sur l'écran d'accueil : il règle la
+dose de menace du storyteller pour la partie qui commence (voir §4). Une carte
+de 128×128 se génère aussitôt, sans réseau : pause et vitesses de jeu
+disponibles.
 
 ### Multijoueur (salle nommée)
 
@@ -21,10 +24,11 @@ http://localhost:5173/?server=ws://localhost:8787&room=demo&name=alice
 ```
 
 Le premier arrivé dans la salle est l'**hôte** : lui seul choisit la graine et
-clique « Démarrer ». Une fois la partie lancée, chacun voit les actions des
-autres ; il n'y a plus ni pause ni choix de vitesse, l'horloge du serveur ne
-s'arrête jamais. Un bandeau signale une désynchronisation éventuelle, avec un
-bouton « Resynchroniser ».
+la difficulté (à côté de la graine, même sélecteur qu'en solo) puis clique
+« Démarrer ». Une fois la partie lancée, chacun voit les actions des autres ;
+il n'y a plus ni pause ni choix de vitesse, l'horloge du serveur ne s'arrête
+jamais. Un bandeau signale une désynchronisation éventuelle, avec un bouton
+« Resynchroniser ».
 
 ### Monde partagé
 
@@ -45,8 +49,8 @@ serveur. Voir §5 pour la suite (caravanes, colonies gelées).
 - Molette : zoom. `Q` / `E` : rotation par pas de 90°.
 - Clic gauche sur un colon : le sélectionne. Clic droit avec un colon
   sélectionné : ordre de déplacement, ou d'attaque sur un ennemi ou un animal.
-- `Échap` : quitte l'outil en cours pour revenir à la sélection ; en
-  sélection, désélectionne.
+- `Échap` : ferme le menu Options s'il est ouvert ; sinon quitte l'outil en
+  cours pour revenir à la sélection ; en sélection, désélectionne.
 - Barre des colons (bas d'écran) : clic pour sélectionner un colon, double
   clic pour centrer la caméra sur lui.
 
@@ -95,10 +99,12 @@ côté client.
 | I | Chaleur | colore les cases par température |
 | N | Journal | événements de la partie, filtrables (Tout / Menaces / Colonie) |
 | V | Caravane | former une caravane (seulement dans une colonie du monde partagé, voir §5) |
+| — | Options (bouton dans la barre, `Échap` pour fermer) | change la difficulté en cours de partie ; en multi, réservé à l'hôte |
 
 Le panneau d'un colon sélectionné montre son travail en cours, son arme et son
 habit, la température ressentie, ses besoins (PV, faim, repos, humeur), sa
-santé (sang, conscience, blessures détaillées) et ses compétences.
+santé (sang, conscience, blessures détaillées, heures de maladie restantes
+s'il y a lieu) et ses compétences.
 
 ## 3. Boucle de survie
 
@@ -108,6 +114,10 @@ Bois (arbres coupés) et pierre (roche minée) sont les matériaux de base. Une
 zone de stockage (`Z`) laisse les colons y ranger tout ce qui traîne au sol ;
 une pile atteint 75 unités avant d'en former une autre. Poser le stockage près
 d'une désignation raccourcit les trajets.
+
+Le HUD affiche aussi la **richesse** de la colonie (piles, constructions et
+colons confondus) à la suite du stock : c'est elle, avec le nombre de colons
+et le temps écoulé, qui décide de la taille des raids (voir §4).
 
 ### Nourriture
 
@@ -158,11 +168,19 @@ de pillards ; ensuite un raid tous les deux à quatre jours. Sa taille et son
 temps écoulé) : plus la colonie prospère, plus les bandes grossissent et
 s'arment. Une bande charge directement, ou arrive à moitié à l'arc, ou encore
 s'installe un moment près de son point d'entrée avant de charger (le temps de
-fermer une porte). Un pillard décroche et fuit sous 65 % de PV. Les colons se
-défendent seuls contre un ennemi à moins de huit cases ; un clic droit sur un
-ennemi, avec un colon sélectionné, ordonne l'attaque. Un tireur à l'arc porte
-à huit cases, à condition d'une ligne de vue dégagée (murs, portes et rochers
-bloquent).
+fermer une porte) — un toast et une entrée de Journal (« Raid en approche »)
+l'annoncent dès qu'elle apparaît sur la carte, avant qu'elle ne charge. Un
+pillard décroche et fuit sous 65 % de PV. Les colons se défendent seuls contre
+un ennemi à moins de huit cases ; un clic droit sur un ennemi, avec un colon
+sélectionné, ordonne l'attaque. Un tireur à l'arc porte à huit cases, à
+condition d'une ligne de vue dégagée (murs, portes et rochers bloquent).
+
+Le menu Options (§2) règle la dose de menace du storyteller : Paisible
+supprime les raids (le reste de la vie de la colonie continue sans eux),
+Facile et Difficile resserrent ou espacent le délai entre deux bandes et leur
+budget autour des valeurs ci-dessus, Normal est la référence. Choisie à
+l'accueil ou dans le lobby avant de démarrer, modifiable ensuite à tout
+moment par ce même menu (réservé à l'hôte en multijoueur).
 
 ### Blessures et santé
 
@@ -189,12 +207,14 @@ toits). Un plant gèle et peut mourir sous −5 °C, cesse de pousser sous 0 °C
 
 Un colon peut tomber malade (tous les six à onze jours), ce qui le ralentit
 nettement et pèse sur son moral pendant deux jours, ou un seul si un
-camarade vient le veiller — le même geste que panser une plaie. Des vivres
-peuvent aussi tomber près de la colonie de temps à autre, et une vague de
-froid ou de chaleur peut durer une journée. Ces événements sont réels dans
-la simulation mais ne sont pas encore annoncés à l'écran (pas de toast, pas
-d'entrée de Journal) : ils se remarquent à leurs effets, pas à une
-notification.
+camarade vient le veiller — le même geste que panser une plaie. Un toast et
+une entrée de Journal l'annoncent, et un point vert apparaît sur sa pastille
+dans la barre des colons ; son panneau affiche « Malade : encore N h » tant
+que ça dure. Des vivres tombent aussi près de la colonie de temps à autre
+(toast « Un largage de N pile(s)… »), et une vague de froid ou de chaleur
+peut durer une journée (toast « Coup de froid » ou « Canicule », avec
+l'écart de température) — ces deux-là continuent quelle que soit la
+difficulté choisie, seuls les raids en dépendent (voir plus haut).
 
 ## 5. Le monde
 

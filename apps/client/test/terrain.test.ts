@@ -8,14 +8,17 @@ import { describe, expect, it } from "vitest";
 import {
   APPAREL_NAMES,
   clampCraftTarget,
+  DIFFICULTY_LABELS,
   eventCategory,
   eventLabel,
   formatEventTime,
   formatInjury,
   formatTemperature,
+  formatWealth,
   hKeyAction,
   moodIcon,
   SEASON_LABELS,
+  sickHoursRemaining,
   SPECIES_LABELS,
   WEAPON_NAMES,
   WEATHER_LABELS,
@@ -109,6 +112,39 @@ describe("eventLabel", () => {
     expect(eventLabel(20, 15)).toBe("Un manteau a été fabriqué");
     // Un nom connu ne doit pas s'y glisser : ce n'est pas un id de pawn.
     expect(eventLabel(20, 14, { 14: "Alice" })).toBe("Une tunique a été fabriquée");
+  });
+
+  it("annonce un raid en approche, `arg` suivant `sim::storyteller::RaidKind`", () => {
+    // Contrat avec `sim::EventKind::RaidIncoming` (21).
+    expect(eventLabel(21, 0)).toBe("Raid en approche : charge");
+    expect(eventLabel(21, 1)).toBe("Raid en approche : archers");
+    // Le siège a sa propre phrase, plus parlante que « : siège ».
+    expect(eventLabel(21, 2)).toBe("Raid en approche : les pillards campent avant d'attaquer");
+  });
+
+  it("annonce un largage de vivres, `arg` étant le nombre de piles", () => {
+    // Contrat avec `sim::EventKind::SupplyDrop` (22).
+    expect(eventLabel(22, 1)).toBe("Un largage de 1 pile est tombé près de la colonie");
+    expect(eventLabel(22, 3)).toBe("Un largage de 3 piles est tombé près de la colonie");
+  });
+
+  it("nomme le colon malade, `arg` étant son id", () => {
+    // Contrat avec `sim::EventKind::Illness` (23).
+    expect(eventLabel(23, 3, { 3: "Alice" })).toBe("Alice est malade");
+    expect(eventLabel(23, 5)).toBe("Un colon est malade");
+  });
+
+  it("annonce un coup de froid ou une canicule, `arg` en dixièmes de degré", () => {
+    // Contrat avec `sim::EventKind::ColdSnap` (24) et `Heatwave` (25) :
+    // `arg` est toujours un écart positif, le signe vient du genre.
+    expect(eventLabel(24, 100)).toBe("Coup de froid : −10 °C pendant un jour");
+    expect(eventLabel(25, 100)).toBe("Canicule : +10 °C pendant un jour");
+  });
+});
+
+describe("DIFFICULTY_LABELS", () => {
+  it("suit `sim::storyteller::Difficulty` (0 paisible … 3 difficile)", () => {
+    expect(DIFFICULTY_LABELS).toEqual(["Paisible", "Facile", "Normal", "Difficile"]);
   });
 });
 
@@ -229,20 +265,50 @@ describe("formatEventTime", () => {
 });
 
 describe("eventCategory", () => {
-  it("classe les menaces : raid, morts au combat, à terre, sanglier", () => {
+  it("classe les menaces : raid, morts au combat, à terre, sanglier, raid en approche, maladie", () => {
     expect(eventCategory(1)).toBe("threat"); // Raid
     expect(eventCategory(2)).toBe("threat"); // ColonistDied
     expect(eventCategory(3)).toBe("threat"); // RaiderDied
     expect(eventCategory(8)).toBe("threat"); // ColonistDowned
     expect(eventCategory(19)).toBe("threat"); // BoarAttacks
+    expect(eventCategory(21)).toBe("threat"); // RaidIncoming
+    expect(eventCategory(23)).toBe("threat"); // Illness
   });
 
   it("classe le reste en colonie", () => {
     // WandererJoined, ColonistBreak, LevelUp, RaiderLeft, ColonistRescued,
     // ColonistTended, les deux caravanes, FastForwarded, les deux artisanats,
-    // saison, gelée, harde et chasse : rien de tout ça n'est une menace.
-    for (const kind of [4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20]) {
+    // saison, gelée, harde et chasse, largage, coup de froid et canicule :
+    // rien de tout ça n'est une menace.
+    for (const kind of [4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 25]) {
       expect(eventCategory(kind)).toBe("colony");
     }
+  });
+});
+
+describe("formatWealth", () => {
+  it("groupe par milliers avec un espace", () => {
+    expect(formatWealth(0)).toBe("0");
+    expect(formatWealth(240)).toBe("240");
+    expect(formatWealth(1240)).toBe("1 240");
+    expect(formatWealth(1234567)).toBe("1 234 567");
+  });
+
+  it("tronque les décimales et refuse les valeurs négatives", () => {
+    expect(formatWealth(12.9)).toBe("12");
+    expect(formatWealth(-50)).toBe("0");
+  });
+});
+
+describe("sickHoursRemaining", () => {
+  it("convertit les ticks de `pawn_sick` en heures, arrondies au-dessus", () => {
+    expect(sickHoursRemaining(0)).toBe(0);
+    expect(sickHoursRemaining(600)).toBe(1);
+    expect(sickHoursRemaining(601)).toBe(2);
+    expect(sickHoursRemaining(1200)).toBe(2);
+  });
+
+  it("ne renvoie jamais un nombre négatif", () => {
+    expect(sickHoursRemaining(-100)).toBe(0);
   });
 });

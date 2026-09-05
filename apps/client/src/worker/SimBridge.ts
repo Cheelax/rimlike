@@ -31,7 +31,14 @@ export interface SimBridgeHandlers {
 
 /** Ce que l'accueil a choisi, tel qu'il part au Worker. */
 export type SimSession =
-  | { readonly mode: "solo"; readonly seed: number; readonly width: number; readonly height: number }
+  | {
+      readonly mode: "solo";
+      readonly seed: number;
+      readonly width: number;
+      readonly height: number;
+      /** Dose de menace choisie à l'accueil (`render/terrain.ts::DIFFICULTY`). */
+      readonly difficulty: number;
+    }
   | {
       readonly mode: "multi";
       readonly server: string;
@@ -59,7 +66,14 @@ export class SimBridge {
   start(session: SimSession): void {
     const message: InitMessage =
       session.mode === "solo"
-        ? { type: "init", mode: "solo", seed: session.seed, width: session.width, height: session.height }
+        ? {
+            type: "init",
+            mode: "solo",
+            seed: session.seed,
+            width: session.width,
+            height: session.height,
+            difficulty: session.difficulty,
+          }
         : { type: "init", mode: "multi", server: session.server, room: session.room, name: session.name };
     this.post(message);
   }
@@ -81,8 +95,9 @@ export class SimBridge {
     this.post({ type: "setSpeed", speed });
   }
 
-  startGame(seed: number, width: number, height: number): void {
-    this.post({ type: "startGame", seed, width, height });
+  /** `difficulty` : voir `render/terrain.ts::DIFFICULTY`. Réservé à l'hôte. */
+  startGame(seed: number, width: number, height: number, difficulty?: number): void {
+    this.post({ type: "startGame", seed, width, height, difficulty });
   }
 
   /** Réclame un snapshot : `localStorage` n'existe pas dans un Worker. */

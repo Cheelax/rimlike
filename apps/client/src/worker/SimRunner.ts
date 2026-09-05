@@ -83,6 +83,10 @@ export interface RunnerSim extends SimLike {
   yearDays(): number;
   /** Température extérieure, en dixièmes de degré. */
   outdoorTemperature(): number;
+  /** Dose de menace courante, suivant `sim::storyteller::Difficulty`. */
+  difficulty(): number;
+  /** Richesse de la colonie (`sim::Sim::wealth`), en cache côté sim. */
+  wealth(): number;
   /** Change à chaque recalcul effectif de la couche « intérieur ». */
   indoorVersion(): number;
   /** Couche « intérieur » : un octet par case, 0 dehors, sinon le numéro de pièce. */
@@ -329,6 +333,8 @@ export class SimRunner {
       departures: sim.departuresCount(),
       lag: this.lag,
       tps: this.tpsValue,
+      difficulty: sim.difficulty(),
+      wealth: sim.wealth(),
     };
     return { ticks, map, overlays, indoor, frame };
   }

@@ -182,6 +182,18 @@ class FakeSim implements RunnerSim {
     return 120;
   }
 
+  difficultyValue = 2;
+
+  difficulty(): number {
+    return this.difficultyValue;
+  }
+
+  wealthValue = 0;
+
+  wealth(): number {
+    return this.wealthValue;
+  }
+
   dispose(): void {
     this.disposed = true;
   }

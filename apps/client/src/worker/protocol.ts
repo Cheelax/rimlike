@@ -33,6 +33,8 @@ export type InitMessage =
       readonly seed: number;
       readonly width: number;
       readonly height: number;
+      /** Dose de menace choisie à l'accueil (`render/terrain.ts::DIFFICULTY`). */
+      readonly difficulty: number;
     }
   | {
       readonly type: "init";
@@ -48,8 +50,19 @@ export type MainToWorker =
   | { readonly type: "issue"; readonly bytes: Uint8Array }
   | { readonly type: "setPaused"; readonly paused: boolean }
   | { readonly type: "setSpeed"; readonly speed: number }
-  /** Réservé à l'hôte, en lobby. */
-  | { readonly type: "startGame"; readonly seed: number; readonly width: number; readonly height: number }
+  /**
+   * Réservé à l'hôte, en lobby. `difficulty` (`render/terrain.ts::DIFFICULTY`)
+   * n'est jamais envoyée au serveur (`packages/protocol` l'ignore) : elle ne
+   * quitte pas ce client, qui l'émettra lui-même en première commande une
+   * fois son propre sim adopté (voir `worker/startDifficulty.ts`).
+   */
+  | {
+      readonly type: "startGame";
+      readonly seed: number;
+      readonly width: number;
+      readonly height: number;
+      readonly difficulty?: number;
+    }
   /** Demande un snapshot : `localStorage` n'existe pas dans un Worker. */
   | { readonly type: "save" }
   | { readonly type: "load"; readonly bytes: Uint8Array }
@@ -153,6 +166,10 @@ export interface FrameMessage {
   readonly lag: number;
   /** Ticks par seconde mesurés dans le Worker. */
   readonly tps: number;
+  /** Dose de menace courante, suivant `render/terrain.ts::DIFFICULTY`. */
+  readonly difficulty: number;
+  /** Richesse de la colonie (`sim-wasm::wealth`), pour le HUD stock. */
+  readonly wealth: number;
 }
 
 export type WorkerToMain =

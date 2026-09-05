@@ -3,6 +3,13 @@ import type { TileClimate } from "@rimlike/world";
 /** Contrat avec `pawn::Faction` (0 colonie, 1 pillard, 2 bête sauvage). */
 export const FACTION = { Colony: 0, Raider: 1, Animal: 2 } as const;
 
+/** Contrat avec `sim::storyteller::Difficulty` : index = valeur de l'enum. */
+export const DIFFICULTY = { Peaceful: 0, Easy: 1, Normal: 2, Hard: 3 } as const;
+export const DIFFICULTY_LABELS = ["Paisible", "Facile", "Normal", "Difficile"] as const;
+
+/** Contrat avec `sim::storyteller::RaidKind` : index = valeur de l'enum. */
+export const RAID_KIND_LABELS = ["charge", "archers", "siège"] as const;
+
 /** Contrat avec `animals::Species` : index = valeur de l'enum. */
 export const SPECIES_LABELS = ["cerf", "lapin", "sanglier"] as const;
 
@@ -168,6 +175,26 @@ export function formatTemperature(tenths: number): string {
   return `${Math.round(tenths / 10)} °C`;
 }
 
+/**
+ * « 1 240 » : un entier groupé par milliers avec un espace, pour la richesse
+ * de la colonie affichée dans le HUD (`sim-wasm::wealth`). Espace normal (pas
+ * insécable) : un simple `replace`, pas `toLocaleString` dont le séparateur
+ * dépend de l'environnement d'exécution.
+ */
+export function formatWealth(n: number): string {
+  const truncated = Math.max(0, Math.trunc(n));
+  return truncated.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+/**
+ * Heures de maladie restantes, à partir des ticks de `sim-wasm::pawn_sick`
+ * (600 ticks = 1 heure de jeu, `TICKS_PER_DAY` valant 24 h). Arrondi au-dessus
+ * pour ne jamais afficher « 0 h » tant qu'il reste des ticks à purger.
+ */
+export function sickHoursRemaining(ticks: number): number {
+  return ticks > 0 ? Math.ceil(ticks / 600) : 0;
+}
+
 export const JOB_LABELS = [
   "inactif",
   "se déplace",
@@ -191,6 +218,7 @@ export const JOB_LABELS = [
   "s'équipe",
   "chasse",
   "dépèce",
+  "attend",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
@@ -263,6 +291,25 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
       if (!name) return "Un habit a été fabriqué";
       return APPAREL_FEMININE[arg] ? `Une ${name} a été fabriquée` : `Un ${name} a été fabriqué`;
     }
+    case 21: {
+      // `arg` = la manière d'aborder la colonie (`sim::storyteller::RaidKind`),
+      // pas un id de pawn. Le siège a sa propre phrase : plus parlant que
+      // « Raid en approche : siège », et `Raid` (1) garde le compte des pillards.
+      const kind = arg === 2 ? "les pillards campent avant d'attaquer" : (RAID_KIND_LABELS[arg] ?? "charge");
+      return `Raid en approche : ${kind}`;
+    }
+    case 22:
+      // `arg` = le nombre de piles larguées (`sim::EventKind::SupplyDrop`).
+      return `Un largage de ${arg} pile${arg > 1 ? "s" : ""} est tombé près de la colonie`;
+    case 23:
+      // `arg` = l'id du colon tombé malade (`sim::EventKind::Illness`).
+      return `${who} est malade`;
+    case 24:
+      // `arg` = l'écart en dixièmes de degré (`sim::EventKind::ColdSnap`), positif.
+      return `Coup de froid : −${Math.round(arg / 10)} °C pendant un jour`;
+    case 25:
+      // `arg` = l'écart en dixièmes de degré (`sim::EventKind::Heatwave`), positif.
+      return `Canicule : +${Math.round(arg / 10)} °C pendant un jour`;
     default:
       return "";
   }
@@ -335,6 +382,8 @@ export function eventCategory(kind: number): EventCategory {
     case 3: // RaiderDied
     case 8: // ColonistDowned
     case 19: // BoarAttacks
+    case 21: // RaidIncoming
+    case 23: // Illness
       return "threat";
     default:
       return "colony";

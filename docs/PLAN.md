@@ -379,8 +379,10 @@ richesse / 400 + jours / 4` (plafond 600) × difficulté (paisible, facile, norm
 (tunique d'abord), trois types de raid (charge, archers, siège qui campe 1200 ticks à
 l'entrée), répit d'un jour après une mort, largages de vivres, maladie (deux jours, un si
 soignée), coups de froid et canicules d'un jour ; richesse de la colonie mise en cache ;
-`MAX_RAIDERS` 6 → 12. Interface à faire (sélecteur de difficulté, libellés des événements
-21-25, indicateur de maladie, job « attend »). Traits livrés le 2026-09-05 (Sonnet, sim) : douze traits en six paires opposées (travailleur /
+`MAX_RAIDERS` 6 → 12. Interface livrée le 2026-09-05 (Sonnet) : sélecteur de difficulté à l'accueil, dans le lobby
+(hôte) et dans un menu Options, richesse dans le HUD, maladie signalée sur la pastille et dans
+le panneau, événements 21-25 libellés et classés ; vérifié : Difficile → trois pillards annoncés
+en archers. Traits livrés le 2026-09-05 (Sonnet, sim) : douze traits en six paires opposées (travailleur /
 paresseux, optimiste / pessimiste, bagarreur / lâche, gourmand / ascète, noctambule, robuste /
 fragile, sociable), deux par colon tirés sans contradiction, effets sur vitesse de travail,
 humeur, dégâts donnés et reçus, défense automatique ; interface à faire. Calendrier partagé
