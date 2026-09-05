@@ -433,7 +433,7 @@ describe("cycle complet à travers un vrai serveur", () => {
   });
 });
 
-describe("migration v1 → v2 : identité par jeton", () => {
+describe("migration d'un fichier v1 : identité par jeton", () => {
   it("recharge un fichier v1 (owner = nom) : un joueur neuf par nom, jeton lisible dans le fichier", async () => {
     const file = join(dir, "world-state.json");
     // Un fichier tel qu'écrit avant la tranche « jeton » : pas de `players`,
@@ -477,14 +477,56 @@ describe("migration v1 → v2 : identité par jeton", () => {
     expect(players[0]!.token.length).toBeGreaterThan(0);
     expect(messages.some((line) => line.includes("migré"))).toBe(true);
 
-    // La prochaine sauvegarde écrit le fichier en v2, jetons compris — c'est
-    // là que l'exploitant peut lire celui d'alice pour le lui communiquer.
+    // La prochaine sauvegarde réécrit le fichier dans la version courante,
+    // jetons compris — c'est là que l'exploitant peut lire celui d'alice pour
+    // le lui communiquer.
     await store.save(result.state);
     const onDisk = JSON.parse(await readFile(file, "utf8")) as WorldStateFile;
-    expect(onDisk.version).toBe(2);
+    expect(onDisk.version).toBe(WORLD_STATE_FILE_VERSION);
     expect(onDisk.state.players).toEqual([
       expect.objectContaining({ name: "alice", key: settlement.owner, token: players[0]!.token }) as unknown,
     ]);
+  });
+
+  it("relit un fichier v2 (avant les marchands itinérants) tel quel", async () => {
+    const file = join(dir, "world-state.json");
+    // Un fichier tel qu'écrit avant la tranche « marchands » (§13) : identité
+    // par jeton déjà en place, mais ni `state.merchants` ni `pendingTraders`.
+    const v2 = {
+      version: 2,
+      worldSeed: DEFAULT_WORLD_SEED,
+      subdivisions: SUBDIVISIONS,
+      savedAt: 1_700_000_000_000,
+      state: {
+        seed: DEFAULT_WORLD_SEED,
+        subdivisions: SUBDIVISIONS,
+        settlements: [
+          { tile: landTile, owner: "key-alice", room: `tile-${landTile}`, seed: 42, createdAt: 1_700_000_000_000 },
+        ],
+        snapshots: [],
+        players: [{ key: "key-alice", name: "alice", token: "tok-alice", createdAt: 1_700_000_000_000 }],
+      },
+    };
+    await writeFile(file, JSON.stringify(v2), "utf8");
+
+    const store = new WorldStore({ file, worldSeed: DEFAULT_WORLD_SEED, subdivisions: SUBDIVISIONS, log: () => {} });
+    const result = await store.load(globe);
+    expect(result.kind).toBe("loaded");
+    if (result.kind !== "loaded") {
+      return;
+    }
+    // La colonie et son propriétaire sont intacts ; les marchands, eux,
+    // repartent de zéro et renaîtront au premier tick du monde.
+    expect(result.state.settlementAt(landTile)?.ownerName).toBe("alice");
+    expect(result.state.playerByToken("tok-alice")?.key).toBe("key-alice");
+    expect(result.state.merchants.count).toBe(0);
+    expect(result.state.pendingTradersAt(landTile)).toBe(0);
+
+    // La prochaine sauvegarde réécrit le fichier dans la version courante.
+    await store.save(result.state);
+    const onDisk = JSON.parse(await readFile(file, "utf8")) as WorldStateFile;
+    expect(onDisk.version).toBe(WORLD_STATE_FILE_VERSION);
+    expect(onDisk.state.merchants).toEqual({ nextId: 1, merchants: [] });
   });
 });
 

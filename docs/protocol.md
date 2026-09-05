@@ -9,7 +9,9 @@ de base, inchangée. La section 11 décrit la **couche monde** : le globe
 partagé, les colonies et les salles adossées à une case, qui se posent
 au-dessus sans rien modifier de ce qui précède. La section 12 décrit les
 **caravanes**, qui font voyager colons et marchandises d'une case à l'autre —
-et donc d'une salle à l'autre.
+et donc d'une salle à l'autre. La section 13 décrit les **marchands
+itinérants**, des caravanes PNJ que le serveur monde fait circuler de colonie
+en colonie.
 
 ## 1. Principes
 
@@ -42,6 +44,9 @@ Constantes partagées (`packages/protocol/src/messages.ts`) :
 | `WORLD_HOUR_MS` | 30000 | Durée réelle d'une **heure de jeu** du monde (§12.1) |
 | `CARAVAN_TICK_MS` | 5000 | Période du tick du monde et du `world_caravans` |
 | `CARAVAN_HISTORY_HOURS` | 24 | Heures de jeu pendant lesquelles une caravane livrée reste listée |
+| `MERCHANT_COUNT` | 2 | Marchands itinérants entretenus sur le globe (§13) |
+| `MERCHANT_STAY_HOURS` | 24 | Heures de jeu qu'un marchand passe sur une colonie |
+| `MAX_PENDING_TRADERS` | 3 | Arrivées de marchands mises en attente pour une colonie fermée |
 
 ## 2. Transport et format
 
@@ -274,6 +279,12 @@ et son calendrier par défaut (tempéré, printemps) tant que personne n'émet
 l'hôte, et lui seul, d'émettre les commandes correspondantes après ce `start`
 (§11.6).
 
+`pendingTraders` est facultatif lui aussi et compte les **marchands itinérants**
+passés sur la case pendant que la colonie était fermée (§13), au plus
+`MAX_PENDING_TRADERS`. Même règle que ci-dessus : l'hôte, et lui seul, émet
+autant de `Command::TriggerTraderVisit`. Omis quand il vaut 0, donc absent du
+cas courant et de toute salle simple.
+
 ```json
 { "type": "start", "seed": 12345, "width": 128, "height": 128, "tick": 0 }
 {
@@ -322,10 +333,14 @@ doit alors omettre `forPlayer`.
 `frozenTicks` est facultatif et n'apparaît qu'à la **réouverture d'une colonie
 gelée** (§11.6) : c'est le temps passé sans personne sur la case, en ticks, que
 le premier arrivant rattrape avec une commande d'avance rapide.
+`pendingTraders` l'accompagne, facultatif et dans le même cas : les marchands
+itinérants passés pendant le sommeil de la colonie (§13). Une réouverture ne
+diffuse aucun `start`, c'est donc ce message-là qui porte le compte.
 
 ```json
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=" }
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000 }
+{ "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000, "pendingTraders": 1 }
 ```
 
 **`desync`** — premier écart de hash constaté. Les clés de `hashes` sont des
@@ -1229,7 +1244,7 @@ pour l'horloge et les caravanes) :
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "worldSeed": 1,
   "subdivisions": 4,
   "savedAt": 1757000000000,
@@ -1238,8 +1253,9 @@ pour l'horloge et les caravanes) :
     "subdivisions": 4,
     "clock": { "worldStartedAt": 1756900000000, "hoursOffset": 412.5 },
     "caravans": { "nextId": 8, "caravans": [ … ] },
+    "merchants": { "nextId": 3, "merchants": [ … ] },
     "settlements": [
-      { "tile": 1732, "owner": "8a1b2c3d-...-e4", "room": "tile-1732", "seed": 2007225770, "createdAt": 1757000000000 }
+      { "tile": 1732, "owner": "8a1b2c3d-...-e4", "room": "tile-1732", "seed": 2007225770, "createdAt": 1757000000000, "pendingTraders": 1 }
     ],
     "snapshots": [
       { "room": "tile-1732", "tick": 1800, "data": "AQIDBA==", "width": 64, "height": 64, "savedAt": 1757000000000, "savedAtHours": 412.5 }
@@ -1258,12 +1274,22 @@ porte les noms, en face de la clé qui leur correspond ; `state.ts` la résout �
 la volée (`WorldState.nameOf`) chaque fois qu'une colonie ou une caravane part
 sur le fil.
 
-`clock`, `caravans` et le `savedAtHours` d'un snapshot sont **facultatifs à la
-lecture** : un fichier écrit avant les caravanes se relit tel quel, le monde
-repart d'une horloge neuve et sans convoi en vol ; un snapshot sans
-`savedAtHours` rouvre sa colonie sans avance rapide (§11.6). Ajouter des
-champs optionnels ne casse rien — c'est pour cela que la version du fichier
-n'a pas bougé de ces tranches-là.
+`clock`, `caravans`, `merchants`, le `pendingTraders` d'une colonie et le
+`savedAtHours` d'un snapshot sont **facultatifs à la lecture** : un fichier
+écrit avant les caravanes se relit tel quel, le monde repart d'une horloge
+neuve et sans convoi en vol ; un fichier écrit avant les marchands se relit de
+même, ils renaissent au premier tick du monde (§13) ; un snapshot sans
+`savedAtHours` rouvre sa colonie sans avance rapide (§11.6).
+
+**Versions du fichier.** Trois numéros existent, et les trois se lisent
+(`SUPPORTED_WORLD_STATE_FILE_VERSIONS`) ; la sauvegarde suivante réécrit
+toujours dans la version courante (`WORLD_STATE_FILE_VERSION`, 3).
+
+| version | ce qu'elle a introduit | relue par ce serveur |
+|---|---|---|
+| 1 | l'état d'origine : `owner` y est un **nom** | oui, **migrée** (voir plus bas) |
+| 2 | identité par jeton : `players`, `owner` devient une **clé** | oui, telle quelle |
+| 3 | marchands itinérants : `state.merchants`, `settlements[].pendingTraders` (§13) | oui, c'est la version écrite |
 
 **Migration v1 → v2 (identité par jeton).** `players` change les choses : dans
 un fichier v1, `owner` (colonies et caravanes) est un **nom** ; à partir de v2
@@ -1277,13 +1303,13 @@ nom) :
 - mais rien n'est perdu : la colonie garde sa case, sa salle, sa graine, et son
   nom d'affichage (`ownerName`) reste celui d'avant ;
 - l'exploitant du serveur peut lire le jeton fraîchement attribué dans le
-  fichier une fois la migration écrite (`WORLD_STATE_FILE_VERSION` monte à 2 à
-  la prochaine sauvegarde) et le communiquer hors bande à l'ancien joueur, s'il
-  le souhaite — c'est un geste manuel, le protocole n'automatise rien de ce
-  côté.
+  fichier une fois la migration écrite (la prochaine sauvegarde réécrit le
+  fichier dans la version courante) et le communiquer hors bande à l'ancien
+  joueur, s'il le souhaite — c'est un geste manuel, le protocole n'automatise
+  rien de ce côté.
 
-Un rechargement de fichier v1 est testé (`apps/server/test/persistence.test.ts`,
-`apps/server/test/world.test.ts`).
+Un rechargement de fichier v1 comme de fichier v2 est testé
+(`apps/server/test/persistence.test.ts`, `apps/server/test/world.test.ts`).
 
 **Configuration**, lue une fois par `index.ts` (`startServer` lui-même ne lit
 jamais l'environnement, il reçoit des options explicites) :
@@ -1517,7 +1543,9 @@ qu'une caravane bouge, il repart à chaque tick du monde pour porter
 l'avancement.
 
 `owner` est la clé du joueur qui l'a expédiée (§11.2), `ownerName` son nom
-d'affichage résolu à la diffusion.
+d'affichage résolu à la diffusion. Le même message porte aussi `merchants`, les
+marchands itinérants du globe (§13) : un champ facultatif de plus, pas un
+second message.
 
 ```json
 {
@@ -1737,3 +1765,253 @@ client qui l'ignore ne perd rien.
 Le client peut appeler `findRoute` **en prévisualisation** avant d'envoyer
 l'ordre (durée estimée, tracé), en acceptant que le serveur ait le dernier mot :
 c'est sa route à lui qui voyage.
+
+## 13. Marchands itinérants (phase 4, troisième tranche)
+
+Le sim sait déjà faire entrer un marchand sur une carte : `Command::TriggerTraderVisit`
+(`crates/sim/src/lib.rs`, le marchand lui-même dans `crates/sim/src/trade.rs`,
+encodée par `WasmSim.encode_trigger_trader_visit()`) fait arriver un marchand
+neutre qui s'installe un jour puis repart. Jusqu'ici,
+seul le storyteller local en faisait venir : chaque colonie avait ses marchands,
+sans rapport avec le globe ni avec les autres.
+
+Le **serveur monde** fait maintenant circuler des caravanes marchandes **PNJ**
+sur le globe, de colonie en colonie, et prévient l'hôte de celle où elles
+s'arrêtent. Trois couches, chacune dans son rôle, comme pour les caravanes de
+joueurs (§12) :
+
+- le **serveur monde** possède les marchands : naissance, itinéraire, horloge,
+  visite. Ils sont 100 % serveur — aucun message client ne les crée, ne les
+  déplace ni ne les fait visiter, et rien de ce qu'un client envoie ne les
+  touche ;
+- les **clients** les affichent sur le globe (`world_caravans.merchants`) ;
+- l'**hôte** d'une colonie visitée reçoit `trader_arrival` et émet
+  `Command::TriggerTraderVisit` en lockstep — le serveur ne simule toujours
+  pas, il ne fait que dire « quelqu'un est arrivé ».
+
+Messages et champs de cette tranche :
+
+| message | sens | ce qui change |
+|---|---|---|
+| `trader_arrival` | serveur → **hôte** d'une salle « case » | nouveau (§13.3) |
+| `world_caravans` | serveur → joueurs du monde | champ `merchants` en plus (§13.4) |
+| `start` | serveur → salle | champ `pendingTraders` en plus (§3.2, §13.5) |
+| `snapshot` | serveur → premier arrivant d'une colonie rouverte | champ `pendingTraders` en plus (§3.2, §13.5) |
+
+Aucun message **client → serveur** n'est ajouté : il n'y a rien à confirmer, et
+rien qu'un client puisse demander.
+
+### 13.1 Le modèle
+
+Un marchand est bien plus simple qu'une caravane de joueur : ni propriétaire,
+ni manifeste, ni annulation, ni livraison à confirmer.
+
+```
+   naissance sur une case terrestre libre (RNG du globe)
+        │
+        ▼
+   [ travelling ] ──── arrivesAt atteint ────▶ [ visiting ]
+        ▲                                          │
+        │            MERCHANT_STAY_HOURS écoulées   │
+        └──────────────────────────────────────────┘
+             destination = la colonie fondée la plus
+             proche (findRoute), hors celle qu'il quitte
+```
+
+- **Naissance** : sur une case **terrestre et libre** du globe, tirée avec le
+  RNG déterministe de `@rimlike/world` (graine du globe + numéro du marchand).
+  Le nom de compagnie est tiré du même flux, dans une petite liste
+  (`MERCHANT_COMPANY_NAMES`, `apps/server/src/merchants.ts`). Deux serveurs
+  partis de la même graine font naître les mêmes compagnies.
+- **Destination** : toujours une **colonie fondée** (un `settlement` non
+  abandonné), la plus proche au sens de `findRoute` — départage par identifiant
+  de case à durées égales — et **jamais celle qu'il quitte**. S'il n'y en a
+  aucune de joignable (globe encore vierge, ou marchand né sur un continent
+  sans colonie), il **attend sur place** et retente à chaque tick du monde.
+- **Vitesse** : celle des caravanes de joueurs (§12.1), c'est-à-dire les coûts
+  de biome de `packages/world` en heures de jeu. `arrivesAt = maintenant +
+  route.hours`, et l'avancement se **dérive** du temps à chaque diffusion : rien
+  n'est incrémenté par tick, un redémarrage reprend le voyage à l'identique.
+- **Visite** : à l'arrivée, `visiting` pendant `MERCHANT_STAY_HOURS` heures de
+  jeu (24 par défaut, un jour de monde), puis il repart vers la colonie suivante.
+- **Population** : le serveur en entretient `MERCHANT_COUNT` (`WORLD_MERCHANTS`,
+  2 par défaut ; `0` n'en fait circuler aucun). Il en fait naître au premier
+  tick du monde, et en retire s'il en trouve plus que sa consigne — un
+  `WORLD_MERCHANTS` revu à la baisse entre deux démarrages ne laisse pas de
+  surnuméraires.
+- Si la colonie visée est **abandonnée** pendant le trajet, le marchand n'y
+  annonce rien : il repart aussitôt vers la suivante.
+
+### 13.2 Rien ne vient du client
+
+Le serveur ne fait **jamais** confiance à un client pour un marchand : il n'y a
+pas de message pour en créer un, en déplacer un, en faire visiter un ou en
+supprimer un, et un `trader_arrival` reçu d'un client est une trame invalide
+(`bad_message`). C'est la différence avec une caravane, qui est l'ordre d'un
+joueur et transporte le manifeste que son sim a produit.
+
+Conséquence pratique : deux clients de la même salle voient exactement le même
+marchand arriver, parce qu'un seul d'entre eux — l'hôte — reçoit
+`trader_arrival` et que son effet passe par le lockstep comme n'importe quel
+ordre.
+
+### 13.3 `trader_arrival`
+
+Envoyé à l'**hôte** de la salle de la case visitée, et à lui seul : un invité
+n'a rien à faire entrer sur la carte, et deux clients qui émettraient chacun
+`TriggerTraderVisit` feraient venir deux marchands.
+
+```json
+{ "type": "trader_arrival", "tile": 1732, "merchantId": "m1", "merchantName": "Compagnie du Levant" }
+```
+
+- `tile` : la case d'arrivée, celle de la salle qui reçoit le message.
+- `merchantId` : l'identifiant du marchand (`m1`, `m2`, …), stable et jamais
+  réutilisé — de quoi reconnaître un doublon si le client tient un journal.
+- `merchantName` : le nom de compagnie, pour l'annoncer dans le HUD.
+
+**Ce que l'hôte doit faire** : émettre `Command::TriggerTraderVisit`
+(`WasmSim.encode_trigger_trader_visit()`) par le chemin habituel (`issue`), une
+fois par message reçu. Comme toute commande de lockstep, l'effet n'arrive pas
+au moment du message mais avec le bundle (§5) : ne rien appliquer localement.
+
+**Ce qu'il n'a pas à faire** : rien à confirmer au serveur. Contrairement à
+`caravan_arrive` (§12.5), il n'y a pas de `..._delivered` : un marchand ne
+transporte pas de manifeste, une occasion manquée n'est qu'une occasion
+manquée. Le serveur n'émet donc **jamais** deux fois le même `trader_arrival`,
+et ne le réémet pas à un nouvel hôte.
+
+### 13.4 `merchants` dans `world_caravans`
+
+Les marchands voyagent sur le **même message** que les caravanes des joueurs,
+à la même cadence (`CARAVAN_TICK_MS`, §12.4) : liste complète, le client
+remplace la sienne.
+
+```json
+{
+  "type": "world_caravans",
+  "caravans": [ … ],
+  "merchants": [
+    { "id": "m1", "name": "Compagnie du Levant", "tile": 1745, "toTile": 1810, "status": "travelling", "progress": 0.25 },
+    { "id": "m2", "name": "Caravane du Sel", "tile": 1732, "toTile": 1732, "status": "visiting", "progress": 1 }
+  ]
+}
+```
+
+- `tile` est la case **courante**, dérivée de l'avancement sur l'itinéraire,
+  comme `Caravan.currentTile`. Les coordonnées s'en déduisent par la géométrie
+  du globe (`world.tiles[tile].center`) : l'itinéraire complet n'est pas
+  transporté, un marchand n'a pas de tracé à afficher.
+- `status` vaut `travelling` ou `visiting`, et **rien d'autre**. Un marchand
+  qui attend faute de colonie se reconnaît à `toTile === tile` avec
+  `progress: 0`.
+- Le champ est **facultatif** : un serveur qui ne connaît pas les marchands
+  n'envoie rien, et un client qui l'ignore reste compatible. Un serveur à jour
+  l'envoie toujours, même vide.
+- `GET /world` **ne les porte pas** : ce corps-là est le globe lui-même,
+  immuable, mis en cache une heure avec un ETag (§11.1). Ce qui bouge passe par
+  le fil. `GET /health` en donne le compte courant (`world.merchants`), pour
+  l'exploitant.
+
+### 13.5 Colonie fermée : `pendingTraders`
+
+Un marchand arrive quand il arrive, sans se soucier de savoir si quelqu'un joue
+la colonie. Deux cas, **jamais les deux à la fois** :
+
+```
+   marchand arrive sur la case d'une colonie
+        │
+        ├── salle ouverte, en jeu, avec un hôte
+        │        └──▶ trader_arrival à l'hôte (§13.3)
+        │
+        └── salle fermée, ou encore en `lobby` (pas de carte)
+                 └──▶ settlement.pendingTraders += 1   (borné à MAX_PENDING_TRADERS)
+                              │
+                              ▼
+                      à la prochaine ouverture :
+                        start.pendingTraders      (colonie qui démarre)
+                        snapshot.pendingTraders   (colonie qui rouvre gelée, §11.6)
+                              │
+                              ▼
+                        remis à zéro côté serveur
+```
+
+- Une salle en `lobby` compte comme fermée : elle a un hôte mais **pas de
+  carte**, il n'y a rien où faire entrer un marchand. C'est la même règle que
+  pour l'arrivée d'une caravane (§12.5).
+- Le compte est borné à `MAX_PENDING_TRADERS` (3) : au-delà, les arrivées
+  suivantes sont **oubliées**. Une colonie laissée un mois sans personne ne doit
+  pas voir débarquer une foire à sa réouverture.
+- **Un seul des deux champs part**, selon le chemin d'ouverture : une colonie
+  neuve (ou sans snapshot conservé) passe par `start`, une colonie gelée par
+  `snapshot` — ces deux chemins sont mutuellement exclusifs (§11.6). Dans les
+  deux cas, c'est l'**hôte** — le premier arrivant l'est toujours — qui émet
+  autant de `Command::TriggerTraderVisit` que le champ l'indique, une seule
+  fois, exactement comme `FastForward` pour `frozenTicks`.
+- **Ordre avec les autres commandes d'ouverture** : `SetClimate`, puis
+  `SetCalendar`, puis `FastForward`, puis les `TriggerTraderVisit` — les
+  marchands en dernier, une visite se jouant dans le présent de la colonie, pas
+  dans le temps qu'elle vient de rattraper.
+- Le compte est rangé **dans la colonie** (`settlements[].pendingTraders`), pas
+  dans une seconde structure, et il est persisté avec elle (§11.8). Il ne part
+  **jamais** sur le fil dans un `Settlement` : `world_settlements` n'en sait
+  rien, c'est une affaire entre le serveur et l'hôte de cette case.
+
+### 13.6 Ce que le serveur garde
+
+`WorldState.toJSON()` porte, en plus de ce que décrit §12.6 :
+
+- `merchants` : `{ nextId, merchants: [...] }`, chaque marchand avec son nom,
+  sa case de départ, sa destination, son itinéraire, ses heures et son statut ;
+- `pendingTraders` sur chaque colonie qui en a (omis quand il vaut 0).
+
+Les identifiants (`m1`, `m2`, …) ne sont jamais réutilisés, `nextId` étant
+persisté avec le reste. Une entrée de marchand **incohérente** relue d'un
+fichier (case disparue, statut inconnu) est simplement **ignorée**, pas levée :
+un PNJ jetable ne met pas tout le fichier du monde en quarantaine — un autre
+naîtra au premier tick. C'est la différence avec une caravane, dont chaque
+entrée porte le manifeste d'un joueur.
+
+### 13.7 Configuration
+
+| variable | défaut | rôle |
+|---|---|---|
+| `WORLD_MERCHANTS` | 2 | Marchands itinérants entretenus sur le globe ; `0` n'en fait circuler aucun |
+| `MERCHANT_STAY_HOURS` | 24 | Heures de jeu qu'un marchand passe sur une colonie avant de repartir |
+
+Les marchands avancent au **tick du monde** (`CARAVAN_TICK_MS`, §12.1), le même
+que les caravanes : il n'y a pas d'horloge de plus.
+
+### 13.8 Ce dont le client aura besoin
+
+**Dans la salle** (connexion de salle, `LockstepClient`) :
+
+```ts
+case "trader_arrival": {
+  // Un marchand s'installe : commande lockstep, comme un clic du joueur.
+  issue(WasmSim.encode_trigger_trader_visit());
+  hud.annoncer(`${message.merchantName} s'installe à l'étal`);
+  break;
+}
+```
+
+À l'ouverture d'une colonie, une fois le sim construit et **seulement si le
+client est l'hôte** (`welcome.isHost`) :
+
+```ts
+// `start.pendingTraders` (colonie qui démarre) ou `snapshot.pendingTraders`
+// (colonie gelée qui rouvre) : jamais les deux, ils s'excluent.
+for (let i = 0; i < (message.pendingTraders ?? 0); i += 1) {
+  issue(WasmSim.encode_trigger_trader_visit());
+}
+```
+
+**Sur le globe**, à la réception de `world_caravans` :
+
+- poser chaque marchand sur `merchants[i].tile` (`world.tiles[tile].center`),
+  d'une autre couleur que les caravanes de joueurs : ce sont des PNJ, personne
+  ne les commande et il n'y a aucun bouton à leur proposer ;
+- afficher `name` (« Compagnie du Levant ») et sa destination, `toTile` ;
+- distinguer `visiting` (à l'étal, il ne bouge pas) de `travelling`, et le cas
+  `toTile === tile` — un marchand qui attend qu'une colonie soit fondée quelque
+  part à sa portée.

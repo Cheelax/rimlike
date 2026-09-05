@@ -14,6 +14,7 @@ import {
   CLIMATE_BASE_MAX,
   CLIMATE_BASE_MIN,
   MAX_FROZEN_TICKS,
+  MAX_PENDING_TRADERS,
   NO_PLAYER,
   PROTOCOL_VERSION,
   YEAR_DAYS,
@@ -22,6 +23,8 @@ import {
   type CaravanStatus,
   type CaravanSummary,
   type ClientMessage,
+  type Merchant,
+  type MerchantStatus,
   type PlayerId,
   type PlayerInfo,
   type RoomState,
@@ -208,6 +211,17 @@ function asStartClimate(value: unknown): StartClimate | null {
   return { baseTemperature: value.baseTemperature, amplitude: value.amplitude };
 }
 
+/**
+ * `start.pendingTraders` / `snapshot.pendingTraders` : le nombre de marchands
+ * itinérants à faire entrer à l'ouverture d'une colonie (`docs/protocol.md`
+ * §13). Même principe que `isFrozenTicks` : au-delà de la borne du serveur, la
+ * trame est refusée plutôt que rognée. Zéro est accepté (le serveur l'omet,
+ * mais rien ne casse s'il l'envoie).
+ */
+function isPendingTraders(value: unknown): value is number {
+  return isInRange(value, 0, MAX_PENDING_TRADERS);
+}
+
 function isName(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 64;
 }
@@ -384,6 +398,43 @@ function asCaravans(value: unknown): Caravan[] | null {
     });
   }
   return caravans;
+}
+
+function asMerchantStatus(value: unknown): MerchantStatus | null {
+  return value === "travelling" || value === "visiting" ? value : null;
+}
+
+/**
+ * Marchands itinérants d'un `world_caravans` (`docs/protocol.md` §13). Ils sont
+ * produits par le serveur seul — aucun client n'en envoie — mais validés comme
+ * le reste : ce codec est aussi celui que le client applique à ce qu'il reçoit.
+ */
+function asMerchants(value: unknown): Merchant[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const merchants: Merchant[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry) || !isName(entry.id) || !isName(entry.name)) {
+      return null;
+    }
+    if (!isTileId(entry.tile) || !isTileId(entry.toTile) || !isProgress(entry.progress)) {
+      return null;
+    }
+    const status = asMerchantStatus(entry.status);
+    if (status === null) {
+      return null;
+    }
+    merchants.push({
+      id: entry.id,
+      name: entry.name,
+      tile: entry.tile,
+      toTile: entry.toTile,
+      status,
+      progress: entry.progress,
+    });
+  }
+  return merchants;
 }
 
 /** Table des joueurs connus du monde (`world_welcome`, `world_players`). */
@@ -654,6 +705,9 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       if (value.dayOfYear !== undefined && !isDayOfYear(value.dayOfYear)) {
         return null;
       }
+      if (value.pendingTraders !== undefined && !isPendingTraders(value.pendingTraders)) {
+        return null;
+      }
       return {
         type: "start",
         seed: value.seed,
@@ -662,6 +716,7 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
         tick: value.tick,
         ...(climate === undefined ? {} : { climate }),
         ...(value.dayOfYear === undefined ? {} : { dayOfYear: value.dayOfYear }),
+        ...(value.pendingTraders === undefined ? {} : { pendingTraders: value.pendingTraders }),
       };
     }
     case "bundle": {
@@ -684,9 +739,16 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       if (value.frozenTicks !== undefined && !isFrozenTicks(value.frozenTicks)) {
         return null;
       }
-      return value.frozenTicks === undefined
-        ? { type: "snapshot", tick: value.tick, data }
-        : { type: "snapshot", tick: value.tick, data, frozenTicks: value.frozenTicks };
+      if (value.pendingTraders !== undefined && !isPendingTraders(value.pendingTraders)) {
+        return null;
+      }
+      return {
+        type: "snapshot",
+        tick: value.tick,
+        data,
+        ...(value.frozenTicks === undefined ? {} : { frozenTicks: value.frozenTicks }),
+        ...(value.pendingTraders === undefined ? {} : { pendingTraders: value.pendingTraders }),
+      };
     }
     case "desync": {
       if (!isTick(value.tick) || !isRecord(value.hashes)) {
@@ -780,7 +842,14 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
     }
     case "world_caravans": {
       const caravans = asCaravans(value.caravans);
-      return caravans === null ? null : { type: "world_caravans", caravans };
+      if (caravans === null) {
+        return null;
+      }
+      if (value.merchants === undefined) {
+        return { type: "world_caravans", caravans };
+      }
+      const merchants = asMerchants(value.merchants);
+      return merchants === null ? null : { type: "world_caravans", caravans, merchants };
     }
     case "caravan_arrive": {
       const manifest = asBytes(value.manifest);
@@ -792,6 +861,17 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
         return null;
       }
       return { type: "caravan_arrive", id: value.id, tile: value.tile, manifest, summary };
+    }
+    case "trader_arrival": {
+      if (!isName(value.merchantId) || !isName(value.merchantName) || !isTileId(value.tile)) {
+        return null;
+      }
+      return {
+        type: "trader_arrival",
+        tile: value.tile,
+        merchantId: value.merchantId,
+        merchantName: value.merchantName,
+      };
     }
     default:
       return null;

@@ -39,7 +39,9 @@ describe("santé", () => {
   it("répond sur GET /health", async () => {
     // `world` décrit le globe servi : c'est le premier contrôle de cohérence
     // entre un client et un serveur (docs/protocol.md §11).
-    const world = { seed: 1, subdivisions: 4, tiles: 2562, settlements: 0 };
+    // `merchants` compte les marchands itinérants en circulation (§13) : zéro
+    // ici, ils naissent au premier tick du monde et ce serveur vient de naître.
+    const world = { seed: 1, subdivisions: 4, tiles: 2562, settlements: 0, merchants: 0 };
     // Persistance non précisée à `startServer` : mode mémoire, comme dans
     // tous les tests qui ne le demandent pas explicitement (persistence.test.ts).
     const persistence = { enabled: false, file: null, lastSavedAt: null };

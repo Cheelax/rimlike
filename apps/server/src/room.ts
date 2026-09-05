@@ -91,6 +91,13 @@ export interface RoomRestore {
   readonly height: number;
   /** Temps gelé en ticks, 0 ou absent s'il n'y a rien à rattraper. */
   readonly frozenTicks?: number;
+  /**
+   * Marchands itinérants arrivés pendant l'absence (`docs/protocol.md` §13).
+   * Part avec le `snapshot` du premier arrivant, à côté de `frozenTicks` et
+   * pour la même raison : une colonie qui rouvre depuis son état conservé ne
+   * reçoit aucun `start`, c'est donc ce message-là qui porte le compte.
+   */
+  readonly pendingTraders?: number;
 }
 
 /** Snapshot de conservation remonté par l'hôte d'une salle « case ». */
@@ -126,6 +133,14 @@ export interface RoomOptions {
    * premier hôte d'une salle qui rouvre (`docs/protocol.md` §12).
    */
   readonly onHostReady?: (hostId: PlayerId) => void;
+  /**
+   * Prend, et remet à zéro côté serveur monde, les marchands itinérants arrivés
+   * pendant que la colonie était fermée (`docs/protocol.md` §13). Appelé une
+   * seule fois, au `start` de l'hôte, dont le message diffusé porte alors
+   * `pendingTraders`. Une salle rouverte depuis un snapshot ne passe pas par
+   * là : elle reçoit le compte par `restore.pendingTraders`, faute de `start`.
+   */
+  readonly takePendingTraders?: () => number;
   /** Période des snapshots de conservation. Défaut : `SNAPSHOT_EVERY_TICKS`. */
   readonly snapshotEveryTicks?: number;
 }
@@ -155,6 +170,7 @@ export class Room {
   private readonly tile: TileRoom | null;
   private readonly onSnapshot: ((snapshot: RoomSnapshotReport) => void) | null;
   private readonly onHostReady: ((hostId: PlayerId) => void) | null;
+  private readonly takePendingTraders: (() => number) | null;
   private readonly snapshotEveryTicks: number;
   /**
    * Horodatage de création de cet **objet** salle (`this.now()`), pour
@@ -209,6 +225,7 @@ export class Room {
     this.tile = options.tile ?? null;
     this.onSnapshot = options.onSnapshot ?? null;
     this.onHostReady = options.onHostReady ?? null;
+    this.takePendingTraders = options.takePendingTraders ?? null;
     this.snapshotEveryTicks = options.snapshotEveryTicks ?? SNAPSHOT_EVERY_TICKS;
     if (!Number.isInteger(this.snapshotEveryTicks) || this.snapshotEveryTicks < 1) {
       throw new RangeError("snapshotEveryTicks doit être un entier >= 1");
@@ -333,11 +350,13 @@ export class Room {
         // `frozenTicks` n'est transporté que s'il y a du temps à rattraper :
         // c'est à ce joueur, qui est l'hôte, d'émettre l'avance rapide.
         const frozenTicks = opening.frozenTicks ?? 0;
+        const pendingTraders = opening.pendingTraders ?? 0;
         this.sendTo(player, {
           type: "snapshot",
           tick: opening.tick,
           data: opening.data,
           ...(frozenTicks > 0 ? { frozenTicks } : {}),
+          ...(pendingTraders > 0 ? { pendingTraders } : {}),
         });
         player.synced = true;
         this.restore = null;
@@ -512,6 +531,9 @@ export class Room {
     for (const p of this.players) {
       p.synced = true;
     }
+    // Pris **avant** la diffusion : `notifyHostReady`, plus bas, ne doit plus
+    // en trouver un seul (docs/protocol.md §13, pas de double livraison).
+    const pendingTraders = this.takePendingTraders?.() ?? 0;
     this.broadcast({
       type: "start",
       seed: effectiveSeed,
@@ -520,6 +542,7 @@ export class Room {
       tick: 0,
       ...(this.tile?.climate !== undefined ? { climate: this.tile.climate } : {}),
       ...(this.tile?.dayOfYear !== undefined ? { dayOfYear: this.tile.dayOfYear } : {}),
+      ...(pendingTraders > 0 ? { pendingTraders } : {}),
     });
     this.log(
       `[${this.name}] démarrage — seed ${effectiveSeed}${this.tile === null ? "" : " (imposé par la case)"}, carte ${width}x${height}, ${this.players.length} joueur(s)`,

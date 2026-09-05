@@ -187,7 +187,9 @@ describe("GET /world", () => {
       rooms: 0,
       roomsByState: { lobby: 0, running: 0, desynced: 0 },
       connections: 0,
-      world: { seed: DEFAULT_WORLD_SEED, subdivisions: SUBDIVISIONS, tiles: 162, settlements: 0 },
+      // `merchants` : les marchands itinérants en circulation (§13). Ils
+      // naissent au premier tick du monde, ce serveur vient de démarrer.
+      world: { seed: DEFAULT_WORLD_SEED, subdivisions: SUBDIVISIONS, tiles: 162, settlements: 0, merchants: 0 },
       // Valeurs par défaut des garde-fous : aucune n'est précisée à `startServer` ici.
       limits: {
         maxMessageBytes: 262_144,

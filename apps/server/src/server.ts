@@ -36,6 +36,7 @@ import {
 import { WORLD_WIRE_VERSION, climateForTile, serializeWorld } from "@rimlike/world";
 import { WebSocketServer, type WebSocket } from "ws";
 
+import type { MerchantArrival } from "./merchants.js";
 import { WorldStore } from "./persistence.js";
 import { Room, type RoomOptions } from "./room.js";
 import {
@@ -73,10 +74,23 @@ export interface ServerOptions {
    */
   readonly worldNow?: () => number;
   /**
-   * Période du tick du monde : avancement des caravanes et diffusion de
-   * `world_caravans`. Défaut : `CARAVAN_TICK_MS` (5 s).
+   * Période du tick du monde : avancement des caravanes **et des marchands
+   * itinérants** (`docs/protocol.md` §13), et diffusion de `world_caravans`.
+   * Défaut : `CARAVAN_TICK_MS` (5 s).
    */
   readonly caravanTickMs?: number;
+  /**
+   * Marchands itinérants entretenus sur le globe (`docs/protocol.md` §13).
+   * Défaut : `MERCHANT_COUNT` (2) ; `0` n'en fait circuler aucun. `index.ts` la
+   * résout depuis `WORLD_MERCHANTS`.
+   */
+  readonly merchantCount?: number;
+  /**
+   * Heures de jeu qu'un marchand passe sur une colonie avant de repartir.
+   * Défaut : `MERCHANT_STAY_HOURS` (24). `index.ts` la résout depuis
+   * `MERCHANT_STAY_HOURS`.
+   */
+  readonly merchantStayHours?: number;
   /**
    * Démarre le tick du monde. Défaut : `setInterval` non bloquant pour le
    * processus. Injectable pour piloter le temps depuis un test.
@@ -411,9 +425,14 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   // serveur éteint.
   const worldHourMs = options.worldHourMs;
   const caravanTickMs = options.caravanTickMs ?? CARAVAN_TICK_MS;
+  // Options de l'état du monde : l'horloge de jeu et les réglages des marchands
+  // itinérants (§13). Les mêmes pour un état neuf et pour un état rechargé —
+  // rien de tout cela n'est dans le fichier, ce sont des options du serveur.
   const clockOptions = {
     ...(worldHourMs === undefined ? {} : { hourMs: worldHourMs }),
     ...(options.worldNow === undefined ? {} : { now: options.worldNow }),
+    ...(options.merchantCount === undefined ? {} : { merchantCount: options.merchantCount }),
+    ...(options.merchantStayHours === undefined ? {} : { merchantStayHours: options.merchantStayHours }),
   };
 
   let worldState: WorldState;
@@ -424,7 +443,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       log(
         `[monde] état rechargé depuis ${worldStateFile} — ${worldState.settlementCount} colonie(s), ` +
           `${worldState.snapshotCount} snapshot(s) conservé(s), ${worldState.caravans.count} caravane(s), ` +
-          `horloge à ${worldState.hours.toFixed(1)} h de jeu`,
+          `${worldState.merchants.count} marchand(s), horloge à ${worldState.hours.toFixed(1)} h de jeu`,
       );
     } else {
       worldState = new WorldState({ world: globe, ...clockOptions });
@@ -625,6 +644,11 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
           subdivisions: worldState.subdivisions,
           tiles: worldState.tileCount,
           settlements: worldState.settlementCount,
+          // Les marchands itinérants ne sont pas dans `GET /world` : ce
+          // corps-là est le globe lui-même, immuable, mis en cache avec un
+          // ETag. Ce qui bouge voyage par `world_caravans` (§13) ; ici, un
+          // simple compte pour l'exploitant.
+          merchants: worldState.merchants.count,
         },
         // Valeurs effectives des garde-fous (`docs/protocol.md` §2, « Limites ») :
         // ce qu'un opérateur voit ici est ce qui s'applique réellement, options
@@ -743,10 +767,24 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   let caravansDirty = false;
   let lastCaravanBroadcast = Number.NEGATIVE_INFINITY;
 
+  /**
+   * L'état des voyages en cours : les caravanes des joueurs et les marchands
+   * itinérants du serveur (`docs/protocol.md` §13), sur le même message et à la
+   * même cadence. `merchants` est toujours présent, éventuellement vide : le
+   * champ est facultatif pour un vieux client, pas ambigu pour un client à jour
+   * — quand il est là, c'est la liste complète, à remplacer telle quelle.
+   */
+  const worldCaravansMessage = (): string =>
+    encodeMessage({
+      type: "world_caravans",
+      caravans: worldState.caravans.list(),
+      merchants: worldState.merchants.list(),
+    });
+
   const broadcastCaravans = (): void => {
     caravansDirty = false;
     lastCaravanBroadcast = Date.now();
-    broadcastWorld(encodeMessage({ type: "world_caravans", caravans: worldState.caravans.list() }));
+    broadcastWorld(worldCaravansMessage());
   };
 
   const caravansChanged = (): void => {
@@ -874,8 +912,49 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   };
 
   /**
-   * Tick du monde : les caravanes avancent, celles qui arrivent sont livrées
-   * (ou mises en attente), et la liste repart aux clients tant que quelque
+   * Un marchand itinérant vient d'atteindre une colonie (`docs/protocol.md`
+   * §13). Deux cas, jamais les deux à la fois :
+   *
+   * - la salle de la case est **ouverte et en jeu**, avec un hôte : le
+   *   `trader_arrival` part vers lui seul, à charge pour lui d'émettre
+   *   `Command::TriggerTraderVisit` en lockstep ;
+   * - sinon (colonie gelée, ou salle encore en `lobby`, donc sans carte où
+   *   faire entrer qui que ce soit) : l'arrivée est comptée dans la colonie et
+   *   remise à la prochaine ouverture (`start`/`snapshot`).
+   *
+   * Rien à confirmer, contrairement à une caravane : un marchand ne transporte
+   * pas de manifeste, une occasion manquée n'est qu'une occasion manquée.
+   */
+  const handleTraderArrival = (arrival: MerchantArrival): void => {
+    const roomName = tileRoomName(arrival.tile);
+    const room = rooms.get(roomName);
+    if (
+      room !== undefined &&
+      room.state !== "lobby" &&
+      room.sendToHost({
+        type: "trader_arrival",
+        tile: arrival.tile,
+        merchantId: arrival.merchantId,
+        merchantName: arrival.merchantName,
+      })
+    ) {
+      log(`[monde] ${arrival.merchantName} (${arrival.merchantId}) s'installe chez l'hôte de ${roomName}`);
+      return;
+    }
+    if (worldState.addPendingTrader(arrival.tile)) {
+      store?.scheduleSave(worldState);
+      log(
+        `[monde] ${arrival.merchantName} arrive sur la case ${arrival.tile}, colonie fermée — ` +
+          `${worldState.pendingTradersAt(arrival.tile)} marchand(s) en attente`,
+      );
+      return;
+    }
+    log(`[monde] ${arrival.merchantName} arrive sur la case ${arrival.tile} : file d'attente pleine, passé son chemin`);
+  };
+
+  /**
+   * Tick du monde : les caravanes et les marchands avancent, ce qui arrive est
+   * livré (ou mis en attente), et la liste repart aux clients tant que quelque
    * chose bouge.
    */
   const worldTick = (): void => {
@@ -883,11 +962,15 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     for (const caravan of arrived) {
       handleArrival(caravan);
     }
-    if (changed) {
+    const merchants = worldState.merchants.tick();
+    for (const arrival of merchants.arrivals) {
+      handleTraderArrival(arrival);
+    }
+    if (changed || merchants.changed) {
       caravansDirty = true;
       store?.scheduleSave(worldState);
     }
-    if (caravansDirty || worldState.caravans.hasMoving) {
+    if (caravansDirty || worldState.caravans.hasMoving || worldState.merchants.hasMoving) {
       broadcastCaravans();
     }
   };
@@ -984,8 +1067,9 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
           },
         }),
       );
-      // Les caravanes en vol, tout de suite : le globe s'affiche complet.
-      send(socket, encodeMessage({ type: "world_caravans", caravans: worldState.caravans.list() }));
+      // Les caravanes en vol et les marchands, tout de suite : le globe
+      // s'affiche complet sans attendre le prochain tick du monde.
+      send(socket, worldCaravansMessage());
       log(
         `[monde] ${player.name} rejoint le monde (${isNewPlayer ? "nouveau joueur" : "reconnu"}) — ` +
           `${worldMembers.size} présent(s)`,
@@ -1179,6 +1263,15 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     // de compter un écart, le jour lui-même se relit depuis l'horloge à
     // chaque nouvelle salle.
     const dayOfYear = worldDayOfYear(worldState.clock.hours());
+    // Une colonie qui rouvre depuis son snapshot ne reçoit aucun `start` : les
+    // marchands qui l'ont visitée pendant son sommeil (§13) partent avec ce
+    // snapshot, pris ici une fois pour toutes. Une colonie qui démarre en
+    // lobby, elle, les prend au `start` (`takePendingTraders` ci-dessous) —
+    // jamais les deux, une salle ne prend pas les deux chemins.
+    const pendingTraders = snapshot === undefined ? 0 : worldState.takePendingTraders(tileId);
+    if (pendingTraders > 0) {
+      store?.scheduleSave(worldState);
+    }
     return new Room({
       name,
       log,
@@ -1194,9 +1287,17 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
               // Le monde a vieilli pendant que la colonie dormait : le premier
               // arrivant émettra l'avance rapide correspondante (§11.6).
               frozenTicks: worldState.frozenTicksFor(name),
+              ...(pendingTraders > 0 ? { pendingTraders } : {}),
             },
           }
         : {}),
+      takePendingTraders: () => {
+        const pending = worldState.takePendingTraders(tileId);
+        if (pending > 0) {
+          store?.scheduleSave(worldState);
+        }
+        return pending;
+      },
       onSnapshot: (report) => {
         if (worldState.saveSnapshot(name, report)) {
           store?.scheduleSave(worldState);
@@ -1393,7 +1494,8 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const port = address.port;
 
   log(
-    `[monde] globe généré — seed ${worldSeed}, subdivision ${worldSubdivisions}, ${globe.tiles.length} cases`,
+    `[monde] globe généré — seed ${worldSeed}, subdivision ${worldSubdivisions}, ${globe.tiles.length} cases, ` +
+      `${worldState.merchants.target} marchand(s) itinérant(s)`,
   );
 
   return {

@@ -7,6 +7,7 @@ import {
   CLIMATE_BASE_MIN,
   frozenTicksForHours,
   MAX_FROZEN_TICKS,
+  MAX_PENDING_TRADERS,
   decodeClientMessage,
   decodeMessage,
   decodeServerMessage,
@@ -23,6 +24,7 @@ import {
   YEAR_DAYS,
   type Caravan,
   type ClientMessage,
+  type Merchant,
   type ServerMessage,
   type Settlement,
   type StartClimate,
@@ -57,6 +59,16 @@ const caravan: Caravan = {
 
 /** Le climat d'une colonie sur une case polaire : moyenne très négative, fort écart saisonnier. */
 const climate: StartClimate = { baseTemperature: -340, amplitude: 200 };
+
+/** Un marchand itinérant de référence, en chemin vers une colonie (§13). */
+const merchant: Merchant = {
+  id: "m1",
+  name: "Compagnie du Levant",
+  tile: 23,
+  toTile: 40,
+  status: "travelling",
+  progress: 0.5,
+};
 
 /** La table des joueurs connus du monde, telle que diffusée par `world_welcome`/`world_players`. */
 const worldPlayers: WorldPlayerInfo[] = [
@@ -162,6 +174,8 @@ describe("encodeMessage / decodeMessage", () => {
     // Salle « case » : la colonie hérite du climat et du jour de l'année de
     // sa case (§11.6, §12.1).
     { type: "start", seed: 7, width: 128, height: 128, tick: 0, climate, dayOfYear: 1 },
+    // Colonie rouverte en lobby après le passage de marchands (§13).
+    { type: "start", seed: 7, width: 64, height: 64, tick: 0, climate, dayOfYear: 1, pendingTraders: 2 },
     { type: "bundle", from: 0, to: 2, ticks: [] },
     {
       type: "bundle",
@@ -181,6 +195,10 @@ describe("encodeMessage / decodeMessage", () => {
     { type: "request_snapshot", forPlayer: NO_PLAYER },
     { type: "snapshot", tick: 42, data: new Uint8Array([1, 2, 3, 4, 5, 6, 7]) },
     { type: "snapshot", tick: 1800, data: new Uint8Array([1]), frozenTicks: 3000 },
+    // Réouverture d'une colonie gelée qu'un marchand a visitée entretemps :
+    // les deux champs voyagent ensemble, chacun sa commande à émettre (§13).
+    { type: "snapshot", tick: 1800, data: new Uint8Array([1]), frozenTicks: 3000, pendingTraders: 1 },
+    { type: "snapshot", tick: 1800, data: new Uint8Array([1]), pendingTraders: MAX_PENDING_TRADERS },
     { type: "desync", tick: 600, hashes: { 1: "aaaa", 2: "bbbb" } },
     { type: "desync", tick: 600, hashes: { 1: "aaaa", 2: "zzzz", 3: "aaaa" }, outliers: [2] },
     { type: "resynced", player: 2, tick: 900 },
@@ -225,6 +243,14 @@ describe("encodeMessage / decodeMessage", () => {
       manifest: new Uint8Array([0, 128, 255]),
       summary: { pawns: 2, items: [[3, 5]] },
     },
+    // Marchands itinérants : même message que les caravanes, champ en plus (§13).
+    { type: "world_caravans", caravans: [], merchants: [] },
+    {
+      type: "world_caravans",
+      caravans: [caravan],
+      merchants: [merchant, { ...merchant, id: "m2", tile: 40, toTile: 40, status: "visiting", progress: 1 }],
+    },
+    { type: "trader_arrival", tile: 40, merchantId: "m1", merchantName: "Compagnie du Levant" },
   ];
 
   it("fait l'aller-retour sur chaque message client", () => {
@@ -443,6 +469,23 @@ describe("validation", () => {
       { type: "snapshot", tick: 1, data: "AQID", frozenTicks: "3000" },
       // Au-delà de 60 jours, le sim tronquerait : la trame ment, on la refuse.
       { type: "snapshot", tick: 1, data: "AQID", frozenTicks: MAX_FROZEN_TICKS + 1 },
+      // Marchands itinérants (§13).
+      { type: "world_caravans", caravans: [], merchants: {} },
+      { type: "world_caravans", caravans: [], merchants: [{ ...merchant, status: "arrived" }] },
+      { type: "world_caravans", caravans: [], merchants: [{ ...merchant, progress: 1.5 }] },
+      { type: "world_caravans", caravans: [], merchants: [{ ...merchant, tile: -1 }] },
+      { type: "world_caravans", caravans: [], merchants: [{ ...merchant, id: "" }] },
+      { type: "world_caravans", caravans: [], merchants: [{ ...merchant, name: "" }] },
+      { type: "trader_arrival", tile: 40, merchantId: "m1" },
+      { type: "trader_arrival", tile: 40, merchantName: "Compagnie du Levant" },
+      { type: "trader_arrival", merchantId: "m1", merchantName: "Compagnie du Levant" },
+      { type: "trader_arrival", tile: -1, merchantId: "m1", merchantName: "Compagnie du Levant" },
+      // Au-delà de la borne du serveur, la trame ment sur ce qu'il enverra.
+      { type: "start", seed: 1, width: 64, height: 64, tick: 0, pendingTraders: MAX_PENDING_TRADERS + 1 },
+      { type: "start", seed: 1, width: 64, height: 64, tick: 0, pendingTraders: -1 },
+      { type: "start", seed: 1, width: 64, height: 64, tick: 0, pendingTraders: 1.5 },
+      { type: "snapshot", tick: 1, data: "AQID", pendingTraders: "2" },
+      { type: "snapshot", tick: 1, data: "AQID", pendingTraders: MAX_PENDING_TRADERS + 1 },
     ];
     for (const value of bad) {
       expect(validateServerMessage(value), JSON.stringify(value)).toBeNull();
@@ -536,6 +579,63 @@ describe("caravanes", () => {
       arrivesAt: 12.75,
       progress: 0.125,
     });
+  });
+});
+
+describe("marchands itinérants", () => {
+  it("transporte un marchand sans perdre de champ, à côté des caravanes", () => {
+    const wire = encodeMessage({ type: "world_caravans", caravans: [caravan], merchants: [merchant] });
+    expect(decodeMessage(wire)).toEqual({ type: "world_caravans", caravans: [caravan], merchants: [merchant] });
+    const back = decodeServerMessage(wire);
+    expect(back?.type === "world_caravans" ? back.merchants : null).toEqual([merchant]);
+  });
+
+  it("laisse passer un world_caravans sans merchants : un vieux serveur reste lisible", () => {
+    const plain = validateServerMessage({ type: "world_caravans", caravans: [] });
+    expect(plain).toEqual({ type: "world_caravans", caravans: [] });
+    expect(plain !== null && "merchants" in plain).toBe(false);
+  });
+
+  it("accepte les deux statuts d'un marchand et rien d'autre", () => {
+    for (const status of ["travelling", "visiting"]) {
+      expect(validateServerMessage({ type: "world_caravans", caravans: [], merchants: [{ ...merchant, status }] })).not.toBeNull();
+    }
+    for (const status of ["arrived", "delivered", "returning", "en_visite"]) {
+      expect(validateServerMessage({ type: "world_caravans", caravans: [], merchants: [{ ...merchant, status }] })).toBeNull();
+    }
+  });
+
+  it("fait l'aller-retour d'un trader_arrival, nom de compagnie compris", () => {
+    const message: ServerMessage = {
+      type: "trader_arrival",
+      tile: 1732,
+      merchantId: "m3",
+      merchantName: "Convoi des Trois Rivières",
+    };
+    expect(decodeServerMessage(encodeMessage(message))).toEqual(message);
+    // Un `trader_arrival` ne vient jamais d'un client : le serveur le refuse.
+    expect(validateClientMessage(message)).toBeNull();
+  });
+
+  it("laisse passer un start sans pendingTraders et garde le champ sinon", () => {
+    const plain = validateServerMessage({ type: "start", seed: 7, width: 64, height: 64, tick: 0 });
+    expect(plain !== null && "pendingTraders" in plain).toBe(false);
+
+    const wire = encodeMessage({ type: "start", seed: 7, width: 64, height: 64, tick: 0, pendingTraders: 3 });
+    const back = decodeServerMessage(wire);
+    expect(back?.type === "start" ? back.pendingTraders : null).toBe(MAX_PENDING_TRADERS);
+  });
+
+  it("borne pendingTraders des deux côtés, sur start comme sur snapshot", () => {
+    expect(MAX_PENDING_TRADERS).toBe(3);
+    for (const pendingTraders of [0, 1, MAX_PENDING_TRADERS]) {
+      expect(validateServerMessage({ type: "start", seed: 1, width: 8, height: 8, tick: 0, pendingTraders })).not.toBeNull();
+      expect(validateServerMessage({ type: "snapshot", tick: 1, data: "AQID", pendingTraders })).not.toBeNull();
+    }
+    for (const pendingTraders of [-1, 1.5, MAX_PENDING_TRADERS + 1, "2", null]) {
+      expect(validateServerMessage({ type: "start", seed: 1, width: 8, height: 8, tick: 0, pendingTraders })).toBeNull();
+      expect(validateServerMessage({ type: "snapshot", tick: 1, data: "AQID", pendingTraders })).toBeNull();
+    }
   });
 });
 

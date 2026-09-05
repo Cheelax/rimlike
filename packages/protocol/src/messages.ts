@@ -142,6 +142,30 @@ export const CARAVAN_TICK_MS = 5000;
  */
 export const CARAVAN_HISTORY_HOURS = 24;
 
+/**
+ * Marchands itinérants (`docs/protocol.md` §13) entretenus en permanence par
+ * le serveur monde. Ce sont des caravanes **PNJ**, 100 % serveur : aucun
+ * client ne les crée, ne les déplace ni ne les fait visiter. Le serveur lit la
+ * valeur dans `WORLD_MERCHANTS` ; `0` en supprime toute trace.
+ */
+export const MERCHANT_COUNT = 2;
+
+/**
+ * Heures de jeu qu'un marchand passe sur une colonie avant de repartir vers la
+ * suivante (`MERCHANT_STAY_HOURS` côté serveur) : un jour de monde, la même
+ * durée que la visite d'un marchand dans le sim (`Command::TriggerTraderVisit`).
+ */
+export const MERCHANT_STAY_HOURS = 24;
+
+/**
+ * Arrivées de marchands mises en attente pour une colonie **fermée**
+ * (`docs/protocol.md` §13) : au-delà, les suivantes sont oubliées. Trois
+ * marchands d'affilée à l'ouverture suffisent largement ; en accumuler
+ * davantage ferait débarquer une foire sur une colonie qui vient de se
+ * réveiller.
+ */
+export const MAX_PENDING_TRADERS = 3;
+
 /** Identifiant de joueur, attribué par le serveur, unique dans la salle. */
 export type PlayerId = number;
 
@@ -274,6 +298,40 @@ export interface Caravan {
   readonly currentTile: number;
   readonly summary: CaravanSummary;
   readonly status: CaravanStatus;
+}
+
+/**
+ * `travelling` : en route vers `toTile`. Un marchand qui n'a aucune colonie où
+ * aller **attend sur place** et se reconnaît à `toTile === tile`.
+ * `visiting` : à l'étal sur une colonie, pour `MERCHANT_STAY_HOURS` heures de
+ * jeu, puis il repart vers la colonie fondée la plus proche.
+ */
+export type MerchantStatus = "travelling" | "visiting";
+
+/**
+ * Un marchand itinérant, tel que le serveur monde le diffuse
+ * (`docs/protocol.md` §13). Contrairement à une `Caravan`, il n'a ni
+ * propriétaire ni manifeste : c'est un PNJ, entièrement serveur, que le client
+ * se contente d'afficher sur le globe.
+ *
+ * `tile` et `progress` sont **dérivés** du temps par le serveur à chaque
+ * diffusion, comme `Caravan.currentTile`/`Caravan.progress` : un client peut
+ * les interpoler entre deux messages, le serveur a le dernier mot. Les
+ * coordonnées se déduisent de `tile` par la géométrie du globe
+ * (`world.tiles[tile].center`), il n'y a rien à transporter de plus.
+ */
+export interface Merchant {
+  /** Identifiant attribué par le serveur, stable pour la vie du marchand. */
+  readonly id: string;
+  /** Nom de compagnie, tiré à la naissance et déterministe par graine du globe. */
+  readonly name: string;
+  /** Case courante, dérivée de l'avancement sur l'itinéraire. */
+  readonly tile: number;
+  /** Case visée ; égale à `tile` quand le marchand attend une colonie où aller. */
+  readonly toTile: number;
+  readonly status: MerchantStatus;
+  /** Avancement dans `[0, 1]` sur le trajet courant. */
+  readonly progress: number;
 }
 
 /** Une commande de joueur planifiée sur un tick, en octets opaques. */
@@ -545,6 +603,14 @@ export interface ServerStartMessage {
   readonly climate?: StartClimate;
   /** Jour de l'année à imposer (`Command::SetCalendar`), dans `0..YEAR_DAYS`. */
   readonly dayOfYear?: number;
+  /**
+   * Marchands itinérants arrivés sur la case pendant que la colonie était
+   * **fermée** (`docs/protocol.md` §13), au plus `MAX_PENDING_TRADERS`. L'hôte,
+   * et lui seul, émet autant de `Command::TriggerTraderVisit` après ce `start`,
+   * exactement comme il émet `FastForward` pour `snapshot.frozenTicks` : le
+   * serveur ne simule pas, il ne fait que compter. Omis quand il vaut 0.
+   */
+  readonly pendingTraders?: number;
 }
 
 /** Le message central : tous les clients reçoivent la même suite de bundles. */
@@ -581,6 +647,15 @@ export interface ServerSnapshotMessage {
   readonly tick: number;
   readonly data: Uint8Array;
   readonly frozenTicks?: number;
+  /**
+   * Le pendant de `start.pendingTraders` pour une colonie qui rouvre **depuis
+   * son snapshot conservé** : ce chemin-là ne diffuse aucun `start`
+   * (`docs/protocol.md` §11.6), le compte voyage donc ici, à côté de
+   * `frozenTicks` et avec la même règle — le premier arrivant est l'hôte, lui
+   * seul émet les `Command::TriggerTraderVisit` correspondantes, une par
+   * marchand. Omis quand il vaut 0.
+   */
+  readonly pendingTraders?: number;
 }
 
 /**
@@ -696,6 +771,14 @@ export interface WorldErrorMessage {
 export interface WorldCaravansMessage {
   readonly type: "world_caravans";
   readonly caravans: readonly Caravan[];
+  /**
+   * Marchands itinérants du globe (`docs/protocol.md` §13), diffusés par le
+   * même message et à la même cadence que les caravanes des joueurs : liste
+   * complète, le client remplace la sienne. **Facultatif** — un serveur qui ne
+   * connaît pas les marchands n'envoie rien, et un client qui les ignore reste
+   * compatible.
+   */
+  readonly merchants?: readonly Merchant[];
 }
 
 /**
@@ -712,6 +795,27 @@ export interface CaravanArriveMessage {
   /** Le manifeste tel qu'expédié, jamais décodé par le serveur. */
   readonly manifest: Uint8Array;
   readonly summary: CaravanSummary;
+}
+
+/**
+ * Un marchand itinérant vient d'arriver sur la case d'une colonie **ouverte et
+ * en jeu** : envoyé à son seul **hôte** (`docs/protocol.md` §13), qui répond en
+ * émettant `Command::TriggerTraderVisit` en lockstep — un marchand neutre entre
+ * alors sur la carte et y reste un jour, comme celui du storyteller local.
+ *
+ * Rien à confirmer au serveur, contrairement à `caravan_arrive` : il n'y a
+ * aucun manifeste à ne pas perdre, seulement une occasion de commerce. Une
+ * arrivée sur une colonie **fermée** ne produit pas ce message mais un
+ * `pendingTraders` remis à l'ouverture suivante (`start`, ou `snapshot` pour
+ * une colonie qui rouvre depuis son état conservé).
+ */
+export interface TraderArrivalMessage {
+  readonly type: "trader_arrival";
+  /** Case d'arrivée : celle de la salle qui reçoit ce message. */
+  readonly tile: number;
+  readonly merchantId: string;
+  /** Nom de compagnie, pour l'annoncer dans le HUD. */
+  readonly merchantName: string;
 }
 
 export type ServerMessage =
@@ -732,7 +836,8 @@ export type ServerMessage =
   | SettledMessage
   | WorldErrorMessage
   | WorldCaravansMessage
-  | CaravanArriveMessage;
+  | CaravanArriveMessage
+  | TraderArrivalMessage;
 
 export type AnyMessage = ClientMessage | ServerMessage;
 

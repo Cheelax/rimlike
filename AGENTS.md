@@ -46,6 +46,7 @@ pnpm dev:server       # relais + serveur monde sur :8787 (GET /health, GET /worl
                       # WORLD_STATE_FILE (apps/server/data/world-state.json ; vide = mémoire),
                       # WORLD_PERSIST=0 pour désactiver la persistance,
                       # WORLD_HOUR_MS (30000 : une heure de jeu = 30 s), CARAVAN_TICK_MS (5000),
+                      # WORLD_MERCHANTS (2 caravanes marchandes PNJ ; 0 désactive), MERCHANT_STAY_HOURS (24),
                       # limites : MAX_MESSAGE_BYTES, MAX_SNAPSHOT_BYTES, MAX_MESSAGES_PER_SECOND,
                       # MAX_CONNECTIONS_PER_IP, MAX_ROOMS, MAX_PLAYERS_PER_ROOM, TRUST_PROXY
 cargo fmt --all       # la CI vérifie le formatage

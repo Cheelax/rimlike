@@ -16,7 +16,9 @@
  * - `version: 1` (identité v1 = le nom, `docs/protocol.md` §11.8) → accepté et
  *   **migré** par `WorldState.fromJSON` : chaque nom de propriétaire devient
  *   un joueur avec un jeton neuf. La prochaine sauvegarde réécrit le fichier
- *   en v2 (`WORLD_STATE_FILE_VERSION`).
+ *   dans la version courante (`WORLD_STATE_FILE_VERSION`) ;
+ * - `version: 2` (avant les marchands itinérants, §13) → relu tel quel : les
+ *   marchands renaissent au premier tick du monde, personne ne perd rien.
  *
  * Dans les deux derniers cas le fichier est renommé
  * `<fichier>.ignored-<horodatage>.json` plutôt que supprimé (l'opérateur peut
@@ -35,21 +37,27 @@ import type { World } from "@rimlike/world";
 import { WorldState, type WorldStateJson, type WorldStateOptions } from "./world.js";
 
 /**
- * Version du format de fichier — celle qu'écrit ce serveur. À monter si
- * `WorldStateJson` change de façon incompatible.
+ * Version du format de fichier — celle qu'écrit ce serveur. À monter dès que
+ * `WorldStateJson` gagne un contenu qu'une version antérieure ne saurait pas
+ * réécrire fidèlement.
  *
- * Passée à 2 avec la tranche « jeton » (`docs/protocol.md` §11.2, §11.8) :
- * `owner`, dans les colonies et les caravanes d'un fichier v1, est un **nom**
- * (identité v1 = le nom) ; à partir de v2 c'est une **clé** de joueur, résolue
- * via `state.players`. `SUPPORTED_WORLD_STATE_FILE_VERSIONS` liste les
- * versions qu'un fichier peut porter en lecture : un v1 est accepté et migré
- * par `WorldState.fromJSON` (nouveaux joueurs, jetons neufs), pas rejeté — la
- * prochaine sauvegarde le réécrit en v2.
+ * - **2**, tranche « jeton » (`docs/protocol.md` §11.2, §11.8) : `owner`, dans
+ *   les colonies et les caravanes d'un fichier v1, est un **nom** (identité
+ *   v1 = le nom) ; à partir de v2 c'est une **clé** de joueur, résolue via
+ *   `state.players`.
+ * - **3**, tranche « marchands itinérants » (§13) : `state.merchants` (les
+ *   marchands PNJ en circulation) et `pendingTraders` sur une colonie.
+ *
+ * `SUPPORTED_WORLD_STATE_FILE_VERSIONS` liste les versions qu'un fichier peut
+ * porter en lecture : un v1 est accepté et migré par `WorldState.fromJSON`
+ * (nouveaux joueurs, jetons neufs), un v2 est relu tel quel (les marchands
+ * renaissent) — aucun des deux n'est rejeté, et la prochaine sauvegarde les
+ * réécrit dans la version courante.
  */
-export const WORLD_STATE_FILE_VERSION = 2;
+export const WORLD_STATE_FILE_VERSION = 3;
 
 /** Versions de fichier acceptées en lecture (voir `WORLD_STATE_FILE_VERSION`). */
-const SUPPORTED_WORLD_STATE_FILE_VERSIONS = [1, 2] as const;
+const SUPPORTED_WORLD_STATE_FILE_VERSIONS = [1, 2, 3] as const;
 
 /** Délai de débounce par défaut entre deux écritures, en millisecondes. */
 export const SAVE_DEBOUNCE_MS = 2000;
@@ -233,10 +241,10 @@ export class WorldStore {
     try {
       const state = WorldState.fromJSON(parsed.state, { ...options, world });
       if (parsed.version === 1) {
-        // Migration v1 → v2 (docs/protocol.md §11.8) : chaque nom de
-        // propriétaire est devenu un joueur avec un jeton neuf, personne ne
-        // peut être reconnu par un ancien nom. La prochaine sauvegarde écrit
-        // le fichier en v2 ; c'est là que l'exploitant peut lire ces jetons.
+        // Migration v1 → identité par jeton (docs/protocol.md §11.8) : chaque
+        // nom de propriétaire est devenu un joueur avec un jeton neuf, personne
+        // ne peut être reconnu par un ancien nom. La prochaine sauvegarde
+        // réécrit le fichier ; c'est là que l'exploitant peut lire ces jetons.
         this.log(
           `[monde] fichier d'état v1 migré (${this.file}) : les propriétaires existants sont devenus des ` +
             "joueurs avec un jeton neuf — la prochaine sauvegarde écrira ces jetons dans le fichier",

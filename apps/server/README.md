@@ -18,6 +18,12 @@ Concrètement, un seul processus expose sur un port HTTP/WebSocket unique :
   (rejoindre le globe, fonder/visiter/abandonner une colonie, faire voyager
   une caravane).
 
+Il fait aussi circuler, de son propre chef, des **marchands itinérants** PNJ
+d'une colonie à l'autre (`docs/protocol.md` §13, `WORLD_MERCHANTS`) : c'est la
+seule chose qu'il « joue » lui-même, et encore, il ne simule rien — il annonce
+l'arrivée à l'hôte de la colonie visitée, qui émet la commande correspondante
+en lockstep.
+
 ## `GET /rooms` — découverte des salles
 
 Détail complet du format et des invariants : `docs/protocol.md` §2,
@@ -56,7 +62,9 @@ explicites).
 | `WORLD_STATE_FILE` | `apps/server/data/world-state.json` | Fichier de persistance de l'état du monde (colonies, joueurs, caravanes). Chaîne vide = persistance désactivée (mode mémoire). |
 | `WORLD_PERSIST` | (non défini) | `0` désactive la persistance, quel que soit `WORLD_STATE_FILE`. |
 | `WORLD_HOUR_MS` | `30000` | Durée réelle d'une heure de jeu du monde, en ms (30 000 = un jour de monde en 12 min réelles). |
-| `CARAVAN_TICK_MS` | `5000` | Période du tick du monde : avancement des caravanes en route et diffusion aux joueurs connectés. |
+| `CARAVAN_TICK_MS` | `5000` | Période du tick du monde : avancement des caravanes en route **et des marchands itinérants**, diffusion aux joueurs connectés. |
+| `WORLD_MERCHANTS` | `2` | Marchands itinérants PNJ entretenus sur le globe (`docs/protocol.md` §13) : ils circulent de colonie en colonie et préviennent l'hôte de celle où ils s'arrêtent. `0` n'en fait circuler aucun. |
+| `MERCHANT_STAY_HOURS` | `24` | Heures de jeu qu'un marchand passe sur une colonie avant de repartir vers la suivante (24 = un jour de monde). |
 | `MAX_MESSAGE_BYTES` | `262144` | Taille maximale d'un message texte (octets UTF-8), sauf `snapshot` (voir `MAX_SNAPSHOT_BYTES`). Dépassement : `error { code: "message_too_large" }` puis fermeture (code WebSocket 1009). |
 | `MAX_SNAPSHOT_BYTES` | `8388608` | Taille maximale d'un message `snapshot` : plus généreuse, il transporte l'état d'une carte entière en base64. |
 | `MAX_MESSAGES_PER_SECOND` | `120` | Messages tolérés par connexion sur une fenêtre glissante d'une seconde (le `pong` ne compte pas). Au-delà : `error { code: "rate_limited" }` ; si le dépassement persiste sans interruption pendant 3 s, la connexion est fermée. |

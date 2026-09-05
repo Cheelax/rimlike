@@ -427,7 +427,13 @@ par tick modulés par humeur et compétence, séances de 600 ticks. Interface li
 (Sonnet) : outil Établi de recherche, panneau Recherche (touche R : cinq technologies, barre
 d'avancement, « Arrêter », avertissement sans établi), ligne HUD, événement 31 ; cadence
 corrigée après mesure (voir journal) ; vérifié : Médecine à 31 % après 6 000 ticks d'un
-chercheur. Relations entre colons livrées le 2026-09-05 (Opus, sim) : avis de −100 à +100 (seize au
+chercheur. Marchands itinérants côté serveur livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
+caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
+tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;
+à l'arrivée, `trader_arrival` à l'hôte seul (qui doit émettre `TriggerTraderVisit`), ou
+`pendingTraders` (borné à 3) remis au prochain `start`/`snapshot` d'une colonie gelée ;
+`world_caravans.merchants` pour le globe, persistance v3 tolérante. Client à câbler (émission par
+l'hôte, marchands dessinés sur le globe). Relations entre colons livrées le 2026-09-05 (Opus, sim) : avis de −100 à +100 (seize au
 plus par colon), bavardage de 90 ticks entre voisins désœuvrés (+4 d'avis mutuel, +8 000 d'humeur
 un jour, délai de 1 200 ticks par paire, moitié pour un sociable), dispute une fois sur huit (un
 sur quatre avec un bagarreur : −10, −10 000), rixe non mortelle sous −60, amis (≥ 50) et rivaux
@@ -450,6 +456,14 @@ colon, événements au journal). À venir : factions PNJ avec réputation, mods 
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-05 : marchands itinérants 100 % serveur. Le serveur monde fait circuler des caravanes
+  PNJ et ne fait jamais confiance au client pour elles ; il ne réémet jamais une arrivée (pas
+  d'accusé), l'hôte émet `TriggerTraderVisit` une fois par message. Une colonie fermée cumule
+  les passages (trois au plus) remis à la réouverture, par `start` pour une colonie qui démarre
+  et par `snapshot` pour une colonie gelée qui rouvre. L'avancement est dérivé des dates de
+  départ et d'arrivée, jamais incrémenté : un redémarrage reprend le voyage à l'identique. Une
+  entrée de marchand corrompue est ignorée au chargement plutôt que de bloquer le fichier.
 
 - 2026-09-05 : un seul contexte WebGL par onglet. `render/gl.ts` possède l'unique
   `WebGLRenderer` et son canevas ; les écrans Monde et Colonie gardent chacun leur scène et

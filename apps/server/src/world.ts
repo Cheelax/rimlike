@@ -27,7 +27,10 @@
  *
  * S'y ajoutent, depuis la tranche « caravanes » (`docs/protocol.md` §12), une
  * **horloge de jeu** (`WorldClock`, en heures de jeu) et le registre des
- * caravanes en voyage (`CaravanRegistry`), tous deux persistés avec le reste.
+ * caravanes en voyage (`CaravanRegistry`), tous deux persistés avec le reste ;
+ * puis, depuis la tranche « marchands » (§13), le registre des marchands
+ * itinérants PNJ (`MerchantRegistry`) et le compte de marchands en attente sur
+ * une colonie fermée (`StoredSettlement.pendingTraders`).
  *
  * `toJSON` / `fromJSON` font l'aller-retour complet (colonies, dernier
  * snapshot de chaque salle, horloge, caravanes et joueurs) en un objet JSON :
@@ -44,6 +47,7 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import {
+  MAX_PENDING_TRADERS,
   WORLD_HOUR_MS,
   base64ToBytes,
   bytesToBase64,
@@ -53,6 +57,7 @@ import {
 import { generateWorld, movementCost, tileCount, type World } from "@rimlike/world";
 
 import { CaravanRegistry, type CaravanRegistryJson } from "./caravans.js";
+import { MerchantRegistry, type MerchantRegistryJson } from "./merchants.js";
 
 /** Graine du globe par défaut (surchargée par `WORLD_SEED`). */
 export const DEFAULT_WORLD_SEED = 1;
@@ -252,6 +257,16 @@ export interface StoredSettlement {
   readonly room: string;
   readonly seed: number;
   readonly createdAt: number;
+  /**
+   * Marchands itinérants arrivés pendant que la colonie était **fermée**
+   * (`docs/protocol.md` §13), borné à `MAX_PENDING_TRADERS`. Remis en une fois
+   * à la prochaine ouverture de la salle — `start.pendingTraders` pour une
+   * colonie qui démarre, `snapshot.pendingTraders` pour une colonie qui rouvre
+   * depuis son état conservé — puis remis à zéro. Mutable, contrairement au
+   * reste : c'est le seul champ d'une colonie qui bouge sans passer par une
+   * fondation ou un abandon. Absent quand il vaut 0.
+   */
+  pendingTraders?: number;
 }
 
 /**
@@ -291,6 +306,13 @@ export interface WorldStateJson {
   readonly caravans?: CaravanRegistryJson;
   /** Joueurs connus (clé, nom, jeton) ; absents d'un fichier antérieur à cette tranche. */
   readonly players?: readonly WorldPlayerJson[];
+  /**
+   * Marchands itinérants en circulation (`docs/protocol.md` §13).
+   * **Facultatifs** : un fichier écrit avant cette tranche se relit tel quel,
+   * les marchands renaissent simplement au premier tick du monde — ce sont des
+   * PNJ, personne ne perd rien à les voir repartir d'ailleurs.
+   */
+  readonly merchants?: MerchantRegistryJson;
 }
 
 export interface WorldStateOptions {
@@ -302,6 +324,10 @@ export interface WorldStateOptions {
   readonly clock?: WorldClock;
   /** Durée réelle d'une heure de jeu, si `clock` n'est pas fourni. */
   readonly hourMs?: number;
+  /** Marchands itinérants entretenus. Défaut : `MERCHANT_COUNT` ; 0 en supprime tout. */
+  readonly merchantCount?: number;
+  /** Durée d'un séjour de marchand, en heures de jeu. Défaut : `MERCHANT_STAY_HOURS`. */
+  readonly merchantStayHours?: number;
 }
 
 export class WorldState {
@@ -311,6 +337,8 @@ export class WorldState {
   readonly clock: WorldClock;
   /** Caravanes en voyage sur le globe. */
   readonly caravans: CaravanRegistry;
+  /** Marchands itinérants PNJ, entretenus par le serveur seul. */
+  readonly merchants: MerchantRegistry;
   /** Colonies par identifiant de case. */
   private readonly settlements = new Map<number, StoredSettlement>();
   /** Dernier snapshot connu par nom de salle. */
@@ -331,6 +359,15 @@ export class WorldState {
       world: this.world,
       hours: () => this.clock.hours(),
       ownerName: (key) => this.nameOf(key),
+    });
+    this.merchants = new MerchantRegistry({
+      world: this.world,
+      hours: () => this.clock.hours(),
+      // Les colonies fondées, triées : l'ordre départage deux destinations à
+      // égale distance, il doit être stable d'un tick à l'autre.
+      settlements: () => [...this.settlements.keys()].sort((a, b) => a - b),
+      ...(options.merchantCount !== undefined ? { count: options.merchantCount } : {}),
+      ...(options.merchantStayHours !== undefined ? { stayHours: options.merchantStayHours } : {}),
     });
   }
 
@@ -506,6 +543,48 @@ export class WorldState {
     this.snapshots.delete(room);
   }
 
+  // --- Marchands en attente (`docs/protocol.md` §13) ---
+  //
+  // Un marchand qui arrive sur une colonie **ouverte et en jeu** part tout de
+  // suite vers son hôte (`trader_arrival`). S'il n'y a personne, l'arrivée est
+  // simplement comptée ici, et remise en une fois à la prochaine ouverture de
+  // la salle. Une arrivée donne donc soit un message immédiat, soit un +1 —
+  // jamais les deux.
+
+  /** Marchands en attente sur une case, 0 si la case n'est pas colonisée. */
+  pendingTradersAt(tileId: number): number {
+    return this.settlements.get(tileId)?.pendingTraders ?? 0;
+  }
+
+  /**
+   * Compte une arrivée de marchand sur une colonie fermée. Faux si la case n'a
+   * pas de colonie, ou si le compte est déjà à `MAX_PENDING_TRADERS` : les
+   * suivantes sont oubliées plutôt qu'accumulées, une colonie qui se réveille
+   * n'a pas à voir débarquer une foire.
+   */
+  addPendingTrader(tileId: number): boolean {
+    const settlement = this.settlements.get(tileId);
+    if (settlement === undefined) {
+      return false;
+    }
+    const known = settlement.pendingTraders ?? 0;
+    if (known >= MAX_PENDING_TRADERS) {
+      return false;
+    }
+    settlement.pendingTraders = known + 1;
+    return true;
+  }
+
+  /** Prend les marchands en attente d'une case et remet le compte à zéro. */
+  takePendingTraders(tileId: number): number {
+    const settlement = this.settlements.get(tileId);
+    const pending = settlement?.pendingTraders ?? 0;
+    if (settlement !== undefined) {
+      delete settlement.pendingTraders;
+    }
+    return pending;
+  }
+
   // --- Joueurs ---
   //
   // L'identité d'un joueur est son jeton, pas son nom (`docs/protocol.md`
@@ -561,9 +640,21 @@ export class WorldState {
     );
   }
 
-  /** Diffusable : `ownerName` résolu à l'instant présent, jamais figé. */
+  /**
+   * Diffusable : `ownerName` résolu à l'instant présent, jamais figé. Les
+   * champs sont recopiés un à un plutôt qu'étalés — `pendingTraders` est une
+   * affaire interne au serveur (`docs/protocol.md` §13), il n'a rien à faire
+   * sur le fil.
+   */
   private toSettlement(stored: StoredSettlement): Settlement {
-    return { ...stored, ownerName: this.nameOf(stored.owner) };
+    return {
+      tile: stored.tile,
+      owner: stored.owner,
+      ownerName: this.nameOf(stored.owner),
+      room: stored.room,
+      seed: stored.seed,
+      createdAt: stored.createdAt,
+    };
   }
 
   /** État complet en JSON. Voir l'en-tête : rien n'est encore écrit sur disque. */
@@ -573,7 +664,19 @@ export class WorldState {
       subdivisions: this.subdivisions,
       clock: this.clock.toJSON(),
       caravans: this.caravans.toJSON(),
-      settlements: [...this.settlements.values()].sort((a, b) => a.tile - b.tile),
+      merchants: this.merchants.toJSON(),
+      settlements: [...this.settlements.values()]
+        .sort((a, b) => a.tile - b.tile)
+        .map((settlement) => ({
+          tile: settlement.tile,
+          owner: settlement.owner,
+          room: settlement.room,
+          seed: settlement.seed,
+          createdAt: settlement.createdAt,
+          // Omis quand il vaut 0 : le cas courant, et un champ absent se relit
+          // par une version antérieure sans rien casser.
+          ...(settlement.pendingTraders ? { pendingTraders: settlement.pendingTraders } : {}),
+        })),
       snapshots: [...this.snapshots.entries()]
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
         .map(([room, snapshot]) => ({
@@ -655,7 +758,17 @@ export class WorldState {
       if (!state.hasTile(settlement.tile)) {
         throw new Error(`colonie sur une case inexistante : ${settlement.tile}`);
       }
-      state.settlements.set(settlement.tile, { ...settlement, owner: resolveOwner(settlement.owner) });
+      // `pendingTraders` est relu borné : un fichier trafiqué ne fait pas
+      // débarquer trente marchands à la réouverture d'une colonie.
+      const pending = Math.min(MAX_PENDING_TRADERS, Math.max(0, Math.trunc(settlement.pendingTraders ?? 0)));
+      state.settlements.set(settlement.tile, {
+        tile: settlement.tile,
+        owner: resolveOwner(settlement.owner),
+        room: settlement.room,
+        seed: settlement.seed,
+        createdAt: settlement.createdAt,
+        ...(pending > 0 ? { pendingTraders: pending } : {}),
+      });
     }
     for (const entry of json.snapshots) {
       const data = base64ToBytes(entry.data);
@@ -676,6 +789,11 @@ export class WorldState {
         ? { ...json.caravans, caravans: json.caravans.caravans.map((c) => ({ ...c, owner: resolveOwner(c.owner) })) }
         : json.caravans;
       state.caravans.restore(caravansJson);
+    }
+    // Absents d'un fichier antérieur aux marchands : ils renaîtront au premier
+    // tick du monde, sur une case tirée au sort comme au premier démarrage.
+    if (json.merchants !== undefined) {
+      state.merchants.restore(json.merchants);
     }
     return state;
   }

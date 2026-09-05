@@ -10,7 +10,9 @@
  * | `WORLD_STATE_FILE` | `apps/server/data/world-state.json` | fichier de persistance du monde ; vide désactive |
  * | `WORLD_PERSIST` | (non défini) | `0` désactive la persistance, quel que soit `WORLD_STATE_FILE` |
  * | `WORLD_HOUR_MS` | 30 000 | durée réelle d'une heure de jeu du monde (30 s = un jour de monde en 12 min) |
- * | `CARAVAN_TICK_MS` | 5 000 | période du tick du monde : avancement des caravanes et diffusion |
+ * | `CARAVAN_TICK_MS` | 5 000 | période du tick du monde : avancement des caravanes et des marchands, diffusion |
+ * | `WORLD_MERCHANTS` | 2 | marchands itinérants entretenus sur le globe ; `0` n'en fait circuler aucun |
+ * | `MERCHANT_STAY_HOURS` | 24 | heures de jeu qu'un marchand passe sur une colonie avant de repartir |
  * | `MAX_MESSAGE_BYTES` | 262 144 | taille maximale d'un message texte, sauf `snapshot` |
  * | `MAX_SNAPSHOT_BYTES` | 8 388 608 | taille maximale d'un message `snapshot` |
  * | `MAX_MESSAGES_PER_SECOND` | 120 | messages tolérés par connexion et par seconde |
@@ -25,7 +27,13 @@
  * `resolveWorldStateFile` (`persistence.ts`).
  */
 
-import { CARAVAN_TICK_MS, MAX_PLAYERS, WORLD_HOUR_MS } from "@rimlike/protocol";
+import {
+  CARAVAN_TICK_MS,
+  MAX_PLAYERS,
+  MERCHANT_COUNT,
+  MERCHANT_STAY_HOURS,
+  WORLD_HOUR_MS,
+} from "@rimlike/protocol";
 
 import { resolveWorldStateFile } from "./persistence.js";
 import {
@@ -59,6 +67,11 @@ const worldSubdivisions = readInteger("WORLD_SUBDIVISIONS", DEFAULT_WORLD_SUBDIV
 // monde reste sous la journée réelle : au-delà, c'est une erreur de saisie.
 const worldHourMs = readInteger("WORLD_HOUR_MS", WORLD_HOUR_MS, 1, 3_600_000);
 const caravanTickMs = readInteger("CARAVAN_TICK_MS", CARAVAN_TICK_MS, 10, 600_000);
+// Marchands itinérants (`docs/protocol.md` §13). 0 les désactive complètement ;
+// la borne haute n'est là que pour attraper une faute de frappe — un globe à
+// 2 562 cases n'a rien à faire de cent marchands.
+const merchantCount = readInteger("WORLD_MERCHANTS", MERCHANT_COUNT, 0, 100);
+const merchantStayHours = readInteger("MERCHANT_STAY_HOURS", MERCHANT_STAY_HOURS, 0, 8760);
 
 // Garde-fous avant hébergement public (`docs/protocol.md` §2, « Limites »).
 const maxMessageBytes = readInteger("MAX_MESSAGE_BYTES", DEFAULT_MAX_MESSAGE_BYTES, 1024, 100_000_000);
@@ -78,6 +91,8 @@ const server = await startServer({
   worldStateFile,
   worldHourMs,
   caravanTickMs,
+  merchantCount,
+  merchantStayHours,
   maxMessageBytes,
   maxSnapshotBytes,
   maxMessagesPerSecond,
@@ -97,6 +112,11 @@ console.log(
 );
 console.log(
   `[serveur] horloge du monde : 1 h de jeu = ${worldHourMs} ms réelles, tick des caravanes toutes les ${caravanTickMs} ms`,
+);
+console.log(
+  merchantCount === 0
+    ? "[serveur] marchands itinérants désactivés (WORLD_MERCHANTS=0)"
+    : `[serveur] ${merchantCount} marchand(s) itinérant(s), ${merchantStayHours} h de jeu par visite`,
 );
 console.log(
   `[serveur] limites : message ${maxMessageBytes} o (snapshot ${maxSnapshotBytes} o), ` +
