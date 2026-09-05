@@ -1,7 +1,7 @@
 import type { TileClimate } from "@rimlike/world";
 
-/** Contrat avec `pawn::Faction` (0 colonie, 1 pillard, 2 bête sauvage). */
-export const FACTION = { Colony: 0, Raider: 1, Animal: 2 } as const;
+/** Contrat avec `pawn::Faction` (0 colonie, 1 pillard, 2 bête sauvage, 3 marchand). */
+export const FACTION = { Colony: 0, Raider: 1, Animal: 2, Trader: 3 } as const;
 
 /** Contrat avec `sim::storyteller::Difficulty` : index = valeur de l'enum. */
 export const DIFFICULTY = { Peaceful: 0, Easy: 1, Normal: 2, Hard: 3 } as const;
@@ -266,6 +266,18 @@ export function sickHoursRemaining(ticks: number): number {
   return ticks > 0 ? Math.ceil(ticks / 600) : 0;
 }
 
+/**
+ * Temps avant que le marchand ne reprenne la route, en français, à partir des
+ * ticks de `sim-wasm::trader_leaves_in` (600 ticks = 1 heure de jeu). Arrondi
+ * à l'heure la plus proche, sauf sous une heure entière où l'arrondi donnerait
+ * « 0 h » : « moins d'une heure » à la place.
+ */
+export function formatTraderLeaves(ticks: number): string {
+  if (ticks < 600) return "moins d'une heure";
+  const hours = Math.round(ticks / 600);
+  return `${hours} h`;
+}
+
 export const JOB_LABELS = [
   "inactif",
   "se déplace",
@@ -381,9 +393,33 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
     case 25:
       // `arg` = l'écart en dixièmes de degré (`sim::EventKind::Heatwave`), positif.
       return `Canicule : +${Math.round(arg / 10)} °C pendant un jour`;
+    case 26: {
+      // `arg` = l'id du marchand qui arrive (`sim::EventKind`, voir AGENTS.md).
+      const name = names?.[arg];
+      return name ? `${name}, un marchand, est arrivé` : "Un marchand est arrivé";
+    }
+    case 27:
+      return traderLabel(arg, names, "est furieux");
+    case 28: {
+      // `arg` = le genre acheté (`sim::ItemKind`), pas un id de pawn.
+      return `Troc conclu : ${ITEM_NAMES[arg] ?? "objet"}`;
+    }
+    case 29:
+      return traderLabel(arg, names, "est mort");
     default:
       return "";
   }
+}
+
+/**
+ * « <nom> le marchand <suffixe> », ou « Le marchand <suffixe> » sans nom
+ * connu (le marchand a disparu du tampon `names` avant l'événement, ou le sim
+ * neuf qui vient de démarrer n'en a pas encore lu). Partagé par les
+ * événements 27 (furieux) et 29 (mort) : seul le suffixe change.
+ */
+function traderLabel(id: number, names: Record<number, string> | undefined, suffix: string): string {
+  const name = names?.[id];
+  return name ? `${name} le marchand ${suffix}` : `Le marchand ${suffix}`;
 }
 
 /**

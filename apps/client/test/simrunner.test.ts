@@ -198,6 +198,26 @@ class FakeSim implements RunnerSim {
     return this.wealthValue;
   }
 
+  traderPresentValue = -1;
+
+  traderPresent(): number {
+    return this.traderPresentValue;
+  }
+
+  traderLeavesInValue = 0;
+
+  traderLeavesIn(): number {
+    return this.traderLeavesInValue;
+  }
+
+  traderOffers(): Int32Array {
+    return new Int32Array(0);
+  }
+
+  buyPrices(): Uint32Array {
+    return new Uint32Array(16);
+  }
+
   dispose(): void {
     this.disposed = true;
   }

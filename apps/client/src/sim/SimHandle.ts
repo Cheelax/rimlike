@@ -111,6 +111,14 @@ export class SimHandle implements SimLike {
   }
 
   /**
+   * Fait venir un marchand tout de suite (débogage, comme `triggerRaid`). En
+   * multi, passe par `encodeTriggerTraderVisit` puis `issue`.
+   */
+  triggerTraderVisit(): void {
+    this.inner.trigger_trader_visit();
+  }
+
+  /**
    * Règle la dose de menace du storyteller (`sim::storyteller::Difficulty` :
    * 0 paisible, 1 facile, 2 normal, 3 difficile). Outil de dev/console : en
    * multi, cette commande doit passer par `encodeSetDifficulty` puis `issue`,
@@ -259,6 +267,51 @@ export class SimHandle implements SimLike {
    */
   fastForward(ticks: number): void {
     this.inner.fast_forward(ticks);
+  }
+
+  // --- Commerce (`crates/sim/src/trade.rs`) ---
+
+  /**
+   * Id du marchand avec qui on peut traiter, −1 s'il n'y en a pas (parti,
+   * devenu hostile, ou jamais venu). Sa position, son nom et sa santé se
+   * lisent dans les tampons habituels : c'est un pawn de faction 3.
+   */
+  traderPresent(): number {
+    return this.inner.trader_present();
+  }
+
+  /** Ticks avant que le marchand ne reprenne la route ; 0 s'il n'y en a pas. */
+  traderLeavesIn(): number {
+    return this.inner.trader_leaves_in();
+  }
+
+  /**
+   * Étal du marchand, à plat : `[genre, quantité, prix unitaire de vente] × n`
+   * par lot. Vide s'il n'y a personne à qui parler.
+   */
+  traderOffers(): Int32Array {
+    return this.inner.trader_offers();
+  }
+
+  /**
+   * Prix unitaire d'achat par genre, indexé par `ItemKind` (16 entrées) : ce
+   * que la colonie touche en cédant une unité. Indépendant de la présence du
+   * marchand.
+   */
+  buyPrices(): Uint32Array {
+    return this.inner.buy_prices();
+  }
+
+  /**
+   * Troque avec le marchand présent : `giveCount` unités de `give` prélevées
+   * en stockage contre `takeCount` unités de `take` posées au sol près de lui.
+   * Les genres suivent `sim::ItemKind`. Outil de dev/console, comme `hunt` : en
+   * multi, cette commande doit passer par `encodeTrade` puis `issue`, jamais
+   * être appliquée directement. Un troc refusé par le sim est silencieux
+   * (voir `apps/client/src/trade.ts::tradeBalance` pour prévalider côté UI).
+   */
+  trade(give: number, giveCount: number, take: number, takeCount: number): void {
+    this.inner.trade(give, giveCount, take, takeCount);
   }
 
   // --- Caravanes (docs/protocol.md §12) ---

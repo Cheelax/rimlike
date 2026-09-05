@@ -398,7 +398,11 @@ jours démarre au jour 12. Ligne de stock unifiée (cinq genres de base, le rest
 tous les 4 à 7 jours (trois profils : vivrier, artisan, armurier), s'installe à 4-6 cases des
 colons pendant un jour, vend à 120 % et achète à 70 % de la valeur de richesse ; troc en
 valeur par `Trade` (prélevé en stockage, déposé à l'étal) ; attaqué, il devient hostile et la
-rancune espace ses visites ; interface à faire. Conservation par le froid et tombes livrées le
+rancune espace ses visites. Interface du troc livrée le 2026-09-05 (Sonnet) : marchand ocre au
+ballot sur le dos, ligne HUD « Marchand … repart dans N h », panneau Troc (il vend / vous donnez,
+balance en valeur pré-validée avec le motif de refus, le sim refusant en silence), événements
+26-29 au journal, `TriggerTraderVisit` pour le débogage ; vérifié : 72 bois contre un arc, stock
+et étal mis à jour, « Troc conclu : arcs ». Conservation par le froid et tombes livrées le
 2026-09-05 (Sonnet, sim) : chaque pile périssable porte une fraîcheur en millionièmes qui
 décroît selon la température de sa case (vitesse normale au-dessus de 15 °C, moitié entre 5 et
 15, quart entre 0 et 5, gelé sous zéro), évaluée toutes les 60 ticks ; une cave froide ou

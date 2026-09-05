@@ -12,9 +12,11 @@ import {
   DIFFICULTY_LABELS,
   eventCategory,
   eventLabel,
+  FACTION,
   formatEventTime,
   formatInjury,
   formatTemperature,
+  formatTraderLeaves,
   formatWealth,
   hKeyAction,
   ITEM_NAMES,
@@ -144,6 +146,49 @@ describe("eventLabel", () => {
     // `arg` est toujours un écart positif, le signe vient du genre.
     expect(eventLabel(24, 100)).toBe("Coup de froid : −10 °C pendant un jour");
     expect(eventLabel(25, 100)).toBe("Canicule : +10 °C pendant un jour");
+  });
+
+  it("annonce l'arrivée du marchand, `arg` étant son id", () => {
+    // Contrat avec `sim::EventKind` 26 (voir AGENTS.md, `crates/sim/src/trade.rs`).
+    expect(eventLabel(26, 9, { 9: "Zara" })).toBe("Zara, un marchand, est arrivé");
+    expect(eventLabel(26, 9)).toBe("Un marchand est arrivé");
+  });
+
+  it("annonce le marchand furieux, `arg` étant son id", () => {
+    // Contrat avec `sim::EventKind` 27.
+    expect(eventLabel(27, 9, { 9: "Zara" })).toBe("Zara le marchand est furieux");
+    expect(eventLabel(27, 9)).toBe("Le marchand est furieux");
+  });
+
+  it("annonce un troc conclu, `arg` étant le genre acheté et non un id", () => {
+    // Contrat avec `sim::EventKind` 28 : `arg` suit `ItemKind`.
+    expect(eventLabel(28, 12)).toBe("Troc conclu : viande");
+    expect(eventLabel(28, 6, { 6: "Zara" })).toBe("Troc conclu : gourdins"); // un nom connu ne doit pas s'y glisser
+  });
+
+  it("annonce la mort du marchand, `arg` étant son id", () => {
+    // Contrat avec `sim::EventKind` 29.
+    expect(eventLabel(29, 9, { 9: "Zara" })).toBe("Zara le marchand est mort");
+    expect(eventLabel(29, 9)).toBe("Le marchand est mort");
+  });
+});
+
+describe("FACTION", () => {
+  it("suit `pawn::Faction` (0 colonie, 1 pillard, 2 bête, 3 marchand)", () => {
+    expect(FACTION).toEqual({ Colony: 0, Raider: 1, Animal: 2, Trader: 3 });
+  });
+});
+
+describe("formatTraderLeaves", () => {
+  it("affiche « moins d'une heure » sous 600 ticks", () => {
+    expect(formatTraderLeaves(0)).toBe("moins d'une heure");
+    expect(formatTraderLeaves(599)).toBe("moins d'une heure");
+  });
+
+  it("arrondit à l'heure la plus proche au-delà", () => {
+    expect(formatTraderLeaves(600)).toBe("1 h");
+    expect(formatTraderLeaves(900)).toBe("2 h"); // 1,5 h arrondi au-dessus
+    expect(formatTraderLeaves(14400)).toBe("24 h");
   });
 });
 
@@ -283,9 +328,9 @@ describe("eventCategory", () => {
   it("classe le reste en colonie", () => {
     // WandererJoined, ColonistBreak, LevelUp, RaiderLeft, ColonistRescued,
     // ColonistTended, les deux caravanes, FastForwarded, les deux artisanats,
-    // saison, gelée, harde et chasse, largage, coup de froid et canicule :
-    // rien de tout ça n'est une menace.
-    for (const kind of [4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 25]) {
+    // saison, gelée, harde et chasse, largage, coup de froid et canicule,
+    // les quatre événements du marchand : rien de tout ça n'est une menace.
+    for (const kind of [4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 25, 26, 27, 28, 29]) {
       expect(eventCategory(kind)).toBe("colony");
     }
   });

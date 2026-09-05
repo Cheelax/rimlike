@@ -178,6 +178,25 @@ export interface FrameMessage {
   readonly difficulty: number;
   /** Richesse de la colonie (`sim-wasm::wealth`), pour le HUD stock. */
   readonly wealth: number;
+  /**
+   * Id du marchand avec qui on peut traiter (`sim-wasm::trader_present`), −1
+   * s'il n'y en a pas. C'est un pawn de faction 3 : son nom, sa position et sa
+   * santé se lisent dans les tampons habituels.
+   */
+  readonly traderPresent: number;
+  /** Ticks avant que le marchand ne reprenne la route ; 0 s'il n'y en a pas. */
+  readonly traderLeavesIn: number;
+  /**
+   * Étal du marchand, à plat : `[genre, quantité, prix unitaire de vente] × n`
+   * (`sim-wasm::trader_offers`). Vide si personne à qui parler.
+   */
+  readonly traderOffers: Int32Array;
+  /**
+   * Prix unitaire d'achat par genre, indexé par `ItemKind` (16 entrées,
+   * `sim-wasm::buy_prices`) : ce que la colonie touche en cédant une unité,
+   * indépendant de la présence du marchand.
+   */
+  readonly buyPrices: Uint32Array;
 }
 
 export type WorkerToMain =
@@ -224,6 +243,8 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
         message.weapons.buffer as ArrayBuffer,
         message.apparel.buffer as ArrayBuffer,
         message.traits.buffer as ArrayBuffer,
+        message.traderOffers.buffer as ArrayBuffer,
+        message.buyPrices.buffer as ArrayBuffer,
       ];
     case "saved":
       return [message.bytes.buffer as ArrayBuffer];

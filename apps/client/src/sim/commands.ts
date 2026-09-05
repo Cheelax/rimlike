@@ -56,6 +56,11 @@ export function encodeTriggerRaid(): Uint8Array {
   return WasmSim.encode_trigger_raid();
 }
 
+/** Visite immédiate d'un marchand (débogage). */
+export function encodeTriggerTraderVisit(): Uint8Array {
+  return WasmSim.encode_trigger_trader_visit();
+}
+
 /** `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé. */
 export function encodeSetPriority(pawn: number, work: number, priority: number): Uint8Array {
   return WasmSim.encode_set_priority(pawn, work, priority);
@@ -160,4 +165,16 @@ export function encodeSetDifficulty(level: number): Uint8Array {
  */
 export function encodeSetCalendar(dayOfYear: number): Uint8Array {
   return WasmSim.encode_set_calendar(dayOfYear);
+}
+
+/**
+ * Troc avec le marchand de passage (`sim::Command::Trade`). `give`/`take`
+ * suivent `sim::ItemKind` : `giveCount` unités de `give` quittent le
+ * stockage, `takeCount` unités de `take` arrivent au sol près de l'étal. Un
+ * troc refusé par le sim (stock insuffisant, marchand absent ou valeur
+ * insuffisante) est silencieux : voir `apps/client/src/trade.ts::tradeBalance`
+ * pour prévalider côté UI avant d'émettre.
+ */
+export function encodeTrade(give: number, giveCount: number, take: number, takeCount: number): Uint8Array {
+  return WasmSim.encode_trade(give, giveCount, take, takeCount);
 }

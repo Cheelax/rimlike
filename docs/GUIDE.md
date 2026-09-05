@@ -100,6 +100,7 @@ côté client.
 | N | Journal | événements de la partie, filtrables (Tout / Menaces / Colonie) |
 | V | Caravane | former une caravane (seulement dans une colonie du monde partagé, voir §5) |
 | — | Options (bouton dans la barre, `Échap` pour fermer) | change la difficulté en cours de partie ; en multi, réservé à l'hôte |
+| — | Troc (bouton grisé sans marchand de passage, voir §3) | négocier avec le marchand présent |
 
 Le panneau d'un colon sélectionné montre son travail en cours, son arme et son
 habit, la température ressentie, ses besoins (PV, faim, repos, humeur), sa
@@ -148,6 +149,22 @@ tunique (6 cuir, +6 °C ressentis) et manteau (12 cuir, +15 °C). Un colon
 s'équipe automatiquement de la meilleure arme et du meilleur habit
 disponibles en stock ; sous 6 °C de température ambiante, il va chercher un
 vêtement de lui-même.
+
+### Marchands et troc
+
+Un marchand arrive tous les quatre à sept jours de jeu, s'installe un jour
+près d'un étal improvisé puis reprend la route ; dès qu'il est là, le HUD
+affiche son nom suivi de « repart dans N h ». Il est neutre : ne pas
+l'attaquer, sinon il se défend et les visites suivantes s'espacent
+davantage. Le cliquer le sélectionne comme un colon (bouton Troc dans son
+panneau), ou le bouton Troc de la barre d'outils, actif seulement pendant sa
+visite, ouvre le panneau : à gauche ce qu'il vend (genre, quantité, prix
+unitaire), à droite ce que la colonie a en stockage. Pas de monnaie : le
+troc se juge en valeur, la colonie devant céder au moins autant qu'elle
+demande (prix d'achat du genre cédé × quantité, comparé au prix de vente du
+genre pris × quantité) ; en dessous, le bouton Proposer reste grisé et le
+motif du refus s'affiche. Les marchandises reçues sont déposées au sol près
+de l'étal, à ranger comme n'importe quel butin.
 
 ### Lits, sommeil et humeur
 
@@ -274,7 +291,7 @@ effacé) est une identité perdue, sans recours simple.
 
 ## 7. Limites connues
 
-Pas encore de recherche, de commerce, de relations ni de traits de
-personnalité ; pas de toits (tout le monde est dehors sous l'orage, la
-chaleur ne se gère pas encore) ; pas de compte joueur (identité par jeton
-local uniquement, sans recouvrement en cas de perte).
+Pas encore de recherche ni de relations entre colons ; pas de toits (tout le
+monde est dehors sous l'orage, la chaleur ne se gère pas encore) ; pas de
+compte joueur (identité par jeton local uniquement, sans recouvrement en cas
+de perte).

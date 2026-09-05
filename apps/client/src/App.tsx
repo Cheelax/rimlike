@@ -5,6 +5,7 @@ import { CaravanPanel, type CaravanColonist, type CaravanDestination } from "./C
 import { ColonistBar, type ColonistBadge } from "./ColonistBar";
 import { CraftingPanel } from "./CraftingPanel";
 import { JournalPanel, type JournalEntry, type JournalFilter } from "./JournalPanel";
+import { TradePanel } from "./TradePanel";
 import {
   CaravanDispatcher,
   manifestSummary,
@@ -41,6 +42,7 @@ import {
   FEATURE,
   formatInjury,
   formatTemperature,
+  formatTraderLeaves,
   formatWealth,
   hKeyAction,
   HEALTH_STRIDE,
@@ -76,9 +78,11 @@ import {
   encodeSetDifficulty,
   encodeSetPriority,
   encodeSetZone,
+  encodeTrade,
   encodeTriggerRaid,
 } from "./sim/commands";
 import { initSim, SimHandle } from "./sim/SimHandle";
+import { tradeOffers } from "./trade";
 import { SimBridge } from "./worker/SimBridge";
 import type { FrameMessage } from "./worker/protocol";
 
@@ -89,6 +93,7 @@ const SAVE_KEY = "rimlike.save.v1";
 /** Contrat avec `pawn::Faction` et `pawn::HP_MAX`. */
 const FACTION_RAIDER = 1;
 const FACTION_ANIMAL = 2;
+const FACTION_TRADER = 3;
 const HP_MAX = 1000;
 /** Durée d'affichage d'une notification. */
 const TOAST_MS = 6000;
@@ -227,6 +232,8 @@ interface PawnInfo {
   species: number;
   /** Marquée gibier (`animals` buffer), sans effet si `animal` est faux. */
   hunted: boolean;
+  /** Vrai pour le marchand de passage (`pawn::Faction::Trader`) : « Marchand » dans le panneau, bouton Troc. */
+  trader: boolean;
 }
 
 interface Stats {
@@ -276,6 +283,14 @@ interface Stats {
   difficulty: number;
   /** Richesse de la colonie (`frame.wealth`), affichée dans le HUD stock. */
   wealth: number;
+  /** Id du marchand présent (`frame.traderPresent`), −1 s'il n'y en a pas. */
+  traderPresent: number;
+  /** Ticks avant que le marchand ne reprenne la route (`frame.traderLeavesIn`), 0 si absent. */
+  traderLeavesIn: number;
+  /** Étal du marchand, à plat : `[genre, quantité, prix de vente] × n` (`frame.traderOffers`). */
+  traderOffers: number[];
+  /** Prix unitaire d'achat par genre, indexé par `ItemKind` (`frame.buyPrices`). */
+  buyPrices: number[];
 }
 
 const INITIAL: Stats = {
@@ -309,6 +324,10 @@ const INITIAL: Stats = {
   ticksPerDay: TICKS_PER_DAY,
   difficulty: DIFFICULTY.Normal,
   wealth: 0,
+  traderPresent: -1,
+  traderLeavesIn: 0,
+  traderOffers: [],
+  buyPrices: new Array(ITEM_NAMES.length).fill(0),
 };
 
 interface Actions {
@@ -422,6 +441,8 @@ export function App() {
   const [stats, setStats] = useState<Stats>(INITIAL);
   const [showWork, setShowWork] = useState(false);
   const [showCraft, setShowCraft] = useState(false);
+  /** Panneau Troc (bouton dans la barre, pas de raccourci : `T` est déjà pris par le matériau). */
+  const [showTrade, setShowTrade] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
   const [journalFilter, setJournalFilter] = useState<JournalFilter>("all");
   /**
@@ -1397,10 +1418,14 @@ export function App() {
         const faction = curPawns[o + 10];
         const hostile = faction === FACTION_RAIDER;
         const isAnimal = faction === FACTION_ANIMAL;
+        // Le marchand n'est ni un colon (pas embarquable en caravane, pas de
+        // pastille dans `ColonistBar`), ni un ennemi, ni une bête : sa
+        // présence se lit à part, dans `frame.traderPresent`.
+        const isTrader = faction === FACTION_TRADER;
         if (hostile) hostiles++;
         else if (isAnimal) beasts++;
-        else colonists++;
-        if (!hostile && !isAnimal) {
+        else if (!isTrader) colonists++;
+        if (!hostile && !isAnimal && !isTrader) {
           const pid = curPawns[o];
           const flags = curPawns[o + 3];
           const name = f.names[pid] ?? "";
@@ -1439,7 +1464,7 @@ export function App() {
           break;
         }
         const skills: SkillInfo[] = [];
-        if (!hostile && !isAnimal) {
+        if (!hostile && !isAnimal && !isTrader) {
           for (let s = 0; s + SKILL_STRIDE <= f.skills.length; s += SKILL_STRIDE) {
             if (f.skills[s] !== id) continue;
             for (let w = 0; w < WORK_LABELS.length; w++) {
@@ -1484,6 +1509,7 @@ export function App() {
           animal: isAnimal,
           species,
           hunted: animalInfo?.hunted ?? false,
+          trader: isTrader,
         };
       }
       // Blessures, compétences de combat et ressenti du colon sélectionné :
@@ -1602,6 +1628,10 @@ export function App() {
         ticksPerDay: f.ticksPerDay,
         difficulty: f.difficulty,
         wealth: f.wealth,
+        traderPresent: f.traderPresent,
+        traderLeavesIn: f.traderLeavesIn,
+        traderOffers: Array.from(f.traderOffers),
+        buyPrices: Array.from(f.buyPrices),
       });
     }, 500);
 
@@ -1688,6 +1718,15 @@ export function App() {
     bridgeRef.current?.issue(encodeSetCraftTarget(kind, clampCraftTarget(target)));
   };
 
+  /**
+   * Propose un troc au marchand présent (`TradePanel`). Le panneau ne
+   * prévalide que pour prévenir : le sim est seul juge (`crates/sim/src/trade.rs`)
+   * et refuse en silence un troc mal formé.
+   */
+  const proposeTrade = (give: number, giveCount: number, take: number, takeCount: number) => {
+    bridgeRef.current?.issue(encodeTrade(give, giveCount, take, takeCount));
+  };
+
   const formCaravan = (
     pawnIds: readonly number[],
     items: readonly (readonly [number, number])[],
@@ -1767,6 +1806,20 @@ export function App() {
       setCaravanTo(null);
     }
   }, [roomTile]);
+
+  /**
+   * Le marchand reprend la route ou meurt (`frame.traderPresent` passe à −1,
+   * §4 de la mission) : le panneau Troc n'a plus personne à qui parler, il se
+   * ferme avec un message bref plutôt que de disparaître sans un mot.
+   */
+  useEffect(() => {
+    if (stats.traderPresent < 0 && showTrade) {
+      setShowTrade(false);
+      setNotice("Le marchand est parti");
+      const t = window.setTimeout(() => setNotice(null), 1800);
+      return () => window.clearTimeout(t);
+    }
+  }, [stats.traderPresent, showTrade]);
 
   if (error) return <div className="error">{error}</div>;
 
@@ -1961,6 +2014,12 @@ export function App() {
               {" · richesse "}
               {formatWealth(stats.wealth)}
             </div>
+            {stats.traderPresent >= 0 && (
+              <div>
+                Marchand <b>{stats.names[stats.traderPresent] || "inconnu"}</b> · repart dans{" "}
+                {formatTraderLeaves(stats.traderLeavesIn)}
+              </div>
+            )}
             <div className="help">
               {stats.tps} tps · {stats.fps} fps · hash {stats.hash}
             </div>
@@ -2003,8 +2062,15 @@ export function App() {
               <div className="panel-title">
                 {sel.hostile
                   ? `Ennemi ${sel.name || "inconnu"}`
-                  : `${sel.name || "Colon " + sel.id} · (${sel.tile.x}, ${sel.tile.y})`}
+                  : sel.trader
+                    ? `Marchand ${sel.name || "inconnu"}`
+                    : `${sel.name || "Colon " + sel.id} · (${sel.tile.x}, ${sel.tile.y})`}
               </div>
+              {sel.trader && (
+                <button className="panel-action" onClick={() => setShowTrade(true)}>
+                  Troc
+                </button>
+              )}
               <div className="panel-job">{sel.job}{sel.carrying ? ` · porte ${sel.carrying}` : ""}</div>
               <div className="panel-weapon">Arme : {sel.weapon >= 0 ? WEAPON_NAMES[sel.weapon] ?? "?" : "à mains nues"}</div>
               <div className="panel-apparel">Habit : {sel.apparel >= 0 ? APPAREL_NAMES[sel.apparel] ?? "?" : "rien"}</div>
@@ -2161,6 +2227,14 @@ export function App() {
             >
               Caravane <span className="key">V</span>
             </button>
+            <button
+              className={showTrade ? "active" : ""}
+              disabled={stats.traderPresent < 0}
+              onClick={() => setShowTrade((v) => !v)}
+              title={stats.traderPresent < 0 ? "Aucun marchand de passage" : "Troc avec le marchand présent"}
+            >
+              Troc
+            </button>
             <button onClick={() => actionsRef.current?.save()} disabled={multi} title={multi ? MULTI_DISABLED : undefined}>
               Sauver
             </button>
@@ -2245,6 +2319,16 @@ export function App() {
               hasCraftingSpot={stats.hasCraftingSpot}
               onSetTarget={setCraftTarget}
               onClose={() => setShowCraft(false)}
+            />
+          )}
+          {showTrade && stats.traderPresent >= 0 && (
+            <TradePanel
+              traderName={stats.names[stats.traderPresent] || "inconnu"}
+              offers={tradeOffers(stats.traderOffers)}
+              stored={stats.stored}
+              buyPrices={stats.buyPrices}
+              onTrade={proposeTrade}
+              onClose={() => setShowTrade(false)}
             />
           )}
           {showJournal && (

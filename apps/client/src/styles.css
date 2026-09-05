@@ -186,6 +186,27 @@ canvas.globe { position: fixed; inset: 0; display: block; width: 100%; height: 1
 .journal-panel button.wide { width: 100%; background: rgba(255,255,255,.08); color: #e6e6e6; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 7px 10px; font: 12px system-ui, sans-serif; cursor: pointer; }
 .journal-panel button.wide:hover { background: rgba(255,255,255,.16); }
 
+/* --- Troc avec le marchand : son étal à gauche, le stock à droite --- */
+.trade-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 520px; max-height: 82vh; z-index: 5; display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; overflow-y: auto; background: rgba(0,0,0,.85); border: 1px solid rgba(255,255,255,.16); border-radius: 10px; font: 12px/1.45 system-ui, sans-serif; }
+.trade-columns { display: flex; gap: 12px; }
+.trade-col { flex: 1; min-width: 0; }
+.trade-list { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow-y: auto; }
+.trade-list li { padding: 4px 6px; background: rgba(255,255,255,.06); border-radius: 5px; }
+.trade-list li.selected { background: rgba(255,224,102,.16); border: 1px solid rgba(255,224,102,.5); }
+.trade-list li.empty { opacity: .5; font-style: italic; }
+.trade-list label { display: grid; grid-template-columns: 16px 1fr; gap: 6px; align-items: center; cursor: pointer; }
+.trade-name { display: block; text-transform: capitalize; }
+.trade-list input[type="number"] { margin-top: 4px; width: 100%; background: rgba(0,0,0,.35); color: #e6e6e6; border: 1px solid rgba(255,255,255,.16); border-radius: 5px; padding: 3px 5px; font: 12px ui-monospace, Menlo, monospace; }
+.trade-list input[type="number"]:focus { outline: none; border-color: #4ad9ff; }
+.trade-balance { padding: 8px 10px; background: rgba(255,255,255,.06); border-radius: 6px; }
+.trade-balance.ok { background: rgba(80,160,80,.25); border: 1px solid rgba(120,220,120,.5); color: #b6f0b6; }
+.trade-balance.bad { background: rgba(160,60,60,.25); border: 1px solid rgba(230,120,120,.5); color: #ffb0b0; }
+.trade-panel button.wide { width: 100%; background: rgba(255,255,255,.08); color: #e6e6e6; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 7px 10px; font: 12px system-ui, sans-serif; cursor: pointer; }
+.trade-panel button.wide:hover:not(:disabled) { background: rgba(255,255,255,.16); }
+.trade-panel button.wide:disabled { opacity: .45; cursor: default; }
+.trade-panel button.primary { background: #ffe066; color: #111; border-color: #ffe066; font-weight: 600; }
+.trade-panel button.primary:hover:not(:disabled) { background: #fff0a0; }
+
 /* --- Options (dose de menace du storyteller) : petit menu, ferme sur Échap --- */
 .options-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 260px; z-index: 5; display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; background: rgba(0,0,0,.82); border: 1px solid rgba(255,255,255,.16); border-radius: 8px; font: 12px/1.45 system-ui, sans-serif; }
 .options-row { display: flex; gap: 4px; flex-wrap: wrap; }

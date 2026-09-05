@@ -89,6 +89,14 @@ export interface RunnerSim extends SimLike {
   difficulty(): number;
   /** Richesse de la colonie (`sim::Sim::wealth`), en cache côté sim. */
   wealth(): number;
+  /** Id du marchand avec qui on peut traiter, −1 s'il n'y en a pas. */
+  traderPresent(): number;
+  /** Ticks avant que le marchand ne reprenne la route ; 0 s'il n'y en a pas. */
+  traderLeavesIn(): number;
+  /** Étal du marchand, à plat : `[genre, quantité, prix unitaire de vente] × n`. */
+  traderOffers(): Int32Array;
+  /** Prix unitaire d'achat par genre, indexé par `ItemKind` (16 entrées). */
+  buyPrices(): Uint32Array;
   /** Change à chaque recalcul effectif de la couche « intérieur ». */
   indoorVersion(): number;
   /** Couche « intérieur » : un octet par case, 0 dehors, sinon le numéro de pièce. */
@@ -338,6 +346,10 @@ export class SimRunner {
       tps: this.tpsValue,
       difficulty: sim.difficulty(),
       wealth: sim.wealth(),
+      traderPresent: sim.traderPresent(),
+      traderLeavesIn: sim.traderLeavesIn(),
+      traderOffers: sim.traderOffers(),
+      buyPrices: sim.buyPrices(),
     };
     return { ticks, map, overlays, indoor, frame };
   }

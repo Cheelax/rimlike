@@ -81,6 +81,10 @@ const SKIN = 0xf1c9a5;
 /** Contrat avec `pawn::HP_MAX` (colons et pillards ; les bêtes ont leur propre plafond, hors rendu). */
 const PAWN_HP_MAX = 1000;
 const RAIDER_COLOR = 0x7a1f1f;
+/** Teinte du marchand (`pawn::Faction::Trader`) : ocre/brune, distincte du pillard et des colons. */
+const TRADER_COLOR = 0xb8863a;
+/** Couleur du ballot porté sur le dos par un marchand, un cuir plus sombre que sa teinte. */
+const TRADER_PACK_COLOR = 0x6b4a26;
 /** Couleur du corps par espèce (`animals::Species` : 0 cerf, 1 lapin, 2 sanglier). */
 const ANIMAL_COLORS = [0xc2a878, 0xb0b0b0, 0x3a3128];
 /** Couleur des pattes du cerf, plus sombre que le corps. */
@@ -123,6 +127,8 @@ interface PawnView {
   huntMarker: THREE.Mesh;
   /** Col du manteau, visible seulement quand l'habit porté est un manteau (`frame.apparel`). */
   collar: THREE.Mesh;
+  /** Ballot sur le dos, visible en permanence pour un marchand (`pawn::Faction::Trader`), jamais pour les autres. */
+  pack: THREE.Mesh;
 }
 
 export interface TilePos {
@@ -823,7 +829,8 @@ export class Renderer {
     if (faction === FACTION.Animal) return this.createAnimalPawn(id);
     const group = new THREE.Group();
     const hostile = faction === FACTION.Raider;
-    const color = hostile ? RAIDER_COLOR : PAWN_COLORS[id % PAWN_COLORS.length];
+    const isTrader = faction === FACTION.Trader;
+    const color = hostile ? RAIDER_COLOR : isTrader ? TRADER_COLOR : PAWN_COLORS[id % PAWN_COLORS.length];
     const bodyMat = new THREE.MeshLambertMaterial({ color });
     const body = new THREE.Mesh(new THREE.CylinderGeometry(0.145, 0.19, 0.34, 8), bodyMat);
     body.position.y = 0.48;
@@ -919,7 +926,17 @@ export class Renderer {
     collar.position.y = 0.62;
     collar.visible = false;
 
-    for (const m of [body, head, nose, hair, ...limbs, carry, club, spearShaft, spearTip, bow, collar]) {
+    // Ballot du marchand : une boîte sur le dos, visible en permanence pour ce
+    // seul pawn (`isTrader`, figé à la création : la faction ne change jamais
+    // en cours de partie). Comme le portage (`carry`), mais fixe et sans genre.
+    const pack = new THREE.Mesh(
+      new THREE.BoxGeometry(0.24, 0.26, 0.16),
+      new THREE.MeshLambertMaterial({ color: TRADER_PACK_COLOR }),
+    );
+    pack.position.set(0, 0.55, -0.22);
+    pack.visible = isTrader;
+
+    for (const m of [body, head, nose, hair, ...limbs, carry, club, spearShaft, spearTip, bow, collar, pack]) {
       m.castShadow = true;
       m.userData.pawnId = id;
     }
@@ -928,7 +945,7 @@ export class Renderer {
     // ajouté au groupe — juste un objet détaché pour garder `PawnView` uniforme.
     const huntMarker = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.16, 6), new THREE.MeshBasicMaterial());
     huntMarker.visible = false;
-    group.add(body, head, nose, hair, ...limbs, carry, zz, hpBack, hpFill, nameSprite, club, spear, bow, collar);
+    group.add(body, head, nose, hair, ...limbs, carry, zz, hpBack, hpFill, nameSprite, club, spear, bow, collar, pack);
     this.pawnRoot.add(group);
     return {
       group,
@@ -950,6 +967,7 @@ export class Renderer {
       animal: false,
       huntMarker,
       collar,
+      pack,
     };
   }
 
@@ -1045,6 +1063,8 @@ export class Renderer {
     bow.visible = false;
     const collar = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), new THREE.MeshBasicMaterial());
     collar.visible = false;
+    const pack = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), new THREE.MeshBasicMaterial());
+    pack.visible = false;
 
     return {
       group,
@@ -1066,6 +1086,7 @@ export class Renderer {
       animal: true,
       huntMarker,
       collar,
+      pack,
     };
   }
 

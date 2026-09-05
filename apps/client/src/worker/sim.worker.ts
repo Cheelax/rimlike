@@ -68,6 +68,7 @@ const SIM_API: ReadonlySet<string> = new Set([
   "attack",
   "setPriority",
   "triggerRaid",
+  "triggerTraderVisit",
   "fastForward",
   "tick",
   "ticksPerDay",
@@ -124,6 +125,12 @@ const SIM_API: ReadonlySet<string> = new Set([
   "difficulty",
   "wealth",
   "pawnSick",
+  // Commerce (`crates/sim/src/trade.rs`) : marchand itinérant et troc.
+  "traderPresent",
+  "traderLeavesIn",
+  "traderOffers",
+  "buyPrices",
+  "trade",
 ]);
 
 /** Idem pour le `LockstepClient`, préfixé `lockstep.` côté appelant. */

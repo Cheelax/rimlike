@@ -75,6 +75,10 @@ function frame(): FrameMessage {
     tps: 60,
     difficulty: 2,
     wealth: 1240,
+    traderPresent: 9,
+    traderLeavesIn: 3600,
+    traderOffers: new Int32Array([6, 3, 40, 12, 10, 5]),
+    buyPrices: new Uint32Array([3, 4, 2, 2, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
   };
 }
 
@@ -148,7 +152,7 @@ describe("protocole du Worker de simulation", () => {
     const clone = structuredClone(original);
     for (const key of [
       "pawns", "items", "blueprints", "events", "priorities", "skills", "health", "animals", "stored",
-      "craftTargets", "weapons", "apparel", "traits",
+      "craftTargets", "weapons", "apparel", "traits", "traderOffers", "buyPrices",
     ] as const) {
       expect(clone[key]).toEqual(original[key]);
       expect(clone[key]).not.toBe(original[key]);
@@ -168,6 +172,12 @@ describe("protocole du Worker de simulation", () => {
     // nombres, clonés tels quels, comme la température ou la saison.
     expect(clone.difficulty).toBe(2);
     expect(clone.wealth).toBe(1240);
+    // Marchand (`sim-wasm::trader_present`/`trader_leaves_in`) : mêmes simples
+    // nombres ; l'étal et les prix d'achat sont des tampons, comme le reste.
+    expect(clone.traderPresent).toBe(9);
+    expect(clone.traderLeavesIn).toBe(3600);
+    expect(Array.from(clone.traderOffers)).toEqual([6, 3, 40, 12, 10, 5]);
+    expect(clone.traderOffers).not.toBe(original.traderOffers);
     // `names` est un simple objet : cloné en donnée, pas en tampon.
     expect(clone.names).toEqual({ 1: "Alice" });
     expect(clone.names).not.toBe(original.names);
@@ -197,9 +207,9 @@ describe("protocole du Worker de simulation", () => {
   it("annonce des tampons distincts, transférables sans copie", () => {
     const original = frame();
     const transfer = transferablesOf(original);
-    // Treize tampons, tous différents : un tampon transféré deux fois lèverait.
-    expect(transfer.length).toBe(13);
-    expect(new Set(transfer).size).toBe(13);
+    // Quinze tampons, tous différents : un tampon transféré deux fois lèverait.
+    expect(transfer.length).toBe(15);
+    expect(new Set(transfer).size).toBe(15);
 
     const clone = structuredClone(original, { transfer });
     expect(Array.from(clone.stored)).toEqual([9, 8, 7, 6, 5, 4, 0, 0, 0]);
