@@ -359,7 +359,12 @@ paissent, fuient et parfois quittent la carte, hardes qui arrivent tous les 2 à
 (12 bêtes au plus), sanglier qui riposte ; chasse par bête marquée (`Hunt`), réservée aux
 colons armés, avec XP de tir ou de mêlée ; dépeçage automatique au poste (viande selon
 l'espèce, cuir), viande crue ou cuisinée. Perf : le coût par tick suit le nombre de pawns
-(les bêtes comptent), à surveiller ; `u64::isqrt` remplace la racine maison. Interface livrée le
+(les bêtes comptent), à surveiller ; `u64::isqrt` remplace la racine maison. Vêtements livrés le 2026-09-05 (Opus, sim) : tunique (6 cuir) et manteau (12 cuir) au poste,
+isolation qui s'ajoute au confort (+6 et +15 °C), habillage automatique quand il fait moins de
+6 °C (seuil mesuré : 12 °C faisait s'habiller la colonie la moitié du temps en climat doux),
+manteau préféré, habit qui tombe à la mort, pillards en tunique par temps froid. Pas de
+gestion de la chaleur (on garde son manteau). Interface à faire (habit dans le panneau, noms).
+Interface faune livrée le
 2026-09-05 (Sonnet) : bêtes dessinées par espèce, marquage de chasse au clic ou à la touche
 H, panneau animal, viande et cuir dans le stock ; chasse rejouée dans le navigateur : arc
 fabriqué, lapin abattu, viande rangée.
@@ -395,6 +400,9 @@ mods de contenu, événements monde.
 - 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
   par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
   libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
+- 2026-09-05 : vêtements (sim). Le seuil d'habillage a été fixé après mesure sur dix
+  graines d'une journée de printemps tempéré, pas à l'intuition. Arme et habit partagent la
+  même recherche d'équipement, seul le barème change.
 - 2026-09-05 : climat par case : dérivé à la volée du globe partagé, jamais persisté ; pas
   de `snapshot.climate` car le climat est déjà dans l'état du sim restauré, contrairement au
   temps gelé qui doit être rejoué en commande.

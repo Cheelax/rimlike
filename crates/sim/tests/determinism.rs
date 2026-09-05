@@ -180,6 +180,15 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             });
         }
     }
+    if t == 9800 {
+        // Un vêtement passe par le même poste et le même bill qu'une arme,
+        // mais consomme du cuir : si la chasse du tick 9500 a donné quelque
+        // chose, la tunique entre dans le hash comme le reste.
+        cmds.push(Command::SetCraftTarget {
+            kind: ItemKind::Tunic,
+            target: 1,
+        });
+    }
     if t % 900 == 0 {
         for (k, p) in sim.pawns().iter().enumerate() {
             cmds.push(Command::MoveTo {

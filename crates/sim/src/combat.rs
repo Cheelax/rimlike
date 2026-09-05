@@ -381,6 +381,11 @@ impl Sim {
         let Some(entry) = self.find_entry_tile() else {
             return 0;
         };
+        // En hiver, ou par n'importe quel temps où un colon aurait froid, les
+        // pillards arrivent couverts : leur tunique ne change ni leurs coups ni
+        // leur résistance, seulement le butin qu'ils laissent en mourant.
+        let dressed = self.season() == crate::Season::Winter
+            || self.outdoor_temperature() < crate::climate::COLD_MOOD_TEMP;
         let mut spawned = 0;
         let mut r: i32 = 0;
         while spawned < count && r < 8 {
@@ -405,6 +410,9 @@ impl Sim {
                     self.pawns[k].hunger = NEED_MAX;
                     self.pawns[k].rest = NEED_MAX;
                     self.pawns[k].weapon = Some(self.raider_weapon(spawned));
+                    if dressed {
+                        self.pawns[k].apparel = Some(ItemKind::Tunic);
+                    }
                     spawned += 1;
                 }
             }
@@ -806,6 +814,11 @@ impl Sim {
                         // siens. Un fuyard, lui, repart avec la sienne.
                         if let Some(weapon) = p.weapon {
                             self.spawn_item(weapon, 1, x, y);
+                        }
+                        // Son habit tombe avec : la tunique d'un pillard
+                        // d'hiver habille le colon qui l'a abattu.
+                        if let Some(apparel) = p.apparel {
+                            self.spawn_item(apparel, 1, x, y);
                         }
                         self.spawn_item(ItemKind::Corpse, 1, x, y);
                         if faction == Faction::Colony {

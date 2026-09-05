@@ -1,4 +1,4 @@
-//! Fabrication d'armes au poste de travail.
+//! Fabrication d'armes et de vêtements au poste de travail.
 //!
 //! Un poste (`Feature::CraftingSpot`, bâti par `BuildKind::CraftingSpot`) est
 //! infranchissable : on travaille à côté, comme au feu de camp. Le joueur ne
@@ -32,7 +32,7 @@ pub struct Recipe {
 /// Toutes les recettes connues. **L'ordre compte** : c'est celui dans lequel
 /// un colon choisit quoi fabriquer quand plusieurs objectifs ne sont pas
 /// atteints, donc il fait partie du déterminisme.
-pub const RECIPES: [Recipe; 3] = [
+pub const RECIPES: [Recipe; 5] = [
     Recipe {
         output: ItemKind::Club,
         inputs: &[(ItemKind::Wood, 8)],
@@ -47,6 +47,19 @@ pub const RECIPES: [Recipe; 3] = [
         output: ItemKind::Bow,
         inputs: &[(ItemKind::Wood, 12)],
         work_ticks: 480,
+    },
+    // Les vêtements viennent après les armes : à objectifs multiples et stock
+    // partagé, la colonie s'arme d'abord. Le cuir vient de la chasse, il n'est
+    // disputé par aucune autre recette.
+    Recipe {
+        output: ItemKind::Tunic,
+        inputs: &[(ItemKind::Leather, 6)],
+        work_ticks: 300,
+    },
+    Recipe {
+        output: ItemKind::Coat,
+        inputs: &[(ItemKind::Leather, 12)],
+        work_ticks: 500,
     },
 ];
 
@@ -87,7 +100,11 @@ mod tests {
     #[test]
     fn les_recettes_sont_coherentes() {
         for r in &RECIPES {
-            assert!(r.output.is_weapon(), "{:?} n'est pas une arme", r.output);
+            assert!(
+                r.output.is_weapon() || r.output.is_apparel(),
+                "{:?} n'est ni une arme ni un vêtement",
+                r.output
+            );
             assert!(!r.inputs.is_empty(), "recette sans ingrédient");
             assert!(r.inputs.len() <= MAX_INGREDIENTS);
             assert!(r.inputs.iter().all(|&(_, n)| n > 0));

@@ -107,6 +107,12 @@ pub enum EventKind {
     AnimalHunted = 18,
     /// Un sanglier charge celui qui l'a blessé. `arg` : l'id du sanglier.
     BoarAttacks = 19,
+    /// Un objet **qui n'est pas une arme** vient de sortir d'un poste de
+    /// fabrication : un vêtement, pour l'instant. `arg` : le genre fabriqué
+    /// (`ItemKind`). Les armes gardent `WeaponCrafted = 14`, que le client sait
+    /// déjà afficher : un genre d'événement de plus coûte moins cher qu'un
+    /// contrat cassé.
+    ItemCrafted = 20,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -189,9 +195,9 @@ pub enum Command {
     FastForward { ticks: u32 },
     /// Règle le nombre d'exemplaires de `kind` que la colonie doit maintenir :
     /// les colons fabriquent tant que le total en jeu (au sol, en main,
-    /// équipé par un colon) est inférieur à `target`. Un genre sans recette
-    /// (`craft::recipe_for`) est ignoré. Tout est à 0 au départ : sans ordre,
-    /// aucune arme n'est fabriquée.
+    /// équipé ou porté par un colon) est inférieur à `target`. Un genre sans
+    /// recette (`craft::recipe_for`) est ignoré. Tout est à 0 au départ : sans
+    /// ordre, ni arme ni vêtement n'est fabriqué.
     SetCraftTarget { kind: ItemKind, target: u32 },
     /// Impose le climat de la carte : moyenne annuelle et écart saisonnier, en
     /// dixièmes de degré. C'est ainsi qu'une salle du globe reçoit le climat de

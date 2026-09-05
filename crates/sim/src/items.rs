@@ -28,13 +28,23 @@ pub enum ItemKind {
     /// Viande crue, tirée d'un dépeçage. Se mange telle quelle (mal) ou se
     /// cuisine comme les autres crus.
     Meat = 12,
-    /// Cuir : ni comestible ni périssable. Sans usage tant que les vêtements
-    /// ne sont pas là ; il se range en attendant.
+    /// Cuir : ni comestible ni périssable. Matière première des vêtements.
     Leather = 13,
+    /// Tunique de cuir : le premier vêtement, vite taillé et modestement chaud.
+    Tunic = 14,
+    /// Manteau de cuir : deux fois plus de cuir, deux fois et demie plus chaud.
+    Coat = 15,
 }
 
+/// Isolation d'une tunique, en dixièmes de degré : +6 °C sur la température
+/// ressentie de son porteur.
+pub const TUNIC_INSULATION: i32 = 60;
+/// Isolation d'un manteau : +15 °C. De quoi tenir dehors un hiver que la
+/// tunique seule ne suffit pas à traverser (`climate::HYPOTHERMIA_TEMP`).
+pub const COAT_INSULATION: i32 = 150;
+
 impl ItemKind {
-    pub const COUNT: usize = 14;
+    pub const COUNT: usize = 16;
 
     pub fn from_u8(v: u8) -> ItemKind {
         match v {
@@ -51,6 +61,8 @@ impl ItemKind {
             11 => ItemKind::BoarCorpse,
             12 => ItemKind::Meat,
             13 => ItemKind::Leather,
+            14 => ItemKind::Tunic,
+            15 => ItemKind::Coat,
             _ => ItemKind::Corpse,
         }
     }
@@ -71,7 +83,9 @@ impl ItemKind {
             | ItemKind::DeerCorpse
             | ItemKind::RabbitCorpse
             | ItemKind::BoarCorpse
-            | ItemKind::Leather => None,
+            | ItemKind::Leather
+            | ItemKind::Tunic
+            | ItemKind::Coat => None,
         }
     }
 
@@ -118,7 +132,9 @@ impl ItemKind {
             | ItemKind::DeerCorpse
             | ItemKind::RabbitCorpse
             | ItemKind::BoarCorpse
-            | ItemKind::Leather => u32::MAX,
+            | ItemKind::Leather
+            | ItemKind::Tunic
+            | ItemKind::Coat => u32::MAX,
         }
     }
 
@@ -135,6 +151,35 @@ impl ItemKind {
             ItemKind::Club => 1,
             ItemKind::Spear => 2,
             ItemKind::Bow => 3,
+            _ => 0,
+        }
+    }
+
+    /// Un vêtement se fabrique, se range et s'endosse — un seul à la fois
+    /// (`Pawn::apparel`), comme une arme. Il tombe au sol à la mort de son
+    /// porteur et voyage avec lui en caravane.
+    pub fn is_apparel(self) -> bool {
+        matches!(self, ItemKind::Tunic | ItemKind::Coat)
+    }
+
+    /// Qualité d'un vêtement : plus grand = meilleur. C'est l'ordre dans lequel
+    /// un colon s'habille (`Coat > Tunic`) ; 0 pour ce qui n'est pas un
+    /// vêtement. Même rôle que `weapon_rank`, et surtout même contrat : un
+    /// colon ne redescend jamais en gamme.
+    pub fn apparel_rank(self) -> u32 {
+        match self {
+            ItemKind::Tunic => 1,
+            ItemKind::Coat => 2,
+            _ => 0,
+        }
+    }
+
+    /// Isolation apportée au porteur, en dixièmes de degré. 0 pour tout ce qui
+    /// ne se porte pas.
+    pub fn insulation_tenths(self) -> i32 {
+        match self {
+            ItemKind::Tunic => TUNIC_INSULATION,
+            ItemKind::Coat => COAT_INSULATION,
             _ => 0,
         }
     }
@@ -186,7 +231,11 @@ impl ItemKind {
             | ItemKind::Club
             | ItemKind::Spear
             | ItemKind::Bow
-            | ItemKind::Leather => None,
+            | ItemKind::Leather
+            // Un vêtement s'use, un jour, à l'usage : pas au fond d'un
+            // entrepôt. Rien ne se gâte ici.
+            | ItemKind::Tunic
+            | ItemKind::Coat => None,
         }
     }
 }

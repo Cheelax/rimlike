@@ -17,6 +17,13 @@
 //! S'y ajoute, pour une case **intérieure**, l'isolation de la pièce et la
 //! chaleur des feux de camp qu'elle contient (voir `Map::refresh_indoor`).
 //!
+//! La température **ressentie** d'un colon (`Pawn::comfort`) est celle de sa
+//! case plus l'isolation de son vêtement (`Pawn::insulation_tenths`). Rien
+//! d'autre ne change : humeur et hypothermie lisent `comfort` comme avant.
+//! Limite assumée de cette tranche : au-dessus de `HOT_MOOD_TEMP`, l'isolation
+//! joue contre son porteur et personne ne se déshabille — la gestion de la
+//! chaleur viendra avec les toits.
+//!
 //! Le climat est un champ de `Sim` : une salle du globe reçoit le sien par
 //! `Command::SetClimate`, en lockstep, sans changer la construction de la
 //! carte (`docs/PLAN.md` §3, biomes du globe).
@@ -83,6 +90,20 @@ pub const FROST_REGROW_DELAY: u32 = TICKS_PER_DAY / 12;
 
 /// En dessous, le colon a froid : l'humeur baisse.
 pub const COLD_MOOD_TEMP: i32 = 50;
+/// En dessous de cette température de case, un colon va chercher un vêtement
+/// en stockage ; au-dessus, il a mieux à faire que traverser la carte pour un
+/// manteau dont il n'a pas l'usage.
+///
+/// **Mesuré avant d'être réglé.** Le climat tempéré par défaut tourne autour de
+/// 12 °C : sur une première journée de printemps, la température extérieure va
+/// de 7,7 à 16 °C, et son minimum du jour reste entre 6,8 et 10 °C sur dix
+/// graines. Un seuil posé à 12 °C aurait donc envoyé la colonie s'habiller
+/// **46 % du temps** (6 600 ticks sur 14 400 sous 12 °C, graine 1) en plein
+/// climat doux — précisément le gaspillage qu'on veut éviter. À 6 °C, aucune de
+/// ces journées ne déclenche quoi que ce soit, et le seuil reste au-dessus de
+/// celui où le froid pèse sur l'humeur (`COLD_MOOD_TEMP`, 5 °C) : le colon part
+/// chercher son manteau **avant** de commencer à grelotter.
+pub const DRESS_TEMP: i32 = 60;
 /// En dessous, le froid blesse (hypothermie) et l'humeur s'effondre.
 pub const HYPOTHERMIA_TEMP: i32 = -50;
 /// Au-dessus, le colon a trop chaud.
@@ -295,17 +316,22 @@ impl Sim {
     /// grand froid aux colons. Les pillards ne ressentent rien : ils viennent
     /// et repartent. `outdoor` est calculé une seule fois par tick : la
     /// température extérieure est la même pour tout le monde.
+    ///
+    /// Le ressenti est la température de la case **plus l'isolation du
+    /// vêtement** : tout ce qui lit `comfort` (l'humeur, l'hypothermie
+    /// ci-dessous) profite du manteau sans le savoir.
     pub(crate) fn tick_comfort(&mut self, i: usize, outdoor: i32) {
         let (x, y) = self.pawns[i].tile();
-        let comfort = outdoor + self.indoor_bonus(x, y);
+        let comfort = outdoor + self.indoor_bonus(x, y) + self.pawns[i].insulation_tenths();
         self.pawns[i].comfort = comfort;
         self.pawns[i].in_snow = self.weather() == Weather::Snow;
         if self.pawns[i].faction == Faction::Colony
             && comfort < HYPOTHERMIA_TEMP
             && self.tick() % HYPOTHERMIA_INTERVAL == 0
         {
-            // Pas de vêtements dans cette tranche : rester dehors par −5 °C se
-            // paie, point. L'atteinte guérit comme les autres une fois au chaud.
+            // Rester dehors par −5 °C se paie, manteau ou pas : l'habit
+            // remonte le ressenti, il ne rend pas invulnérable. L'atteinte
+            // guérit comme les autres une fois au chaud.
             self.pawns[i].chill_torso();
         }
     }
@@ -320,7 +346,8 @@ impl Sim {
                 continue;
             }
             let (x, y) = self.pawns[i].tile();
-            self.pawns[i].comfort = outdoor + self.indoor_bonus(x, y);
+            self.pawns[i].comfort =
+                outdoor + self.indoor_bonus(x, y) + self.pawns[i].insulation_tenths();
             self.pawns[i].in_snow = snow;
         }
     }

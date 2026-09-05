@@ -3,7 +3,7 @@
 use sim::combat::HEAL_INTERVAL;
 use sim::farm::GROW_TICKS;
 use sim::fastforward::{FROZEN_HUNGER, FROZEN_REST};
-use sim::health::{BLEED_TICKS, BLOOD_MAX, DOWNED_BLOOD};
+use sim::health::{BLEED_TICKS, BLOOD_MAX, DOWNED_BLOOD, SEVERITY_MAX};
 use sim::pawn::RESTED;
 use sim::pawn::{
     BREAK_TICKS, HP_MAX, HP_WOUNDED, HUNGER_DECAY, HUNGRY, MOOD_BREAK, NEED_MAX, REST_DECAY, TIRED,
@@ -2453,6 +2453,339 @@ fn climate_is_configurable_and_bounded() {
     assert!(
         (sim::climate::TEMPERATURE_MIN..=sim::climate::TEMPERATURE_MAX).contains(&cold),
         "température hors bornes : {cold}"
+    );
+}
+
+// ----------------------------------------------------------------------
+// Vêtements et isolation
+// ----------------------------------------------------------------------
+
+/// Plaine nue sous un climat glacial : à −12 °C de moyenne et sans écart
+/// saisonnier, un colon le dos nu passe ses journées sous `HYPOTHERMIA_TEMP`
+/// (−5 °C) et prend le froid ; le même sous un manteau (+15 °C) repasse au
+/// large au-dessus et cicatrise.
+fn frozen_plain(seed: u64) -> Sim {
+    let map = map_from(&[
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+    ]);
+    Sim::from_map_with_climate(seed, map, sim::Climate::new(-120, 0))
+}
+
+/// Pose stockage, vivres et poste de fabrication sur une plaine gelée.
+fn frozen_workshop(seed: u64) -> Sim {
+    let mut s = frozen_plain(seed);
+    // Poste et stockage posés à la main : les chantiers qui les font naître
+    // sont déjà couverts ailleurs, ce qui compte ici est ce qu'on y fabrique.
+    s.map_mut().set_feature(3, 3, Feature::CraftingSpot);
+    s.step(&[Command::SetZone {
+        zone: Zone::Stockpile,
+        x0: 10,
+        y0: 8,
+        x1: 12,
+        y1: 10,
+    }]);
+    // De quoi ne pas mourir de faim pendant deux jours de couture.
+    s.spawn_item(ItemKind::Berries, 200, 8, 6);
+    s
+}
+
+/// Somme des sévérités des colons vivants : ici, le froid et rien d'autre.
+fn cold_damage(s: &Sim) -> u32 {
+    s.pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Colony)
+        .map(|p| p.total_severity())
+        .sum()
+}
+
+/// Le cuir de la chasse devient des manteaux, les manteaux tiennent chaud, et
+/// le froid cesse de ronger ceux qui en portent un. Deux simulations côte à
+/// côte, même graine et même carte : du cuir dans l'une, rien dans l'autre.
+#[test]
+fn cold_colonists_craft_and_wear_coats() {
+    let mut dressed = frozen_workshop(9);
+    let mut bare = frozen_workshop(9);
+    for s in [&mut dressed, &mut bare] {
+        s.step(&[Command::SetCraftTarget {
+            kind: ItemKind::Coat,
+            target: 3,
+        }]);
+    }
+    // 30 cuirs : deux manteaux (12 pièces chacun) et un reste trop maigre pour
+    // un troisième. Le colon qui reste le dos nu est le témoin de la mesure.
+    dressed.spawn_item(ItemKind::Leather, 30, 4, 4);
+
+    for _ in 0..DAY {
+        dressed.step(&[]);
+        bare.step(&[]);
+    }
+
+    let coated: Vec<u32> = dressed
+        .pawns()
+        .iter()
+        .filter(|p| p.apparel == Some(ItemKind::Coat))
+        .map(|p| p.id)
+        .collect();
+    assert!(
+        coated.len() >= 2,
+        "manteaux portés : {:?}, cuir restant : {}, événements : {:?}",
+        dressed
+            .pawns()
+            .iter()
+            .map(|p| p.apparel)
+            .collect::<Vec<_>>(),
+        dressed.colony_total(ItemKind::Leather),
+        dressed.events()
+    );
+    assert!(
+        dressed
+            .events()
+            .iter()
+            .any(|e| e.kind == EventKind::ItemCrafted && e.arg == ItemKind::Coat as u32),
+        "le manteau n'a pas émis d'ItemCrafted : {:?}",
+        dressed.events()
+    );
+    assert!(
+        !dressed
+            .events()
+            .iter()
+            .any(|e| e.kind == EventKind::WeaponCrafted),
+        "un manteau n'est pas une arme"
+    );
+
+    // Le témoin : même carte, même tick, même plein air, quinze degrés d'écart.
+    let naked = dressed
+        .pawns()
+        .iter()
+        .find(|p| p.faction == Faction::Colony && p.apparel.is_none())
+        .expect("un colon est resté le dos nu");
+    let warm = find_pawn(&dressed, coated[0]).expect("le colon habillé est là");
+    assert!(
+        !dressed.map().is_indoor(warm.tile().0, warm.tile().1)
+            && !dressed.map().is_indoor(naked.tile().0, naked.tile().1),
+        "la plaine n'a pas de pièce : les deux sont dehors"
+    );
+    assert_eq!(
+        warm.comfort - naked.comfort,
+        sim::items::COAT_INSULATION,
+        "le manteau vaut exactement son isolation"
+    );
+
+    // Deuxième journée : le froid continue de ronger la colonie sans cuir, et
+    // lâche prise sur ceux qui portent un manteau.
+    let before_dressed: Vec<u32> = coated
+        .iter()
+        .map(|&id| find_pawn(&dressed, id).expect("vivant").total_severity())
+        .collect();
+    let before_bare = cold_damage(&bare);
+    for _ in 0..DAY {
+        dressed.step(&[]);
+        bare.step(&[]);
+    }
+    for (k, &id) in coated.iter().enumerate() {
+        let after = find_pawn(&dressed, id).expect("vivant").total_severity();
+        assert!(
+            after <= before_dressed[k],
+            "le froid ronge encore un colon couvert : {} puis {}",
+            before_dressed[k],
+            after
+        );
+    }
+    let after_bare = cold_damage(&bare);
+    assert!(
+        after_bare > before_bare,
+        "sans manteau, le froid devrait s'accumuler : {before_bare} puis {after_bare}"
+    );
+    assert!(
+        cold_damage(&dressed) * 2 < after_bare,
+        "colonie couverte {} contre colonie nue {}",
+        cold_damage(&dressed),
+        after_bare
+    );
+}
+
+/// Sous un climat doux, personne ne perd une journée à traverser la carte pour
+/// une tunique dont il n'a pas l'usage.
+#[test]
+fn mild_climate_no_one_bothers_to_dress() {
+    let mut s = clearing();
+    s.step(&[Command::SetZone {
+        zone: Zone::Stockpile,
+        x0: 8,
+        y0: 5,
+        x1: 9,
+        y1: 6,
+    }]);
+    s.spawn_item(ItemKind::Tunic, 3, 8, 5);
+    s.spawn_item(ItemKind::Berries, 100, 5, 6);
+
+    let mut coldest = i32::MAX;
+    for _ in 0..DAY {
+        s.step(&[]);
+        coldest = coldest.min(s.outdoor_temperature());
+        assert!(
+            s.pawns().iter().all(|p| p.apparel.is_none()),
+            "quelqu'un s'est habillé par {} dixièmes au tick {}",
+            s.outdoor_temperature(),
+            s.tick()
+        );
+    }
+    // Le test dit bien ce qu'il croit dire : la journée est restée douce.
+    assert!(
+        coldest >= sim::climate::DRESS_TEMP,
+        "la journée est passée sous le seuil : {coldest}"
+    );
+    assert_eq!(s.colony_total(ItemKind::Tunic), 3, "les tuniques sont là");
+}
+
+/// Le manteau passe avant la tunique, on ne redescend jamais en gamme, et
+/// l'habit d'un mort tombe à ses pieds comme son arme.
+#[test]
+fn coat_preferred_over_tunic_and_dropped_on_death() {
+    let mut s = frozen_workshop(11);
+    s.spawn_item(ItemKind::Tunic, 2, 10, 8);
+
+    assert!(
+        run_until(&mut s, DAY, |s| s
+            .pawns()
+            .iter()
+            .filter(|p| p.apparel == Some(ItemKind::Tunic))
+            .count()
+            >= 2),
+        "personne ne s'est habillé au froid : {:?}",
+        s.pawns().iter().map(|p| p.apparel).collect::<Vec<_>>()
+    );
+
+    // Un manteau entre en rayon : quelqu'un monte en gamme et laisse tomber sa
+    // tunique. C'est la preuve du classement, à l'abri de toute course entre
+    // deux colons partis chercher chacun le sien.
+    s.spawn_item(ItemKind::Coat, 1, 11, 8);
+    assert!(
+        run_until(&mut s, DAY, |s| s
+            .pawns()
+            .iter()
+            .any(|p| p.apparel == Some(ItemKind::Coat))),
+        "le manteau est resté en rayon : {:?}",
+        s.pawns().iter().map(|p| p.apparel).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        s.colony_total(ItemKind::Tunic),
+        2,
+        "la tunique quittée n'est pas perdue"
+    );
+
+    // Et il ne la reprend pas : un manteau ne se troque pas contre une tunique.
+    let heir = s
+        .pawns()
+        .iter()
+        .find(|p| p.apparel == Some(ItemKind::Coat))
+        .expect("quelqu'un porte le manteau")
+        .id;
+    for _ in 0..600 {
+        s.step(&[]);
+        assert_eq!(
+            find_pawn(&s, heir).and_then(|p| p.apparel),
+            Some(ItemKind::Coat),
+            "le manteau a été troqué contre une tunique"
+        );
+    }
+
+    // Mort : l'habit tombe là où le colon tombe.
+    let tile = find_pawn(&s, heir).expect("vivant").tile();
+    let before = on_ground(&s, ItemKind::Coat);
+    s.inflict_injury(heir, BodyPart::Torso, SEVERITY_MAX);
+    s.step(&[]);
+    assert!(find_pawn(&s, heir).is_none(), "le colon devait mourir");
+    assert_eq!(
+        on_ground(&s, ItemKind::Coat),
+        before + 1,
+        "le manteau n'est pas tombé : {:?}",
+        s.items()
+    );
+    assert!(
+        s.items()
+            .iter()
+            .any(|i| i.kind == ItemKind::Coat && (i.x, i.y) == tile),
+        "le manteau devrait être en {tile:?} : {:?}",
+        s.items()
+    );
+}
+
+/// Les pillards ne viennent pas en chemise par −12 °C : ils arrivent en tunique,
+/// et la tunique fait partie du butin.
+#[test]
+fn winter_raiders_come_dressed() {
+    let mut cold = frozen_plain(5);
+    cold.step(&[Command::TriggerRaid]);
+    let dressed: Vec<&Pawn> = cold
+        .pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Raider)
+        .collect();
+    assert!(!dressed.is_empty(), "aucun pillard n'est entré");
+    assert!(
+        dressed.iter().all(|p| p.apparel == Some(ItemKind::Tunic)),
+        "pillards déshabillés par {} dixièmes : {:?}",
+        cold.outdoor_temperature(),
+        dressed.iter().map(|p| p.apparel).collect::<Vec<_>>()
+    );
+
+    // Le butin : ce qu'ils portent tombe avec leur arme.
+    let victim = dressed[0].id;
+    cold.inflict_injury(victim, BodyPart::Torso, SEVERITY_MAX);
+    cold.step(&[]);
+    assert!(
+        on_ground(&cold, ItemKind::Tunic) >= 1,
+        "la tunique du mort n'a pas fait de butin : {:?}",
+        cold.items()
+    );
+
+    // Au printemps tempéré, en revanche, on vient en chemise.
+    let mut mild = clearing();
+    mild.step(&[Command::TriggerRaid]);
+    assert!(
+        mild.pawns()
+            .iter()
+            .filter(|p| p.faction == Faction::Raider)
+            .all(|p| p.apparel.is_none()),
+        "pillards couverts par {} dixièmes",
+        mild.outdoor_temperature()
+    );
+
+    // L'hiver décide même quand le thermomètre ne dit rien : sur une carte
+    // chaude, la saison suffit à sortir les tuniques.
+    let mut tropical = Sim::new_with_climate(6, 32, 32, sim::Climate::new(400, 100));
+    tropical.step(&[Command::FastForward {
+        ticks: TICKS_PER_DAY * 46,
+    }]);
+    assert_eq!(tropical.season(), sim::Season::Winter);
+    assert!(
+        tropical.outdoor_temperature() > sim::climate::COLD_MOOD_TEMP,
+        "l'hiver tropical reste chaud : {}",
+        tropical.outdoor_temperature()
+    );
+    tropical.step(&[Command::TriggerRaid]);
+    let tropicals: Vec<Option<ItemKind>> = tropical
+        .pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Raider)
+        .map(|p| p.apparel)
+        .collect();
+    assert!(!tropicals.is_empty(), "aucun pillard n'est entré");
+    assert!(
+        tropicals.iter().all(|a| *a == Some(ItemKind::Tunic)),
+        "la saison n'a pas habillé les pillards : {tropicals:?}"
     );
 }
 

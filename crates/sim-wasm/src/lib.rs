@@ -513,6 +513,18 @@ impl WasmSim {
             .map_or(-1, |w| w as i32)
     }
 
+    /// Habit porté par un pawn, suivant `sim::ItemKind` (14 tunique, 15
+    /// manteau). -1 : le dos nu, ou id inconnu. Hors du tampon des pawns comme
+    /// `pawn_weapon` : `PAWN_STRIDE` ne bouge pas.
+    pub fn pawn_apparel(&self, id: u32) -> i32 {
+        self.inner
+            .pawns()
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.apparel)
+            .map_or(-1, |a| a as i32)
+    }
+
     /// Compétences de combat d'un pawn : `[niveau mêlée, xp mêlée, niveau tir,
     /// xp tir]`. Vide si l'id est inconnu. Elles ne sont pas dans le tampon des
     /// compétences, qui suit `WorkType` et garde son `SKILL_STRIDE`.
@@ -1127,10 +1139,13 @@ mod tests {
         assert!(s.craft_targets().iter().all(|&t| t == 0), "0 au départ");
 
         s.set_craft_target(ItemKind::Club as u8, 3);
+        // Un vêtement a une recette lui aussi : même commande, même tampon.
+        s.set_craft_target(ItemKind::Coat as u8, 2);
         // Un genre sans recette est ignoré par le sim.
         s.set_craft_target(ItemKind::Stone as u8, 9);
         s.step(1);
         assert_eq!(s.craft_targets()[ItemKind::Club as usize], 3);
+        assert_eq!(s.craft_targets()[ItemKind::Coat as usize], 2);
         assert_eq!(s.craft_targets()[ItemKind::Stone as usize], 0);
 
         let id = s.inner.pawns()[0].id;
@@ -1138,6 +1153,11 @@ mod tests {
         s.inner.pawn_mut(id).expect("le colon existe").weapon = Some(ItemKind::Spear);
         assert_eq!(s.pawn_weapon(id), ItemKind::Spear as i32);
         assert_eq!(s.pawn_weapon(9999), -1, "id inconnu");
+
+        assert_eq!(s.pawn_apparel(id), -1, "un colon démarre le dos nu");
+        s.inner.pawn_mut(id).expect("le colon existe").apparel = Some(ItemKind::Coat);
+        assert_eq!(s.pawn_apparel(id), ItemKind::Coat as i32);
+        assert_eq!(s.pawn_apparel(9999), -1, "id inconnu");
 
         let skills = s.pawn_combat_skills(id);
         assert_eq!(skills.len(), 4, "[niveau mêlée, xp, niveau tir, xp]");

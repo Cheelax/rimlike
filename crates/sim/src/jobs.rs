@@ -1312,12 +1312,13 @@ impl Sim {
     }
 
     // ------------------------------------------------------------------
-    // Fabrication d'armes et équipement
+    // Fabrication d'armes et de vêtements, équipement
     // ------------------------------------------------------------------
 
     /// Exemplaires d'un genre que possède la colonie : piles au sol ou rangées,
-    /// charges en main, armes équipées. Les pillards ne comptent pas, leur
-    /// gourdin n'appartient pas à la colonie tant qu'ils le tiennent.
+    /// charges en main, armes équipées et vêtements portés. Les pillards ne
+    /// comptent pas, leur gourdin (ni leur tunique) n'appartient pas à la
+    /// colonie tant qu'ils le portent.
     pub fn colony_total(&self, kind: ItemKind) -> u32 {
         let mut total: u32 = self
             .items
@@ -1335,6 +1336,9 @@ impl Sim {
                 total += n;
             }
             if p.weapon == Some(kind) {
+                total += 1;
+            }
+            if p.apparel == Some(kind) {
                 total += 1;
             }
         }
@@ -1472,13 +1476,20 @@ impl Sim {
                     };
                     return;
                 }
-                // L'arme tombe au pied du poste : un rangeur la mettra en
+                // La pièce tombe au pied du poste : un rangeur la mettra en
                 // stockage, où un colon viendra la prendre.
                 self.spawn_item(recipe, 1, here.0, here.1);
                 let id = self.pawns[i].id;
                 self.reservations.retain(|r| r.pawn != id);
                 self.pawns[i].job = Job::Idle;
-                self.push_event(EventKind::WeaponCrafted, recipe as u32);
+                // Les armes gardent `WeaponCrafted`, que le client sait déjà
+                // afficher ; le reste passe par `ItemCrafted`.
+                let event = if recipe.is_weapon() {
+                    EventKind::WeaponCrafted
+                } else {
+                    EventKind::ItemCrafted
+                };
+                self.push_event(event, recipe as u32);
             }
         }
     }
@@ -1572,16 +1583,49 @@ impl Sim {
         }
     }
 
-    /// Va chercher en stockage la meilleure arme disponible, si elle vaut mieux
-    /// que celle qu'on a déjà (`Bow > Spear > Club`).
+    /// Va chercher en stockage le meilleur équipement disponible : une arme
+    /// (`Bow > Spear > Club`) et un vêtement (`Coat > Tunic`). Les deux tiennent
+    /// dans la même fonction parce qu'ils tiennent la même place dans l'ordre
+    /// du colon — juste avant le travail — et se jouent pareil (`Job::Equip`,
+    /// une pile réservée, un aller simple).
+    ///
+    /// Quand le colon a froid, l'habit passe devant : celui qui grelotte a plus
+    /// besoin d'un manteau que d'un arc.
     fn try_start_equip(&mut self, i: usize) -> bool {
         if self.map.stockpile_count() == 0 {
             return false;
         }
+        if self.pawns[i].comfort < climate::COLD_MOOD_TEMP {
+            return self.try_start_wear(i) || self.try_start_arm(i);
+        }
+        self.try_start_arm(i) || self.try_start_wear(i)
+    }
+
+    /// L'arme : on ne redescend jamais en gamme.
+    fn try_start_arm(&mut self, i: usize) -> bool {
         let current = self.pawns[i].weapon.map_or(0, |w| w.weapon_rank());
-        // Test sans allocation : le cas courant est « aucune arme rangée ».
+        self.try_start_gear(i, current, ItemKind::weapon_rank)
+    }
+
+    /// L'habit, seulement s'il sert : au-dessus de `climate::DRESS_TEMP`, un
+    /// colon a mieux à faire que traverser la carte pour un manteau.
+    ///
+    /// La température de sa case se relit **sans rien recalculer** : `comfort`
+    /// vient d'être posé par `tick_comfort` au même tick, isolation comprise.
+    fn try_start_wear(&mut self, i: usize) -> bool {
+        if self.pawns[i].comfort - self.pawns[i].insulation_tenths() >= climate::DRESS_TEMP {
+            return false;
+        }
+        let current = self.pawns[i].apparel.map_or(0, |a| a.apparel_rank());
+        self.try_start_gear(i, current, ItemKind::apparel_rank)
+    }
+
+    /// Part chercher la meilleure pile rangée dont le rang dépasse `current`.
+    /// Partagée par l'arme et l'habit : seul le barème change.
+    fn try_start_gear(&mut self, i: usize, current: u32, rank: fn(ItemKind) -> u32) -> bool {
+        // Test sans allocation : le cas courant est « rien de rangé ».
         let usable = |s: &ItemStack| {
-            s.kind.weapon_rank() > current
+            rank(s.kind) > current
                 && s.reserved_by.is_none()
                 && s.count > 0
                 && self.map.zone(s.x, s.y) == Zone::Stockpile
@@ -1590,7 +1634,7 @@ impl Sim {
             return false;
         }
         let from = self.pawns[i].tile();
-        // Meilleure arme d'abord, puis la plus proche : `Reverse` renverse le
+        // Meilleure pièce d'abord, puis la plus proche : `Reverse` renverse le
         // seul critère décroissant sans casser l'ordre total du tri.
         let mut candidates: Vec<(Reverse<u32>, u32, u32, u32, usize)> = self
             .items
@@ -1599,7 +1643,7 @@ impl Sim {
             .filter(|(_, s)| usable(s))
             .map(|(k, s)| {
                 (
-                    Reverse(s.kind.weapon_rank()),
+                    Reverse(rank(s.kind)),
                     chebyshev(from, (s.x, s.y)),
                     s.x,
                     s.y,
@@ -1632,18 +1676,29 @@ impl Sim {
         };
         let here = self.pawns[i].tile();
         let kind = self.items[k].kind;
-        let current = self.pawns[i].weapon.map_or(0, |w| w.weapon_rank());
-        if (self.items[k].x, self.items[k].y) != here || kind.weapon_rank() <= current {
+        // Arme ou habit : la pile dit lequel, et chacun se compare au sien.
+        let better = if kind.is_apparel() {
+            kind.apparel_rank() > self.pawns[i].apparel.map_or(0, |a| a.apparel_rank())
+        } else {
+            kind.weapon_rank() > self.pawns[i].weapon.map_or(0, |w| w.weapon_rank())
+        };
+        if (self.items[k].x, self.items[k].y) != here || !better {
             self.abandon_job(i);
             return;
         }
-        // Une arme se porte à l'unité : la pile en perd une, pas plus.
+        // Arme comme habit se portent à l'unité : la pile en perd une, pas plus.
         self.items[k].count -= 1;
         self.items[k].reserved_by = None;
         if self.items[k].count == 0 {
             self.items.remove(k);
         }
-        if let Some(old) = self.pawns[i].weapon.replace(kind) {
+        let replaced = if kind.is_apparel() {
+            self.pawns[i].apparel.replace(kind)
+        } else {
+            self.pawns[i].weapon.replace(kind)
+        };
+        // Ce qu'il quitte tombe à ses pieds : un rangeur le remettra en rayon.
+        if let Some(old) = replaced {
             self.spawn_item(old, 1, here.0, here.1);
         }
         self.pawns[i].job = Job::Idle;

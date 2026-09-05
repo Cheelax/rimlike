@@ -109,6 +109,11 @@ fn sanitize(p: &mut Pawn) {
     if p.weapon.is_some_and(|w| !w.is_weapon()) {
         p.weapon = None;
     }
+    // Et son habit sur le dos, à condition que ce soit un habit : un manteau
+    // fait le voyage, un « manteau » qui serait un cadavre, non.
+    if p.apparel.is_some_and(|a| !a.is_apparel()) {
+        p.apparel = None;
+    }
     for prio in &mut p.priorities {
         *prio = (*prio).min(4);
     }

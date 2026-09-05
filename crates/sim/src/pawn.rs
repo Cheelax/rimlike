@@ -134,14 +134,16 @@ pub enum Job {
         target: u32,
         progress: u32,
     },
-    /// Fabrique une arme au poste `spot` : va chercher les ingrédients de la
-    /// recette qui produit `recipe`, les rapporte, puis taille (voir `craft`).
+    /// Fabrique au poste `spot` — une arme ou un vêtement : va chercher les
+    /// ingrédients de la recette qui produit `recipe`, les rapporte, puis
+    /// travaille (voir `craft`).
     Craft {
         spot: (u32, u32),
         recipe: ItemKind,
         stage: CraftStage,
     },
-    /// Va chercher une arme rangée en stockage et l'équipe.
+    /// Va chercher une pièce d'équipement rangée en stockage — une arme ou un
+    /// vêtement — et l'endosse. Le genre de la pile réservée dit laquelle.
     Equip {
         item: u32,
     },
@@ -281,6 +283,12 @@ pub struct Pawn {
     /// elle disparaît en atteignant un bord. Tiré une fois par fuite et lu
     /// seulement pendant celle-ci (voir `animals::ESCAPE_CHANCE`).
     pub leaving: bool,
+    /// Vêtement porté, `None` sur le dos nu. Un seul à la fois, comme l'arme :
+    /// il isole du froid (`insulation_tenths`), tombe au sol à la mort du
+    /// porteur et voyage avec lui en caravane. **Champ ajouté en fin de
+    /// structure** : un vieux snapshot est refusé net plutôt que relu de
+    /// travers.
+    pub apparel: Option<ItemKind>,
 }
 
 impl Pawn {
@@ -325,7 +333,14 @@ impl Pawn {
             hunted: false,
             graze_at: 0,
             leaving: false,
+            apparel: None,
         }
+    }
+
+    /// Isolation apportée par le vêtement porté, en dixièmes de degré : ce que
+    /// le colon gagne sur la température de sa case. 0 sur le dos nu.
+    pub fn insulation_tenths(&self) -> i32 {
+        self.apparel.map_or(0, |a| a.insulation_tenths())
     }
 
     /// Points de vie d'un pawn entier. Un humain vaut `HP_MAX` ; une bête vaut
@@ -403,7 +418,10 @@ impl Pawn {
             m -= 50_000;
         }
         // Le froid et la chaleur ne se cumulent pas : on garde le pire des
-        // trois seuils. Pas de vêtements dans cette tranche.
+        // trois seuils. `comfort` porte déjà l'isolation du vêtement, donc un
+        // manteau remonte ces seuils sans qu'on ait rien à faire ici — y
+        // compris, faute de gestion de la chaleur, du mauvais côté de
+        // `HOT_MOOD_TEMP`.
         if self.comfort < HYPOTHERMIA_TEMP {
             m -= FREEZING_MOOD_MALUS;
         } else if self.comfort < COLD_MOOD_TEMP {
