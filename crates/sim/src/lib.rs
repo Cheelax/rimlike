@@ -34,6 +34,7 @@ pub mod pawn;
 pub mod rng;
 pub mod storyteller;
 pub mod testmap;
+pub mod traits;
 pub mod weather;
 pub mod work;
 
@@ -53,6 +54,7 @@ pub use map::{Designation, Feature, Map, ROOM_MAX_TILES, Rect, Terrain, Zone};
 pub use pawn::{Faction, Job, Pawn};
 pub use rng::Rng;
 pub use storyteller::{Difficulty, RaidKind};
+pub use traits::Trait;
 pub use weather::Weather;
 pub use work::{WORK_TYPES, WorkType};
 
@@ -236,6 +238,16 @@ pub enum Command {
     /// `TriggerRaid` du joueur, lui, reste un outil de débogage et fonctionne
     /// toujours. **Ajoutée en fin d'énumération** : postcard encode l'indice.
     SetDifficulty { level: Difficulty },
+    /// Décale le calendrier pour que `day_of_year()` vaille `day_of_year`
+    /// (modulo `climate::YEAR_DAYS`), **sans toucher au tick ni à
+    /// `time_of_day`** : seul `Sim::calendar_offset_days` change, météo et
+    /// températures suivant d'elles-mêmes puisqu'elles lisent `day_of_year()`.
+    /// C'est ainsi que le serveur monde impose le jour de l'année d'une
+    /// colonie neuve, comme il impose son climat (`Command::SetClimate`) :
+    /// l'hôte l'émet en lockstep, tout le monde l'applique au même tick.
+    /// Émet `EventKind::SeasonChanged` si la saison change de ce fait.
+    /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
+    SetCalendar { day_of_year: u32 },
 }
 
 #[derive(Debug)]
@@ -317,6 +329,12 @@ pub struct Sim {
     /// et tick où il s'arrête.
     temperature_offset: i32,
     offset_until: u64,
+    /// Décalage imposé par `Command::SetCalendar`, en jours : `day_of_year()`
+    /// et `season()` l'ajoutent au jour brut déduit du tick
+    /// (`climate::day_of_tick`). Toujours dans `0..YEAR_DAYS`. **Champ ajouté
+    /// en fin de structure** : un vieux snapshot est refusé net plutôt que relu
+    /// de travers.
+    calendar_offset_days: u32,
 }
 
 impl Sim {
@@ -377,6 +395,7 @@ impl Sim {
             next_extreme_at: 0,
             temperature_offset: 0,
             offset_until: 0,
+            calendar_offset_days: 0,
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -438,6 +457,9 @@ impl Sim {
             // compétences se tirent comme les autres.
             pawn.melee.level = self.rng.below(9) as u8;
             pawn.ranged.level = self.rng.below(9) as u8;
+            // Deux traits de caractère, jamais contradictoires (voir
+            // `traits::roll`). Ni les pillards ni les bêtes n'en ont.
+            pawn.traits = traits::roll(&mut self.rng);
         }
         self.pawns.push(pawn);
         id
@@ -615,6 +637,7 @@ impl Sim {
             }
             Command::Hunt { animal, on } => self.set_hunted(animal, on),
             Command::SetDifficulty { level } => self.difficulty = level,
+            Command::SetCalendar { day_of_year } => self.set_calendar(day_of_year),
         }
     }
 

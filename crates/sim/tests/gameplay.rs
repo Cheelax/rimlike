@@ -796,6 +796,9 @@ fn low_mood_triggers_break_then_relief() {
     let mut s = clearing();
     let id = s.pawns()[0].id;
     let p = s.pawn_mut(id).unwrap();
+    // Le test force la faim et le sommeil au sol ; un trait tiré au sort (Ascète,
+    // Optimiste…) pourrait annuler ces malus : on l'observe sans trait.
+    p.traits = [None, None];
     p.hunger = 0;
     p.last_sleep_in_bed = false;
     assert!(

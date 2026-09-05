@@ -80,8 +80,9 @@ impl Sim {
         self.weather_until = self.tick;
         self.tick_weather();
         // Le calendrier avance tout seul : `day_of_year` et la saison sont des
-        // fonctions du tick, qui vient de bondir. Restent à remettre à jour les
-        // valeurs recopiées dans les pawns.
+        // fonctions du tick (et du décalage imposé par `Command::SetCalendar`,
+        // inchangé ici), et le tick vient de bondir. Restent à remettre à jour
+        // les valeurs recopiées dans les pawns.
         self.refresh_comfort();
         self.push_event(EventKind::FastForwarded, ticks / TICKS_PER_DAY);
     }

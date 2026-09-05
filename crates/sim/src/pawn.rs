@@ -12,6 +12,7 @@ use crate::items::ItemKind;
 use crate::map::{Designation, Map};
 use crate::path::Tile;
 use crate::storyteller::{ILLNESS_MOBILITY_PERCENT, ILLNESS_MOOD_MALUS, ILLNESS_WORK_PERCENT};
+use crate::traits::{self, Trait};
 use crate::work::{self, Skill, WORK_TYPES, WorkType};
 
 /// Vitesse nominale : 1/256 de case par tick. 18 ≈ 4,2 cases/s à 60 ticks/s.
@@ -311,6 +312,22 @@ pub struct Pawn {
     /// La maladie a été soignée : elle ne demande plus de chevet et se termine
     /// deux fois plus vite. Remis à faux dès que le colon est guéri.
     pub illness_tended: bool,
+    /// Deux traits de caractère au plus, jamais contradictoires (voir
+    /// `traits::roll`). Tirés à la création pour les colons (voyageurs
+    /// compris) par `Sim::spawn_pawn` ; toujours `[None, None]` pour les
+    /// pillards et les bêtes. **Champs ajoutés en fin de structure** : un
+    /// vieux snapshot est refusé net plutôt que relu de travers.
+    pub traits: [Option<Trait>; 2],
+    /// Hors de la plage `traits::DAY_START_HOUR`-`traits::DAY_END_HOUR`,
+    /// recopié à chaque tick par `Sim::tick_pawn` comme `outdoor_storm` : sert
+    /// à `Trait::NightOwl` (`work_step`), qui ne voit que le pawn.
+    pub is_night: bool,
+    /// Un pillard vivant traîne encore sur la carte, recopié à chaque tick
+    /// comme `outdoor_storm` : sert à `Trait::Coward` (`mood`).
+    pub enemy_present: bool,
+    /// Nombre d'autres colons vivants sur la carte, recopié à chaque tick
+    /// comme `outdoor_storm` : sert à `Trait::Sociable` (`mood`).
+    pub other_colonists_alive: u32,
 }
 
 impl Pawn {
@@ -359,7 +376,35 @@ impl Pawn {
             sick_until: 0,
             sick: false,
             illness_tended: false,
+            traits: [None, None],
+            is_night: false,
+            enemy_present: false,
+            other_colonists_alive: 0,
         }
+    }
+
+    /// Vrai si le colon porte ce trait, sur l'un des deux emplacements.
+    pub fn has_trait(&self, t: Trait) -> bool {
+        self.traits[0] == Some(t) || self.traits[1] == Some(t)
+    }
+
+    /// Dégâts effectivement subis pour un coup de force `base` : `Tough`
+    /// encaisse `traits::TOUGH_DAMAGE_PERCENT`, `Frail`
+    /// `traits::FRAIL_DAMAGE_PERCENT`. La sévérité portant le saignement
+    /// (`Injury::bleeding` = sévérité / `health::BLEED_FRACTION`), moduler
+    /// l'une revient à moduler l'autre dans les mêmes proportions. Appelée par
+    /// le combat (`Sim::melee_strike`, `Sim::shoot`) ; `Sim::inflict_injury`
+    /// n'applique volontairement aucun modificateur, pour rester un coup «
+    /// brut » utilisable en test et en debug.
+    pub fn damage_from(&self, base: u32) -> u32 {
+        let percent = if self.has_trait(Trait::Tough) {
+            traits::TOUGH_DAMAGE_PERCENT
+        } else if self.has_trait(Trait::Frail) {
+            traits::FRAIL_DAMAGE_PERCENT
+        } else {
+            100
+        };
+        (base * percent / 100).max(1)
     }
 
     /// Isolation apportée par le vêtement porté, en dixièmes de degré : ce que
@@ -420,11 +465,22 @@ impl Pawn {
         }
         if self.last_sleep_in_bed {
             m += 50_000;
-        } else {
+        } else if !self.has_trait(Trait::Ascetic) {
+            // Un ascète ne perd rien à dormir au sol.
             m -= 80_000;
         }
+        let ascetic = self.has_trait(Trait::Ascetic);
+        let gourmand = self.has_trait(Trait::Gourmand);
         m += match self.last_meal_quality {
-            1 => 40_000,
+            1 => {
+                if gourmand {
+                    40_000 + traits::GOURMAND_EXTRA_MEAL_BONUS
+                } else {
+                    40_000
+                }
+            }
+            // Un ascète ne perd rien à manger cru.
+            -1 if ascetic => 0,
             -1 => -60_000,
             _ => 0,
         };
@@ -461,6 +517,25 @@ impl Pawn {
         if self.sick {
             m -= ILLNESS_MOOD_MALUS;
         }
+        if self.has_trait(Trait::Optimist) {
+            m += traits::OPTIMIST_MOOD_BONUS;
+        }
+        if self.has_trait(Trait::Pessimist) {
+            m -= traits::PESSIMIST_MOOD_MALUS;
+        }
+        // Un couard rumine tant qu'un pillard traîne sur la carte.
+        if self.has_trait(Trait::Coward) && self.enemy_present {
+            m -= traits::COWARD_ENEMY_MOOD_MALUS;
+        }
+        if self.has_trait(Trait::Sociable) {
+            if self.other_colonists_alive == 0 {
+                m -= traits::SOCIABLE_ALONE_MOOD_MALUS;
+            } else {
+                let bonus = (traits::SOCIABLE_MOOD_PER_COLONIST * self.other_colonists_alive)
+                    .min(traits::SOCIABLE_MOOD_CAP);
+                m += i64::from(bonus);
+            }
+        }
         m.clamp(0, i64::from(NEED_MAX)) as u32
     }
 
@@ -482,6 +557,31 @@ impl Pawn {
         mood_percent * work::skill_percent(level) / 100 * self.manipulation_percent() / 100
             * sick_percent
             / 100
+            * self.trait_work_percent()
+            / 100
+    }
+
+    /// Multiplicateur combiné des traits qui touchent la vitesse de travail :
+    /// `Industrious`/`Lazy` (fixe) et `NightOwl` (selon `is_night`, recopié
+    /// par tick comme `outdoor_storm`). Les deux familles se cumulent : un
+    /// travailleur acharné qui est aussi lève-tard reste plus rapide la nuit
+    /// que le jour, sans perdre son bonus permanent.
+    fn trait_work_percent(&self) -> u32 {
+        let steady = if self.has_trait(Trait::Industrious) {
+            traits::INDUSTRIOUS_WORK_PERCENT
+        } else if self.has_trait(Trait::Lazy) {
+            traits::LAZY_WORK_PERCENT
+        } else {
+            100
+        };
+        let clock = if !self.has_trait(Trait::NightOwl) {
+            100
+        } else if self.is_night {
+            traits::NIGHT_OWL_NIGHT_PERCENT
+        } else {
+            traits::NIGHT_OWL_DAY_PERCENT
+        };
+        steady * clock / 100
     }
 
     /// Vitesse en pourcentage de la nominale. Les malus globaux de blessure ne

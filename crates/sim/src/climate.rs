@@ -226,13 +226,42 @@ impl Sim {
         self.climate = climate.sanitized();
     }
 
-    /// Jour de l'année courant, dans `0..YEAR_DAYS`.
+    /// Jour de l'année courant, dans `0..YEAR_DAYS` : le jour brut déduit du
+    /// tick, décalé par `Command::SetCalendar` (`calendar_offset_days`, 0 par
+    /// défaut). Le tick et `time_of_day` n'y participent pas : imposer un jour
+    /// ne fait pas sauter l'horloge de la journée.
     pub fn day_of_year(&self) -> u32 {
-        day_of_tick(self.tick())
+        self.day_of_year_at(self.tick())
+    }
+
+    /// Jour de l'année qu'aurait le tick donné, avec le décalage courant.
+    /// Sert à comparer un jour à celui de la veille sans reconstruire l'offset
+    /// à la main (voir `tick_climate`).
+    #[inline]
+    fn day_of_year_at(&self, tick: u64) -> u32 {
+        (day_of_tick(tick) + self.calendar_offset_days) % YEAR_DAYS
     }
 
     pub fn season(&self) -> Season {
         season_of_day(self.day_of_year())
+    }
+
+    /// Impose le jour de l'année (`Command::SetCalendar`) : décale
+    /// `calendar_offset_days` pour que `day_of_year()` vaille `day_of_year %
+    /// YEAR_DAYS`, sans toucher au tick ni à `time_of_day`. Météo et
+    /// températures suivent d'elles-mêmes puisqu'elles lisent `day_of_year()`.
+    /// Émet `EventKind::SeasonChanged` si la saison change de ce fait, avec le
+    /// même raccourci que `tick_climate` sur `frost_announced`.
+    pub fn set_calendar(&mut self, day_of_year: u32) {
+        let target = day_of_year % YEAR_DAYS;
+        let raw = day_of_tick(self.tick());
+        let before = self.season();
+        self.calendar_offset_days = (target + YEAR_DAYS - raw) % YEAR_DAYS;
+        let after = self.season();
+        if after != before {
+            self.push_event(EventKind::SeasonChanged, after as u32);
+            self.frost_announced = after != Season::Autumn;
+        }
     }
 
     /// Température extérieure de la carte, en dixièmes de degré. Lue une fois
@@ -300,8 +329,12 @@ impl Sim {
     pub(crate) fn tick_climate(&mut self, outdoor: i32) {
         let tick = self.tick();
         if (tick + u64::from(DAY_START_OFFSET)) % u64::from(TICKS_PER_DAY) == 0 && tick > 0 {
-            let season = season_of_day(day_of_tick(tick));
-            if season != season_of_day(day_of_tick(tick - 1)) {
+            // Le décalage de `Command::SetCalendar` s'ajoute aux deux jours
+            // comparés : il ne change rien à *quand* la saison bascule (les
+            // jours d'un an de jeu, pas ceux du calendrier), seulement à
+            // *quelle* saison c'est.
+            let season = season_of_day(self.day_of_year_at(tick));
+            if season != season_of_day(self.day_of_year_at(tick - 1)) {
                 self.push_event(EventKind::SeasonChanged, season as u32);
                 // Hors automne, il n'y a pas de première gelée à guetter.
                 self.frost_announced = season != Season::Autumn;

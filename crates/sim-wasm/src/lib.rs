@@ -254,6 +254,14 @@ impl WasmSim {
         });
     }
 
+    /// Impose le jour de l'année (`sim::climate::YEAR_DAYS` = 60), sans
+    /// toucher au tick ni à l'heure du jour : `day_of_year()` vaudra la valeur
+    /// donnée, modulo. C'est ainsi que le serveur monde impose le calendrier
+    /// d'une colonie neuve, comme il impose son climat (`set_climate`).
+    pub fn set_calendar(&mut self, day_of_year: u32) {
+        self.pending.push(sim::Command::SetCalendar { day_of_year });
+    }
+
     // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
     //
     // Fonctions **associées** : le client doit pouvoir encoder avant même
@@ -375,6 +383,11 @@ impl WasmSim {
         encode(&sim::Command::SetDifficulty {
             level: Difficulty::from_u8(level),
         })
+    }
+
+    /// Jour de l'année imposé. Voir `set_calendar`.
+    pub fn encode_set_calendar(day_of_year: u32) -> Vec<u8> {
+        encode(&sim::Command::SetCalendar { day_of_year })
     }
 
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
@@ -583,6 +596,23 @@ impl WasmSim {
                     i32::from(p.ranged.level),
                     p.ranged.xp as i32,
                 ]
+            })
+            .unwrap_or_default()
+    }
+
+    /// Traits de caractère d'un pawn, suivant `sim::Trait` (0 à 11). 0, 1 ou
+    /// 2 valeurs ; vide si l'id est inconnu ou le pawn n'en a pas (pillards,
+    /// bêtes).
+    pub fn pawn_traits(&self, id: u32) -> Vec<i32> {
+        self.inner
+            .pawns()
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| {
+                p.traits
+                    .iter()
+                    .filter_map(|t| t.map(|t| t as i32))
+                    .collect()
             })
             .unwrap_or_default()
     }
@@ -1066,6 +1096,10 @@ mod tests {
                     level: sim::Difficulty::Normal,
                 },
             ),
+            (
+                WasmSim::encode_set_calendar(45),
+                Command::SetCalendar { day_of_year: 45 },
+            ),
         ];
         for (bytes, expected) in cases {
             assert!(!bytes.is_empty(), "une commande encodée n'est jamais vide");
@@ -1223,6 +1257,21 @@ mod tests {
             "niveaux de départ : {skills:?}"
         );
         assert!(s.pawn_combat_skills(9999).is_empty());
+
+        // Deux traits au plus, jamais plus : `Sim::spawn_pawn` en tire deux au
+        // maximum pour un colon.
+        assert!(
+            s.pawn_traits(id).len() <= 2,
+            "traits : {:?}",
+            s.pawn_traits(id)
+        );
+        s.inner.pawn_mut(id).expect("le colon existe").traits =
+            [Some(sim::Trait::Tough), Some(sim::Trait::Sociable)];
+        assert_eq!(
+            s.pawn_traits(id),
+            vec![sim::Trait::Tough as i32, sim::Trait::Sociable as i32]
+        );
+        assert!(s.pawn_traits(9999).is_empty(), "id inconnu");
     }
 
     #[test]
@@ -1272,6 +1321,30 @@ mod tests {
             "la couche n'a pas été refaite"
         );
         assert!(s.tile_temperature(3, 3) > s.outdoor_temperature());
+    }
+
+    /// `set_calendar` est la frontière JS de `Command::SetCalendar` : le jour
+    /// de l'année imposé se retrouve bien dans `day_of_year`/`season`, sans
+    /// faire bouger le tick.
+    #[test]
+    fn set_calendar_impose_le_jour_de_lannee() {
+        let mut s = fresh();
+        let tick_before = s.tick();
+        s.set_calendar(45);
+        s.step(1);
+        assert_eq!(s.day_of_year(), 45);
+        assert_eq!(s.season(), sim::Season::Winter as u8);
+        assert_eq!(
+            s.tick(),
+            tick_before + 1.0,
+            "un seul tick, comme sans commande"
+        );
+
+        // Une valeur au-delà de `year_days()` retombe dessus par modulo.
+        let mut wrapped = fresh();
+        wrapped.set_calendar(45 + sim::YEAR_DAYS * 3);
+        wrapped.step(1);
+        assert_eq!(wrapped.day_of_year(), 45);
     }
 
     /// Contrat de la faune avec le client : tampon `animals` (stride 3),

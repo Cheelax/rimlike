@@ -124,6 +124,11 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             amplitude: 300,
         });
     }
+    if t == 120 {
+        // Le calendrier imposé fait aussi partie de l'état : une case du
+        // globe reçoit son jour de l'année comme son climat, en lockstep.
+        cmds.push(Command::SetCalendar { day_of_year: 30 });
+    }
     if t == 6000 {
         // Le combat consomme du RNG : les deux sims doivent rester identiques.
         cmds.push(Command::TriggerRaid);

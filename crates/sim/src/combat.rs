@@ -13,6 +13,7 @@ use crate::items::ItemKind;
 use crate::map::{Feature, Map, chebyshev};
 use crate::path;
 use crate::pawn::{Faction, Job, Pawn};
+use crate::traits::{self, Trait};
 use crate::work;
 use crate::{EventKind, Sim, TICKS_PER_DAY};
 
@@ -355,6 +356,15 @@ impl Sim {
         false
     }
 
+    /// Un pillard vivant traîne-t-il encore sur la carte ? Sert à
+    /// `Trait::Coward` (`Pawn::mood`), recopié par pawn à chaque tick comme
+    /// `outdoor_storm` (voir `Sim::tick_pawn`).
+    pub(crate) fn raider_alive(&self) -> bool {
+        self.pawns
+            .iter()
+            .any(|p| p.is_alive() && p.faction == Faction::Raider)
+    }
+
     /// Cases des pawns vivants d'un camp, dans l'ordre des indices.
     fn living_tiles(&self, faction: Faction) -> Vec<(u32, u32, u32)> {
         self.pawns
@@ -420,8 +430,14 @@ impl Sim {
     // ------------------------------------------------------------------
 
     /// Un colon qui voit un ennemi à portée lâche ce qu'il fait et l'attaque.
-    /// Renvoie vrai s'il vient de s'y mettre.
+    /// Renvoie vrai s'il vient de s'y mettre. Un couard (`Trait::Coward`) ne
+    /// se défend jamais de lui-même : il subit le combat, il ne le cherche
+    /// pas. Un ordre du joueur (`Command::Attack`) pose `Job::Attack`
+    /// ailleurs et reste possible.
     pub(crate) fn defend_if_threatened(&mut self, i: usize) -> bool {
+        if self.pawns[i].has_trait(Trait::Coward) {
+            return false;
+        }
         if matches!(
             self.pawns[i].job,
             Job::Attack { .. } | Job::Move { manual: true }
@@ -604,11 +620,20 @@ impl Sim {
         let percent = if faction == Faction::Animal {
             100
         } else {
-            self.pawns[i].weapon.map_or(100, |w| w.melee_percent())
+            let base = self.pawns[i].weapon.map_or(100, |w| w.melee_percent())
                 * melee_skill_percent(self.pawns[i].melee.level)
-                / 100
+                / 100;
+            // Un bagarreur frappe plus fort au corps à corps.
+            if self.pawns[i].has_trait(Trait::Brawler) {
+                base * traits::BRAWLER_MELEE_PERCENT / 100
+            } else {
+                base
+            }
         };
         let damage = (roll * percent / 100).max(1);
+        // `Tough`/`Frail` modulent les dégâts *reçus* : c'est la cible, pas
+        // l'attaquant, qui décide (voir `Pawn::damage_from`).
+        let damage = self.pawns[k].damage_from(damage);
         let part = health::part_for_roll(self.rng.below(health::HIT_WEIGHT_TOTAL));
         self.pawns[k].add_injury(part, damage, damage / health::BLEED_FRACTION);
         self.pawns[i].attack_cooldown = ATTACK_COOLDOWN;
@@ -622,8 +647,15 @@ impl Sim {
     /// la partie touchée si le tir porte. Un tir manqué forme quand même.
     fn shoot(&mut self, i: usize, k: usize, distance: u32) {
         let accuracy = ranged_accuracy_percent(self.pawns[i].ranged.level, distance);
+        // Un bagarreur préfère le corps à corps : il vise moins bien à l'arc.
+        let accuracy = if self.pawns[i].has_trait(Trait::Brawler) {
+            accuracy.saturating_sub(traits::BRAWLER_RANGED_MALUS)
+        } else {
+            accuracy
+        };
         if self.rng.below(100) < accuracy {
             let damage = self.rng.range_i32(RANGED_DAMAGE.0, RANGED_DAMAGE.1) as u32;
+            let damage = self.pawns[k].damage_from(damage);
             let part = health::part_for_roll(self.rng.below(health::HIT_WEIGHT_TOTAL));
             self.pawns[k].add_injury(part, damage, damage / health::BLEED_FRACTION);
             // Une flèche qui porte déclenche la fuite (ou la charge) de la

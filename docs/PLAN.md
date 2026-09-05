@@ -380,8 +380,14 @@ richesse / 400 + jours / 4` (plafond 600) × difficulté (paisible, facile, norm
 l'entrée), répit d'un jour après une mort, largages de vivres, maladie (deux jours, un si
 soignée), coups de froid et canicules d'un jour ; richesse de la colonie mise en cache ;
 `MAX_RAIDERS` 6 → 12. Interface à faire (sélecteur de difficulté, libellés des événements
-21-25, indicateur de maladie, job « attend »). À venir : recherche, traits et relations,
-factions PNJ et commerce, mods de contenu, événements monde.
+21-25, indicateur de maladie, job « attend »). Traits livrés le 2026-09-05 (Sonnet, sim) : douze traits en six paires opposées (travailleur /
+paresseux, optimiste / pessimiste, bagarreur / lâche, gourmand / ascète, noctambule, robuste /
+fragile, sociable), deux par colon tirés sans contradiction, effets sur vitesse de travail,
+humeur, dégâts donnés et reçus, défense automatique ; interface à faire. Calendrier partagé
+(Sonnet) : `SetCalendar` décale le jour de l'année sans toucher au tick, le serveur impose le
+jour du monde à la fondation (`start.dayOfYear`), l'avance rapide garde l'alignement au gel ;
+client à brancher. À venir : recherche, relations, factions PNJ et commerce, mods de
+contenu, événements monde.
 
 ## 7. Risques identifiés
 
@@ -420,6 +426,10 @@ factions PNJ et commerce, mods de contenu, événements monde.
 - 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
   par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
   libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
+- 2026-09-05 : traits (sim) : effets appliqués dans `mood()` et `work_step()` plutôt qu'à la
+  source des jobs, pour ne pas disperser les règles. Un test forçant un colon à craquer a dû
+  neutraliser ses traits : le hasard lui donnait « Ascète ». Calendrier : un décalage en jours
+  plutôt qu'un saut de tick, pour que hash, météo et heure restent cohérents.
 - 2026-09-05 : client publié sur GitHub Pages (https://cheelax.github.io/rimlike/) à chaque
   push sur `main`. Le solo se joue sans rien installer ; c'est le canal de test le plus simple
   pour des joueurs extérieurs. Réversible d'un clic dans les réglages du dépôt.

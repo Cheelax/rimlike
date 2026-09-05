@@ -20,6 +20,7 @@ use crate::pawn::{
     BREAK_TICKS, Faction, HUNGER_DECAY, Job, MOOD_BREAK, NEED_MAX, RELIEF_TICKS, REST_DECAY,
     REST_RECOVERY, RESTED,
 };
+use crate::traits::{self, Trait};
 use crate::work::{self, WorkType};
 use crate::{EventKind, Sim, TICKS_PER_DAY, Weather};
 
@@ -47,6 +48,9 @@ impl Sim {
             return;
         }
         self.pawns[i].outdoor_storm = self.weather == Weather::Storm;
+        // Sert à `Trait::NightOwl` (`Pawn::work_step`) : la vitesse de
+        // travail ne voit que le pawn, pas l'horloge du sim.
+        self.pawns[i].is_night = self.is_night();
         self.tick_comfort(i, outdoor);
         self.tick_health(i);
         // Une hémorragie peut avoir tué le pawn à l'instant : il sera retiré
@@ -75,6 +79,15 @@ impl Sim {
             self.animal_ai(i);
             return;
         }
+        // Sert à `Trait::Coward` et `Trait::Sociable` (`Pawn::mood`) : deux
+        // recopies de plus dans le même esprit qu'`outdoor_storm`.
+        let my_id = self.pawns[i].id;
+        self.pawns[i].enemy_present = self.raider_alive();
+        self.pawns[i].other_colonists_alive = self
+            .pawns
+            .iter()
+            .filter(|p| p.is_alive() && p.faction == Faction::Colony && p.id != my_id)
+            .count() as u32;
         self.decay_needs(i);
         // À terre : plus de défense, plus de crise, plus de recherche de job.
         // Sa position, s'il est porté, est recopiée par le porteur.
@@ -212,12 +225,21 @@ impl Sim {
         let p = &self.pawns[i];
         let sleeping = matches!(p.job, Job::Sleep { .. }) && !p.is_moving();
         let in_bed = matches!(p.job, Job::Sleep { in_bed: true });
+        // Un gourmand a plus d'appétit : sa faim décline plus vite, éveillé
+        // comme endormi.
+        let gourmand = p.has_trait(Trait::Gourmand);
         let p = &mut self.pawns[i];
-        p.hunger = p.hunger.saturating_sub(if sleeping {
+        let hunger_decay = if sleeping {
             HUNGER_DECAY / 2
         } else {
             HUNGER_DECAY
-        });
+        };
+        let hunger_decay = if gourmand {
+            hunger_decay * traits::GOURMAND_HUNGER_PERCENT / 100
+        } else {
+            hunger_decay
+        };
+        p.hunger = p.hunger.saturating_sub(hunger_decay);
         if sleeping {
             let recovery = if in_bed {
                 REST_RECOVERY * 3 / 2
@@ -228,6 +250,16 @@ impl Sim {
         } else {
             p.rest = p.rest.saturating_sub(REST_DECAY);
         }
+    }
+
+    /// Hors de la plage `traits::DAY_START_HOUR`-`traits::DAY_END_HOUR` :
+    /// sert à `Trait::NightOwl`, recopié par pawn à chaque tick
+    /// (`Pawn::is_night`) puisque `Pawn::work_step` ne voit que le pawn.
+    fn is_night(&self) -> bool {
+        let t = self.time_of_day();
+        let day_start = TICKS_PER_DAY * traits::DAY_START_HOUR / 24;
+        let day_end = TICKS_PER_DAY * traits::DAY_END_HOUR / 24;
+        !(day_start..day_end).contains(&t)
     }
 
     fn food_available(&self) -> bool {

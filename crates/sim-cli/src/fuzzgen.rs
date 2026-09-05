@@ -6,11 +6,11 @@
 
 use sim::{
     BuildKind, CaravanManifest, Command, Designation, Difficulty, ItemKind, MANIFEST_VERSION,
-    Material, Pawn, Rng, Sim, WorkType, Zone,
+    Material, Pawn, Rng, Sim, WorkType, YEAR_DAYS, Zone,
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 17;
+pub const VARIANT_COUNT: usize = 18;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -32,6 +32,7 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "SetClimate",
     "Hunt",
     "SetDifficulty",
+    "SetCalendar",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -215,6 +216,19 @@ fn random_temperature(rng: &mut Rng) -> i32 {
     }
 }
 
+/// Jour de l'année pour `SetCalendar` : le plus souvent déjà dans les bornes
+/// (`0..YEAR_DAYS`), parfois un multiple de `YEAR_DAYS` au-delà — qui doit
+/// retomber sur la même valeur par un simple modulo — parfois aux bornes de
+/// `u32`, là où déborderait une arithmétique mal bornée.
+fn random_day_of_year(rng: &mut Rng) -> u32 {
+    match rng.below(4) {
+        0 => u32::MAX - rng.below(1_000),
+        1 => YEAR_DAYS.saturating_mul(1 + rng.below(1_000)),
+        2 => YEAR_DAYS.saturating_mul(1 + rng.below(1_000)) + rng.below(YEAR_DAYS),
+        _ => rng.below(YEAR_DAYS),
+    }
+}
+
 /// Tire une commande aléatoire à appliquer telle quelle. Renvoie aussi
 /// l'indice de la variante choisie (dans `VARIANT_NAMES`) pour les
 /// statistiques de fin de run.
@@ -357,13 +371,19 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
             animal: random_pawn_id(rng, sim),
             on: rng.chance(1, 2),
         },
-        _ => Command::SetDifficulty {
+        16 => Command::SetDifficulty {
             // Le tirage sur 256 cogne largement au-delà des quatre valeurs
             // valides : `Difficulty::from_u8` doit retomber sur « normal »
             // plutôt que de laisser passer une dose de menace inventée. Le
             // paisible et le difficile passent donc aussi, et une campagne
             // alterne les trois régimes de raid sur la même carte.
             level: Difficulty::from_u8(rng.below(256) as u8),
+        },
+        _ => Command::SetCalendar {
+            // Un jour aberrant (bien au-delà de `YEAR_DAYS`, ou aux bornes de
+            // `u32`) doit retomber par modulo sur un jour valide, sans jamais
+            // faire déborder l'arithmétique du calendrier.
+            day_of_year: random_day_of_year(rng),
         },
     };
     (cmd, variant)
