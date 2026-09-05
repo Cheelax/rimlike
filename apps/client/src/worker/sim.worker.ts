@@ -14,7 +14,7 @@
  */
 
 import { LockstepClient } from "../net/LockstepClient";
-import { WebSocketTransport } from "../net/Transport";
+import { ReconnectingTransport, WebSocketTransport } from "../net/Transport";
 import { encodeFastForward, encodeSetCalendar, encodeSetClimate, encodeSetDifficulty } from "../sim/commands";
 import { SimHandle } from "../sim/SimHandle";
 import { DIFFICULTY } from "../render/terrain";
@@ -194,8 +194,15 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
     if (message.difficulty !== DIFFICULTY.Normal) sim.setDifficulty(message.difficulty);
     runner.setSim(sim);
   } else {
+    // Enveloppée dans `ReconnectingTransport` : une coupure (serveur relancé,
+    // réseau perdu) rouvre toute seule une `WebSocketTransport` neuve, avec un
+    // délai exponentiel plafonné (`Transport.ts`). `onReconnect` prévient
+    // `lockstep.reconnect()` dès qu'un `Transport` neuf existe, qui rejoue
+    // `join` — le flux normal d'un rejoignant (`docs/protocol.md` §8) reprend
+    // ensuite tout seul à la réception de `welcome`/`snapshot`.
+    const transport = new ReconnectingTransport({ factory: () => new WebSocketTransport(message.server) });
     lockstep = new LockstepClient({
-      transport: new WebSocketTransport(message.server),
+      transport,
       createSim: (seed, width, height) => SimHandle.create({ seed: BigInt(seed), width, height }),
       restoreSim: (bytes) => SimHandle.restore(bytes),
       onState: (state) => post({ type: "net", state }),
@@ -244,6 +251,7 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
         if (bytes) lockstep?.issue(bytes);
       },
     });
+    transport.onReconnect(() => lockstep?.reconnect());
     runner = new SimRunner({ lockstep });
     lockstep.join(message.room, message.name);
   }

@@ -331,6 +331,8 @@ export function WorldScreen({
           subdivisions: world.subdivisions,
           tiles: world.tiles.length,
           lastError: net?.lastError ?? null,
+          reconnecting: net?.reconnecting ?? false,
+          attempts: net?.attempts ?? 0,
         };
       },
       /**
@@ -521,7 +523,15 @@ export function WorldScreen({
             <div>
               <b>{settlements.length}</b> colonie{settlements.length > 1 ? "s" : ""} ·{" "}
               <b>{onlinePlayers.length}</b> joueur{onlinePlayers.length > 1 ? "s" : ""} en ligne ·{" "}
-              {net?.phase === "connected" ? "connecté" : net?.phase === "closed" ? "déconnecté" : "connexion…"}
+              {net?.phase === "connected"
+                ? "connecté"
+                : net?.phase === "closed"
+                  ? net.reconnecting
+                    ? "serveur injoignable"
+                    : "déconnecté"
+                  : net?.reconnecting
+                    ? `reconnexion… (tentative ${net.attempts})`
+                    : "connexion…"}
             </div>
             <div className="help">glisser : tourner · molette : zoom · clic : choisir une case</div>
           </div>

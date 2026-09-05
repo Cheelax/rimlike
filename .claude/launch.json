@@ -21,6 +21,19 @@
         "dev:server"
       ],
       "port": 8787
+    },
+    {
+      "name": "server-fast",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "WORLD_HOUR_MS=1000",
+        "CARAVAN_TICK_MS=500",
+        "WORLD_PERSIST=0",
+        "WORLD_SUBDIVISIONS=3",
+        "pnpm",
+        "dev:server"
+      ],
+      "port": 8787
     }
   ]
 }

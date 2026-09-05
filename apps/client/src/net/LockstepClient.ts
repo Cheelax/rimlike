@@ -121,6 +121,36 @@ export interface LockstepState {
    * puisqu'il n'y a rien à consommer ici).
    */
   readonly lastResyncTick: number | null;
+  /**
+   * Vrai entre un `reconnect()` (appelé après une coupure du `Transport`, en
+   * général via `ReconnectingTransport.onReconnect`) et le `welcome` qui
+   * confirme que le serveur nous a repris — que la salle soit `lobby` ou
+   * `running` : la resynchronisation du sim lui-même, elle, suit le chemin
+   * habituel d'un rejoignant (§8) et se lit dans `phase`/`ready`. Le HUD
+   * affiche « reconnexion… » tant que c'est vrai ; `lag` reste à 0 pendant ce
+   * temps plutôt que de compter un retard qui ne veut rien dire hors ligne.
+   */
+  readonly reconnecting: boolean;
+  /** Tentatives de reconnexion consécutives depuis la dernière connexion établie. */
+  readonly attempts: number;
+  /**
+   * Nombre de reconnexions abouties depuis le début de la session (pas le
+   * tick : en `lobby` le tick ne bouge pas, deux coupures avant `start`
+   * donneraient le même repère). `null` avant la première. Même usage que
+   * `lastResyncTick` : à comparer à la valeur précédemment vue pour afficher
+   * un toast une fois, jamais remis à `null` ensuite.
+   */
+  readonly lastReconnectAt: number | null;
+  /**
+   * Commandes perdues pendant la coupure qui vient de se terminer (celles
+   * données à `issue` entre le `reconnect()` et le `welcome` qui l'a confirmé,
+   * §5 : jamais mises en file, le serveur ne les aurait de toute façon pas
+   * acceptées sur une connexion qui n'existe plus pour lui). Valide en même
+   * temps que `lastReconnectAt`, dont il faut comparer le changement pour
+   * savoir quand afficher le toast — `0` ne veut pas forcément dire « rien à
+   * signaler », comme `frozenTicks`.
+   */
+  readonly lastReconnectLostCommands: number;
 }
 
 export interface LockstepOptions {
@@ -161,6 +191,8 @@ export class LockstepClient {
 
   private phase: LockstepPhase = "connecting";
   private roomName = "";
+  /** Mémorisé pour `reconnect()` : `join` se rejoue avec le même nom. */
+  private playerName = "";
   private playerId: PlayerId | null = null;
   private hostId: PlayerId | null = null;
   private players: readonly PlayerInfo[] = [];
@@ -187,6 +219,17 @@ export class LockstepClient {
   private outliersKnown = false;
   /** Voir `LockstepState.lastResyncTick`. */
   private lastResyncTick: number | null = null;
+  /** Voir `LockstepState.reconnecting`. */
+  private reconnectingFlag = false;
+  /** Voir `LockstepState.attempts`. */
+  private attemptsValue = 0;
+  /** Commandes refusées par `issue` depuis le début de la coupure en cours. */
+  private lostCommandsValue = 0;
+  /** Reconnexions abouties depuis le début de la session ; voir `LockstepState.lastReconnectAt`. */
+  private reconnectCount = 0;
+  private lastReconnectAtValue: number | null = null;
+  /** Voir `LockstepState.lastReconnectLostCommands`. */
+  private lastReconnectLostCommandsValue = 0;
 
   constructor(options: LockstepOptions) {
     this.transport = options.transport;
@@ -196,6 +239,11 @@ export class LockstepClient {
     this.onSim = options.onSim ?? null;
     this.onError = options.onError ?? null;
     this.transport.onMessage((text) => this.receive(text));
+    // `code`/`reason` ne sont utiles qu'au diagnostic (pas affichés) : ce qui
+    // compte pour le joueur est que la salle ne répond plus. Si le `Transport`
+    // sait se reconnaître tout seul (`ReconnectingTransport`), c'est
+    // `reconnect()` qui nous prévient d'un nouvel essai, pas cet appel — qui ne
+    // revient ici qu'à l'abandon définitif (§8, doc de `ReconnectingTransport`).
     this.transport.onClose(() => {
       this.phase = "closed";
       this.emit();
@@ -228,7 +276,32 @@ export class LockstepClient {
   /** Premier message de la connexion. Crée la salle si elle n'existe pas. */
   join(room: string, name: string): void {
     this.roomName = room;
+    this.playerName = name;
     this.send({ type: "join", room, name, protocol: PROTOCOL_VERSION });
+    this.emit();
+  }
+
+  /**
+   * Rejoue `join` après une coupure réseau (`docs/protocol.md` §4, §8) : remet
+   * l'état à `connecting`, marque `reconnecting`, et renvoie `join { room,
+   * name }` avec le même nom que la première fois. La suite est le flux
+   * existant d'un rejoignant : `welcome` (`lobby` ou `running`), puis pour une
+   * salle `running`, `request_snapshot` à l'hôte et `snapshot` — qui
+   * **remplace** le sim en cours (voir `adopt`), exactement comme un
+   * rejoignant, pas une fusion avec l'état d'avant la coupure.
+   *
+   * À appeler quand une couche au-dessus détecte qu'un `Transport` neuf est
+   * disponible (`ReconnectingTransport.onReconnect`, câblé dans
+   * `worker/sim.worker.ts`) ou à la main (bouton « Réessayer » après
+   * abandon, `App.tsx`). Sans appel préalable à `join`, il n'y a ni salle ni
+   * nom à rejouer : no-op.
+   */
+  reconnect(): void {
+    if (this.roomName === "" || this.playerName === "") return;
+    this.phase = "connecting";
+    this.reconnectingFlag = true;
+    this.attemptsValue += 1;
+    this.send({ type: "join", room: this.roomName, name: this.playerName, protocol: PROTOCOL_VERSION });
     this.emit();
   }
 
@@ -249,8 +322,19 @@ export class LockstepClient {
   /**
    * Envoie une commande encodée. Rien n'est appliqué localement : elle
    * reviendra dans un bundle, au tick choisi par le serveur.
+   *
+   * Pendant une coupure (`reconnecting`), il n'y a personne pour la recevoir :
+   * cette connexion n'existe plus pour le serveur, donc pas de file d'attente
+   * pour un envoi différé (ce serait rejouer une commande en dehors du tick
+   * que `docs/protocol.md` §5 lui aurait donné). Elle est comptée comme
+   * perdue à la place, et signalée en une fois à la reconnexion (voir
+   * `LockstepState.lastReconnectLostCommands`).
    */
   issue(bytes: Uint8Array): void {
+    if (this.reconnectingFlag) {
+      this.lostCommandsValue += 1;
+      return;
+    }
     this.send({ type: "command", payload: bytes });
   }
 
@@ -391,6 +475,19 @@ export class LockstepClient {
         this.seed = message.seed ?? null;
         this.width = message.width ?? null;
         this.height = message.height ?? null;
+        // Reconnexion confirmée : le réseau est de retour, que la salle soit
+        // `lobby` ou `running` (la resynchronisation du sim, elle, suit le
+        // chemin habituel d'un rejoignant et se lit dans `phase`/`ready`, pas
+        // ici). Rien à faire pour un `welcome` ordinaire (`reconnectingFlag`
+        // déjà faux) : ces champs restent à leurs valeurs par défaut.
+        if (this.reconnectingFlag) {
+          this.reconnectingFlag = false;
+          this.attemptsValue = 0;
+          this.reconnectCount += 1;
+          this.lastReconnectAtValue = this.reconnectCount;
+          this.lastReconnectLostCommandsValue = this.lostCommandsValue;
+          this.lostCommandsValue = 0;
+        }
         // En cours de partie, le sim viendra du snapshot du host (§8).
         this.emit();
         return;
@@ -579,7 +676,10 @@ export class LockstepClient {
       isHost: this.playerId !== null && this.playerId === this.hostId,
       players: Object.freeze([...this.players]),
       tick: this.nextTick,
-      lag: this.lag,
+      // Un retard qui ne veut rien dire hors ligne : rien n'a bougé pendant la
+      // coupure (aucun bundle reçu), il ne faut pas l'afficher comme si le
+      // client peinait à suivre une horloge qui, elle, a continué de tourner.
+      lag: this.reconnectingFlag ? 0 : this.lag,
       ready: this.simInstance !== null,
       seed: this.seed,
       width: this.width,
@@ -593,6 +693,10 @@ export class LockstepClient {
       isOutlier: this.playerId !== null && this.deviating.has(this.playerId),
       roomDesynced: this.desyncInfo !== null && !(this.outliersKnown && this.deviating.size === 0),
       lastResyncTick: this.lastResyncTick,
+      reconnecting: this.reconnectingFlag,
+      attempts: this.attemptsValue,
+      lastReconnectAt: this.lastReconnectAtValue,
+      lastReconnectLostCommands: this.lastReconnectLostCommandsValue,
     });
   }
 }

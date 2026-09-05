@@ -545,4 +545,45 @@ describe("WorldClient", () => {
     expect(transport.messages()).toEqual([{ type: "world_join", name: "bob", protocol: PROTOCOL_VERSION }]);
     expect(client.identitySummary).toBeNull();
   });
+
+  describe("reconnexion (docs/protocol.md §11.2, §11.3)", () => {
+    it("reconnect() rejoue world_join avec le même jeton", () => {
+      saveIdentity(identityScope(SERVER_URL, "bob"), { token: "s3cr3t-token", playerKey: BOB_KEY });
+      const { transport, client } = harness();
+      client.join();
+      transport.deliver({ type: "world_welcome", playerId: 2, playerKey: BOB_KEY, name: "bob", settlements: [], players: PLAYERS, world: GLOBE });
+      transport.sent.length = 0;
+
+      client.reconnect();
+
+      expect(client.state.phase).toBe("connecting");
+      expect(client.state.reconnecting).toBe(true);
+      expect(client.state.attempts).toBe(1);
+      expect(transport.messages()).toEqual([
+        { type: "world_join", name: "bob", protocol: PROTOCOL_VERSION, token: "s3cr3t-token" },
+      ]);
+    });
+
+    it("un world_welcome après reconnect() remet reconnecting et attempts à zéro et rafraîchit l'état", () => {
+      const { transport, client } = joined();
+      client.reconnect();
+      client.reconnect();
+      expect(client.state.attempts).toBe(2);
+
+      transport.deliver({
+        type: "world_welcome",
+        playerId: 2,
+        playerKey: BOB_KEY,
+        name: "bob",
+        settlements: [ALICE],
+        players: PLAYERS,
+        world: GLOBE,
+      });
+
+      expect(client.state.phase).toBe("connected");
+      expect(client.state.reconnecting).toBe(false);
+      expect(client.state.attempts).toBe(0);
+      expect(client.state.settlements).toEqual([ALICE]);
+    });
+  });
 });

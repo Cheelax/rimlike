@@ -146,8 +146,13 @@ chantiers les émet divisés par 100. Le client rebâtit ses meshes quand `map_v
   `sim.applyEncoded`, en multi `LockstepClient.issue`. Ne jamais appliquer une commande
   localement en multi : elle revient dans un bundle.
 - `apps/client/src/net/` : `LockstepClient` (logique pure, sans timer ni DOM), `Transport`
-  (WebSocket navigateur) et `WsTransport` (paquet `ws`, tests uniquement, jamais importé
-  depuis `App.tsx`).
+  (WebSocket navigateur), `ReconnectingTransport` (enveloppe une fabrique de transport :
+  délai exponentiel 1 s → 15 s avec gigue, huit essais, planificateur injectable ; appelle
+  `onReconnect` quand un transport neuf existe, `onClose` seulement à l'abandon) et
+  `WsTransport` (paquet `ws`, tests uniquement, jamais importé depuis `App.tsx`). Salle et
+  monde ont chacun leur transport reconnectant ; `LockstepClient.reconnect()` rejoue `join`
+  et reprend par le snapshot du rejoignant, les commandes émises pendant la coupure sont
+  comptées (`lastReconnectLostCommands`), jamais rejouées.
 - Souris : glisser gauche trace un rectangle quand un outil est actif, sinon déplace la
   caméra ; glisser droit et flèches déplacent toujours ; clic droit = ordre en sélection,
   retour à la sélection en mode outil.

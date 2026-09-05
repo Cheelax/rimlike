@@ -13,7 +13,7 @@ import {
 } from "./net/CaravanDispatcher";
 import type { LockstepError, LockstepState } from "./net/LockstepClient";
 import { fetchRooms, roomDisplayName, roomDay, roomStateLabel, type RoomInfo } from "./net/roomsFetch";
-import { WebSocketTransport } from "./net/Transport";
+import { ReconnectingTransport, WebSocketTransport } from "./net/Transport";
 import { WorldClient, type WorldClientState } from "./net/WorldClient";
 import { fetchWorld, type WorldProgress } from "./net/worldFetch";
 import { WorldScreen, type CaravanOrder } from "./WorldScreen";
@@ -563,8 +563,16 @@ export function App() {
         if (cancelled) return;
         setGlobe(world);
         setGlobeLoad({ kind: "ready" });
+        // Enveloppée dans `ReconnectingTransport` : la connexion monde tombe
+        // et se reconnecte indépendamment de celle de la salle (`docs/protocol.md`
+        // §11.3), avec le même délai exponentiel plafonné qu'elle
+        // (`net/Transport.ts`). `onReconnect` rejoue `world_join` avec le même
+        // jeton (`WorldClient.reconnect`) dès qu'un `Transport` neuf existe.
+        const worldTransport = new ReconnectingTransport({
+          factory: () => new WebSocketTransport(worldSession.server),
+        });
         client = new WorldClient({
-          transport: new WebSocketTransport(worldSession.server),
+          transport: worldTransport,
           name: worldSession.name,
           serverUrl: worldSession.server,
           // Vérification de cohérence : le `world_welcome` doit annoncer le
@@ -612,6 +620,7 @@ export function App() {
             client?.deliverCaravan(arrival.id);
           },
         });
+        worldTransport.onReconnect(() => client?.reconnect());
         worldRef.current = client;
         client.join();
       } catch (e) {
@@ -720,6 +729,8 @@ export function App() {
     let lastFrozenTicksNotified = 0;
     /** Dernier `lastResyncTick` déjà annoncé par toast, pour ne le dire qu'une fois. */
     let lastResyncNotified: number | null = null;
+    /** Dernier `lastReconnectAt` déjà annoncé par toast, pour ne le dire qu'une fois. */
+    let lastReconnectNotified: number | null = null;
     /**
      * Vrai jusqu'au premier `frame` d'un sim neuf, chargé ou restauré : rien à
      * interpoler depuis l'état d'avant, et ses événements sont du passé.
@@ -899,6 +910,18 @@ export function App() {
         if (state.lastResyncTick !== null && state.lastResyncTick !== lastResyncNotified) {
           lastResyncNotified = state.lastResyncTick;
           pushToast(`Resynchronisé au tick ${state.lastResyncTick}`);
+        }
+        // Reconnexion aboutie (`docs/protocol.md` §4, §8) : les commandes
+        // données pendant la coupure n'ont jamais quitté ce client (§5), on ne
+        // le tait pas.
+        if (state.lastReconnectAt !== null && state.lastReconnectAt !== lastReconnectNotified) {
+          lastReconnectNotified = state.lastReconnectAt;
+          const lost = state.lastReconnectLostCommands;
+          pushToast(
+            lost > 0
+              ? `Connexion perdue : ${lost} commande${lost > 1 ? "s" : ""} non envoyée${lost > 1 ? "s" : ""}`
+              : "Connexion rétablie",
+          );
         }
       },
       onSaved: (bytes) => {
@@ -1784,6 +1807,18 @@ export function App() {
     setInitialWorldTile(null);
   };
   /**
+   * Bouton « Réessayer » du bandeau « Serveur injoignable » (`Lobby`,
+   * `docs/protocol.md` §4) : la reconnexion automatique (`ReconnectingTransport`)
+   * a épuisé ses `MAX_RECONNECT_ATTEMPTS` tentatives, il n'y a plus de
+   * `Transport` vivant à relancer. On repart d'un `session` neuf (même
+   * référence de champs, nouvel objet) : l'effet ci-dessous le voit comme un
+   * changement, ferme le Worker mort et en ouvre un tout neuf, avec sa propre
+   * `ReconnectingTransport` fraîche.
+   */
+  const retryConnection = () => {
+    setSession((prev) => (prev === null ? prev : { ...prev }));
+  };
+  /**
    * Rejoindre une salle listée par « Salles ouvertes » (§2 du protocole) : une
    * salle simple préremplit le champ salle puis connecte tout de suite avec
    * le nom déjà saisi ; une salle « case » ouvre l'écran Monde avec la case
@@ -1872,6 +1907,8 @@ export function App() {
             difficulty={multiDifficulty}
             onDifficulty={setMultiDifficulty}
             onBackToWorld={inWorld ? backToWorld : null}
+            onRetry={retryConnection}
+            onGoHome={quitWorld}
             // Le serveur n'accepte qu'un entier positif comme graine.
             onStart={() => bridgeRef.current?.startGame(startSeed, MAP_SIZE, MAP_SIZE, multiDifficulty)}
           />
@@ -2513,6 +2550,8 @@ function Lobby({
   difficulty,
   onDifficulty,
   onBackToWorld,
+  onRetry,
+  onGoHome,
   onStart,
 }: {
   room: string;
@@ -2526,31 +2565,54 @@ function Lobby({
   onDifficulty: (v: number) => void;
   /** Présent en mode monde : de quoi ressortir sans recharger la page. */
   onBackToWorld: (() => void) | null;
+  /** Relance une connexion neuve après l'abandon de la reconnexion automatique. */
+  onRetry: () => void;
+  /** Retour complet à l'accueil (bandeau « Serveur injoignable »). */
+  onGoHome: () => void;
   onStart: () => void;
 }) {
   if (net === null || net.phase === "connecting") {
     return (
       <div className="overlay">
         <div className="card">
-          <div className="card-title">Connexion à la salle {room}…</div>
+          <div className="card-title">
+            {net?.reconnecting ? `Reconnexion à la salle ${room}…` : `Connexion à la salle ${room}…`}
+          </div>
+          {net?.reconnecting && net.attempts > 0 && (
+            <div className="help">Tentative {net.attempts}…</div>
+          )}
         </div>
       </div>
     );
   }
   if (net.phase === "closed") {
+    // Une coupure ordinaire (fermeture volontaire du serveur, salle détruite)
+    // ne passe jamais par `reconnect()` : `reconnecting` reste faux. Une
+    // reconnexion qui a fini par abandonner (`ReconnectingTransport`, après
+    // `MAX_RECONNECT_ATTEMPTS`) le laisse à vrai — c'est le seul cas où on
+    // propose de relancer plutôt que de renvoyer vers le monde ou l'accueil.
+    const abandoned = net.reconnecting;
     return (
       <div className="overlay">
         <div className="card">
-          <div className="card-title">Connexion perdue</div>
+          <div className="card-title">{abandoned ? "Serveur injoignable" : "Connexion perdue"}</div>
           <div className="help">
-            {net.lastError ? net.lastError.message : "Le serveur a fermé la connexion."}{" "}
-            {onBackToWorld ? "Revenez au monde pour choisir une autre case." : "Rechargez la page pour réessayer."}
+            {net.lastError ? net.lastError.message : "Le serveur a fermé la connexion."}
+            {abandoned ? ` Après ${net.attempts} tentative${net.attempts > 1 ? "s" : ""} de reconnexion.` : ""}
           </div>
+          {abandoned && (
+            <button className="wide primary" onClick={onRetry}>
+              Réessayer
+            </button>
+          )}
           {onBackToWorld && (
             <button className="wide" onClick={onBackToWorld}>
               Retour au monde
             </button>
           )}
+          <button className="wide" onClick={onGoHome}>
+            Retour à l'accueil
+          </button>
         </div>
       </div>
     );

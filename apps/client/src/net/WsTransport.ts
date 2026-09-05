@@ -13,26 +13,34 @@ export class WsTransport implements Transport {
   private readonly socket: WebSocket;
   private readonly backlog: string[] = [];
   private message: ((text: string) => void) | null = null;
-  private closed: (() => void) | null = null;
+  private closed: ((code?: number, reason?: string) => void) | null = null;
 
-  private constructor(socket: WebSocket) {
-    this.socket = socket;
+  /**
+   * Construction synchrone, comme `WebSocketTransport` : les trames envoyées
+   * avant l'ouverture attendent dans `backlog`, vidé dès l'événement `open`.
+   * De quoi servir de fabrique à `ReconnectingTransport` (`() => Transport`,
+   * forcément synchrone) ; `connect` reste la façon la plus simple d'attendre
+   * la connexion dans un test qui n'a pas besoin de reconnexion.
+   */
+  constructor(url: string) {
+    this.socket = new WebSocket(url);
+    this.socket.on("open", () => {
+      for (const text of this.backlog.splice(0)) {
+        this.socket.send(text);
+      }
+    });
     this.socket.on("message", (data: unknown) => this.message?.(String(data)));
-    this.socket.on("close", () => this.closed?.());
-    this.socket.on("error", () => this.closed?.());
+    this.socket.on("close", (code: number, reason: Buffer) => this.closed?.(code, reason.toString()));
+    this.socket.on("error", (err: Error) => this.closed?.(1006, err.message));
   }
 
   /** Résout quand la socket est ouverte : les tests n'ont pas à attendre. */
   static async connect(url: string): Promise<WsTransport> {
-    const socket = new WebSocket(url);
-    const transport = new WsTransport(socket);
+    const transport = new WsTransport(url);
     await new Promise<void>((resolve, reject) => {
-      socket.once("open", () => resolve());
-      socket.once("error", reject);
+      transport.socket.once("open", resolve);
+      transport.socket.once("error", reject);
     });
-    for (const text of transport.backlog.splice(0)) {
-      socket.send(text);
-    }
     return transport;
   }
 
@@ -48,12 +56,22 @@ export class WsTransport implements Transport {
     this.message = cb;
   }
 
-  onClose(cb: () => void): void {
+  onClose(cb: (code?: number, reason?: string) => void): void {
     this.closed = cb;
   }
 
   close(): void {
     this.backlog.length = 0;
     this.socket.close();
+  }
+
+  /**
+   * Coupe la connexion sans négociation, sans passer par `close()` : simule
+   * une vraie coupure réseau (câble arraché, processus tué) pour éprouver la
+   * reconnexion (`reconnect.test.ts`, `lockstep.test.ts`) plutôt qu'une
+   * fermeture volontaire, qui n'en déclenche aucune.
+   */
+  simulateDrop(): void {
+    this.socket.terminate();
   }
 }

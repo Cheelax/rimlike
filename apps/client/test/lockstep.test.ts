@@ -16,12 +16,12 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { encodeMessage, type ServerMessage } from "@rimlike/protocol";
+import { PROTOCOL_VERSION, encodeMessage, type ServerMessage } from "@rimlike/protocol";
 
 import { startServer, type RunningServer } from "../../server/src/server.js";
 import { LockstepClient, type LockstepError, type LockstepState } from "../src/net/LockstepClient";
 import type { SimLike } from "../src/net/SimLike";
-import type { Transport } from "../src/net/Transport";
+import { ReconnectingTransport, type Transport } from "../src/net/Transport";
 import { WsTransport } from "../src/net/WsTransport";
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -341,6 +341,89 @@ describe("lockstep contre le vrai serveur", () => {
     // L'état des deux reste identique : seul le hash annoncé diffère.
     expect(bob.fake().trace()).toEqual(alice.fake().trace());
   });
+
+  it("bob se reconnecte après une coupure de socket et retrouve le même hash", async () => {
+    const alice = await join("demo", "alice");
+    await waitFor("alice en lobby", () => alice.client.state.phase === "lobby");
+
+    // Bob, seul de la paire, passe par une `ReconnectingTransport` : sa
+    // `WsTransport` peut être coupée sans `close()` (`simulateDrop`, un
+    // `ws.terminate()`), ce qu'aucune fermeture volontaire ne déclenche.
+    let bobRawTransport: WsTransport | null = null;
+    const bobTransport = new ReconnectingTransport({
+      factory: () => {
+        const raw = new WsTransport(server.url);
+        bobRawTransport = raw;
+        return raw;
+      },
+      // Des délais courts : c'est un vrai serveur, mais le test n'a pas à
+      // attendre une seconde pour une reconnexion locale.
+      baseDelayMs: 20,
+      maxDelayMs: 100,
+    });
+    const bobStates: LockstepState[] = [];
+    const bobErrors: LockstepError[] = [];
+    let bobRestores = 0;
+    const bobClient = new LockstepClient({
+      transport: bobTransport,
+      createSim: (seed) => Promise.resolve(FakeSim.fresh(seed)),
+      restoreSim: (data) => {
+        bobRestores += 1;
+        return Promise.resolve(FakeSim.fromSnapshot(data));
+      },
+      onState: (state) => bobStates.push(state),
+      onError: (error) => bobErrors.push(error),
+    });
+    // Câblage attendu de `sim.worker.ts` : un `Transport` neuf prévient qu'il
+    // faut rejouer `join`.
+    bobTransport.onReconnect(() => bobClient.reconnect());
+    const bob: Session = {
+      name: "bob",
+      client: bobClient,
+      states: bobStates,
+      errors: bobErrors,
+      fake: () => {
+        const sim = bobClient.sim;
+        if (sim === null) throw new Error("bob n'a pas de sim");
+        return sim as FakeSim;
+      },
+      restoreCount: () => bobRestores,
+    };
+    sessions.push(bob); // fermé par `afterEach`, comme les sessions de `join()`
+    bobClient.join("demo", "bob");
+    await waitFor("deux joueurs annoncés", () => alice.client.state.players.length === 2);
+
+    alice.client.startGame(2024, 32, 32);
+    await waitFor("les deux sims créés", () => alice.client.sim !== null && bob.client.sim !== null);
+
+    const both = [alice, bob] as const;
+    alice.client.issue(bytes(0xa1));
+    await pumpUntil(both, "tick 30 atteint", reachedTick(both, 30));
+
+    // La coupure : ni un `resync` ni un `leave`, une vraie perte de socket.
+    // Bob la voit d'abord comme un rejoignant (§8) : le host (alice) lui sert
+    // un snapshot sur `request_snapshot`, sans qu'on ait rien à faire ici.
+    const restoresBefore = bob.restoreCount();
+    bobRawTransport?.simulateDrop();
+    await pumpUntil(
+      both,
+      "bob reconnecté et restauré depuis le snapshot d'alice",
+      () => bob.restoreCount() > restoresBefore,
+      8000,
+    );
+    expect(bob.client.state.phase).toBe("running");
+    // La reconnexion a bien été suivie jusqu'au bout côté état exposé.
+    expect(bob.states.some((s) => s.reconnecting)).toBe(true);
+    expect(bob.client.state.reconnecting).toBe(false);
+    expect(bob.client.state.lastReconnectAt).not.toBeNull();
+
+    bob.client.issue(bytes(0xb1));
+    const target = Math.max(alice.client.tick, bob.client.tick) + 30;
+    await pumpUntil(both, `tick ${target} atteint`, reachedTick(both, target));
+
+    expect(bob.fake().hash()).toBe(alice.fake().hash());
+    expect(alice.errors).toEqual([]);
+  });
 });
 
 /** Transport de laboratoire : on injecte les trames serveur à la main. */
@@ -622,5 +705,156 @@ describe("file de bundles", () => {
     transport.sent.length = 0;
     client.requestResync();
     expect(transport.sent.map((t) => JSON.parse(t) as { type: string })).toEqual([{ type: "resync" }]);
+  });
+});
+
+describe("reconnexion (docs/protocol.md §4, §8)", () => {
+  async function ready(): Promise<{ transport: FakeTransport; client: LockstepClient; errors: LockstepError[] }> {
+    const transport = new FakeTransport();
+    const errors: LockstepError[] = [];
+    const client = new LockstepClient({
+      transport,
+      createSim: (seed) => Promise.resolve(FakeSim.fresh(seed)),
+      restoreSim: (data) => Promise.resolve(FakeSim.fromSnapshot(data)),
+      onError: (error) => errors.push(error),
+    });
+    client.join("demo", "alice");
+    transport.deliver({
+      type: "welcome",
+      protocol: 1,
+      playerId: 1,
+      isHost: true,
+      players: [{ id: 1, name: "alice" }],
+      state: "lobby",
+      tick: 0,
+    });
+    transport.deliver({ type: "start", seed: 5, width: 16, height: 16, tick: 0 });
+    await waitFor("sim créé", () => client.sim !== null);
+    return { transport, client, errors };
+  }
+
+  it("reconnect() remet l'état à connecting et renvoie join avec le même nom", async () => {
+    const { transport, client } = await ready();
+    transport.sent.length = 0;
+
+    client.reconnect();
+
+    expect(client.state.phase).toBe("connecting");
+    expect(client.state.reconnecting).toBe(true);
+    expect(client.state.attempts).toBe(1);
+    const sent = transport.sent.map((t) => JSON.parse(t) as { type: string; room?: string; name?: string });
+    expect(sent).toEqual([{ type: "join", room: "demo", name: "alice", protocol: PROTOCOL_VERSION }]);
+  });
+
+  it("sans join() préalable, reconnect() ne fait rien", () => {
+    const transport = new FakeTransport();
+    const client = new LockstepClient({
+      transport,
+      createSim: (seed) => Promise.resolve(FakeSim.fresh(seed)),
+      restoreSim: (data) => Promise.resolve(FakeSim.fromSnapshot(data)),
+    });
+    client.reconnect();
+    expect(transport.sent).toEqual([]);
+    expect(client.state.reconnecting).toBe(false);
+  });
+
+  it("un welcome (running) suivi d'un snapshot remplace le sim et reprend le pompage", async () => {
+    const { transport, client } = await ready();
+    transport.deliver({ type: "bundle", from: 0, to: 2, ticks: [] });
+    client.pump(64);
+    const before = client.sim;
+    expect(client.tick).toBe(3);
+
+    client.reconnect();
+    expect(client.state.phase).toBe("connecting");
+
+    transport.deliver({
+      type: "welcome",
+      protocol: 1,
+      playerId: 1,
+      isHost: true,
+      players: [{ id: 1, name: "alice" }],
+      state: "running",
+      tick: 3,
+    });
+    // Le sim ne change pas encore : comme pour un rejoignant, il faut le
+    // `snapshot` qui suit (§8), pas seulement le `welcome`.
+    expect(client.sim).toBe(before);
+    expect(client.state.phase).toBe("running");
+    expect(client.state.reconnecting).toBe(false);
+    expect(client.state.attempts).toBe(0);
+    expect(client.state.lastReconnectAt).toBe(1);
+
+    const snapshot = FakeSim.fresh(5);
+    snapshot.step(10);
+    transport.deliver({ type: "snapshot", tick: 10, data: snapshot.snapshot() });
+    expect(client.tick).toBe(10); // posé tout de suite par `resetTo`, avant même la résolution du sim
+    await waitFor("sim remplacé par celui du snapshot", () => client.sim !== before);
+
+    transport.deliver({ type: "bundle", from: 10, to: 12, ticks: [] });
+    expect(client.pump(64)).toBe(3);
+    expect(client.tick).toBe(13);
+  });
+
+  it("compte les commandes perdues pendant la coupure et les signale à la reconnexion", async () => {
+    const { transport, client } = await ready();
+    client.reconnect();
+
+    transport.sent.length = 0;
+    client.issue(bytes(0x11));
+    client.issue(bytes(0x22));
+    // Aucune des deux n'a été envoyée : la connexion n'existe plus pour le
+    // serveur pendant la coupure (docs/protocol.md §5).
+    expect(transport.sent).toEqual([]);
+    expect(client.state.lastReconnectLostCommands).toBe(0); // pas encore reconnecté
+
+    transport.deliver({
+      type: "welcome",
+      protocol: 1,
+      playerId: 1,
+      isHost: true,
+      players: [{ id: 1, name: "alice" }],
+      state: "lobby",
+      tick: 0,
+    });
+    expect(client.state.reconnecting).toBe(false);
+    expect(client.state.lastReconnectAt).toBe(1);
+    expect(client.state.lastReconnectLostCommands).toBe(2);
+
+    // Une fois reconnecté, `issue` repart normalement.
+    transport.sent.length = 0;
+    client.issue(bytes(0x33));
+    expect(transport.sent.length).toBe(1);
+  });
+
+  it("le retard n'est pas compté pendant la coupure", async () => {
+    const { transport, client } = await ready();
+    transport.deliver({ type: "bundle", from: 0, to: 5, ticks: [] });
+    // Rattrapage partiel : il reste du retard avant même la coupure.
+    client.pump(2);
+    expect(client.lag).toBeGreaterThan(0);
+
+    client.reconnect();
+    expect(client.state.reconnecting).toBe(true);
+    expect(client.state.lag).toBe(0);
+  });
+
+  it("plusieurs reconnect() consécutifs comptent les tentatives, remises à zéro par le welcome", async () => {
+    const { transport, client } = await ready();
+    client.reconnect();
+    client.reconnect();
+    client.reconnect();
+    expect(client.state.attempts).toBe(3);
+
+    transport.deliver({
+      type: "welcome",
+      protocol: 1,
+      playerId: 1,
+      isHost: true,
+      players: [{ id: 1, name: "alice" }],
+      state: "lobby",
+      tick: 0,
+    });
+    expect(client.state.attempts).toBe(0);
   });
 });

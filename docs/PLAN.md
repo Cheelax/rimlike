@@ -241,8 +241,12 @@ revient dans le rang ; limites : hôte déviant jamais réparé, pas de majorit�
 Client à brancher (bandeau avec bouton, restauration en cours de partie). Worker livré le
 2026-09-05 : sim et client lockstep dans un Web Worker (`SimRunner` pur testé, `SimBridge` côté principal, protocole
 typé, tampons transférés, carte et overlays envoyés seulement quand leur version change) ;
-onglet masqué : 60 ticks/s maintenus. Reste : reconnexion, resynchronisation après désync,
-essai d'une heure. Livré par trois sous-agents Opus.
+onglet masqué : 60 ticks/s maintenus. Livré par trois sous-agents Opus. Reconnexion automatique
+livrée le 2026-09-05 (Sonnet) : `ReconnectingTransport` (délai 1 s → 15 s, gigue, huit essais),
+`LockstepClient.reconnect()` rejoue `join` et reprend par le snapshot du rejoignant, commandes
+émises pendant la coupure comptées et signalées, bandeau « Serveur injoignable » avec « Réessayer ».
+Vérifié en navigateur : relais coupé puis relancé, les deux onglets retrouvent la salle. Reste :
+resynchronisation après désync côté client, essai d'une heure.
 - Serveur relais : lobby, ordonnancement des commandes par tick, redistribution.
 - Lockstep 2-4 joueurs sur la même carte, hash de désync, resync par snapshot.
 - Rejoindre en cours de partie.
@@ -410,6 +414,14 @@ avec réputation, mods de contenu, événements monde.
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-05 : reconnexion automatique (client). Le transport de salle et celui du monde
+  sont enveloppés dans `ReconnectingTransport`, qui masque les essais intermédiaires : la couche
+  au-dessus ne voit que « nouveau transport prêt » (`onReconnect`) ou « abandon » (`onClose`).
+  Les commandes émises pendant la coupure ne sont jamais rejouées (le lockstep leur aurait donné
+  un autre tick, voir protocole §5) : elles sont comptées et le joueur est prévenu une fois.
+  Un serveur relancé perd ses salles : les clients reviennent alors dans un lobby neuf, ce qui
+  est le comportement attendu tant que les salles ne sont pas persistées.
 
 - 2026-09-05 : props naturalistes modulaires (client). Catalogue procédural fusionné
   et instancié : tous les éléments et les seize genres d'objets, sols joints,

@@ -95,6 +95,16 @@ export interface WorldClientState {
    * `identitySummary` (longueur du jeton, pas sa valeur).
    */
   readonly token: string | null;
+  /**
+   * Vrai entre un `reconnect()` (coupure du `Transport`, en général via
+   * `ReconnectingTransport.onReconnect`) et le `world_welcome` qui confirme
+   * que le serveur nous a repris. Même rôle que `LockstepClient.reconnecting`
+   * pour la salle, en indépendant : cette connexion et celle de la salle
+   * tombent et se reconnectent chacune de son côté (`docs/protocol.md` §11.3).
+   */
+  readonly reconnecting: boolean;
+  /** Tentatives de reconnexion consécutives depuis la dernière connexion établie. */
+  readonly attempts: number;
 }
 
 /** Ce qu'il faut pour expédier un manifeste vers une autre case. */
@@ -163,6 +173,10 @@ export class WorldClient {
   private identity: StoredIdentity | null = null;
   /** Un seul essai après `bad_token` : le second `world_join` n'a pas de jeton à refuser. */
   private badTokenRetried = false;
+  /** Voir `WorldClientState.reconnecting`. */
+  private reconnectingFlag = false;
+  /** Voir `WorldClientState.attempts`. */
+  private attemptsValue = 0;
 
   constructor(options: WorldClientOptions) {
     this.transport = options.transport;
@@ -215,6 +229,32 @@ export class WorldClient {
    */
   join(): void {
     this.identity = loadIdentity(identityScope(this.serverUrl, this.playerName));
+    this.send({
+      type: "world_join",
+      name: this.playerName,
+      protocol: PROTOCOL_VERSION,
+      ...(this.identity !== null ? { token: this.identity.token } : {}),
+    });
+    this.emit();
+  }
+
+  /**
+   * Rejoue `world_join` après une coupure (`docs/protocol.md` §11.2, §11.3) :
+   * même jeton qu'avant (`this.identity`, jamais perdu — il vit dans
+   * `localStorage`, pas dans cette connexion), donc le serveur nous reconnaît
+   * comme le même joueur. `world_welcome` qui suit remet `settlements`,
+   * `players` et `caravans` à jour tout seul (ce sont des diffusions
+   * complètes, pas des deltas, §11.5) : rien d'autre à faire ici.
+   *
+   * À appeler quand une couche au-dessus détecte qu'un `Transport` neuf est
+   * disponible (`ReconnectingTransport.onReconnect`, câblé dans `App.tsx`).
+   * Sans `join()` préalable il n'y a pas de nom à rejouer : no-op.
+   */
+  reconnect(): void {
+    if (this.playerName === "") return;
+    this.phase = "connecting";
+    this.reconnectingFlag = true;
+    this.attemptsValue += 1;
     this.send({
       type: "world_join",
       name: this.playerName,
@@ -334,6 +374,10 @@ export class WorldClient {
           this.identity = { ...this.identity, playerKey: message.playerKey };
         }
         this.phase = "connected";
+        // Reconnexion confirmée : le réseau est de retour (rien à faire pour
+        // un `world_welcome` ordinaire, `reconnectingFlag` déjà faux).
+        this.reconnectingFlag = false;
+        this.attemptsValue = 0;
         this.emit();
         return;
       }
@@ -416,6 +460,8 @@ export class WorldClient {
       world: this.worldInfo,
       lastError: this.lastError,
       token: this.identity?.token ?? null,
+      reconnecting: this.reconnectingFlag,
+      attempts: this.attemptsValue,
     });
   }
 }
