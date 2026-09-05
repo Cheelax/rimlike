@@ -83,6 +83,13 @@ export interface WorldScreenProps {
   readonly name: string;
   /** Faux pendant qu'on joue une colonie : le globe reste monté mais caché. */
   readonly visible: boolean;
+  /**
+   * Case présélectionnée à l'entrée dans l'écran Monde — typiquement le choix
+   * fait depuis « Salles ouvertes » de l'accueil pour une salle « case ».
+   * N'a d'effet qu'au montage : un changement ultérieur de cette prop ne
+   * redéplace pas la sélection, qui est ensuite pilotée par les clics.
+   */
+  readonly initialTile?: number | null;
   readonly onSettle: (tile: number) => void;
   readonly onVisit: (tile: number) => void;
   readonly onAbandon: (tile: number) => void;
@@ -134,6 +141,7 @@ export function WorldScreen({
   net,
   name,
   visible,
+  initialTile = null,
   onSettle,
   onVisit,
   onAbandon,
@@ -151,11 +159,11 @@ export function WorldScreen({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<GlobeRenderer | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selected, setSelected] = useState<number | null>(initialTile);
   const [hovered, setHovered] = useState<number | null>(null);
   const [hoveredCaravan, setHoveredCaravan] = useState<string | null>(null);
   /** Miroir synchrone de la sélection : le crochet de dev le lit sans passer par React. */
-  const selectedRef = useRef<number | null>(null);
+  const selectedRef = useRef<number | null>(initialTile);
   /**
    * Le mode sélection lu par les écouteurs souris, montés une fois pour
    * toutes : un `useEffect` par changement de mode recréerait le globe.
@@ -263,6 +271,15 @@ export function WorldScreen({
   useEffect(() => {
     if (visible) rendererRef.current?.resize();
   }, [visible]);
+
+  // Présélection venue de l'accueil (« Salles ouvertes ») : un seul centrage
+  // de caméra, à l'entrée dans l'écran Monde — la sélection elle-même est déjà
+  // portée par l'état initial de `selected` ci-dessus.
+  useEffect(() => {
+    if (initialTile !== null) rendererRef.current?.focusTile(initialTile);
+    // Volontairement `[]` : un seul centrage au montage, pas à chaque
+    // changement de `initialTile` (voir le contrat de la prop ci-dessus).
+  }, []);
 
   useEffect(() => {
     rendererRef.current?.setSelected(selected);

@@ -12,6 +12,7 @@ import {
   type DispatchedDeparture,
 } from "./net/CaravanDispatcher";
 import type { LockstepError, LockstepState } from "./net/LockstepClient";
+import { fetchRooms, roomDisplayName, roomDay, roomStateLabel, type RoomInfo } from "./net/roomsFetch";
 import { WebSocketTransport } from "./net/Transport";
 import { WorldClient, type WorldClientState } from "./net/WorldClient";
 import { fetchWorld, type WorldProgress } from "./net/worldFetch";
@@ -92,6 +93,10 @@ const DEFAULT_SERVER = "ws://localhost:8787";
 const DEFAULT_SEED = 42;
 const MAP_SIZE = 128;
 const MULTI_DISABLED = "indisponible en multijoueur";
+/** Période de sondage de `GET /rooms` tant que l'accueil est affiché (§2 du protocole). */
+const ROOMS_POLL_MS = 5000;
+/** Attente avant de resonder `GET /rooms` après un changement d'adresse de serveur. */
+const ROOMS_SERVER_DEBOUNCE_MS = 500;
 
 /** Étiquette d'humeur, en pourcentage. */
 function moodLabel(mood: number): string {
@@ -423,6 +428,21 @@ export function App() {
   });
   const [net, setNet] = useState<LockstepState | null>(null);
   const [seed, setSeed] = useState<number>(DEFAULT_SEED);
+  // --- Salles ouvertes : sondage de `GET /rooms`, tant que l'accueil est affiché ---
+  const [rooms, setRooms] = useState<readonly RoomInfo[]>([]);
+  const [roomsTruncated, setRoomsTruncated] = useState(false);
+  /** Message d'erreur bref (serveur injoignable), jamais un toast répété à chaque sondage. */
+  const [roomsError, setRoomsError] = useState<string | null>(null);
+  const [roomFilter, setRoomFilter] = useState("");
+  const [roomsLobbyOnly, setRoomsLobbyOnly] = useState(false);
+  /** Adresse serveur effective pour le sondage, mise à jour 500 ms après la dernière frappe. */
+  const [roomsServer, setRoomsServer] = useState(form.server);
+  /**
+   * Case présélectionnée en entrant dans l'écran Monde depuis « Salles
+   * ouvertes » (bouton Rejoindre d'une salle « case »). Remise à `null` en
+   * quittant le monde ou en repartant du bouton « Monde partagé » ordinaire.
+   */
+  const [initialWorldTile, setInitialWorldTile] = useState<number | null>(null);
   // --- Monde partagé : le globe et la connexion vivent en dehors de la partie ---
   const worldRef = useRef<WorldClient | null>(null);
   const [globe, setGlobe] = useState<World | null>(null);
@@ -575,6 +595,58 @@ export function App() {
       setImposedSeed(null);
     };
   }, [worldSession]);
+
+  /** L'accueil, tel qu'affiché plus bas : ni partie, ni monde en cours. */
+  const homeVisible = session === null && worldSession === null;
+
+  // --- Salles ouvertes : `GET /rooms` en sondage, adresse serveur débattue à part ---
+  useEffect(() => {
+    const t = window.setTimeout(() => setRoomsServer(form.server), ROOMS_SERVER_DEBOUNCE_MS);
+    return () => window.clearTimeout(t);
+  }, [form.server]);
+
+  useEffect(() => {
+    if (!homeVisible) return;
+    let cancelled = false;
+    const poll = () => {
+      void fetchRooms(roomsServer).then(
+        (res) => {
+          if (cancelled) return;
+          setRooms(res.rooms);
+          setRoomsTruncated(res.truncated);
+          setRoomsError(null);
+        },
+        (e: unknown) => {
+          // Serveur injoignable : une ligne discrète dans l'accueil, jamais
+          // un toast répété à chaque sondage de 5 s.
+          if (cancelled) return;
+          setRoomsError(e instanceof Error ? e.message : String(e));
+        },
+      );
+    };
+    poll();
+    const id = window.setInterval(poll, ROOMS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [homeVisible, roomsServer]);
+
+  // Crochet de dev : la dernière liste reçue, seulement pendant que l'accueil
+  // est affiché (voir « Vérifier dans le navigateur », `AGENTS.md`).
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const hook = window as unknown as { __rimlike?: Record<string, unknown> };
+    if (!homeVisible) {
+      if (hook.__rimlike) delete hook.__rimlike.rooms;
+      return;
+    }
+    hook.__rimlike ??= {};
+    hook.__rimlike.rooms = rooms;
+    return () => {
+      if (hook.__rimlike) delete hook.__rimlike.rooms;
+    };
+  }, [homeVisible, rooms]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1619,6 +1691,25 @@ export function App() {
     setNet(null);
     setStats(INITIAL);
     setSession(null);
+    setInitialWorldTile(null);
+  };
+  /**
+   * Rejoindre une salle listée par « Salles ouvertes » (§2 du protocole) : une
+   * salle simple préremplit le champ salle puis connecte tout de suite avec
+   * le nom déjà saisi ; une salle « case » ouvre l'écran Monde avec la case
+   * présélectionnée, un bouton « Visiter » y est déjà proposé (même flux que
+   * `WorldScreen.onVisit`).
+   */
+  const joinRoom = (room: RoomInfo) => {
+    if (room.players >= room.maxPlayers) return; // grisé côté accueil, refusé ici par sécurité
+    if (room.isTile) {
+      if (room.tile === undefined) return;
+      setInitialWorldTile(room.tile);
+      setWorldSession({ server: form.server, name: form.name });
+      return;
+    }
+    setForm({ ...form, room: room.name });
+    setSession({ mode: "multi", server: form.server, room: room.name, name: form.name });
   };
   // Graine effective d'un `start` : celle de la case l'emporte (le serveur
   // l'impose de toute façon, docs/protocol.md §11.2).
@@ -1634,6 +1725,7 @@ export function App() {
           // Le globe repasse devant la colonie le temps de choisir la case
           // d'arrivée d'une caravane, puis se remasque.
           visible={session === null || caravanPicking}
+          initialTile={initialWorldTile}
           onSettle={(tile) => worldRef.current?.settle(tile)}
           onVisit={(tile) => worldRef.current?.visit(tile)}
           onAbandon={(tile) => worldRef.current?.abandon(tile)}
@@ -1662,7 +1754,18 @@ export function App() {
           onChange={setForm}
           onSolo={() => setSession({ mode: "solo" })}
           onJoin={() => setSession({ mode: "multi", ...form })}
-          onWorld={() => setWorldSession({ server: form.server, name: form.name })}
+          onWorld={() => {
+            setInitialWorldTile(null);
+            setWorldSession({ server: form.server, name: form.name });
+          }}
+          rooms={rooms}
+          roomsTruncated={roomsTruncated}
+          roomsError={roomsError}
+          roomFilter={roomFilter}
+          onRoomFilterChange={setRoomFilter}
+          roomsLobbyOnly={roomsLobbyOnly}
+          onRoomsLobbyOnlyChange={setRoomsLobbyOnly}
+          onJoinRoom={joinRoom}
         />
       ) : (
         session !== null &&
@@ -2070,15 +2173,39 @@ function HomeScreen({
   onSolo,
   onJoin,
   onWorld,
+  rooms,
+  roomsTruncated,
+  roomsError,
+  roomFilter,
+  onRoomFilterChange,
+  roomsLobbyOnly,
+  onRoomsLobbyOnlyChange,
+  onJoinRoom,
 }: {
   form: JoinForm;
   onChange: (f: JoinForm) => void;
   onSolo: () => void;
   onJoin: () => void;
   onWorld: () => void;
+  /** Dernière liste reçue de `GET /rooms` (`docs/protocol.md` §2), non filtrée. */
+  rooms: readonly RoomInfo[];
+  roomsTruncated: boolean;
+  /** Message bref si le sondage échoue ; `null` tant que tout va bien. */
+  roomsError: string | null;
+  roomFilter: string;
+  onRoomFilterChange: (v: string) => void;
+  roomsLobbyOnly: boolean;
+  onRoomsLobbyOnlyChange: (v: boolean) => void;
+  onJoinRoom: (room: RoomInfo) => void;
 }) {
   const connectable = form.server.trim() !== "" && form.name.trim() !== "";
   const ready = connectable && form.room.trim() !== "";
+  const needle = roomFilter.trim().toLowerCase();
+  const visibleRooms = rooms.filter(
+    (room) =>
+      (!roomsLobbyOnly || room.state === "lobby") &&
+      (needle === "" || roomDisplayName(room).toLowerCase().includes(needle)),
+  );
   return (
     <div className="overlay">
       <div className="card">
@@ -2123,6 +2250,52 @@ function HomeScreen({
         <div className="help">
           Paramètres d'URL acceptés : ?server=…&amp;room=…&amp;name=… ou ?server=…&amp;name=…&amp;world=1
         </div>
+
+        <div className="card-sep">ou</div>
+        <div className="card-subtitle">Salles ouvertes</div>
+        <div className="rooms-filters">
+          <input
+            className="rooms-filter-text"
+            placeholder="filtrer par nom…"
+            value={roomFilter}
+            onChange={(e) => onRoomFilterChange(e.target.value)}
+          />
+          <label className="rooms-lobby-only">
+            <input
+              type="checkbox"
+              checked={roomsLobbyOnly}
+              onChange={(e) => onRoomsLobbyOnlyChange(e.target.checked)}
+            />
+            en attente seulement
+          </label>
+        </div>
+        {roomsError !== null ? (
+          <div className="help">serveur injoignable</div>
+        ) : (
+          <>
+            <ul className="lobby rooms-list">
+              {visibleRooms.map((room) => {
+                const full = room.players >= room.maxPlayers;
+                return (
+                  <li key={room.name}>
+                    <div className="rooms-room-info">
+                      <b>{roomDisplayName(room)}</b>
+                      <div className="help">
+                        {roomStateLabel(room.state)} · {room.players}/{room.maxPlayers} joueurs · jour{" "}
+                        {roomDay(room.tick)}
+                      </div>
+                    </div>
+                    <button className="small" disabled={full} onClick={() => onJoinRoom(room)}>
+                      {full ? "Complète" : "Rejoindre"}
+                    </button>
+                  </li>
+                );
+              })}
+              {visibleRooms.length === 0 && <li className="empty">aucune salle ouverte</li>}
+            </ul>
+            {roomsTruncated && <div className="help">et d'autres…</div>}
+          </>
+        )}
       </div>
     </div>
   );
