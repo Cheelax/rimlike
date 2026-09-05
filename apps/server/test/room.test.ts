@@ -351,6 +351,156 @@ describe("désync", () => {
     room.handle(bobId, { type: "hash", tick: 900, hash: "dddd" });
     expect(alice.ofType("desync")).toHaveLength(1);
   });
+
+  it("ne calcule aucune majorité à deux joueurs : pas d'outliers, pas d'auto-réparation", () => {
+    const alice = new Recorder();
+    const bob = new Recorder();
+    const aliceId = room.join("alice", alice.send)!;
+    const bobId = room.join("bob", bob.send)!;
+    room.handle(aliceId, { type: "start", seed: 1, width: 32, height: 32 });
+
+    room.handle(aliceId, { type: "hash", tick: 300, hash: "aaaa" });
+    room.handle(bobId, { type: "hash", tick: 300, hash: "bbbb" });
+
+    const desync = alice.ofType("desync")[0]!;
+    expect(desync.outliers).toBeUndefined();
+    expect(room.state).toBe("desynced");
+    // Impossible de départager qui a raison à deux : personne n'est sollicité.
+    expect(alice.ofType("request_snapshot")).toEqual([]);
+    expect(bob.ofType("request_snapshot")).toEqual([]);
+  });
+});
+
+describe("resynchronisation", () => {
+  it("répare automatiquement le déviant identifié par la majorité, puis signale son retour", () => {
+    const alice = new Recorder();
+    const bob = new Recorder();
+    const carol = new Recorder();
+    const aliceId = room.join("alice", alice.send)!;
+    const bobId = room.join("bob", bob.send)!;
+    const carolId = room.join("carol", carol.send)!;
+    room.handle(aliceId, { type: "start", seed: 1, width: 32, height: 32 });
+
+    // Point de contrôle : bob dévie, alice et carol s'accordent.
+    room.handle(aliceId, { type: "hash", tick: 300, hash: "AAAA" });
+    room.handle(carolId, { type: "hash", tick: 300, hash: "AAAA" });
+    room.handle(bobId, { type: "hash", tick: 300, hash: "ZZZZ" });
+
+    expect(alice.ofType("desync")).toEqual([
+      { type: "desync", tick: 300, hashes: { 1: "AAAA", 2: "ZZZZ", 3: "AAAA" }, outliers: [bobId] },
+    ]);
+    expect(room.state).toBe("desynced");
+
+    // L'hôte, et lui seul, est sollicité pour rattraper bob — comme un rejoignant.
+    expect(alice.ofType("request_snapshot")).toEqual([{ type: "request_snapshot", forPlayer: bobId }]);
+    expect(carol.ofType("request_snapshot")).toEqual([]);
+
+    const resyncTick = room.tick;
+    room.handle(aliceId, { type: "snapshot", tick: resyncTick, data: bytes(9, 9, 9), forPlayer: bobId });
+    expect(bob.ofType("snapshot")).toEqual([{ type: "snapshot", tick: resyncTick, data: bytes(9, 9, 9) }]);
+
+    // Prochain point de contrôle : bob a rattrapé la majorité.
+    room.handle(aliceId, { type: "hash", tick: 600, hash: "BBBB" });
+    room.handle(carolId, { type: "hash", tick: 600, hash: "BBBB" });
+    room.handle(bobId, { type: "hash", tick: 600, hash: "BBBB" });
+
+    expect(alice.ofType("resynced")).toEqual([{ type: "resynced", player: bobId, tick: 600 }]);
+    expect(room.state).toBe("running");
+  });
+
+  it("ne redéclenche pas de réparation avant RESYNC_COOLDOWN_TICKS, puis le fait au-delà", () => {
+    const alice = new Recorder();
+    const bob = new Recorder();
+    const carol = new Recorder();
+    const aliceId = room.join("alice", alice.send)!;
+    const bobId = room.join("bob", bob.send)!;
+    const carolId = room.join("carol", carol.send)!;
+    room.handle(aliceId, { type: "start", seed: 1, width: 32, height: 32 });
+
+    room.handle(aliceId, { type: "hash", tick: 300, hash: "AAAA" });
+    room.handle(carolId, { type: "hash", tick: 300, hash: "AAAA" });
+    room.handle(bobId, { type: "hash", tick: 300, hash: "ZZZZ" });
+    expect(alice.ofType("request_snapshot")).toHaveLength(1);
+
+    // Bob dévie encore juste après : le cooldown est actif, pas de nouvelle demande.
+    room.handle(aliceId, { type: "hash", tick: 350, hash: "BBBB" });
+    room.handle(carolId, { type: "hash", tick: 350, hash: "BBBB" });
+    room.handle(bobId, { type: "hash", tick: 350, hash: "YYYY" });
+    expect(alice.ofType("request_snapshot")).toHaveLength(1);
+
+    // 1800 ticks après la première tentative : le cooldown est passé.
+    room.handle(aliceId, { type: "hash", tick: 2100, hash: "CCCC" });
+    room.handle(carolId, { type: "hash", tick: 2100, hash: "CCCC" });
+    room.handle(bobId, { type: "hash", tick: 2100, hash: "XXXX" });
+    expect(alice.ofType("request_snapshot")).toHaveLength(2);
+    expect(alice.ofType("request_snapshot").at(-1)).toEqual({ type: "request_snapshot", forPlayer: bobId });
+  });
+
+  it("ne répare jamais un hôte déviant : on se contente de desync", () => {
+    const alice = new Recorder();
+    const bob = new Recorder();
+    const carol = new Recorder();
+    const aliceId = room.join("alice", alice.send)!;
+    const bobId = room.join("bob", bob.send)!;
+    const carolId = room.join("carol", carol.send)!;
+    room.handle(aliceId, { type: "start", seed: 1, width: 32, height: 32 });
+
+    // C'est l'hôte (alice) qui dévie ; bob et carol s'accordent en premier, pour
+    // que la majorité soit déjà connue au moment où le hash de l'hôte arrive.
+    room.handle(bobId, { type: "hash", tick: 300, hash: "ZZZZ" });
+    room.handle(carolId, { type: "hash", tick: 300, hash: "ZZZZ" });
+    room.handle(aliceId, { type: "hash", tick: 300, hash: "AAAA" });
+
+    expect(alice.ofType("desync")[0]!.outliers).toEqual([aliceId]);
+    expect(room.state).toBe("desynced");
+    // Aucune demande de snapshot : en v1, personne ne corrige l'hôte.
+    expect(alice.ofType("request_snapshot")).toEqual([]);
+  });
+
+  describe("manuelle", () => {
+    it("un non-host obtient un nouveau snapshot", () => {
+      const alice = new Recorder();
+      const bob = new Recorder();
+      const aliceId = room.join("alice", alice.send)!;
+      const bobId = room.join("bob", bob.send)!;
+      room.handle(aliceId, { type: "start", seed: 1, width: 32, height: 32 });
+
+      room.handle(bobId, { type: "resync" });
+      expect(alice.ofType("request_snapshot")).toEqual([{ type: "request_snapshot", forPlayer: bobId }]);
+      expect(bob.ofType("error")).toEqual([]);
+
+      room.handle(aliceId, { type: "snapshot", tick: 0, data: bytes(5), forPlayer: bobId });
+      expect(bob.ofType("snapshot")).toEqual([{ type: "snapshot", tick: 0, data: bytes(5) }]);
+    });
+
+    it("refuse l'hôte", () => {
+      const alice = new Recorder();
+      const aliceId = room.join("alice", alice.send)!;
+      room.handle(aliceId, { type: "start", seed: 1, width: 32, height: 32 });
+      room.handle(aliceId, { type: "resync" });
+      expect(alice.ofType("error")[0]!.code).toBe("host_cannot_resync");
+    });
+
+    it("refuse avant le démarrage de la salle", () => {
+      const alice = new Recorder();
+      const bob = new Recorder();
+      room.join("alice", alice.send);
+      const bobId = room.join("bob", bob.send)!;
+      room.handle(bobId, { type: "resync" });
+      expect(bob.ofType("error")[0]!.code).toBe("not_running");
+    });
+
+    it("refuse une seconde demande avant le délai de repos", () => {
+      const alice = new Recorder();
+      const bob = new Recorder();
+      const aliceId = room.join("alice", alice.send)!;
+      const bobId = room.join("bob", bob.send)!;
+      room.handle(aliceId, { type: "start", seed: 1, width: 32, height: 32 });
+      room.handle(bobId, { type: "resync" });
+      room.handle(bobId, { type: "resync" });
+      expect(bob.ofType("error")[0]!.code).toBe("resync_cooldown");
+    });
+  });
 });
 
 describe("salle de case", () => {

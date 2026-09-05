@@ -25,6 +25,7 @@ import {
   MAX_PLAYERS,
   NO_PLAYER,
   PROTOCOL_VERSION,
+  RESYNC_COOLDOWN_TICKS,
   SNAPSHOT_EVERY_TICKS,
   Scheduler,
   TICK_RATE,
@@ -154,6 +155,18 @@ export class Room {
   private nextKeepTick = Number.POSITIVE_INFINITY;
   /** Dernier hôte annoncé par `onHostReady`, pour ne pas le réannoncer. */
   private readyHost: PlayerId | null = null;
+  /**
+   * Joueurs actuellement identifiés comme déviants (leur dernier hash connu
+   * diverge de la majorité, `HashLedger.outliers`). Vide ⇒ la salle peut
+   * revenir de `desynced` à `running` (docs/protocol.md §7).
+   */
+  private readonly deviating = new Set<PlayerId>();
+  /**
+   * Dernier tick auquel une resynchronisation (automatique ou manuelle) a été
+   * déclenchée pour un joueur : sert de cooldown, qu'elle vienne de l'auto-
+   * réparation ou d'un `resync` explicite (`RESYNC_COOLDOWN_TICKS`).
+   */
+  private readonly lastResyncAt = new Map<PlayerId, number>();
 
   constructor(options: RoomOptions) {
     this.name = options.name;
@@ -303,6 +316,8 @@ export class Room {
     const [player] = this.players.splice(index, 1);
     this.scheduler.dropPlayer(id);
     this.ledger.removePlayer(id);
+    this.deviating.delete(id);
+    this.lastResyncAt.delete(id);
     this.log(`[${this.name}] joueur ${id} (${player!.name}) part — ${this.players.length} restant(s)`);
 
     if (this.hostId === id) {
@@ -319,6 +334,11 @@ export class Room {
     }
     this.broadcastPlayers();
     this.notifyHostReady();
+    // Le départ d'un déviant peut suffire à vider `deviating` : la salle sort
+    // alors de `desynced` sans qu'un `resynced` ait de sens pour lui.
+    if (this.deviating.size === 0 && this.roomState === "desynced") {
+      this.roomState = "running";
+    }
     if (this.isEmpty) {
       this.stop();
     }
@@ -359,6 +379,9 @@ export class Room {
         this.sendTo(player, { type: "pong" });
         return;
       case "pong":
+        return;
+      case "resync":
+        this.handleResync(player);
         return;
       case "world_join":
       case "settle":
@@ -480,15 +503,107 @@ export class Room {
 
   private handleHash(id: PlayerId, tick: number, hash: string): void {
     const report = this.ledger.report(id, tick, hash);
-    if (report === null) {
+    if (report !== null) {
+      this.roomState = "desynced";
+      const outliers = this.ledger.outliers(report.tick);
+      this.broadcast({
+        type: "desync",
+        tick: report.tick,
+        hashes: report.hashes,
+        ...(outliers.length > 0 ? { outliers } : {}),
+      });
+      const detail = Object.entries(report.hashes)
+        .map(([player, value]) => `${player}=${value}`)
+        .join(" ");
+      this.log(`[${this.name}] DÉSYNC au tick ${tick} — ${detail}`);
+    }
+    // Indépendant du signalement « premier écart » ci-dessus (qui ne se
+    // produit qu'une fois pour la vie de la salle) : à chaque hash reçu, on
+    // regarde si une majorité se dégage pour ce tick, pour réparer les
+    // déviants et détecter un retour à la normale (docs/protocol.md §7).
+    this.reconcileHashMajority(tick);
+  }
+
+  /**
+   * Compare le hash annoncé par chaque joueur à la majorité connue pour ce
+   * tick (`HashLedger.majorityHash`, `null` tant qu'on n'a pas au moins trois
+   * hashes). Un nouveau déviant déclenche une resynchronisation automatique
+   * (sauf l'hôte : v1 le prend pour référence, rien à corriger) ; un déviant
+   * dont le hash concorde de nouveau émet `resynced` et peut sortir la salle
+   * de `desynced` si plus personne ne dévie.
+   */
+  private reconcileHashMajority(tick: number): void {
+    const majority = this.ledger.majorityHash(tick);
+    if (majority === null) {
       return;
     }
-    this.roomState = "desynced";
-    this.broadcast({ type: "desync", tick: report.tick, hashes: report.hashes });
-    const detail = Object.entries(report.hashes)
-      .map(([player, value]) => `${player}=${value}`)
-      .join(" ");
-    this.log(`[${this.name}] DÉSYNC au tick ${tick} — ${detail}`);
+    const hashes = this.ledger.hashesAt(tick);
+    for (const key of Object.keys(hashes)) {
+      const player = Number(key) as PlayerId;
+      if (hashes[player] !== majority) {
+        this.deviating.add(player);
+        this.roomState = "desynced";
+        if (player !== this.hostId) {
+          this.tryAutoResync(player, tick);
+        }
+      } else if (this.deviating.delete(player)) {
+        this.broadcast({ type: "resynced", player, tick });
+        this.log(`[${this.name}] joueur ${player} resynchronisé au tick ${tick}`);
+      }
+    }
+    if (this.deviating.size === 0 && this.roomState === "desynced") {
+      this.roomState = "running";
+      this.log(`[${this.name}] plus aucun déviant connu — sortie de l'état desynced`);
+    }
+  }
+
+  /**
+   * Déclenche, pour un déviant, le même mécanisme que pour un rejoignant
+   * (`requestSnapshotFor`) : l'hôte recevra `request_snapshot { forPlayer }` et
+   * répondra par `snapshot`, rejoué depuis ce tick. Borné par
+   * `RESYNC_COOLDOWN_TICKS` par joueur, qu'il s'agisse d'une tentative
+   * automatique ou d'un `resync` manuel précédent : pas de tempête de
+   * demandes tant que la précédente n'a pas eu le temps d'aboutir.
+   */
+  private tryAutoResync(player: PlayerId, tick: number): void {
+    const last = this.lastResyncAt.get(player);
+    if (last !== undefined && tick - last < RESYNC_COOLDOWN_TICKS) {
+      return;
+    }
+    const target = this.players.find((p) => p.id === player);
+    if (target === undefined) {
+      return;
+    }
+    this.lastResyncAt.set(player, tick);
+    target.synced = false;
+    this.requestSnapshotFor(player);
+    this.log(`[${this.name}] resynchronisation automatique déclenchée pour le joueur ${player} au tick ${tick}`);
+  }
+
+  /**
+   * `resync` manuel : un joueur demande explicitement un snapshot frais de
+   * l'hôte. Refusé pour l'hôte lui-même (`host_cannot_resync`, v1 : il fait
+   * référence) et soumis au même cooldown que l'auto-réparation
+   * (`resync_cooldown`).
+   */
+  private handleResync(player: RoomPlayer): void {
+    if (!this.isRunning()) {
+      this.fail(player, "not_running", "la salle n'a pas démarré");
+      return;
+    }
+    if (player.id === this.hostId) {
+      this.fail(player, "host_cannot_resync", "l'hôte fait référence, il ne peut pas se resynchroniser");
+      return;
+    }
+    const last = this.lastResyncAt.get(player.id);
+    if (last !== undefined && this.tick - last < RESYNC_COOLDOWN_TICKS) {
+      this.fail(player, "resync_cooldown", "une resynchronisation vient déjà d'être déclenchée pour ce joueur");
+      return;
+    }
+    this.lastResyncAt.set(player.id, this.tick);
+    player.synced = false;
+    this.requestSnapshotFor(player.id);
+    this.log(`[${this.name}] resynchronisation manuelle demandée par le joueur ${player.id}`);
   }
 
   private requestSnapshotFor(id: PlayerId): void {

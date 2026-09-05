@@ -180,6 +180,43 @@ describe("HashLedger", () => {
     expect(ledger.hashesAt(1)).toEqual({});
     expect(ledger.hashesAt(3)).toEqual({ 1: "a" });
   });
+
+  it("identifie le déviant quand une majorité se dégage à trois joueurs", () => {
+    const ledger = new HashLedger();
+    ledger.report(1, 300, "aaaa");
+    ledger.report(2, 300, "zzzz");
+    ledger.report(3, 300, "aaaa");
+    expect(ledger.majorityHash(300)).toBe("aaaa");
+    expect(ledger.outliers(300)).toEqual([2]);
+  });
+
+  it("ne calcule aucune majorité à deux joueurs, même en désaccord", () => {
+    const ledger = new HashLedger();
+    ledger.report(1, 300, "aaaa");
+    ledger.report(2, 300, "bbbb");
+    expect(ledger.majorityHash(300)).toBeNull();
+    expect(ledger.outliers(300)).toEqual([]);
+  });
+
+  it("ne calcule aucune majorité sans valeur qui dépasse la moitié", () => {
+    const ledger = new HashLedger();
+    ledger.report(1, 300, "aaaa");
+    ledger.report(2, 300, "bbbb");
+    ledger.report(3, 300, "cccc");
+    ledger.report(4, 300, "dddd");
+    // 4 joueurs, 4 valeurs différentes : personne n'a la majorité.
+    expect(ledger.majorityHash(300)).toBeNull();
+    expect(ledger.outliers(300)).toEqual([]);
+  });
+
+  it("outliers est vide quand tout le monde s'accorde", () => {
+    const ledger = new HashLedger();
+    ledger.report(1, 300, "aaaa");
+    ledger.report(2, 300, "aaaa");
+    ledger.report(3, 300, "aaaa");
+    expect(ledger.majorityHash(300)).toBe("aaaa");
+    expect(ledger.outliers(300)).toEqual([]);
+  });
 });
 
 describe("BundleHistory", () => {

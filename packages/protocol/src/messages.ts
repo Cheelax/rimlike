@@ -74,6 +74,16 @@ export const SNAPSHOT_EVERY_TICKS = 1800;
 /** Bundles conservés par salle pour le rejeu d'un joueur qui rejoint. */
 export const MAX_HISTORY_BUNDLES = 2000;
 
+/**
+ * Cooldown d'une resynchronisation, en ticks : un déviant qui continue de
+ * diverger à un point de contrôle suivant n'est pas resollicité avant ce
+ * délai (pas de tempête de `request_snapshot`), et une demande manuelle
+ * (`resync`) trop rapprochée de la précédente pour ce joueur est refusée
+ * (`error resync_cooldown`). 1800 ticks = 30 s à 60 ticks/s, la même échelle
+ * que `SNAPSHOT_EVERY_TICKS` (`docs/protocol.md` §7).
+ */
+export const RESYNC_COOLDOWN_TICKS = 1800;
+
 /** Période du heartbeat serveur → client. */
 export const HEARTBEAT_MS = 5000;
 
@@ -319,6 +329,20 @@ export interface PongMessage {
 }
 
 /**
+ * Demande explicite du client de se resynchroniser sur l'état de l'hôte : le
+ * serveur relance pour lui le mécanisme d'un rejoignant (`request_snapshot`
+ * puis `snapshot` puis rejeu, `docs/protocol.md` §8 et §7). Refusée pour
+ * l'hôte (`error host_cannot_resync` : en v1 l'hôte fait référence, se
+ * resynchroniser sur soi-même n'a pas de sens), si la salle n'a pas démarré
+ * (`not_running`), ou si une resynchronisation vient déjà d'être déclenchée
+ * pour ce joueur, automatiquement ou manuellement, il y a moins de
+ * `RESYNC_COOLDOWN_TICKS` (`resync_cooldown`).
+ */
+export interface ResyncMessage {
+  readonly type: "resync";
+}
+
+/**
  * Connexion au **monde**, sans entrer dans une salle : le client reçoit la
  * liste des colonies et peut ensuite s'installer, visiter ou repartir. Une
  * connexion peut faire `world_join` puis `join` : le monde et la salle
@@ -413,6 +437,7 @@ export type ClientMessage =
   | ClientSnapshotMessage
   | PingMessage
   | PongMessage
+  | ResyncMessage
   | WorldJoinMessage
   | SettleMessage
   | VisitMessage
@@ -494,11 +519,32 @@ export interface ServerSnapshotMessage {
 /**
  * Premier écart de hash constaté. Les clés de `hashes` sont des identifiants
  * de joueur (chaînes après passage par JSON).
+ *
+ * `outliers` liste les joueurs déviants au sens de `HashLedger.outliers` : la
+ * valeur majoritaire à ce tick fait référence, les autres sont les déviants.
+ * Absent (jamais un tableau vide sur le fil) quand aucune majorité n'est
+ * connue — il faut au moins trois hashes pour ce tick, donc systématiquement
+ * absent à deux joueurs, faute de pouvoir départager qui a raison. Facultatif
+ * pour la compatibilité d'un ancien serveur ou d'un ancien client
+ * (`docs/protocol.md` §7).
  */
 export interface DesyncMessage {
   readonly type: "desync";
   readonly tick: number;
   readonly hashes: Readonly<Record<PlayerId, string>>;
+  readonly outliers?: readonly PlayerId[];
+}
+
+/**
+ * Une resynchronisation a réussi : `player` a de nouveau annoncé, au point de
+ * contrôle `tick`, un hash égal à la majorité (`HashLedger.majorityHash`).
+ * Diffusé à tous ; la salle quitte l'état `desynced` si plus personne ne
+ * dévie (`docs/protocol.md` §7).
+ */
+export interface ResyncedMessage {
+  readonly type: "resynced";
+  readonly player: PlayerId;
+  readonly tick: number;
 }
 
 export interface ErrorMessage {
@@ -609,6 +655,7 @@ export type ServerMessage =
   | RequestSnapshotMessage
   | ServerSnapshotMessage
   | DesyncMessage
+  | ResyncedMessage
   | ErrorMessage
   | PingMessage
   | PongMessage
@@ -648,6 +695,10 @@ export const ERROR_CODES = [
   "history_gap",
   /** Pas de host disponible pour fournir un snapshot. */
   "no_host",
+  /** `resync` envoyé par le host : en v1 il fait référence, rien à corriger. */
+  "host_cannot_resync",
+  /** `resync` refusé : une resynchronisation vient déjà d'être déclenchée pour ce joueur. */
+  "resync_cooldown",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

@@ -112,6 +112,16 @@ client peut aussi envoyer `ping`, le serveur répond `pong`.
 { "type": "pong" }
 ```
 
+**`resync`** — demande explicite d'une resynchronisation sur l'état de l'hôte
+(§7) : le serveur y répond comme pour un rejoignant (`request_snapshot` à
+l'hôte puis `snapshot` et rejeu). Refusé pour l'hôte (`host_cannot_resync`),
+hors salle démarrée (`not_running`) ou trop tôt après la précédente
+resynchronisation de ce joueur (`resync_cooldown`).
+
+```json
+{ "type": "resync" }
+```
+
 ### 3.2 Serveur → client
 
 **`welcome`** — réponse à `join`. `tick` est le prochain tick que le serveur
@@ -188,10 +198,22 @@ le premier arrivant rattrape avec une commande d'avance rapide.
 ```
 
 **`desync`** — premier écart de hash constaté. Les clés de `hashes` sont des
-identifiants de joueur (chaînes, JSON oblige).
+identifiants de joueur (chaînes, JSON oblige). `outliers` (§7) liste les
+joueurs déviants au sens de la majorité ; absent quand aucune majorité n'est
+connue (moins de trois hashes pour ce tick, ou pas de valeur majoritaire —
+systématique à deux joueurs).
 
 ```json
 { "type": "desync", "tick": 600, "hashes": { "1": "3f0a1c77b2e94d10", "2": "aa19f0b3c4d55e21" } }
+{ "type": "desync", "tick": 600, "hashes": { "1": "aaaa", "2": "zzzz", "3": "aaaa" }, "outliers": [2] }
+```
+
+**`resynced`** — une resynchronisation a réussi (§7) : `player` a de nouveau
+annoncé, au point de contrôle `tick`, un hash égal à la majorité. Diffusé à
+tous ; la salle quitte `desynced` pour `running` si plus personne ne dévie.
+
+```json
+{ "type": "resynced", "player": 2, "tick": 900 }
 ```
 
 **`error`** — message invalide ou action refusée. `code` est stable, `message`
@@ -204,20 +226,23 @@ est un texte de diagnostic (français, non destiné à l'affichage brut).
 Codes émis en v1 (`ERROR_CODES`, liste ouverte : un client ne doit pas exiger
 d'appartenir à cette liste) : `bad_message`, `version_mismatch`, `not_joined`,
 `already_joined`, `room_full`, `not_host`, `already_running`, `not_running`,
-`history_gap`, `no_host`.
+`history_gap`, `no_host`, `host_cannot_resync` (§7 : l'hôte ne peut pas se
+resynchroniser sur lui-même), `resync_cooldown` (§7 : resynchronisation déjà
+déclenchée récemment pour ce joueur).
 
 ## 4. Cycle de vie d'une salle
 
 ```
                  join (1er joueur)                 start (host)
    [ pas de salle ] ─────────────▶ [ lobby ] ──────────────────▶ [ running ]
-          ▲                            │                              │
-          │ dernier départ             │ join / leave                 │ écart de hash
-          │ (salle détruite)           ▼                              ▼
+          ▲                            │                              │  ▲
+          │ dernier départ             │ join / leave                 │  │ plus aucun déviant
+          │ (salle détruite)           ▼                              ▼  │ (resynced, §7)
           └────────────────────── [ lobby ]                     [ desynced ]
                                                                       │
-                                          horloge et bundles continuent
-                                          (v1 : on signale, on ne répare pas)
+                                          horloge et bundles continuent ;
+                                          les déviants non-hôtes sont réparés
+                                          automatiquement (§7)
 ```
 
 En `running`, chaque battement de 50 ms :
@@ -243,7 +268,7 @@ Détails de la vie d'une salle :
   laisse rien derrière elle ; une salle « case » laisse son dernier snapshot
   de conservation au serveur, qui rouvre la colonie avec (§11).
 - `start` par un non-host → `not_host`. `start` sur une salle démarrée →
-  `already_running`. `command`, `hash` ou `snapshot` avant `start` →
+  `already_running`. `command`, `hash`, `snapshot` ou `resync` avant `start` →
   `not_running`.
 
 ## 5. La garantie d'ordre
@@ -290,21 +315,120 @@ retour visuel non simulé (surbrillance, curseur, aperçu de rectangle).
   client qui n'arrive jamais à suivre finit par accumuler du retard, puis
   par manquer d'historique s'il se reconnecte (voir §8).
 
-## 7. Détection de désync
+## 7. Détection de désync et resynchronisation
 
 - Chaque client envoie `hash { tick, hash }` quand `tick % HASH_EVERY_TICKS === 0`,
   avec la valeur de `WasmSim.hash()` **avant** d'exécuter ce tick.
 - Le serveur compare **par tick**, entre les seuls joueurs qui ont annoncé ce
   tick : un joueur en retard n'invente pas un écart, il arrive plus tard.
-- Au **premier** écart, le serveur diffuse `desync { tick, hashes }` à tous et
-  passe la salle en `desynced`. Les écarts suivants ne sont pas rediffusés.
-- En v1 on **signale seulement** : l'horloge et les bundles continuent. La
-  réparation (resync forcée depuis le snapshot du host) est un chantier séparé,
-  qui réutilisera tel quel le mécanisme du §8.
-- Côté client, `desync` doit être visible dans le HUD : la partie n'est plus
-  fiable, mieux vaut le dire que laisser deux colonies diverger en silence.
+- Au **premier** écart jamais constaté dans la salle, le serveur diffuse
+  `desync { tick, hashes }` à tous et passe la salle en `desynced`. Les écarts
+  suivants ne redéclenchent pas cette diffusion : `desync` est un signal
+  d'alarme, pas un journal (`HashLedger.report`, `packages/protocol/src/lockstep.ts`).
+
+Ce que la v1 signalait sans jamais réparer se répare maintenant, à partir
+d'une notion de **majorité** :
+
+```
+   3 joueurs annoncent le hash du tick 300 :   alice=AAAA  bob=ZZZZ  carol=AAAA
+                                                      │
+                                    HashLedger.majorityHash(300) = AAAA
+                                    HashLedger.outliers(300)     = [bob]
+                                                      │
+              desync { tick:300, hashes:{...}, outliers:[bob] } ── diffusé à tous
+                                                      │
+   bob ≠ hôte ⇒ réparation automatique (sauf cooldown actif)
+                                                      │
+   serveur ──▶ hôte : request_snapshot { forPlayer: bob }   (comme un rejoignant, §8)
+   hôte    ──▶ serveur : snapshot { tick, data, forPlayer: bob }
+   serveur ──▶ bob    : snapshot { tick, data }  puis  bundle(tick..) rejoués
+                                                      │
+   au point de contrôle suivant, bob annonce un hash = majorité
+                                                      │
+              resynced { player: bob, tick } ── diffusé à tous
+   salle : desynced → running (si plus personne ne dévie)
+```
+
+- **Majorité** (`HashLedger.majorityHash(tick)` / `outliers(tick)`, purs, sans
+  I/O) : dès que **trois hashes ou plus** sont connus pour un tick, la valeur
+  qui réunit une **majorité stricte** (plus de la moitié) fait référence ; les
+  autres joueurs sont les « déviants » de ce tick. Sans majorité (moins de
+  trois hashes connus, ou aucune valeur majoritaire — le cas systématique à
+  deux joueurs, faute de pouvoir départager qui a raison), `outliers` est vide.
+  Le champ `desync.outliers` reprend ce calcul au moment de la diffusion ;
+  absent du fil quand il est vide (pas de `[]` explicite).
+- **Auto-réparation** : à chaque hash reçu (pas seulement le premier écart
+  jamais vu), le serveur recalcule la majorité du tick annoncé. Un joueur qui y
+  apparaît comme déviant, **s'il n'est pas l'hôte**, déclenche automatiquement
+  le même mécanisme que pour un rejoignant (§8) : `request_snapshot { forPlayer }`
+  à l'hôte, puis relais du `snapshot` et rejeu des bundles depuis ce tick vers
+  le déviant. Bornée à une tentative par déviant et par `RESYNC_COOLDOWN_TICKS`
+  (1800 ticks, 30 s) : pas de tempête de `request_snapshot` si la réparation
+  précédente n'a pas encore abouti ou si le déviant continue de diverger.
+- **Retour à la normale** : un déviant dont le hash concorde de nouveau avec la
+  majorité, à un point de contrôle suivant, fait émettre `resynced { player, tick }`
+  à tous. La salle quitte `desynced` pour `running` dès que plus personne ne
+  dévie.
+- **Resynchronisation manuelle** : un client peut envoyer `resync {}` à tout
+  moment (salle `running` ou `desynced`, jamais en `lobby` → `error not_running`)
+  pour demander explicitement un snapshot frais, sans attendre un point de
+  contrôle. Le serveur applique le même mécanisme (`request_snapshot` à l'hôte,
+  puis `snapshot` et rejeu). Refusé pour l'hôte lui-même (`error
+  host_cannot_resync`) et soumis au même cooldown que l'auto-réparation
+  (`error resync_cooldown` si une resynchronisation, automatique ou manuelle,
+  vient déjà d'être déclenchée pour ce joueur).
+- **Limites, à connaître avant de compter dessus** :
+  - **L'hôte fait référence en v1.** Si c'est l'hôte qui a dérivé, il apparaît
+    comme déviant dans le calcul de majorité mais n'est **jamais** la cible
+    d'une réparation automatique ou manuelle (`host_cannot_resync`) : personne
+    ne peut le corriger, puisque tout rattrapage — le sien compris — part de
+    son propre état. La salle reste `desynced` indéfiniment dans ce cas ; une
+    v2 pourrait faire voter la majorité (n'importe quel joueur majoritaire
+    devient la source d'un snapshot), mais cela suppose que les clients
+    sachent produire un snapshot sur demande, pas seulement l'hôte.
+  - **À deux joueurs, pas de majorité possible** : `outliers` est toujours
+    vide et l'auto-réparation ne se déclenche jamais (il faut au moins trois
+    hashes pour départager qui a raison). Seule la resynchronisation manuelle
+    reste disponible, et elle suppose qu'on **sache** qui des deux dévie —
+    l'un des deux joueurs peut toujours demander `resync` par précaution, le
+    pire cas est un rattrapage inutile depuis un état déjà bon.
+  - Un joueur en cours de resynchronisation ne reçoit plus de bundles
+    (`synced = false`, exactement comme un rejoignant) jusqu'à ce que le
+    snapshot et le rejeu soient reçus : un déviant qui reste longtemps sans
+    réponse de l'hôte reste visible dans `deviating` jusqu'à expiration du
+    cooldown, qui retente alors.
+
+### Ce dont le client aura besoin
+
+- Afficher `desync` dans le HUD dès réception (la partie n'est plus fiable,
+  mieux vaut le dire que laisser deux colonies diverger en silence), avec le
+  détail de `outliers` s'il est présent.
+- Si son propre `playerId` figure dans `outliers` d'un `desync` (ou d'un appel
+  ultérieur à `resync` par clic sur un bouton « Resynchroniser » du bandeau) :
+  attendre le `snapshot` de resynchronisation exactement comme un rejoignant —
+  `WasmSim.restore(data)` puis rejeu des bundles reçus ensuite. Comme le sim
+  est restauré à un tick **supérieur ou égal** au tick courant du client (le
+  snapshot vient de l'état actuel de l'hôte, pas d'un point dans le passé), le
+  `LockstepClient` doit accepter un `snapshot` **en cours de partie**, pas
+  seulement à la connexion initiale d'un rejoignant : vérifier que
+  `resetTo(tick)` (déjà utilisé pour un rejoignant) vide bien la file de
+  bundles déjà appliqués avant de repartir de ce tick, sans quoi d'anciens
+  bundles seraient rejoués sur le nouvel état.
+- Retirer le bandeau de désynchronisation dès réception d'un `resynced` dont
+  `player` est son propre `playerId`. Si la salle reste `desynced` (hôte
+  déviant, ou deux joueurs sans majorité), garder le bandeau et proposer le
+  bouton manuel plutôt que de le retirer sur la seule foi du temps qui passe.
+- Traiter `host_cannot_resync` et `resync_cooldown` comme des refus muets ou
+  quasi muets (griser le bouton un instant), pas des erreurs bloquantes.
 
 ## 8. Rejoindre en cours
+
+Ce mécanisme est **réutilisé tel quel** par la resynchronisation d'un déviant
+(§7, automatique ou manuelle) : côté serveur, un déviant est traité exactement
+comme un joueur qui rejoint (`synced = false`, `request_snapshot` à l'hôte,
+puis `snapshot` et rejeu depuis ce tick), et non un fondu qui repart de zéro —
+lui seul récupère un `snapshot` et se resynchronise, sans que la salle ni les
+autres joueurs ne soient affectés.
 
 ```
    carol                    serveur                     alice (host)
@@ -354,6 +478,11 @@ retour visuel non simulé (surbrillance, curseur, aperçu de rectangle).
 - Il n'y a pas de reprise de salle **hors monde** : si tout le monde part, la
   salle disparaît. Une salle « case », elle, rouvre depuis son dernier
   snapshot conservé (§11).
+- Ces mêmes limites s'appliquent à une resynchronisation (§7) : un déviant peut
+  lui aussi recevoir `error history_gap` si l'hôte snapshotte un tick trop
+  vieux (en pratique il snapshotte son tick courant, comme pour un rejoignant),
+  et hérite pareillement de l'état de l'hôte si celui-ci est lui-même déviant —
+  d'où la règle « l'hôte ne se resynchronise jamais sur lui-même » du §7.
 
 ## 9. Migration binaire prévue
 

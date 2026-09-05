@@ -234,8 +234,12 @@ postcard et `apply_encoded` dans `sim-wasm` ; client lockstep pur (`LockstepClie
 contre le vrai serveur et le vrai WASM ; écran d'accueil, lobby, mode multi (exécution par
 bundle, hashes, snapshot de l'hôte pour les rejoignants, bandeau de désync), un seul chemin
 `issue(bytes)` pour le solo et le multi. Essai réel à deux onglets : même tick, même hash,
-commandes de l'un appliquées chez l'autre. Worker livré le 2026-09-05 : sim et client
-lockstep dans un Web Worker (`SimRunner` pur testé, `SimBridge` côté principal, protocole
+commandes de l'un appliquées chez l'autre. Resynchronisation livrée côté serveur le 2026-09-05 (Sonnet) :
+majorité des hashes dès trois joueurs, déviants identifiés dans `desync`, réparation
+automatique par snapshot de l'hôte avec cooldown, `resync` manuel, `resynced` quand le déviant
+revient dans le rang ; limites : hôte déviant jamais réparé, pas de majorité à deux joueurs.
+Client à brancher (bandeau avec bouton, restauration en cours de partie). Worker livré le
+2026-09-05 : sim et client lockstep dans un Web Worker (`SimRunner` pur testé, `SimBridge` côté principal, protocole
 typé, tampons transférés, carte et overlays envoyés seulement quand leur version change) ;
 onglet masqué : 60 ticks/s maintenus. Reste : reconnexion, resynchronisation après désync,
 essai d'une heure. Livré par trois sous-agents Opus.
@@ -380,6 +384,10 @@ mods de contenu, événements monde.
 - 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
   par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
   libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
+- 2026-09-05 : resync (serveur) : la majorité est recalculée à chaque hash reçu, pas
+  seulement au premier écart, sinon ni réparation ni retour à la normale ne seraient
+  détectables. Un seul cooldown par joueur, partagé entre réparation automatique et demande
+  manuelle.
 - 2026-09-05 : climat (sim). Le calendrier démarre au printemps pour ne pas commencer dans
   le gel ; le remplissage des pièces ignore arbres, feux et eau pour rester rarement
   invalidé ; une seule lecture de la température extérieure par tick partagée par tous les

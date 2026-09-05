@@ -171,6 +171,54 @@ export class HashLedger {
     return entry === undefined ? {} : Object.fromEntries(entry);
   }
 
+  /**
+   * Hash majoritaire pour un tick, référence pour identifier les déviants
+   * (`docs/protocol.md` §7). `null` si moins de trois hashes sont connus pour
+   * ce tick, ou si aucune valeur ne réunit une **majorité stricte** (plus de
+   * la moitié des joueurs qui l'ont annoncé) : à deux joueurs qui divergent,
+   * impossible de départager qui a raison, on ne calcule donc jamais de
+   * majorité dans ce cas.
+   */
+  majorityHash(tick: number): string | null {
+    const entry = this.perTick.get(tick);
+    if (entry === undefined || entry.size < 3) {
+      return null;
+    }
+    const counts = new Map<string, number>();
+    for (const hash of entry.values()) {
+      counts.set(hash, (counts.get(hash) ?? 0) + 1);
+    }
+    let best: string | null = null;
+    let bestCount = 0;
+    for (const [hash, count] of counts) {
+      if (count > bestCount) {
+        best = hash;
+        bestCount = count;
+      }
+    }
+    return best !== null && bestCount * 2 > entry.size ? best : null;
+  }
+
+  /**
+   * Joueurs dont le hash annoncé pour ce tick diverge de `majorityHash(tick)`,
+   * triés par identifiant croissant. Liste vide si aucune majorité n'est
+   * connue : sans référence, personne n'est désigné déviant.
+   */
+  outliers(tick: number): PlayerId[] {
+    const majority = this.majorityHash(tick);
+    const entry = this.perTick.get(tick);
+    if (majority === null || entry === undefined) {
+      return [];
+    }
+    const result: PlayerId[] = [];
+    for (const [player, hash] of entry) {
+      if (hash !== majority) {
+        result.push(player);
+      }
+    }
+    return result.sort((a, b) => a - b);
+  }
+
   /** Retire un joueur parti de tous les ticks encore en mémoire. */
   removePlayer(player: PlayerId): void {
     for (const entry of this.perTick.values()) {

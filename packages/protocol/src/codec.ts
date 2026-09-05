@@ -489,6 +489,8 @@ export function validateClientMessage(value: unknown): ClientMessage | null {
       return { type: "ping" };
     case "pong":
       return { type: "pong" };
+    case "resync":
+      return { type: "resync" };
     case "world_join": {
       if (!isName(value.name)) {
         return null;
@@ -646,7 +648,28 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
         }
         hashes[id] = hash;
       }
-      return { type: "desync", tick: value.tick, hashes };
+      let outliers: PlayerId[] | undefined;
+      if (value.outliers !== undefined) {
+        if (!Array.isArray(value.outliers)) {
+          return null;
+        }
+        outliers = [];
+        for (const entry of value.outliers) {
+          if (!isPlayerId(entry)) {
+            return null;
+          }
+          outliers.push(entry);
+        }
+      }
+      return outliers === undefined
+        ? { type: "desync", tick: value.tick, hashes }
+        : { type: "desync", tick: value.tick, hashes, outliers };
+    }
+    case "resynced": {
+      if (!isPlayerId(value.player) || !isTick(value.tick)) {
+        return null;
+      }
+      return { type: "resynced", player: value.player, tick: value.tick };
     }
     case "error": {
       if (!isName(value.code) || typeof value.message !== "string") {
