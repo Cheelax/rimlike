@@ -28,7 +28,7 @@ import { fileURLToPath } from "node:url";
 
 import type { World } from "@rimlike/world";
 
-import { WorldState, type WorldStateJson } from "./world.js";
+import { WorldState, type WorldStateJson, type WorldStateOptions } from "./world.js";
 
 /** Version du format de fichier. À monter si `WorldStateJson` change de façon incompatible. */
 export const WORLD_STATE_FILE_VERSION = 1;
@@ -142,9 +142,12 @@ export class WorldStore {
   /**
    * Relit le fichier. `world` est le globe déjà généré par ce serveur : il
    * sert à la fois de référence pour valider `worldSeed`/`subdivisions` et à
-   * reconstruire le `WorldState` (`WorldState.fromJSON`).
+   * reconstruire le `WorldState` (`WorldState.fromJSON`). `options` porte le
+   * reste de la configuration de l'état reconstruit — en pratique `hourMs`,
+   * la durée d'une heure de jeu, qui n'est pas dans le fichier : c'est une
+   * option du serveur, pas une propriété du monde sauvegardé.
    */
-  async load(world: World): Promise<WorldStoreLoadResult> {
+  async load(world: World, options: Omit<WorldStateOptions, "world"> = {}): Promise<WorldStoreLoadResult> {
     let raw: string;
     try {
       raw = await readFile(this.file, "utf8");
@@ -184,7 +187,7 @@ export class WorldStore {
     }
 
     try {
-      const state = WorldState.fromJSON(parsed.state, { world });
+      const state = WorldState.fromJSON(parsed.state, { ...options, world });
       return { kind: "loaded", state, savedAt: parsed.savedAt };
     } catch (error) {
       const quarantineFile = await this.quarantine();

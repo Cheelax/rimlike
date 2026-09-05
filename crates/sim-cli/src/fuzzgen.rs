@@ -4,10 +4,13 @@
 //! priorités hors bornes, colon qui s'attaque lui-même...). Toute l'entropie
 //! passe par `sim::Rng`, comme l'exige le sim.
 
-use sim::{BuildKind, Command, Designation, Material, Rng, Sim, WorkType, Zone};
+use sim::{
+    BuildKind, CaravanManifest, Command, Designation, ItemKind, MANIFEST_VERSION, Material, Pawn,
+    Rng, Sim, WorkType, Zone,
+};
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 9;
+pub const VARIANT_COUNT: usize = 12;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -21,6 +24,9 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "Attack",
     "SetPriority",
     "TriggerRaid",
+    "FormCaravan",
+    "ClearDepartures",
+    "ArriveCaravan",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -85,6 +91,110 @@ fn random_pawn_id(rng: &mut Rng, sim: &Sim) -> u32 {
     } else {
         rng.next_u32()
     }
+}
+
+/// Quantité d'objets pour une caravane : le plus souvent plausible, parfois
+/// nulle (à ignorer) ou énorme (bien au-delà de ce que le stock contient).
+fn random_count(rng: &mut Rng) -> u32 {
+    match rng.below(5) {
+        0 => 0,
+        1 => u32::MAX - rng.below(1_000),
+        2 => rng.below(100_000),
+        _ => rng.below(80),
+    }
+}
+
+/// Liste de marchandises demandées au départ, parfois vide, avec des genres
+/// tirés dans toute la plage de `ItemKind` (cadavres compris) et des doublons
+/// possibles. Une quantité aberrante ne coûte rien ici : le départ ne prélève
+/// que ce que le stock contient.
+fn random_goods(rng: &mut Rng) -> Vec<(ItemKind, u32)> {
+    let n = rng.below(4);
+    (0..n)
+        .map(|_| {
+            (
+                ItemKind::from_u8(rng.below(ItemKind::COUNT as u32) as u8),
+                random_count(rng),
+            )
+        })
+        .collect()
+}
+
+/// Marchandises d'un manifeste bricolé. Vides le plus souvent, et petites
+/// sinon : chaque arrivée dépose des piles qui restent sur la carte pour de
+/// bon, et une campagne n'a pas à ensevelir les 576 cases sous les piles pour
+/// éprouver le dépôt. La quantité aberrante reste tirée, mais rarement — elle
+/// couvre à elle seule `caravan::MAX_CARAVAN_TILES` cases.
+fn random_cargo(rng: &mut Rng) -> Vec<(ItemKind, u32)> {
+    if rng.chance(3, 4) {
+        return Vec::new();
+    }
+    let n = 1 + rng.below(2);
+    (0..n)
+        .map(|_| {
+            let kind = ItemKind::from_u8(rng.below(ItemKind::COUNT as u32) as u8);
+            let count = match rng.below(16) {
+                0 => 0,
+                1 => u32::MAX - rng.below(1_000),
+                _ => rng.below(40),
+            };
+            (kind, count)
+        })
+        .collect()
+}
+
+/// Manifeste bricolé de toutes pièces : des colons aux champs volontairement
+/// hors bornes (sang, besoins, niveaux, priorités, blessures) pour éprouver
+/// l'assainissement à l'arrivée, et parfois une version inconnue, qui doit
+/// faire refuser le manifeste au décodage.
+fn random_manifest(rng: &mut Rng) -> Vec<u8> {
+    let count = rng.below(5);
+    let pawns: Vec<Pawn> = (0..count)
+        .map(|k| {
+            let mut p = Pawn::at_tile(k + 1, rng.below(64), rng.below(64), "Voyageur".to_string());
+            p.hunger = rng.next_u32();
+            p.rest = rng.next_u32();
+            p.blood = rng.next_u32();
+            p.hp = rng.next_u32();
+            p.grief_ticks = rng.next_u32();
+            for prio in &mut p.priorities {
+                *prio = rng.below(256) as u8;
+            }
+            for skill in &mut p.skills {
+                skill.level = rng.below(256) as u8;
+                skill.xp = rng.next_u32();
+            }
+            for _ in 0..rng.below(12) {
+                p.injuries.push(sim::Injury::new(
+                    sim::BodyPart::from_u8(rng.below(8) as u8),
+                    rng.below(2_000),
+                    rng.below(500),
+                ));
+            }
+            p
+        })
+        .collect();
+    let manifest = CaravanManifest {
+        version: if rng.chance(1, 8) {
+            rng.below(1_000) as u16
+        } else {
+            MANIFEST_VERSION
+        },
+        origin_tick: rng.next_u64(),
+        pawns,
+        items: random_cargo(rng),
+    };
+    let mut bytes = manifest.encode();
+    // Une fois sur huit, la trame est abîmée après coup : octets en trop ou
+    // tronqués, exactement ce que le décodage strict doit refuser.
+    match rng.below(8) {
+        0 => bytes.push(rng.below(256) as u8),
+        1 => {
+            bytes.truncate(rng.below(bytes.len() as u32 + 1) as usize);
+        }
+        _ => {}
+    }
+    bytes
 }
 
 /// Tire une commande aléatoire à appliquer telle quelle. Renvoie aussi
@@ -157,7 +267,40 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
             // au-delà pour vérifier que `Sim::apply` sature bien (`.min(4)`).
             priority: rng.below(256) as u8,
         },
-        _ => Command::TriggerRaid,
+        8 => Command::TriggerRaid,
+        9 => {
+            // Liste de colons parfois vide, parfois pleine d'ids inventés, et
+            // de temps en temps deux fois le même (doublon : refus attendu).
+            let n = rng.below(4);
+            let mut pawns: Vec<u32> = (0..n).map(|_| random_pawn_id(rng, sim)).collect();
+            if rng.chance(1, 5)
+                && let Some(&first) = pawns.first()
+            {
+                pawns.push(first);
+            }
+            Command::FormCaravan {
+                pawns,
+                items: random_goods(rng),
+            }
+        }
+        10 => Command::ClearDepartures {
+            // Bien au-delà de la taille de la file : elle doit saturer.
+            count: match rng.below(3) {
+                0 => u32::MAX - rng.below(1_000),
+                1 => rng.below(1_000_000),
+                _ => rng.below(4),
+            },
+        },
+        _ => Command::ArriveCaravan {
+            // Un vrai manifeste sur 50, sinon des octets sans queue ni tête refusés au
+            // décodage strict : assez pour couvrir l'arrivée sans noyer la carte sous des
+            // milliers de piles (voir FUZZ-FINDINGS.md).
+            manifest: if rng.below(50) == 0 {
+                random_manifest(rng)
+            } else {
+                (0..rng.below(64)).map(|_| rng.below(256) as u8).collect()
+            },
+        },
     };
     (cmd, variant)
 }

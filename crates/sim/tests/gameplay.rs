@@ -6,8 +6,8 @@ use sim::pawn::RESTED;
 use sim::pawn::{BREAK_TICKS, HP_MAX, HP_WOUNDED, HUNGRY, MOOD_BREAK, NEED_MAX, TIRED};
 use sim::testmap::map_from;
 use sim::{
-    BodyPart, BuildKind, Command, Designation, EventKind, Faction, Feature, ItemKind, Job,
-    Material, Pawn, Sim, Terrain, Weather, WorkType, Zone,
+    BodyPart, BuildKind, CaravanManifest, Command, Designation, EventKind, Faction, Feature,
+    ItemKind, Job, Material, Pawn, Sim, Terrain, Weather, WorkType, Zone,
 };
 
 const DAY: u64 = sim::TICKS_PER_DAY as u64;
@@ -1310,4 +1310,263 @@ fn mobility_slows_walking() {
         slow > fast,
         "jambe blessée {slow} ticks, jambe saine {fast} ticks"
     );
+}
+
+// ----------------------------------------------------------------------
+// Caravanes : sortir d'une carte, entrer sur une autre
+// ----------------------------------------------------------------------
+
+/// Total d'un genre posé au sol, toutes piles confondues.
+fn on_ground(s: &Sim, kind: ItemKind) -> u32 {
+    s.items()
+        .iter()
+        .filter(|i| i.kind == kind)
+        .map(|i| i.count)
+        .sum()
+}
+
+/// Le contrat complet du sim avec le futur serveur monde : deux colons et des
+/// marchandises quittent une carte dans un manifeste, et débarquent sur une
+/// autre avec de nouveaux ids.
+#[test]
+fn caravan_departs_with_stock_and_arrives_elsewhere() {
+    let mut a = clearing();
+    a.step(&[Command::SetZone {
+        zone: Zone::Stockpile,
+        x0: 8,
+        y0: 5,
+        x1: 9,
+        y1: 6,
+    }]);
+    a.spawn_item(ItemKind::Wood, 60, 8, 5);
+    a.spawn_item(ItemKind::Berries, 20, 9, 5);
+    assert_eq!(a.stored_totals()[ItemKind::Wood as usize], 60);
+
+    let travellers: Vec<u32> = a.pawns().iter().take(2).map(|p| p.id).collect();
+    let names: Vec<String> = a.pawns().iter().take(2).map(|p| p.name.clone()).collect();
+    let skills: Vec<u8> = a
+        .pawns()
+        .iter()
+        .take(2)
+        .map(|p| p.skills[WorkType::Build as usize].level)
+        .collect();
+    let before = a.pawns().len();
+
+    a.step(&[Command::FormCaravan {
+        pawns: travellers.clone(),
+        items: vec![(ItemKind::Wood, 40), (ItemKind::Berries, 20)],
+    }]);
+
+    assert_eq!(a.pawns().len(), before - 2, "les partants sont restés");
+    assert!(travellers.iter().all(|&id| find_pawn(&a, id).is_none()));
+    assert_eq!(
+        a.stored_totals()[ItemKind::Wood as usize],
+        20,
+        "40 bois prélevés sur 60"
+    );
+    assert_eq!(a.stored_totals()[ItemKind::Berries as usize], 0);
+    assert_eq!(a.departures().len(), 1);
+    assert!(
+        a.events()
+            .iter()
+            .any(|e| e.kind == EventKind::CaravanDeparted && e.arg == 2),
+        "pas d'événement de départ : {:?}",
+        a.events()
+    );
+
+    let manifest = CaravanManifest::decode(&a.departures()[0]).expect("manifeste lisible");
+    assert_eq!(manifest.pawns.len(), 2);
+    assert_eq!(
+        manifest.items,
+        vec![(ItemKind::Wood, 40), (ItemKind::Berries, 20)]
+    );
+    for (k, p) in manifest.pawns.iter().enumerate() {
+        assert_eq!(p.name, names[k], "nom perdu en route");
+        assert_eq!(p.skills[WorkType::Build as usize].level, skills[k]);
+        assert_eq!(p.job, Job::Idle);
+        assert!(p.path.is_empty() && p.carrying.is_none());
+    }
+
+    // Arrivée sur une tout autre carte.
+    let mut b = Sim::new(9, 48, 48);
+    let existing: Vec<u32> = b.pawns().iter().map(|p| p.id).collect();
+    b.step(&[Command::ArriveCaravan {
+        manifest: a.departures()[0].clone(),
+    }]);
+
+    assert_eq!(b.pawns().len(), existing.len() + 2);
+    let newcomers: Vec<&Pawn> = b
+        .pawns()
+        .iter()
+        .filter(|p| !existing.contains(&p.id))
+        .collect();
+    assert_eq!(newcomers.len(), 2, "ids en collision avec ceux de la carte");
+    assert_ne!(newcomers[0].id, newcomers[1].id);
+    for p in &newcomers {
+        assert_eq!(p.faction, Faction::Colony);
+        let (x, y) = p.tile();
+        assert!(
+            b.map().passable(x, y),
+            "colon débarqué sur une case infranchissable ({x}, {y})"
+        );
+    }
+    assert_eq!(on_ground(&b, ItemKind::Wood), 40);
+    assert_eq!(on_ground(&b, ItemKind::Berries), 20);
+    assert!(
+        b.events()
+            .iter()
+            .any(|e| e.kind == EventKind::CaravanArrived && e.arg == 2),
+        "pas d'événement d'arrivée : {:?}",
+        b.events()
+    );
+
+    // L'hôte a expédié : la file se vide par commande, en lockstep.
+    a.step(&[Command::ClearDepartures { count: 1 }]);
+    assert!(a.departures().is_empty());
+}
+
+/// Tout ce qui ne part pas : listes vides, ids inventés, pillards, colons à
+/// terre. Et ce qui part quand même : une demande plus grosse que le stock.
+#[test]
+fn caravan_rejects_invalid_requests() {
+    let mut s = clearing();
+    let id = s.pawns()[0].id;
+    let colonists = s.pawns().len();
+
+    s.step(&[Command::FormCaravan {
+        pawns: Vec::new(),
+        items: vec![(ItemKind::Wood, 5)],
+    }]);
+    s.step(&[Command::FormCaravan {
+        pawns: vec![9999],
+        items: Vec::new(),
+    }]);
+    s.step(&[Command::FormCaravan {
+        pawns: vec![id, id],
+        items: Vec::new(),
+    }]);
+    assert!(s.departures().is_empty(), "une demande invalide est partie");
+    assert_eq!(s.pawns().len(), colonists);
+
+    // Un pillard n'est pas de la colonie.
+    let mut r = clearing();
+    r.step(&[Command::TriggerRaid]);
+    let raider = r
+        .pawns()
+        .iter()
+        .find(|p| p.faction == Faction::Raider)
+        .map(|p| p.id)
+        .expect("un pillard est entré");
+    r.step(&[Command::FormCaravan {
+        pawns: vec![raider],
+        items: Vec::new(),
+    }]);
+    assert!(
+        r.departures().is_empty(),
+        "un pillard est parti en caravane"
+    );
+
+    // Un colon à terre ne marche pas jusqu'au globe.
+    let mut d = clearing();
+    let downed = d.pawns()[0].id;
+    d.inflict_injury(downed, BodyPart::LeftLeg, 40);
+    d.pawn_mut(downed).expect("le colon existe").blood = 200;
+    d.step(&[]);
+    assert!(find_pawn(&d, downed).is_some_and(|p| p.is_downed()));
+    d.step(&[Command::FormCaravan {
+        pawns: vec![downed],
+        items: Vec::new(),
+    }]);
+    assert!(
+        d.departures().is_empty(),
+        "un colon à terre est parti en caravane"
+    );
+
+    // Plus de bois demandé qu'il n'en existe : on part avec ce qu'il y a, et
+    // un genre absent du stock ne figure pas au manifeste.
+    let mut t = clearing();
+    t.step(&[Command::SetZone {
+        zone: Zone::Stockpile,
+        x0: 8,
+        y0: 5,
+        x1: 9,
+        y1: 6,
+    }]);
+    t.spawn_item(ItemKind::Wood, 12, 8, 5);
+    let one = t.pawns()[0].id;
+    t.step(&[Command::FormCaravan {
+        pawns: vec![one],
+        items: vec![(ItemKind::Wood, 999), (ItemKind::Stone, 5)],
+    }]);
+    let manifest = CaravanManifest::decode(&t.departures()[0]).expect("manifeste lisible");
+    assert_eq!(manifest.items, vec![(ItemKind::Wood, 12)]);
+    assert_eq!(t.stored_totals()[ItemKind::Wood as usize], 0);
+
+    // Un manifeste illisible n'entre pas et ne panique pas. Le hash change
+    // (le tick avance) : c'est l'état hors tick qu'on compare.
+    let mut u = clearing();
+    let pawns_before = u.pawns().len();
+    let items_before = u.items().len();
+    let truncated = manifest.encode()[..3].to_vec();
+    for bytes in [vec![0xff, 0x00, 0x42], Vec::new(), truncated] {
+        u.step(&[Command::ArriveCaravan { manifest: bytes }]);
+    }
+    assert_eq!(u.pawns().len(), pawns_before, "un corrompu a fait entrer");
+    assert_eq!(u.items().len(), items_before);
+    assert!(
+        !u.events()
+            .iter()
+            .any(|e| e.kind == EventKind::CaravanArrived)
+    );
+}
+
+/// Le colon voyage entier : blessures, sang, compétences et priorités sont
+/// dans le manifeste et se retrouvent à l'arrivée.
+#[test]
+fn caravan_roundtrip_preserves_health_and_skills() {
+    let mut a = clearing();
+    let id = a.pawns()[0].id;
+    let name = a.pawns()[0].name.clone();
+    {
+        let p = a.pawn_mut(id).expect("le colon existe");
+        p.skills[WorkType::Cook as usize].level = 15;
+        p.priorities[WorkType::Haul as usize] = 1;
+    }
+    a.inflict_injury(id, BodyPart::LeftArm, 300);
+    let severity = a.pawns()[0].total_severity();
+    assert!(severity > 0 && !a.pawns()[0].is_downed());
+
+    a.step(&[Command::FormCaravan {
+        pawns: vec![id],
+        items: Vec::new(),
+    }]);
+    let manifest = CaravanManifest::decode(&a.departures()[0]).expect("manifeste lisible");
+    assert_eq!(manifest.version, sim::MANIFEST_VERSION);
+    assert_eq!(manifest.pawns.len(), 1);
+    assert_eq!(manifest.pawns[0].injuries.len(), 1);
+
+    let mut b = Sim::new(9, 48, 48);
+    let existing: Vec<u32> = b.pawns().iter().map(|p| p.id).collect();
+    b.step(&[Command::ArriveCaravan {
+        manifest: a.departures()[0].clone(),
+    }]);
+    let p = b
+        .pawns()
+        .iter()
+        .find(|p| !existing.contains(&p.id))
+        .expect("le voyageur a débarqué");
+
+    assert_eq!(p.name, name, "nom perdu en route");
+    assert_eq!(p.skills[WorkType::Cook as usize].level, 15);
+    assert_eq!(p.priorities[WorkType::Haul as usize], 1);
+    assert_eq!(p.injuries.len(), 1);
+    assert_eq!(p.injuries[0].part, BodyPart::LeftArm);
+    // Le tick d'arrivée cicatrise déjà un peu : la blessure a bien voyagé.
+    assert!(
+        p.injuries[0].severity + 5 >= severity && p.injuries[0].severity <= severity,
+        "sévérité {} loin des {severity} du départ",
+        p.injuries[0].severity
+    );
+    assert!(p.hp < HP_MAX, "les PV dérivent des blessures");
+    assert!(p.blood < BLOOD_MAX, "la plaie saigne toujours");
 }

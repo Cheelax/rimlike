@@ -44,7 +44,8 @@ pnpm test:world       # tests du globe (géométrie, biomes, itinéraires)
 pnpm dev:server       # relais + serveur monde sur :8787 (GET /health, GET /world)
                       # env : PORT, WORLD_SEED (1), WORLD_SUBDIVISIONS (4),
                       # WORLD_STATE_FILE (apps/server/data/world-state.json ; vide = mémoire),
-                      # WORLD_PERSIST=0 pour désactiver la persistance
+                      # WORLD_PERSIST=0 pour désactiver la persistance,
+                      # WORLD_HOUR_MS (30000 : une heure de jeu = 30 s), CARAVAN_TICK_MS (5000)
 cargo fmt --all       # la CI vérifie le formatage
 cargo run -p sim-cli --release -- bench --size 128 --ticks 20000   # référence de perf du sim
 cargo run -p sim-cli --release -- verify --seed 1 --size 64 --ticks 10000 --scenario demo
@@ -110,6 +111,7 @@ Les valeurs numériques des enums sont un contrat, à modifier des deux côtés 
 | `work::WorkType` (6 types), `weather::Weather` (0 clair, 1 pluie, 2 orage) | `terrain.ts` (`WORK_LABELS`, `WEATHER_LABELS`), `Renderer.ts` (`setWeather`) |
 | `work::Skill` (niveau 0-20, xp), `EventKind::LevelUp = 7`, `pawn_name(id)` | tampon `skills`, stride 13 : id puis niveau/xp par type dans l'ordre de `WorkType::ALL` |
 | `health::BodyPart` (0 tête … 5 jambe droite), `EventKind` 8 à terre / 9 secouru / 10 soigné, jobs 15 à terre / 16 secourt / 17 soigne, drapeau pawn `DOWNED = 32` | tampon `health`, stride 4 : id, sang 0-1000, conscience %, nombre de blessures ; `pawn_injuries(id)` : partie, sévérité, saignement, pansée |
+| `caravan::CaravanManifest` (octets postcard opaques), `Command::FormCaravan` / `ClearDepartures` / `ArriveCaravan`, `EventKind` 11 départ / 12 arrivée | `departures_count`, `departure(i)`, `describe_manifest(bytes)` → `[colons, genres, kind, count, …]` ; le manifeste part au serveur monde (`caravan_depart`) et revient dans la commande `ArriveCaravan` de l'hôte d'arrivée (voir `docs/protocol.md` §12) |
 | `pawn::Job::code()` | `terrain.ts` (`JOB_LABELS`) |
 | `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, `PRIORITY_STRIDE` = 7, `SKILL_STRIDE` = 13, `HEALTH_STRIDE` = 4, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |
 

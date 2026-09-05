@@ -7,7 +7,9 @@ l'intégration côté client.
 Les sections 1 à 10 décrivent le **lockstep sur une carte** : c'est la couche
 de base, inchangée. La section 11 décrit la **couche monde** : le globe
 partagé, les colonies et les salles adossées à une case, qui se posent
-au-dessus sans rien modifier de ce qui précède.
+au-dessus sans rien modifier de ce qui précède. La section 12 décrit les
+**caravanes**, qui font voyager colons et marchandises d'une case à l'autre —
+et donc d'une salle à l'autre.
 
 ## 1. Principes
 
@@ -34,6 +36,9 @@ Constantes partagées (`packages/protocol/src/messages.ts`) :
 | `HEARTBEAT_MS` | 5000 | Période du `ping` serveur |
 | `HEARTBEAT_TIMEOUT_MS` | 15000 | Silence toléré avant fermeture |
 | `MAX_PLAYERS` | 4 | Joueurs par salle |
+| `WORLD_HOUR_MS` | 30000 | Durée réelle d'une **heure de jeu** du monde (§12.1) |
+| `CARAVAN_TICK_MS` | 5000 | Période du tick du monde et du `world_caravans` |
+| `CARAVAN_HISTORY_HOURS` | 24 | Heures de jeu pendant lesquelles une caravane livrée reste listée |
 
 ## 2. Transport et format
 
@@ -716,7 +721,8 @@ repart de toute façon d'un état neuf à chaque redémarrage. `apps/server/src/
 (`WorldStore`) écrit et relit cet état dans **un fichier JSON unique**.
 
 **Format sur disque** — l'en-tête sert à valider le fichier avant d'y toucher,
-`state` est exactement `WorldState.toJSON()` (§11.6 pour les snapshots) :
+`state` est exactement `WorldState.toJSON()` (§11.6 pour les snapshots, §12.6
+pour l'horloge et les caravanes) :
 
 ```json
 {
@@ -727,6 +733,8 @@ repart de toute façon d'un état neuf à chaque redémarrage. `apps/server/src/
   "state": {
     "seed": 1,
     "subdivisions": 4,
+    "clock": { "worldStartedAt": 1756900000000, "hoursOffset": 412.5 },
+    "caravans": { "nextId": 8, "caravans": [ … ] },
     "settlements": [
       { "tile": 1732, "owner": "alice", "room": "tile-1732", "seed": 2007225770, "createdAt": 1757000000000 }
     ],
@@ -736,6 +744,12 @@ repart de toute façon d'un état neuf à chaque redémarrage. `apps/server/src/
   }
 }
 ```
+
+`clock` et `caravans` sont **facultatifs à la lecture** : un fichier écrit
+avant les caravanes se relit tel quel, le monde repart d'une horloge neuve et
+sans convoi en vol. C'est pour cela que la version du fichier reste à 1 —
+ajouter des champs optionnels ne casse rien, et une migration ne se justifie
+que le jour où un champ existant change de sens.
 
 **Configuration**, lue une fois par `index.ts` (`startServer` lui-même ne lit
 jamais l'environnement, il reçoit des options explicites) :
@@ -773,10 +787,330 @@ précisent pas.
 
 ### 11.9 Ce qui n'est pas encore fait
 
-- **Caravanes** : `findRoute` existe dans `packages/world`, aucun message ne
-  les expose. Pas de déplacement entre cases.
-- **Avance rapide abstraite** des cartes gelées : le temps ne passe pas dans
-  une colonie vide.
+- **Avance rapide abstraite** des cartes gelées : le temps du monde passe (§12.1),
+  mais celui d'une colonie vide non — elle reprend au tick où elle s'était arrêtée.
 - **Comptes** : l'identité est le nom, sans mot de passe ni jeton.
-- **Horloge globale** du monde : il n'y en a pas encore, seulement l'horloge
-  par salle.
+- **Bateaux** : l'océan reste infranchissable, une caravane ne quitte pas son
+  continent (`docs/world.md` §4).
+- **Interception** : une caravane en vol ne peut être ni attaquée ni pillée.
+
+## 12. Caravanes (phase 4, deuxième tranche)
+
+Une caravane emporte des colons et des marchandises d'une case du globe à une
+autre. Elle sort d'une carte, traverse le globe pendant des heures de jeu, et
+entre dans une autre carte. Trois couches s'y croisent, chacune dans son rôle :
+
+- le **sim** (Rust) sait faire un manifeste (`describe_manifest` pour
+  l'affichage) et sait faire entrer un convoi sur une carte
+  (`Command::ArriveCaravan { manifest }`) ;
+- le **serveur monde** possède le voyage : itinéraire, horloge, arrivée. Il ne
+  décode **jamais** le manifeste, exactement comme il ne décode jamais une
+  commande de lockstep (§1) ;
+- les **clients** font le lien : l'hôte de la case de départ envoie le
+  manifeste que son sim a produit, l'hôte de la case d'arrivée le réinjecte
+  en lockstep.
+
+### 12.1 L'horloge du monde
+
+Les caravanes ne comptent ni en millisecondes ni en ticks de salle, mais en
+**heures de jeu du monde** :
+
+| notion | unité | qui la porte |
+|---|---|---|
+| tick | 1/60 s de jeu sur **une carte** | la salle (§1) |
+| heure de jeu | `WORLD_HOUR_MS` = 30 s réelles | le serveur monde |
+
+Une heure de jeu vaut 30 s réelles par défaut (`WORLD_HOUR_MS`, réglable par
+la variable d'environnement du même nom), soit un jour de monde en 12 minutes.
+Les coûts de déplacement de `packages/world` sont déjà dans cette unité : 4 h
+pour traverser une prairie, 24 h pour une montagne (`docs/world.md` §4).
+
+`worldHours()` est le nombre d'heures de jeu écoulées **depuis la création du
+monde**. L'horloge est continue tant que le serveur tourne — pas de pause en
+multi, c'est la décision du plan (`docs/PLAN.md` §3) — et **s'arrête quand le
+serveur s'éteint** : à la sauvegarde, le total courant est écrit
+(`clock.hoursOffset`), au redémarrage le compte reprend de là. Le temps d'arrêt
+n'a donc pas vieilli le monde, et une caravane partie la veille ne se retrouve
+pas arrivée « pendant la nuit » : elle reprend sa route avec le même
+`arrivesAt`. `clock.worldStartedAt` est la date réelle de création du monde,
+gardée pour dater le monde à l'usage d'un humain, pas pour faire tourner
+l'horloge.
+
+### 12.2 Cycle de vie
+
+```
+   hôte de la case A                serveur monde              hôte de la case B
+        │                                 │                            │
+        │  caravan_depart {manifest}      │                            │
+        ├────────────────────────────────▶│  findRoute(A, B)           │
+        │                                 │  arrivesAt = now + hours   │
+        │  world_caravans (travelling) ◀──┼──────────────────────────▶ │
+        │                                 │                            │
+        │  caravan_cancel  (< 50 % du trajet seulement)                │
+        ├────────────────────────────────▶│  demi-tour : `returning`   │
+        │                                 │                            │
+        │              … le temps passe, au rythme de WORLD_HOUR_MS …  │
+        │                                 │                            │
+        │                                 │  now >= arrivesAt          │
+        │                                 │  → `arrived`               │
+        │                                 │  caravan_arrive {manifest} │
+        │                                 ├───────────────────────────▶│
+        │                                 │                            │ commande
+        │                                 │                            │ ArriveCaravan
+        │                                 │  caravan_delivered         │ en lockstep
+        │                                 │◀───────────────────────────┤
+        │  world_caravans (delivered)  ◀──┤                            │
+        │                                 │  oubliée après             │
+        │                                 │  CARAVAN_HISTORY_HOURS     │
+```
+
+Les quatre statuts :
+
+| statut | sens |
+|---|---|
+| `travelling` | en route vers `toTile` |
+| `returning` | rappelée avant la moitié, elle rentre (`toTile` devient la case d'origine) |
+| `arrived` | à destination, en attente d'un hôte qui l'injecte |
+| `delivered` | injectée ; listée encore `CARAVAN_HISTORY_HOURS` heures de jeu, puis oubliée |
+
+Une caravane qui **rentre** arrive comme une autre : elle repasse par `arrived`
+sur sa case d'origine, et son hôte la réinjecte de la même façon. Il n'y a
+qu'un seul chemin d'arrivée à écrire côté client.
+
+### 12.3 Messages, client → serveur
+
+Ces trois messages voyagent sur la connexion **monde** (après `world_join`),
+à une exception documentée en 12.5 : `caravan_delivered`.
+
+**`caravan_depart`** — expédier. Envoyé par un joueur **présent dans la salle
+de `fromTile`**. `manifest` est l'encodage postcard du convoi produit par le
+sim, opaque ; `summary` est ce que le client en sait, pour l'affichage sur le
+globe.
+
+```json
+{
+  "type": "caravan_depart",
+  "fromTile": 1732,
+  "toTile": 1810,
+  "manifest": "BQAAAAMAAAA=",
+  "summary": { "pawns": 3, "items": [[0, 40], [4, 12]] }
+}
+```
+
+`summary.items` est une liste de `[kind, count]`, `kind` étant la valeur de
+`items::ItemKind` du sim (le contrat d'enum d'`AGENTS.md`). Le serveur ne le
+vérifie pas contre le manifeste : **il ne peut pas**, il ne le décode pas.
+C'est un texte d'affichage, pas une autorité — rien dans le sim ne doit en
+dépendre.
+
+**`caravan_cancel`** — faire demi-tour, avant la moitié du trajet.
+
+```json
+{ "type": "caravan_cancel", "id": "c7" }
+```
+
+**`caravan_delivered`** — l'hôte de la case d'arrivée confirme avoir émis la
+commande d'entrée du convoi en lockstep.
+
+```json
+{ "type": "caravan_delivered", "id": "c7" }
+```
+
+### 12.4 Messages, serveur → client
+
+**`world_caravans`** — toutes les caravanes connues, diffusé aux joueurs du
+monde. Liste complète comme `world_settlements` : le client remplace la sienne.
+Envoyé à chaque changement et **au plus une fois par `CARAVAN_TICK_MS`** ; tant
+qu'une caravane bouge, il repart à chaque tick du monde pour porter
+l'avancement.
+
+```json
+{
+  "type": "world_caravans",
+  "caravans": [
+    {
+      "id": "c7",
+      "owner": "alice",
+      "fromTile": 1732,
+      "toTile": 1810,
+      "route": [1732, 1745, 1799, 1810],
+      "departedAt": 412.5,
+      "arrivesAt": 436.5,
+      "progress": 0.25,
+      "currentTile": 1732,
+      "summary": { "pawns": 3, "items": [[0, 40], [4, 12]] },
+      "status": "travelling"
+    }
+  ]
+}
+```
+
+- `route` vient de `findRoute` : les cases traversées, départ et arrivée
+  compris (`docs/world.md` §5).
+- `departedAt` et `arrivesAt` sont des **heures de jeu**, flottantes.
+- `progress` est linéaire sur la durée : `(now − departedAt) / (arrivesAt −
+  departedAt)`, borné à `[0, 1]`.
+- `currentTile` vaut `route[floor(progress × (route.length − 1))]`. La caravane
+  ne s'arrête donc pas case par case : elle avance à vitesse constante sur un
+  itinéraire dont le **coût**, lui, tient compte des biomes traversés.
+- Les deux derniers sont **dérivés** du temps par le serveur, jamais stockés :
+  un client peut les interpoler entre deux messages, le serveur a le dernier mot.
+
+**`caravan_arrive`** — envoyé à **l'hôte** de la salle de la case d'arrivée,
+et à lui seul.
+
+```json
+{
+  "type": "caravan_arrive",
+  "id": "c7",
+  "tile": 1810,
+  "manifest": "BQAAAAMAAAA=",
+  "summary": { "pawns": 3, "items": [[0, 40], [4, 12]] }
+}
+```
+
+**Codes de `world_error` ajoutés** :
+
+| code | quand |
+|---|---|
+| `caravan_no_route` | aucun chemin terrestre entre les deux cases (`findRoute` rend `null`) |
+| `caravan_same_tile` | départ et arrivée sur la même case |
+| `caravan_not_in_room` | expédier ou livrer sans être dans la salle de la case concernée |
+| `caravan_not_found` | caravane inconnue, ou dans un état qui ne se prête pas à l'action |
+| `caravan_too_late` | annulation demandée après la moitié du trajet |
+
+Les codes déjà en place servent aussi : `bad_tile` (case hors du globe),
+`not_owner` (annuler la caravane d'un autre), `not_in_world` (ordre reçu avant
+`world_join`).
+
+### 12.5 Les règles
+
+**Qui peut expédier.** Il faut être dans le monde **et** dans la salle de
+`fromTile`. En v1, le propriétaire de la colonie n'a aucun privilège : un
+visiteur présent dans la salle peut expédier une caravane en son propre nom
+(`owner` est le nom de l'expéditeur, pas celui du propriétaire de la case).
+C'est cohérent avec le reste de la tranche — l'identité n'est qu'un nom, il n'y
+a pas de droits — et ce sera à revoir en même temps que les comptes.
+Être dans la salle `tile-<id>` suffit à prouver que la case est colonisée : le
+serveur n'ouvre pas la salle d'une case libre (§11.2).
+
+**Annulation.** Seule une caravane `travelling` s'annule, et seulement tant que
+`progress < 0.5` : au-delà, elle est plus près de sa destination que de chez
+elle. Elle repart alors de sa **position courante** vers sa case d'origine, sur
+un itinéraire **recalculé** — entrer dans une case coûte le prix de son biome,
+donc reprendre le chemin à l'envers ne donne pas la même durée. `fromTile`
+devient la case du demi-tour, `toTile` la case d'origine.
+
+**Arrivée sur une colonie existante.** Si la salle est ouverte et en jeu,
+`caravan_arrive` part vers son hôte. Si elle est fermée (colonie gelée) ou
+encore en `lobby` — pas de carte, donc rien où injecter le convoi — l'arrivée
+**attend**. Elle repart dès que la salle a un hôte en jeu : à la réouverture
+(la salle rouvre depuis son snapshot conservé, §11.6, puis reçoit l'arrivée) ou
+au `start` de l'hôte.
+
+**Arrivée sur une case libre.** Le serveur **fonde la colonie** au nom du
+propriétaire de la caravane : la case ne peut être que terrestre, un itinéraire
+n'en traverse pas d'autres. Un `world_settlements` l'annonce à tout le monde.
+La salle, elle, n'est pas créée pour autant : elle s'ouvrira en `lobby` au
+premier `join`, comme toute salle de case sans snapshot. **La colonie « naît »
+quand quelqu'un l'ouvre** ; jusque-là elle existe sur le globe, et le manifeste
+attend au chaud.
+
+**Attente et réémission.** Tant que le serveur n'a pas reçu
+`caravan_delivered`, la caravane reste `arrived` et son `caravan_arrive` est
+**réémis** — au nouvel hôte si l'hôte change, au premier hôte si la salle
+rouvre. Une arrivée ne se perd donc pas parce qu'un joueur a fermé son onglet
+au mauvais moment. En contrepartie, l'hôte doit accepter de **recevoir deux
+fois** la même arrivée s'il a répondu au moment où il partait : le duplicata
+est possible, la perte ne l'est pas. C'est le compromis choisi ; l'`id` permet
+au client de reconnaître un doublon s'il tient un journal.
+
+`caravan_delivered` est le seul message de cette section qui n'exige pas
+`world_join` : il répond à un `caravan_arrive` reçu **dans une salle**, et un
+client peut très bien jouer une case sans être entré dans le monde. Ce qu'il
+exige, c'est d'être dans la salle de la case d'arrivée. Le serveur ne vérifie
+pas que son auteur est encore l'hôte : seul l'hôte reçoit `caravan_arrive`, et
+une confirmation qui arrive après un changement d'hôte reste vraie.
+
+**Redémarrages.** Caravanes, manifestes et horloge sont persistés (§11.8) : un
+redémarrage reprend les voyages en cours à l'heure de jeu où ils en étaient.
+Une arrivée non confirmée avant l'arrêt est toujours en attente après.
+
+### 12.6 Ce que le serveur garde
+
+`WorldState.toJSON()` porte, en plus des colonies et des snapshots :
+
+- `clock` : `{ worldStartedAt, hoursOffset }` (§12.1) ;
+- `caravans` : `{ nextId, caravans: [...] }`, chaque caravane avec son
+  itinéraire, ses heures, son statut et son **manifeste en base64** — la même
+  convention que les snapshots, le JSON ne transporte pas de binaire.
+
+Les arrivées en attente ne sont **pas** un second état : ce sont exactement les
+caravanes de statut `arrived`. Une seule source de vérité, donc rien à
+resynchroniser entre deux structures, et le manifeste est persisté avec la
+caravane qui le porte.
+
+Les identifiants (`c1`, `c2`, …) ne sont jamais réutilisés, `nextId` étant
+persisté avec le reste.
+
+### 12.7 Ce dont le client aura besoin
+
+**Côté hôte de la case de départ** — vider la file de départs du sim à chaque
+tour de boucle :
+
+```ts
+// Le sim a produit des manifestes (le joueur a formé une caravane).
+for (const departure of sim.pendingDepartures()) {          // manifeste + destination
+  socket.send(encodeMessage({
+    type: "caravan_depart",
+    fromTile,                                                // la case de cette salle
+    toTile: departure.toTile,
+    manifest: departure.manifest,                            // octets postcard, opaques
+    summary: sim.describeManifest(departure.manifest),       // pawns + [kind, count][]
+  }));
+}
+// Puis on retire ces départs de la file du sim, **en lockstep** : c'est une
+// commande comme une autre, elle doit passer par le même chemin que le reste.
+issue(encodeClearDepartures());
+```
+
+Le point à ne pas rater : la lecture de la file est locale, mais son **vidage**
+est une commande lockstep. Sans cela, les autres clients de la salle
+garderaient une file que l'hôte a vidée dans son coin — et deux sims qui
+divergent, c'est une désync (§7).
+
+**Côté hôte de la case d'arrivée** :
+
+```ts
+case "caravan_arrive": {
+  // Le convoi entre sur la carte : commande lockstep, comme un clic du joueur.
+  issue(WasmSim.encode_arrive_caravan(message.manifest));
+  // Puis on confirme, sinon le serveur réémettra l'arrivée.
+  socket.send(encodeMessage({ type: "caravan_delivered", id: message.id }));
+  break;
+}
+```
+
+Répondre **après** avoir émis la commande, pas avant : tant que le serveur n'a
+pas la confirmation, il garde l'arrivée, ce qui est exactement le comportement
+voulu si le client meurt entre les deux. Et comme toute commande de lockstep,
+l'effet n'arrive pas au clic mais avec le bundle (§5) : ne pas appliquer le
+manifeste localement.
+
+**Sur le globe**, à la réception de `world_caravans` :
+
+- tracer la ligne de `route` (les centres des cases, `world.tiles[id].center`) ;
+- poser la caravane sur `currentTile`, ou interpoler entre
+  `route[i]` et `route[i + 1]` avec `progress` pour un déplacement continu ;
+- afficher `summary` (« 3 colons, 40 bois ») et le temps restant :
+  `(arrivesAt − now) × WORLD_HOUR_MS` millisecondes réelles, `now` étant
+  l'heure de jeu estimée depuis le dernier message ;
+- distinguer les statuts : `returning` rentre, `arrived` attend qu'on ouvre la
+  colonie d'arrivée — c'est une notification à afficher, pas une erreur ;
+- proposer `caravan_cancel` tant que `progress < 0.5` et que la caravane
+  appartient au joueur, griser le bouton au-delà plutôt que d'encaisser un
+  `caravan_too_late`.
+
+Le client peut appeler `findRoute` **en prévisualisation** avant d'envoyer
+l'ordre (durée estimée, tracé), en acceptant que le serveur ait le dernier mot :
+c'est sa route à lui qui voyage.

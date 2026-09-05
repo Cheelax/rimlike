@@ -19,7 +19,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { movementCost } from "@rimlike/world";
+import { bytesToBase64, type CaravanSummary } from "@rimlike/protocol";
+import { findRoute, movementCost } from "@rimlike/world";
 
 import {
   DEFAULT_WORLD_STATE_FILE,
@@ -28,13 +29,19 @@ import {
   resolveWorldStateFile,
   type WorldStateFile,
 } from "../src/persistence.js";
-import { startServer, type RunningServer } from "../src/server.js";
+import { startServer, type RunningServer, type ServerOptions } from "../src/server.js";
 import { DEFAULT_WORLD_SEED, WorldState, sharedWorld } from "../src/world.js";
 import { TestClient, bytes } from "./helpers.js";
 
 const SUBDIVISIONS = 2;
 const globe = sharedWorld(SUBDIVISIONS, DEFAULT_WORLD_SEED);
 const landTile = globe.tiles.findIndex((tile) => movementCost(tile.biome) !== null);
+/** Une case atteignable par voie terrestre depuis `landTile`. */
+const destinationTile = globe.tiles.find(
+  (tile) => tile.id !== landTile && movementCost(tile.biome) !== null && findRoute(globe, landTile, tile.id) !== null,
+)!.id;
+const manifest = bytes(4, 8, 15, 16, 23, 42);
+const caravanSummary: CaravanSummary = { pawns: 3, items: [[1, 12]] };
 
 /** Attend une condition sur l'état du serveur (pas sur un flux de messages). */
 async function until(label: string, predicate: () => boolean, timeoutMs = 4000): Promise<void> {
@@ -210,7 +217,11 @@ describe("cycle complet à travers un vrai serveur", () => {
     servers = [];
   });
 
-  async function boot(worldStateFile: string, worldSeed = DEFAULT_WORLD_SEED): Promise<RunningServer> {
+  async function boot(
+    worldStateFile: string,
+    worldSeed = DEFAULT_WORLD_SEED,
+    extra: Partial<ServerOptions> = {},
+  ): Promise<RunningServer> {
     const server = await startServer({
       port: 0,
       log: () => {},
@@ -219,6 +230,7 @@ describe("cycle complet à travers un vrai serveur", () => {
       worldStateFile,
       saveDebounceMs: 20,
       roomOptions: { tickRate: 60_000, bundleTicks: 600 },
+      ...extra,
     });
     servers.push(server);
     return server;
@@ -295,6 +307,68 @@ describe("cycle complet à travers un vrai serveur", () => {
     expect(third.world.settlementCount).toBe(0);
     const entries = await readdir(dir);
     expect(entries.some((name) => name.includes(".ignored-"))).toBe(true);
+  });
+
+  it("reprend une caravane en vol au redémarrage, avec la même heure d'arrivée", async () => {
+    const file = join(dir, "world-state.json");
+    // Une heure de jeu qui dure une minute réelle : la caravane est encore
+    // très loin de sa destination à la fin du test.
+    const options = { worldHourMs: 60_000, caravanTickMs: 10 };
+    const first = await boot(file, DEFAULT_WORLD_SEED, options);
+
+    const alice = await connect(first);
+    alice.send({ type: "world_join", name: "alice" });
+    await alice.next("world_welcome");
+    alice.send({ type: "settle", tile: landTile });
+    const settled = await alice.next("settled");
+    alice.send({ type: "join", room: settled.room, name: "alice" });
+    await alice.nth("welcome");
+    alice.send({ type: "start", seed: 1, width: 64, height: 64 });
+    await alice.nth("start");
+
+    alice.send({
+      type: "caravan_depart",
+      fromTile: landTile,
+      toTile: destinationTile,
+      manifest,
+      summary: caravanSummary,
+    });
+    await until("caravane enregistrée", () => first.world.caravans.count === 1);
+    const before = first.world.caravans.list()[0]!;
+    expect(before.status).toBe("travelling");
+    expect(before.progress).toBeLessThan(0.01);
+
+    await until("sauvegarde de la caravane", () => first.persistence.lastSavedAt !== null);
+    await first.close();
+
+    // Le manifeste voyage jusque sur le disque, en base64 comme les snapshots.
+    const onDisk = JSON.parse(await readFile(file, "utf8")) as WorldStateFile;
+    expect(onDisk.state.caravans?.caravans).toEqual([
+      expect.objectContaining({ id: before.id, manifest: bytesToBase64(manifest) }) as unknown,
+    ]);
+    expect(onDisk.state.clock?.hoursOffset).toBeGreaterThan(0);
+
+    // Redémarrage : la caravane reprend son voyage exactement où elle en
+    // était. Les heures d'un monde sont des heures de **jeu** : le temps passé
+    // serveur éteint n'a pas vieilli le monde et ne l'a pas fait arriver.
+    const second = await boot(file, DEFAULT_WORLD_SEED, options);
+    expect(second.world.caravans.count).toBe(1);
+    const after = second.world.caravans.list()[0]!;
+    expect(after.id).toBe(before.id);
+    expect(after.departedAt).toBe(before.departedAt);
+    expect(after.arrivesAt).toBe(before.arrivesAt);
+    expect(after.route).toEqual(before.route);
+    expect(after.summary).toEqual(caravanSummary);
+    expect(after.status).toBe("travelling");
+    expect(after.progress).toBeGreaterThanOrEqual(before.progress);
+    expect(after.progress).toBeLessThan(0.01);
+
+    // Et un client qui arrive voit la caravane sans rien demander.
+    const bob = await connect(second);
+    bob.send({ type: "world_join", name: "bob" });
+    await bob.next("world_welcome");
+    const caravans = (await bob.nth("world_caravans")).caravans;
+    expect(caravans.map((c) => c.id)).toEqual([before.id]);
   });
 });
 

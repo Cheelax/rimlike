@@ -202,6 +202,38 @@ describe("sérialisation JSON", () => {
     expect(back.snapshotFor(`tile-${landTile}`)?.data).toEqual(data);
   });
 
+  it("emporte l'horloge de jeu et les caravanes, et se relit sans elles", () => {
+    let real = 5_000;
+    const clocked = new WorldState({ world: globe, now: () => real, hourMs: 1000 });
+    clocked.settle(landTile, "alice");
+    real += 3000; // 3 h de jeu
+    clocked.caravans.depart({
+      owner: "alice",
+      fromTile: landTile,
+      toTile: otherLandTile,
+      manifest: new Uint8Array([1, 2, 3]),
+      summary: { pawns: 1, items: [] },
+    });
+
+    const json = JSON.parse(JSON.stringify(clocked.toJSON())) as ReturnType<WorldState["toJSON"]>;
+    expect(json.clock).toEqual({ worldStartedAt: 5_000, hoursOffset: 3 });
+
+    // Le serveur redémarre bien plus tard : l'horloge reprend à 3 h, pas plus.
+    real += 10_000_000;
+    const back = WorldState.fromJSON(json, { world: globe, now: () => real, hourMs: 1000 });
+    expect(back.hours).toBe(3);
+    expect(back.caravans.toJSON()).toEqual(json.caravans);
+    // Repartie à 3 h de jeu, la caravane n'a pas avancé pendant l'arrêt.
+    expect(back.caravans.list()[0]).toMatchObject({ departedAt: 3, progress: 0, status: "travelling" });
+
+    // Un fichier antérieur aux caravanes se relit tel quel : horloge neuve.
+    const { clock: _clock, caravans: _caravans, ...older } = json;
+    const legacy = WorldState.fromJSON(older, { world: globe, now: () => real, hourMs: 1000 });
+    expect(legacy.hours).toBe(0);
+    expect(legacy.caravans.count).toBe(0);
+    expect(legacy.list()).toEqual(clocked.list());
+  });
+
   it("refuse un état enregistré sur un autre globe", () => {
     const json = { ...state.toJSON(), subdivisions: 5 };
     expect(() => WorldState.fromJSON(json, { world: globe })).toThrow(/incompatible/);

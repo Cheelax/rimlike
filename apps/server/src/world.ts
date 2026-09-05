@@ -20,15 +20,21 @@
  *   assumée de la v1, à remplacer par de vrais comptes avant toute mise en
  *   ligne publique.
  *
- * `toJSON` / `fromJSON` font l'aller-retour complet (colonies + dernier
- * snapshot de chaque salle) en un objet JSON : c'est ce que `WorldStore`
+ * S'y ajoutent, depuis la tranche « caravanes » (`docs/protocol.md` §12), une
+ * **horloge de jeu** (`WorldClock`, en heures de jeu) et le registre des
+ * caravanes en voyage (`CaravanRegistry`), tous deux persistés avec le reste.
+ *
+ * `toJSON` / `fromJSON` font l'aller-retour complet (colonies, dernier
+ * snapshot de chaque salle, horloge et caravanes) en un objet JSON : c'est ce que `WorldStore`
  * (`persistence.ts`) écrit et relit sur disque, pour qu'un redémarrage du
  * serveur ne perde ni les colonies ni leurs snapshots conservés. Ce module
  * n'y touche pas lui-même — il reste pur — voir `docs/protocol.md` §11.8.
  */
 
-import { base64ToBytes, bytesToBase64, type Settlement } from "@rimlike/protocol";
+import { WORLD_HOUR_MS, base64ToBytes, bytesToBase64, type Settlement } from "@rimlike/protocol";
 import { generateWorld, movementCost, tileCount, type World } from "@rimlike/world";
+
+import { CaravanRegistry, type CaravanRegistryJson } from "./caravans.js";
 
 /** Graine du globe par défaut (surchargée par `WORLD_SEED`). */
 export const DEFAULT_WORLD_SEED = 1;
@@ -94,6 +100,75 @@ export interface RoomSnapshot {
   readonly savedAt: number;
 }
 
+/** Forme JSON de l'horloge du monde. */
+export interface WorldClockJson {
+  /** Date réelle de création du monde, en millisecondes epoch. */
+  readonly worldStartedAt: number;
+  /** Heures de jeu déjà écoulées à l'instant de l'enregistrement. */
+  readonly hoursOffset: number;
+}
+
+export interface WorldClockOptions {
+  /** Durée réelle d'une heure de jeu. Défaut : `WORLD_HOUR_MS` (30 s). */
+  readonly hourMs?: number;
+  /** Horloge murale, injectable pour les tests. Défaut : `Date.now`. */
+  readonly now?: () => number;
+  /** Date réelle de création du monde. Défaut : maintenant. */
+  readonly worldStartedAt?: number;
+  /** Heures de jeu déjà écoulées avant ce démarrage (relues d'une sauvegarde). */
+  readonly hoursOffset?: number;
+}
+
+/**
+ * L'horloge de jeu du globe : `hours()` rend les **heures de jeu** écoulées
+ * depuis la création du monde. Une heure de jeu dure `hourMs` millisecondes
+ * réelles (30 s par défaut, donc un jour de monde en 12 min). C'est l'unité de
+ * tout ce qui voyage sur le globe ; elle n'a rien à voir avec les ticks d'une
+ * salle, qui numérotent la simulation d'une **carte**.
+ *
+ * Le compte est **continu pendant que le serveur tourne** (pas de pause en
+ * multi, `docs/PLAN.md` §3) mais **s'arrête quand il s'éteint** : au
+ * redémarrage, `hoursOffset` reprend le total relu de la sauvegarde et repart
+ * de zéro en temps réel. Le monde ne vieillit donc pas serveur éteint, et une
+ * caravane partie avant l'arrêt reprend son voyage avec le même `arrivesAt`,
+ * pas « rattrapée » par des heures qui ne se sont jamais jouées.
+ *
+ * `worldStartedAt` est la date **réelle** de création du monde. Elle ne sert
+ * qu'à dater le monde pour un humain : ce n'est pas elle qui fait avancer
+ * l'horloge, justement parce que le temps d'arrêt ne compte pas.
+ */
+export class WorldClock {
+  /** Durée réelle d'une heure de jeu, en millisecondes. */
+  readonly hourMs: number;
+  /** Date réelle de création du monde, en millisecondes epoch. */
+  readonly worldStartedAt: number;
+  private readonly nowMs: () => number;
+  private readonly hoursOffset: number;
+  /** Instant réel du démarrage de cette session, origine du compte en cours. */
+  private readonly sessionStartedAt: number;
+
+  constructor(options: WorldClockOptions = {}) {
+    this.hourMs = options.hourMs ?? WORLD_HOUR_MS;
+    if (!Number.isFinite(this.hourMs) || this.hourMs <= 0) {
+      throw new RangeError("hourMs doit être un nombre strictement positif");
+    }
+    this.nowMs = options.now ?? Date.now;
+    this.sessionStartedAt = this.nowMs();
+    this.hoursOffset = options.hoursOffset ?? 0;
+    this.worldStartedAt = options.worldStartedAt ?? this.sessionStartedAt;
+  }
+
+  /** Heures de jeu écoulées depuis la création du monde. */
+  hours(): number {
+    return this.hoursOffset + (this.nowMs() - this.sessionStartedAt) / this.hourMs;
+  }
+
+  /** Sauvegarde : le total courant devient l'offset du prochain démarrage. */
+  toJSON(): WorldClockJson {
+    return { worldStartedAt: this.worldStartedAt, hoursOffset: this.hours() };
+  }
+}
+
 /** Refus d'une action de monde, avec le code à renvoyer au client. */
 export type SettleFailure =
   | { readonly ok: false; readonly code: "bad_tile" }
@@ -106,7 +181,14 @@ export type AbandonResult =
   | { readonly ok: true; readonly settlement: Settlement }
   | { readonly ok: false; readonly code: "bad_tile" | "not_settled" | "not_owner" };
 
-/** Forme JSON de `WorldState`, telle qu'écrite sur disque par `WorldStore`. */
+/**
+ * Forme JSON de `WorldState`, telle qu'écrite sur disque par `WorldStore`.
+ *
+ * `clock` et `caravans` sont **facultatifs** : un fichier écrit avant les
+ * caravanes se relit tel quel, le monde repart simplement d'une horloge neuve
+ * et sans convoi en vol. C'est pour cela que `WORLD_STATE_FILE_VERSION` reste
+ * à 1 (`docs/protocol.md` §11.8).
+ */
 export interface WorldStateJson {
   readonly seed: number;
   readonly subdivisions: number;
@@ -120,6 +202,10 @@ export interface WorldStateJson {
     readonly height: number;
     readonly savedAt: number;
   }[];
+  /** Horloge de jeu du monde ; absente d'un fichier antérieur aux caravanes. */
+  readonly clock?: WorldClockJson;
+  /** Caravanes en vol et arrivées en attente ; absentes de même. */
+  readonly caravans?: CaravanRegistryJson;
 }
 
 export interface WorldStateOptions {
@@ -127,11 +213,19 @@ export interface WorldStateOptions {
   readonly world: World;
   /** Horloge des dates de fondation et d'enregistrement. Défaut : `Date.now`. */
   readonly now?: () => number;
+  /** Horloge de jeu du monde. Défaut : une horloge neuve sur `now`. */
+  readonly clock?: WorldClock;
+  /** Durée réelle d'une heure de jeu, si `clock` n'est pas fourni. */
+  readonly hourMs?: number;
 }
 
 export class WorldState {
   private readonly world: World;
   private readonly now: () => number;
+  /** Horloge de jeu du globe (heures de jeu). */
+  readonly clock: WorldClock;
+  /** Caravanes en voyage sur le globe. */
+  readonly caravans: CaravanRegistry;
   /** Colonies par identifiant de case. */
   private readonly settlements = new Map<number, Settlement>();
   /** Dernier snapshot connu par nom de salle. */
@@ -140,6 +234,18 @@ export class WorldState {
   constructor(options: WorldStateOptions) {
     this.world = options.world;
     this.now = options.now ?? Date.now;
+    this.clock =
+      options.clock ??
+      new WorldClock({
+        now: this.now,
+        ...(options.hourMs !== undefined ? { hourMs: options.hourMs } : {}),
+      });
+    this.caravans = new CaravanRegistry({ world: this.world, hours: () => this.clock.hours() });
+  }
+
+  /** Heures de jeu écoulées depuis la création du monde. */
+  get hours(): number {
+    return this.clock.hours();
   }
 
   get seed(): number {
@@ -287,6 +393,8 @@ export class WorldState {
     return {
       seed: this.seed,
       subdivisions: this.subdivisions,
+      clock: this.clock.toJSON(),
+      caravans: this.caravans.toJSON(),
       settlements: this.list(),
       snapshots: [...this.snapshots.entries()]
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -308,7 +416,18 @@ export class WorldState {
    * tomberaient sur d'autres biomes.
    */
   static fromJSON(json: WorldStateJson, options: WorldStateOptions): WorldState {
-    const state = new WorldState(options);
+    // L'horloge repart du total relu, sur une origine réelle fixée
+    // maintenant : le temps passé serveur éteint ne vieillit pas le monde.
+    const clock =
+      options.clock ??
+      new WorldClock({
+        now: options.now ?? Date.now,
+        ...(options.hourMs !== undefined ? { hourMs: options.hourMs } : {}),
+        ...(json.clock !== undefined
+          ? { worldStartedAt: json.clock.worldStartedAt, hoursOffset: json.clock.hoursOffset }
+          : {}),
+      });
+    const state = new WorldState({ ...options, clock });
     if (json.seed !== state.seed || json.subdivisions !== state.subdivisions) {
       throw new Error(
         `état monde incompatible : sauvegarde (${json.seed}, ${json.subdivisions}) contre globe (${state.seed}, ${state.subdivisions})`,
@@ -332,6 +451,9 @@ export class WorldState {
         height: entry.height,
         savedAt: entry.savedAt,
       });
+    }
+    if (json.caravans !== undefined) {
+      state.caravans.restore(json.caravans);
     }
     return state;
   }

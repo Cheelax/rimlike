@@ -37,6 +37,21 @@ fn encode(command: &sim::Command) -> Vec<u8> {
     postcard::to_allocvec(command).expect("encodage postcard d'une commande")
 }
 
+/// Assemble une commande de départ de caravane. Les genres et les quantités
+/// arrivent en deux tampons parallèles (JS n'a pas de tuple) : ils sont
+/// appariés dans l'ordre et tronqués à la plus courte des deux longueurs.
+fn form_caravan_command(pawn_ids: &[u32], item_kinds: &[u8], item_counts: &[u32]) -> sim::Command {
+    let items = item_kinds
+        .iter()
+        .zip(item_counts.iter())
+        .map(|(&kind, &count)| (ItemKind::from_u8(kind), count))
+        .collect();
+    sim::Command::FormCaravan {
+        pawns: pawn_ids.to_vec(),
+        items,
+    }
+}
+
 /// Pourquoi des octets venus du réseau n'ont pas donné de commande.
 #[derive(Debug)]
 enum CommandError {
@@ -168,6 +183,26 @@ impl WasmSim {
         self.pending.push(sim::Command::TriggerRaid);
     }
 
+    /// Fait partir une caravane. `item_kinds` suit `sim::ItemKind`, apparié
+    /// avec `item_counts`.
+    pub fn form_caravan(&mut self, pawn_ids: &[u32], item_kinds: &[u8], item_counts: &[u32]) {
+        self.pending
+            .push(form_caravan_command(pawn_ids, item_kinds, item_counts));
+    }
+
+    /// Retire les `count` premiers manifestes de la file des départs, une fois
+    /// qu'ils sont partis chez le serveur monde.
+    pub fn clear_departures(&mut self, count: u32) {
+        self.pending.push(sim::Command::ClearDepartures { count });
+    }
+
+    /// Fait entrer un manifeste sur cette carte.
+    pub fn arrive_caravan(&mut self, manifest: &[u8]) {
+        self.pending.push(sim::Command::ArriveCaravan {
+            manifest: manifest.to_vec(),
+        });
+    }
+
     // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
     //
     // Fonctions **associées** : le client doit pouvoir encoder avant même
@@ -230,6 +265,29 @@ impl WasmSim {
 
     pub fn encode_trigger_raid() -> Vec<u8> {
         encode(&sim::Command::TriggerRaid)
+    }
+
+    /// Départ d'une caravane. `item_kinds` suit `sim::ItemKind`, apparié avec
+    /// `item_counts` dans l'ordre.
+    pub fn encode_form_caravan(
+        pawn_ids: &[u32],
+        item_kinds: &[u8],
+        item_counts: &[u32],
+    ) -> Vec<u8> {
+        encode(&form_caravan_command(pawn_ids, item_kinds, item_counts))
+    }
+
+    /// Vidange de la file des départs, à émettre après avoir expédié les
+    /// manifestes : tous les clients de la salle l'appliquent au même tick.
+    pub fn encode_clear_departures(count: u32) -> Vec<u8> {
+        encode(&sim::Command::ClearDepartures { count })
+    }
+
+    /// Arrivée d'une caravane. Le manifeste voyage **dans** la commande.
+    pub fn encode_arrive_caravan(manifest: &[u8]) -> Vec<u8> {
+        encode(&sim::Command::ArriveCaravan {
+            manifest: manifest.to_vec(),
+        })
     }
 
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
@@ -442,6 +500,38 @@ impl WasmSim {
                     i32::from(inj.tended),
                 ]);
             }
+        }
+        out
+    }
+
+    // --- Caravanes ---
+
+    /// Manifestes en attente d'expédition vers le serveur monde.
+    pub fn departures_count(&self) -> u32 {
+        self.inner.departures().len() as u32
+    }
+
+    /// Copie du manifeste encodé à cet indice, vide si l'indice est hors file.
+    /// L'hôte les lit tous, les envoie, puis émet `clear_departures`.
+    pub fn departure(&self, index: u32) -> Vec<u8> {
+        self.inner
+            .departures()
+            .get(index as usize)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Résumé d'un manifeste sans décoder le postcard côté client :
+    /// `[nb colons, nb genres, genre0, quantité0, …]`. Vide si les octets ne
+    /// sont pas un manifeste lisible.
+    pub fn describe_manifest(bytes: &[u8]) -> Vec<i32> {
+        let Ok(manifest) = sim::CaravanManifest::decode(bytes) else {
+            return Vec::new();
+        };
+        let mut out = vec![manifest.pawns.len() as i32, manifest.items.len() as i32];
+        for &(kind, count) in &manifest.items {
+            out.push(kind as i32);
+            out.push(count as i32);
         }
         out
     }
@@ -666,6 +756,23 @@ mod tests {
                     priority: 3,
                 },
             ),
+            (
+                WasmSim::encode_form_caravan(&[1, 2], &[0, 2], &[40, 20]),
+                Command::FormCaravan {
+                    pawns: vec![1, 2],
+                    items: vec![(ItemKind::Wood, 40), (ItemKind::Berries, 20)],
+                },
+            ),
+            (
+                WasmSim::encode_clear_departures(3),
+                Command::ClearDepartures { count: 3 },
+            ),
+            (
+                WasmSim::encode_arrive_caravan(&[7, 8, 9]),
+                Command::ArriveCaravan {
+                    manifest: vec![7, 8, 9],
+                },
+            ),
         ];
         for (bytes, expected) in cases {
             assert!(!bytes.is_empty(), "une commande encodée n'est jamais vide");
@@ -751,6 +858,36 @@ mod tests {
             1000 - 199,
             "PV dérivés de la sévérité"
         );
+    }
+
+    /// Contrat de caravane avec le client : la file des départs se lit et se
+    /// vide par commande, et `describe_manifest` résume sans décoder postcard.
+    #[test]
+    fn une_caravane_part_se_resume_et_quitte_la_file() {
+        let mut s = fresh();
+        s.inner.map_mut().set_zone(2, 2, Zone::Stockpile);
+        s.inner.spawn_item(ItemKind::Wood, 30, 2, 2);
+        let ids: Vec<u32> = s.inner.pawns().iter().take(1).map(|p| p.id).collect();
+
+        s.form_caravan(&ids, &[ItemKind::Wood as u8], &[20]);
+        s.step(1);
+        assert_eq!(s.departures_count(), 1);
+
+        let bytes = s.departure(0);
+        assert_eq!(
+            WasmSim::describe_manifest(&bytes),
+            vec![1, 1, ItemKind::Wood as i32, 20],
+            "[nb colons, nb genres, genre, quantité]"
+        );
+        assert!(s.departure(7).is_empty(), "indice hors file");
+        assert!(
+            WasmSim::describe_manifest(&[0xff, 0xff]).is_empty(),
+            "un manifeste illisible ne décrit rien"
+        );
+
+        s.clear_departures(1);
+        s.step(1);
+        assert_eq!(s.departures_count(), 0);
     }
 
     #[test]

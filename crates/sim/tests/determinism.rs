@@ -1,7 +1,10 @@
 //! Le test qui protège tout le projet : deux simulations nourries des mêmes
 //! entrées doivent produire exactement le même état.
 
-use sim::{BuildKind, Command, Designation, Material, Sim, TICKS_PER_DAY, WorkType, Zone};
+use sim::{
+    BuildKind, Command, Designation, Faction, ItemKind, Material, Sim, TICKS_PER_DAY, WorkType,
+    Zone,
+};
 
 const TICKS: u64 = 10_000;
 
@@ -103,6 +106,27 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             y1: h / 2 - 6,
         });
     }
+    if t == 7000 {
+        // Une caravane part : deux colons et du bois quittent la carte, et le
+        // manifeste encodé entre dans l'état (donc dans le hash).
+        let travellers: Vec<u32> = sim
+            .pawns()
+            .iter()
+            .filter(|p| p.faction == Faction::Colony && p.is_alive() && !p.is_downed())
+            .take(2)
+            .map(|p| p.id)
+            .collect();
+        if travellers.len() == 2 {
+            cmds.push(Command::FormCaravan {
+                pawns: travellers,
+                items: vec![(ItemKind::Wood, 15)],
+            });
+        }
+    }
+    if t == 7010 {
+        // L'hôte a expédié le manifeste : tout le monde vide la file au même tick.
+        cmds.push(Command::ClearDepartures { count: 1 });
+    }
     if t % 900 == 0 {
         for (k, p) in sim.pawns().iter().enumerate() {
             cmds.push(Command::MoveTo {
@@ -119,14 +143,25 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
 fn same_seed_same_commands_same_hash() {
     let mut a = Sim::new(0xDEAD_BEEF, 64, 64);
     let mut b = Sim::new(0xDEAD_BEEF, 64, 64);
+    let mut caravan_left = false;
     for t in 0..TICKS {
         let cmds = scripted_commands(&a, t);
         a.step(&cmds);
         b.step(&cmds);
+        if t == 7005 {
+            caravan_left = a.departures().len() == 1;
+        }
+        if t == 7015 {
+            assert!(
+                a.departures().is_empty(),
+                "la file des départs n'a pas été vidée"
+            );
+        }
         if t % 1000 == 0 {
             assert_eq!(a.state_hash(), b.state_hash(), "désync au tick {t}");
         }
     }
+    assert!(caravan_left, "le scénario n'a pas fait partir de caravane");
     assert_eq!(a.tick(), TICKS);
     assert_eq!(a.state_hash(), b.state_hash());
     assert_eq!(a, b);

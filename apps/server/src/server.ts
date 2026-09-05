@@ -17,11 +17,13 @@ import type { AddressInfo } from "node:net";
 import { gzipSync } from "node:zlib";
 
 import {
+  CARAVAN_TICK_MS,
   HEARTBEAT_MS,
   HEARTBEAT_TIMEOUT_MS,
   decodeClientMessage,
   encodeMessage,
   isCompatibleProtocol,
+  type Caravan,
   type ClientMessage,
   type ErrorCode,
   type PlayerId,
@@ -38,6 +40,7 @@ import {
   WorldState,
   sharedWorld,
   tileFromRoomName,
+  tileRoomName,
 } from "./world.js";
 
 export interface ServerOptions {
@@ -48,7 +51,26 @@ export interface ServerOptions {
   readonly timeoutMs?: number;
   readonly log?: (line: string) => void;
   /** Options passées à chaque salle créée (horloge injectable, tailles). */
-  readonly roomOptions?: Omit<RoomOptions, "name" | "log" | "tile" | "restore" | "onSnapshot">;
+  readonly roomOptions?: Omit<
+    RoomOptions,
+    "name" | "log" | "tile" | "restore" | "onSnapshot" | "onHostReady"
+  >;
+  /**
+   * Durée réelle d'une heure de jeu du monde, en millisecondes. Défaut :
+   * `WORLD_HOUR_MS` (30 s). `index.ts` la résout depuis `WORLD_HOUR_MS` ; les
+   * tests la raccourcissent pour voyager vite.
+   */
+  readonly worldHourMs?: number;
+  /**
+   * Période du tick du monde : avancement des caravanes et diffusion de
+   * `world_caravans`. Défaut : `CARAVAN_TICK_MS` (5 s).
+   */
+  readonly caravanTickMs?: number;
+  /**
+   * Démarre le tick du monde. Défaut : `setInterval` non bloquant pour le
+   * processus. Injectable pour piloter le temps depuis un test.
+   */
+  readonly startWorldClock?: (onTick: () => void, intervalMs: number) => () => void;
   /** Graine du globe. Défaut : `DEFAULT_WORLD_SEED`. */
   readonly worldSeed?: number;
   /** Subdivisions du globe. Défaut : `DEFAULT_WORLD_SUBDIVISIONS`. */
@@ -91,7 +113,17 @@ interface Connection {
 /** Messages traités au niveau de la connexion, avant toute salle. */
 type WorldClientMessage = Extract<
   ClientMessage,
-  { type: "world_join" | "settle" | "visit" | "abandon" | "world_leave" }
+  {
+    type:
+      | "world_join"
+      | "settle"
+      | "visit"
+      | "abandon"
+      | "world_leave"
+      | "caravan_depart"
+      | "caravan_cancel"
+      | "caravan_delivered";
+  }
 >;
 
 function isWorldMessage(message: ClientMessage): message is WorldClientMessage {
@@ -100,7 +132,10 @@ function isWorldMessage(message: ClientMessage): message is WorldClientMessage {
     message.type === "settle" ||
     message.type === "visit" ||
     message.type === "abandon" ||
-    message.type === "world_leave"
+    message.type === "world_leave" ||
+    message.type === "caravan_depart" ||
+    message.type === "caravan_cancel" ||
+    message.type === "caravan_delivered"
   );
 }
 
@@ -133,6 +168,26 @@ function abandonErrorText(code: "bad_tile" | "not_settled" | "not_owner", tile: 
   }
 }
 
+/** Diagnostic d'un ordre de caravane refusé. */
+function caravanErrorText(code: WorldErrorCode): string {
+  switch (code) {
+    case "bad_tile":
+      return "une des deux cases n'existe pas sur ce globe";
+    case "caravan_same_tile":
+      return "une caravane doit partir vers une autre case";
+    case "caravan_no_route":
+      return "aucun itinéraire terrestre entre ces deux cases (l'océan est infranchissable)";
+    case "caravan_not_found":
+      return "caravane inconnue, ou dans un état qui ne se prête pas à cette action";
+    case "not_owner":
+      return "cette caravane appartient à quelqu'un d'autre";
+    case "caravan_too_late":
+      return "la caravane a passé la moitié de son trajet, elle ne fait plus demi-tour";
+    default:
+      return "ordre de caravane refusé";
+  }
+}
+
 export async function startServer(options: ServerOptions = {}): Promise<RunningServer> {
   const log = options.log ?? ((line: string) => console.log(line));
   const heartbeatMs = options.heartbeatMs ?? HEARTBEAT_MS;
@@ -160,23 +215,31 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       })
     : null;
 
+  // Horloge de jeu du globe : c'est elle qui fait voyager les caravanes. Elle
+  // reprend son compte au redémarrage (`WorldClock`), le monde ne vieillit pas
+  // serveur éteint.
+  const worldHourMs = options.worldHourMs;
+  const caravanTickMs = options.caravanTickMs ?? CARAVAN_TICK_MS;
+  const clockOptions = worldHourMs === undefined ? {} : { hourMs: worldHourMs };
+
   let worldState: WorldState;
   if (store !== null) {
-    const loaded = await store.load(globe);
+    const loaded = await store.load(globe, clockOptions);
     if (loaded.kind === "loaded") {
       worldState = loaded.state;
       log(
         `[monde] état rechargé depuis ${worldStateFile} — ${worldState.settlementCount} colonie(s), ` +
-          `${worldState.snapshotCount} snapshot(s) conservé(s)`,
+          `${worldState.snapshotCount} snapshot(s) conservé(s), ${worldState.caravans.count} caravane(s), ` +
+          `horloge à ${worldState.hours.toFixed(1)} h de jeu`,
       );
     } else {
-      worldState = new WorldState({ world: globe });
+      worldState = new WorldState({ world: globe, ...clockOptions });
       if (loaded.kind === "ignored") {
         log(`[monde] fichier d'état ignoré (${loaded.reason}) — le monde repart à vide, voir le détail sur stderr`);
       }
     }
   } else {
-    worldState = new WorldState({ world: globe });
+    worldState = new WorldState({ world: globe, ...clockOptions });
   }
   const generatedAt = Date.now();
 
@@ -312,6 +375,99 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     broadcastWorld(encodeMessage({ type: "world_players", players: worldPlayerNames() }));
   };
 
+  // --- Caravanes ---
+  //
+  // `world_caravans` est diffusé à chaque changement, mais au plus une fois
+  // par `caravanTickMs` : un changement trop rapproché du précédent envoi
+  // attend le prochain tick du monde, qui le portera avec l'avancement.
+
+  let caravansDirty = false;
+  let lastCaravanBroadcast = Number.NEGATIVE_INFINITY;
+
+  const broadcastCaravans = (): void => {
+    caravansDirty = false;
+    lastCaravanBroadcast = Date.now();
+    broadcastWorld(encodeMessage({ type: "world_caravans", caravans: worldState.caravans.list() }));
+  };
+
+  const caravansChanged = (): void => {
+    if (Date.now() - lastCaravanBroadcast >= caravanTickMs) {
+      broadcastCaravans();
+    } else {
+      caravansDirty = true;
+    }
+  };
+
+  /**
+   * Remet à l'hôte d'une salle les arrivées que personne n'a encore confirmées.
+   * Sans hôte, ou tant que la salle est en `lobby` (pas de carte, donc rien où
+   * injecter le convoi), l'arrivée attend : elle repartira au prochain
+   * `onHostReady`.
+   */
+  const deliverArrivals = (roomName: string): void => {
+    const room = rooms.get(roomName);
+    const tileId = tileFromRoomName(roomName);
+    if (room === undefined || tileId === null || room.state === "lobby") {
+      return;
+    }
+    for (const arrival of worldState.caravans.pendingArrivals(tileId)) {
+      if (room.sendToHost({ type: "caravan_arrive", ...arrival })) {
+        log(`[monde] caravane ${arrival.id} proposée à l'hôte de ${roomName}`);
+      }
+    }
+  };
+
+  /**
+   * Une caravane vient d'arriver. Sur une case libre, elle **fonde** la
+   * colonie au nom de son propriétaire : la case est forcément terrestre,
+   * l'itinéraire n'en traverse pas d'autres. La salle, elle, n'est pas créée
+   * pour autant — elle s'ouvrira en `lobby` au premier `join`, comme toute
+   * salle de case sans snapshot : la colonie « naît » quand quelqu'un l'ouvre,
+   * et le manifeste attend jusque-là.
+   */
+  const handleArrival = (caravan: Caravan): void => {
+    const tile = caravan.toTile;
+    if (worldState.settlementAt(tile) === undefined) {
+      const result = worldState.settle(tile, caravan.owner);
+      if (!result.ok) {
+        log(`[monde] caravane ${caravan.id} arrivée sur la case ${tile}, fondation refusée (${result.code})`);
+        return;
+      }
+      log(`[monde] caravane ${caravan.id} : ${caravan.owner} fonde une colonie sur la case ${tile}`);
+      store?.scheduleSave(worldState);
+      broadcastSettlements();
+    }
+    deliverArrivals(tileRoomName(tile));
+  };
+
+  /**
+   * Tick du monde : les caravanes avancent, celles qui arrivent sont livrées
+   * (ou mises en attente), et la liste repart aux clients tant que quelque
+   * chose bouge.
+   */
+  const worldTick = (): void => {
+    const { arrived, changed } = worldState.caravans.advance();
+    for (const caravan of arrived) {
+      handleArrival(caravan);
+    }
+    if (changed) {
+      caravansDirty = true;
+      store?.scheduleSave(worldState);
+    }
+    if (caravansDirty || worldState.caravans.hasMoving) {
+      broadcastCaravans();
+    }
+  };
+
+  const startWorldClock =
+    options.startWorldClock ??
+    ((onTick: () => void, intervalMs: number) => {
+      const handle = setInterval(onTick, intervalMs);
+      handle.unref?.();
+      return () => clearInterval(handle);
+    });
+  const stopWorldClock = startWorldClock(worldTick, caravanTickMs);
+
   const leaveWorld = (connection: Connection): void => {
     if (!worldMembers.delete(connection)) {
       return;
@@ -356,8 +512,33 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
           },
         }),
       );
+      // Les caravanes en vol, tout de suite : le globe s'affiche complet.
+      send(socket, encodeMessage({ type: "world_caravans", caravans: worldState.caravans.list() }));
       log(`[monde] ${message.name} rejoint le monde — ${worldMembers.size} présent(s)`);
       broadcastWorldPlayers();
+      return;
+    }
+
+    if (message.type === "caravan_delivered") {
+      // Ce message répond à un `caravan_arrive` reçu **dans une salle**. Son
+      // auteur n'est pas forcément entré dans le monde : on ne lui impose que
+      // d'être dans la salle de la case d'arrivée. Le serveur n'exige pas non
+      // plus qu'il soit encore l'hôte — seul l'hôte reçoit `caravan_arrive`,
+      // et une confirmation tardive après un changement d'hôte reste vraie.
+      const arrival = worldState.caravans.arrivalOf(message.id);
+      if (arrival === undefined) {
+        worldFail(socket, "caravan_not_found", caravanErrorText("caravan_not_found"));
+        return;
+      }
+      const room = tileRoomName(arrival.tile);
+      if (connection.room === null || connection.room.name !== room) {
+        worldFail(socket, "caravan_not_in_room", `il faut être dans la salle ${room} pour livrer cette caravane`);
+        return;
+      }
+      worldState.caravans.markDelivered(message.id);
+      store?.scheduleSave(worldState);
+      log(`[monde] caravane ${message.id} livrée sur la case ${arrival.tile}`);
+      caravansChanged();
       return;
     }
 
@@ -425,6 +606,46 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
         broadcastSettlements();
         return;
       }
+      case "caravan_depart": {
+        // v1 : tout joueur **présent dans la salle de la case de départ** peut
+        // expédier, propriétaire ou simple visiteur. Être dans la salle
+        // `tile-<id>` suffit à prouver que la case est colonisée : le serveur
+        // n'ouvre pas de salle de case libre (§11.2).
+        const room = tileRoomName(message.fromTile);
+        if (connection.room === null || connection.room.name !== room) {
+          worldFail(socket, "caravan_not_in_room", `il faut être dans la salle ${room} pour en faire partir une caravane`);
+          return;
+        }
+        const result = worldState.caravans.depart({
+          owner: name,
+          fromTile: message.fromTile,
+          toTile: message.toTile,
+          manifest: message.manifest,
+          summary: message.summary,
+        });
+        if (!result.ok) {
+          worldFail(socket, result.code, caravanErrorText(result.code));
+          return;
+        }
+        store?.scheduleSave(worldState);
+        log(
+          `[monde] ${name} expédie la caravane ${result.caravan.id} de la case ${message.fromTile} vers ${message.toTile} ` +
+            `— ${result.caravan.route.length} case(s), ${(result.caravan.arrivesAt - result.caravan.departedAt).toFixed(1)} h de jeu`,
+        );
+        caravansChanged();
+        return;
+      }
+      case "caravan_cancel": {
+        const result = worldState.caravans.cancel(message.id, name);
+        if (!result.ok) {
+          worldFail(socket, result.code, caravanErrorText(result.code));
+          return;
+        }
+        store?.scheduleSave(worldState);
+        log(`[monde] ${name} rappelle la caravane ${message.id} vers la case ${result.caravan.toTile}`);
+        caravansChanged();
+        return;
+      }
     }
   };
 
@@ -467,6 +688,9 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
           store?.scheduleSave(worldState);
         }
       },
+      // La salle entre en jeu, ou change d'hôte : les arrivées non confirmées
+      // repartent vers celui qui peut les injecter.
+      onHostReady: () => deliverArrivals(name),
     });
   };
 
@@ -601,6 +825,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     },
     async close(): Promise<void> {
       clearInterval(heartbeat);
+      stopWorldClock();
       for (const room of rooms.values()) {
         room.stop();
       }

@@ -13,6 +13,7 @@ import {
   validateClientMessage,
   validateServerMessage,
   WORLD_ERROR_CODES,
+  type Caravan,
   type ClientMessage,
   type ServerMessage,
   type Settlement,
@@ -25,6 +26,21 @@ const settlement: Settlement = {
   room: "tile-1234",
   seed: 3_141_592_653,
   createdAt: 1_757_000_000_000,
+};
+
+/** Une caravane de référence, en vol à mi-parcours. */
+const caravan: Caravan = {
+  id: "c1",
+  owner: "alice",
+  fromTile: 12,
+  toTile: 40,
+  route: [12, 23, 31, 40],
+  departedAt: 10,
+  arrivesAt: 34.5,
+  progress: 0.5,
+  currentTile: 23,
+  summary: { pawns: 3, items: [[0, 40], [4, 12]] },
+  status: "travelling",
 };
 
 describe("base64", () => {
@@ -73,6 +89,22 @@ describe("encodeMessage / decodeMessage", () => {
     { type: "visit", tile: 0 },
     { type: "abandon", tile: 10_241 },
     { type: "world_leave" },
+    {
+      type: "caravan_depart",
+      fromTile: 12,
+      toTile: 40,
+      manifest: new Uint8Array([1, 0, 255, 42]),
+      summary: { pawns: 3, items: [[0, 40], [4, 12]] },
+    },
+    {
+      type: "caravan_depart",
+      fromTile: 0,
+      toTile: 1,
+      manifest: new Uint8Array([7]),
+      summary: { pawns: 0, items: [] },
+    },
+    { type: "caravan_cancel", id: "c1" },
+    { type: "caravan_delivered", id: "c1" },
   ];
 
   const serverMessages: ServerMessage[] = [
@@ -140,6 +172,18 @@ describe("encodeMessage / decodeMessage", () => {
     { type: "world_players", players: ["alice"] },
     { type: "settled", tile: 1234, room: "tile-1234", seed: 3_141_592_653 },
     { type: "world_error", code: "occupied", message: "case déjà colonisée" },
+    { type: "world_caravans", caravans: [] },
+    {
+      type: "world_caravans",
+      caravans: [caravan, { ...caravan, id: "c2", status: "delivered", progress: 1, currentTile: 40 }],
+    },
+    {
+      type: "caravan_arrive",
+      id: "c1",
+      tile: 40,
+      manifest: new Uint8Array([0, 128, 255]),
+      summary: { pawns: 2, items: [[3, 5]] },
+    },
   ];
 
   it("fait l'aller-retour sur chaque message client", () => {
@@ -206,6 +250,24 @@ describe("validation", () => {
       { type: "settle", tile: 1.5 },
       { type: "visit", tile: "3" },
       { type: "abandon", tile: null },
+      { type: "caravan_depart", fromTile: 1, toTile: 2, summary: { pawns: 1, items: [] } },
+      { type: "caravan_depart", fromTile: 1, toTile: 2, manifest: "", summary: { pawns: 1, items: [] } },
+      { type: "caravan_depart", fromTile: 1, manifest: "AQID", summary: { pawns: 1, items: [] } },
+      { type: "caravan_depart", fromTile: -1, toTile: 2, manifest: "AQID", summary: { pawns: 1, items: [] } },
+      { type: "caravan_depart", fromTile: 1, toTile: 2, manifest: "AQID" },
+      { type: "caravan_depart", fromTile: 1, toTile: 2, manifest: "AQID", summary: { pawns: -1, items: [] } },
+      { type: "caravan_depart", fromTile: 1, toTile: 2, manifest: "AQID", summary: { pawns: 1, items: [[1]] } },
+      {
+        type: "caravan_depart",
+        fromTile: 1,
+        toTile: 2,
+        manifest: "AQID",
+        summary: { pawns: 1, items: [[1, 2, 3]] },
+      },
+      { type: "caravan_depart", fromTile: 1, toTile: 2, manifest: "AQID", summary: { pawns: 1, items: {} } },
+      { type: "caravan_cancel" },
+      { type: "caravan_cancel", id: "" },
+      { type: "caravan_delivered", id: 3 },
     ];
     for (const value of bad) {
       expect(validateClientMessage(value), JSON.stringify(value)).toBeNull();
@@ -259,6 +321,20 @@ describe("validation", () => {
       { type: "settled", room: "tile-1", seed: 1 },
       { type: "world_error", code: "", message: "vide" },
       { type: "world_error", code: "occupied" },
+      { type: "world_caravans", caravans: {} },
+      { type: "world_caravans", caravans: [{ ...caravan, status: "perdue" }] },
+      { type: "world_caravans", caravans: [{ ...caravan, progress: 1.5 }] },
+      { type: "world_caravans", caravans: [{ ...caravan, progress: "0.5" }] },
+      { type: "world_caravans", caravans: [{ ...caravan, route: [] }] },
+      { type: "world_caravans", caravans: [{ ...caravan, route: [1, -2] }] },
+      { type: "world_caravans", caravans: [{ ...caravan, arrivesAt: Number.POSITIVE_INFINITY }] },
+      { type: "world_caravans", caravans: [{ ...caravan, departedAt: -1 }] },
+      { type: "world_caravans", caravans: [{ ...caravan, id: "" }] },
+      { type: "world_caravans", caravans: [{ ...caravan, owner: 1 }] },
+      { type: "world_caravans", caravans: [{ ...caravan, summary: { pawns: 1 } }] },
+      { type: "caravan_arrive", id: "c1", tile: 3, summary: { pawns: 1, items: [] } },
+      { type: "caravan_arrive", id: "c1", manifest: "AQID", summary: { pawns: 1, items: [] } },
+      { type: "caravan_arrive", id: "c1", tile: 3, manifest: "AQID" },
     ];
     for (const value of bad) {
       expect(validateServerMessage(value), JSON.stringify(value)).toBeNull();
@@ -302,5 +378,55 @@ describe("monde", () => {
 
   it("garde des codes d'erreur monde distincts", () => {
     expect(new Set(WORLD_ERROR_CODES).size).toBe(WORLD_ERROR_CODES.length);
+  });
+});
+
+describe("caravanes", () => {
+  it("écrit le manifeste en base64 et le rend octet pour octet", () => {
+    const manifest = new Uint8Array([0, 1, 127, 128, 254, 255]);
+    const wire = encodeMessage({
+      type: "caravan_depart",
+      fromTile: 3,
+      toTile: 9,
+      manifest,
+      summary: { pawns: 1, items: [] },
+    });
+    expect(decodeMessage(wire)).toEqual({
+      type: "caravan_depart",
+      fromTile: 3,
+      toTile: 9,
+      manifest: "AAF/gP7/",
+      summary: { pawns: 1, items: [] },
+    });
+    const back = decodeClientMessage(wire);
+    expect(back?.type === "caravan_depart" ? back.manifest : null).toEqual(manifest);
+  });
+
+  it("transporte une caravane sans perdre de champ", () => {
+    const wire = encodeMessage({ type: "world_caravans", caravans: [caravan] });
+    expect(decodeMessage(wire)).toEqual({ type: "world_caravans", caravans: [caravan] });
+    const back = decodeServerMessage(wire);
+    expect(back?.type === "world_caravans" ? back.caravans : null).toEqual([caravan]);
+  });
+
+  it("accepte les quatre statuts et rien d'autre", () => {
+    for (const status of ["travelling", "returning", "arrived", "delivered"]) {
+      expect(validateServerMessage({ type: "world_caravans", caravans: [{ ...caravan, status }] })).not.toBeNull();
+    }
+    expect(validateServerMessage({ type: "world_caravans", caravans: [{ ...caravan, status: "en_vol" }] })).toBeNull();
+  });
+
+  it("garde les heures de jeu flottantes, contrairement aux ticks", () => {
+    // L'horloge du monde n'est pas en lockstep : le serveur fait autorité, les
+    // flottants y sont permis (docs/world.md §6).
+    const message = validateServerMessage({
+      type: "world_caravans",
+      caravans: [{ ...caravan, departedAt: 0.25, arrivesAt: 12.75, progress: 0.125 }],
+    });
+    expect(message?.type === "world_caravans" ? message.caravans[0] : null).toMatchObject({
+      departedAt: 0.25,
+      arrivesAt: 12.75,
+      progress: 0.125,
+    });
   });
 });

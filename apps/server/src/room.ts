@@ -90,6 +90,14 @@ export interface RoomOptions {
   readonly restore?: RoomRestore;
   /** Appelé quand l'hôte remonte un snapshot de conservation. */
   readonly onSnapshot?: (snapshot: RoomSnapshotReport) => void;
+  /**
+   * Appelé dès que la salle est en jeu **avec un hôte**, puis à chaque
+   * changement d'hôte — jamais deux fois de suite pour le même. Le serveur
+   * monde s'en sert pour (re)livrer les caravanes arrivées sur la case : une
+   * arrivée non confirmée doit repartir vers le nouvel hôte, ou vers le
+   * premier hôte d'une salle qui rouvre (`docs/protocol.md` §12).
+   */
+  readonly onHostReady?: (hostId: PlayerId) => void;
   /** Période des snapshots de conservation. Défaut : `SNAPSHOT_EVERY_TICKS`. */
   readonly snapshotEveryTicks?: number;
 }
@@ -118,6 +126,7 @@ export class Room {
   private readonly log: (line: string) => void;
   private readonly tile: TileRoom | null;
   private readonly onSnapshot: ((snapshot: RoomSnapshotReport) => void) | null;
+  private readonly onHostReady: ((hostId: PlayerId) => void) | null;
   private readonly snapshotEveryTicks: number;
 
   private readonly players: RoomPlayer[] = [];
@@ -136,6 +145,8 @@ export class Room {
   private restore: RoomRestore | null = null;
   /** Prochain tick où réclamer un snapshot de conservation. */
   private nextKeepTick = Number.POSITIVE_INFINITY;
+  /** Dernier hôte annoncé par `onHostReady`, pour ne pas le réannoncer. */
+  private readyHost: PlayerId | null = null;
 
   constructor(options: RoomOptions) {
     this.name = options.name;
@@ -147,6 +158,7 @@ export class Room {
     this.log = options.log ?? ((line) => console.log(line));
     this.tile = options.tile ?? null;
     this.onSnapshot = options.onSnapshot ?? null;
+    this.onHostReady = options.onHostReady ?? null;
     this.snapshotEveryTicks = options.snapshotEveryTicks ?? SNAPSHOT_EVERY_TICKS;
     if (!Number.isInteger(this.snapshotEveryTicks) || this.snapshotEveryTicks < 1) {
       throw new RangeError("snapshotEveryTicks doit être un entier >= 1");
@@ -262,6 +274,7 @@ export class Room {
     if (this.isRunning() && this.stopClock === null) {
       this.stopClock = this.startClock(() => this.emitBundle(), this.bundleIntervalMs);
     }
+    this.notifyHostReady();
     return player.id;
   }
 
@@ -289,6 +302,7 @@ export class Room {
       }
     }
     this.broadcastPlayers();
+    this.notifyHostReady();
     if (this.isEmpty) {
       this.stop();
     }
@@ -335,11 +349,27 @@ export class Room {
       case "visit":
       case "abandon":
       case "world_leave":
+      case "caravan_depart":
+      case "caravan_cancel":
+      case "caravan_delivered":
         // Les actions de monde sont traitées par le serveur avant d'atteindre
         // une salle : en arriver ici est un bug de câblage.
         this.fail(player, "bad_message", "action de monde adressée à une salle");
         return;
     }
+  }
+
+  /**
+   * Envoie un message à l'hôte, s'il y en a un. Renvoie faux sinon : au
+   * serveur de réessayer plus tard (c'est ce que fait `onHostReady`).
+   */
+  sendToHost(message: ServerMessage): boolean {
+    const host = this.players.find((p) => p.id === this.hostId);
+    if (host === undefined) {
+      return false;
+    }
+    this.sendTo(host, message);
+    return true;
   }
 
   /** Arrête l'horloge. À appeler quand la salle est détruite. */
@@ -355,6 +385,19 @@ export class Room {
 
   private isRunning(): boolean {
     return this.roomState === "running" || this.roomState === "desynced";
+  }
+
+  /**
+   * Annonce l'hôte au serveur monde, une seule fois par hôte : à l'entrée en
+   * jeu (`start` ou réouverture depuis un snapshot) et à chaque changement
+   * d'hôte. Une salle en `lobby` n'a pas de sim, donc rien à recevoir.
+   */
+  private notifyHostReady(): void {
+    if (!this.isRunning() || this.hostId === null || this.hostId === this.readyHost) {
+      return;
+    }
+    this.readyHost = this.hostId;
+    this.onHostReady?.(this.hostId);
   }
 
   private handleStart(player: RoomPlayer, seed: number, width: number, height: number): void {
@@ -384,6 +427,9 @@ export class Room {
       `[${this.name}] démarrage — seed ${effectiveSeed}${this.tile === null ? "" : " (imposé par la case)"}, carte ${width}x${height}, ${this.players.length} joueur(s)`,
     );
     this.stopClock = this.startClock(() => this.emitBundle(), this.bundleIntervalMs);
+    // La carte existe enfin : une caravane arrivée pendant le lobby peut être
+    // livrée à l'hôte.
+    this.notifyHostReady();
   }
 
   private emitBundle(): void {

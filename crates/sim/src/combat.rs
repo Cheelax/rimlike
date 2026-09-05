@@ -191,7 +191,7 @@ impl Sim {
 
     /// Case de bord d'où la colonie est vraiment atteignable : sinon un
     /// arrivant resterait planté derrière un mur ou de l'eau.
-    fn find_entry_tile(&mut self) -> Option<(u32, u32)> {
+    pub(crate) fn find_entry_tile(&mut self) -> Option<(u32, u32)> {
         let colonists = self.living_tiles(Faction::Colony);
         if colonists.is_empty() {
             return None;

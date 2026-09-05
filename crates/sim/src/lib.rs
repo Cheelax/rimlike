@@ -14,6 +14,7 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod build;
+pub mod caravan;
 pub mod combat;
 pub mod farm;
 pub mod fixed;
@@ -34,6 +35,7 @@ pub mod work;
 use serde::{Deserialize, Serialize};
 
 pub use build::{Blueprint, BuildKind, Material};
+pub use caravan::{CaravanManifest, MANIFEST_VERSION};
 pub use farm::Crop;
 pub use health::{BodyPart, Injury};
 pub use items::{ItemKind, ItemStack};
@@ -74,6 +76,12 @@ pub enum EventKind {
     ColonistRescued = 9,
     /// Les blessures d'un colon viennent d'être pansées. `arg` : l'id du soigné.
     ColonistTended = 10,
+    /// Une caravane a quitté la carte. `arg` : le nombre de colons partis.
+    /// Son manifeste attend dans `Sim::departures`.
+    CaravanDeparted = 11,
+    /// Une caravane vient d'arriver. `arg` : le nombre de colons débarqués
+    /// (0 pour un simple envoi de marchandises).
+    CaravanArrived = 12,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -130,6 +138,24 @@ pub enum Command {
     },
     /// Fait entrer un raid tout de suite (débogage, tests).
     TriggerRaid,
+    /// Fait partir une caravane : les colons quittent la carte avec les
+    /// marchandises prélevées en stockage, et le manifeste encodé rejoint
+    /// `Sim::departures`. Ignorée si la liste est vide, si un id est inconnu,
+    /// répété, désigne un pillard ou un colon à terre. Les quantités
+    /// manquantes ne sont pas un refus : on part avec ce qui existe.
+    FormCaravan {
+        pawns: Vec<u32>,
+        items: Vec<(ItemKind, u32)>,
+    },
+    /// Retire les `count` premiers manifestes de `Sim::departures`. C'est la
+    /// seule façon de vider la file en lockstep : l'hôte lit `departures()`,
+    /// expédie les octets au serveur monde, puis émet cette commande que tous
+    /// les clients appliquent au même tick.
+    ClearDepartures { count: u32 },
+    /// Fait entrer un manifeste (octets de `CaravanManifest::encode`) sur
+    /// cette carte. Le manifeste voyage **dans** la commande : tous les
+    /// clients de la salle l'appliquent au même tick. Illisible : ignoré.
+    ArriveCaravan { manifest: Vec<u8> },
 }
 
 #[derive(Debug)]
@@ -171,6 +197,11 @@ pub struct Sim {
     weather_until: u64,
     /// Compteur d'ids partagé par tout ce qui a un id.
     next_id: u32,
+    /// Manifestes de caravanes parties d'ici, encodés, en attente d'être
+    /// expédiés au serveur monde. Ils font partie de l'état (donc du hash)
+    /// tant que `Command::ClearDepartures` ne les a pas retirés : sans ça,
+    /// deux clients de la même salle divergeraient dès le premier départ.
+    departures: Vec<Vec<u8>>,
 }
 
 impl Sim {
@@ -205,6 +236,7 @@ impl Sim {
             weather: Weather::Clear,
             weather_until: 0,
             next_id: 1,
+            departures: Vec::new(),
         };
         sim.spawn_starting_pawns(3);
         sim.schedule_first_raid();
@@ -400,6 +432,12 @@ impl Sim {
             Command::TriggerRaid => {
                 self.spawn_raid();
             }
+            Command::FormCaravan {
+                ref pawns,
+                ref items,
+            } => self.form_caravan(pawns, items),
+            Command::ClearDepartures { count } => self.clear_departures(count),
+            Command::ArriveCaravan { ref manifest } => self.arrive_caravan(manifest),
         }
     }
 

@@ -43,6 +43,31 @@ export const HEARTBEAT_TIMEOUT_MS = 15000;
 /** Joueurs simultanés par salle (phase 3 : 2 à 4 joueurs sur une carte). */
 export const MAX_PLAYERS = 4;
 
+/**
+ * Durée réelle d'une **heure de jeu** du monde, en millisecondes : 30 s, donc
+ * un jour de monde en 12 min. C'est l'unité de l'horloge du globe, celle qui
+ * fait avancer les caravanes (`docs/protocol.md` §12) — sans rapport avec les
+ * ticks d'une salle, qui numérotent la simulation d'une carte.
+ *
+ * Le serveur la lit dans `WORLD_HOUR_MS` ; un client qui veut animer une
+ * caravane entre deux `world_caravans` a besoin de la même valeur.
+ */
+export const WORLD_HOUR_MS = 30_000;
+
+/**
+ * Période du tick du monde : le serveur fait avancer les caravanes et diffuse
+ * `world_caravans` au plus une fois par `CARAVAN_TICK_MS`, même si dix
+ * changements surviennent entre deux.
+ */
+export const CARAVAN_TICK_MS = 5000;
+
+/**
+ * Une caravane livrée reste visible dans `world_caravans` pendant ce nombre
+ * d'heures de jeu, puis disparaît de la liste : le client peut afficher les
+ * arrivées récentes sans tenir d'historique.
+ */
+export const CARAVAN_HISTORY_HOURS = 24;
+
 /** Identifiant de joueur, attribué par le serveur, unique dans la salle. */
 export type PlayerId = number;
 
@@ -102,6 +127,61 @@ export interface WorldInfo {
   readonly subdivisions: number;
   /** Nombre de cases, `10 × 4^subdivisions + 2`. */
   readonly tiles: number;
+}
+
+/**
+ * Résumé d'affichage d'une caravane, **fourni par le client** qui l'expédie :
+ * le serveur ne décode jamais le manifeste (c'est du postcard produit par le
+ * sim, comme les commandes), il ne peut donc pas savoir seul ce qu'elle
+ * transporte. Le résumé sert au globe et aux notifications ; il n'a aucune
+ * valeur d'autorité et ne doit rien décider dans le sim.
+ */
+export interface CaravanSummary {
+  /** Nombre de colons du convoi. */
+  readonly pawns: number;
+  /** Marchandises, `[kind, count]` avec `kind` la valeur de `items::ItemKind`. */
+  readonly items: readonly (readonly [number, number])[];
+}
+
+/**
+ * `travelling` : en route vers `toTile`.
+ * `returning` : annulée avant la moitié, elle refait le trajet vers son point
+ * de départ (`toTile` devient alors la case d'origine).
+ * `arrived` : parvenue à destination, en attente d'être injectée dans la carte
+ * par l'hôte de la salle d'arrivée.
+ * `delivered` : l'hôte a confirmé l'injection ; la caravane reste listée
+ * `CARAVAN_HISTORY_HOURS` heures de jeu, puis disparaît.
+ */
+export type CaravanStatus = "travelling" | "returning" | "arrived" | "delivered";
+
+/**
+ * Une caravane en voyage sur le globe, telle que le serveur la diffuse. Les
+ * dates sont en **heures de jeu du monde** (voir `WORLD_HOUR_MS`), pas en
+ * millisecondes ni en ticks de salle.
+ *
+ * `progress` et `currentTile` sont dérivés du temps par le serveur et
+ * recalculés à chaque diffusion : un client peut les interpoler entre deux
+ * `world_caravans`, mais c'est le serveur qui fait autorité.
+ */
+export interface Caravan {
+  /** Identifiant attribué par le serveur, unique et stable pour la vie du monde. */
+  readonly id: string;
+  /** Nom du joueur qui l'a expédiée (l'identité v1 est le nom). */
+  readonly owner: string;
+  readonly fromTile: number;
+  readonly toTile: number;
+  /** Cases traversées, `[fromTile, …, toTile]` (le `Route.tiles` du globe). */
+  readonly route: readonly number[];
+  /** Heure de jeu du départ. */
+  readonly departedAt: number;
+  /** Heure de jeu de l'arrivée prévue (ou constatée). */
+  readonly arrivesAt: number;
+  /** Avancement dans `[0, 1]`, linéaire sur la durée du trajet. */
+  readonly progress: number;
+  /** Case courante, `route[floor(progress × (route.length − 1))]`. */
+  readonly currentTile: number;
+  readonly summary: CaravanSummary;
+  readonly status: CaravanStatus;
 }
 
 /** Une commande de joueur planifiée sur un tick, en octets opaques. */
@@ -216,6 +296,42 @@ export interface WorldLeaveMessage {
   readonly type: "world_leave";
 }
 
+/**
+ * Expédier une caravane depuis la case `fromTile`. Envoyé par un joueur
+ * **présent dans la salle de `fromTile`** (v1 : propriétaire ou simple
+ * visiteur, voir `docs/protocol.md` §12) et déjà entré dans le monde.
+ *
+ * `manifest` est l'encodage postcard du convoi produit par le sim, opaque pour
+ * le serveur, qui se contente de le transporter jusqu'à la case d'arrivée.
+ */
+export interface CaravanDepartMessage {
+  readonly type: "caravan_depart";
+  readonly fromTile: number;
+  readonly toTile: number;
+  /** Manifeste du sim, en octets opaques (base64 sur le fil). */
+  readonly manifest: Uint8Array;
+  readonly summary: CaravanSummary;
+}
+
+/**
+ * Faire demi-tour. Refusé (`caravan_too_late`) au-delà de la moitié du trajet :
+ * passé ce point la caravane est plus près de sa destination que de chez elle.
+ */
+export interface CaravanCancelMessage {
+  readonly type: "caravan_cancel";
+  readonly id: string;
+}
+
+/**
+ * L'hôte de la salle d'arrivée confirme avoir émis la commande d'entrée du
+ * convoi en lockstep. Tant que le serveur ne l'a pas reçu, la caravane reste
+ * `arrived` et son `caravan_arrive` est réémis (nouvel hôte, réouverture).
+ */
+export interface CaravanDeliveredMessage {
+  readonly type: "caravan_delivered";
+  readonly id: string;
+}
+
 export type ClientMessage =
   | JoinMessage
   | ClientStartMessage
@@ -228,7 +344,10 @@ export type ClientMessage =
   | SettleMessage
   | VisitMessage
   | AbandonMessage
-  | WorldLeaveMessage;
+  | WorldLeaveMessage
+  | CaravanDepartMessage
+  | CaravanCancelMessage
+  | CaravanDeliveredMessage;
 
 // --- Serveur → client ---
 
@@ -354,6 +473,32 @@ export interface WorldErrorMessage {
   readonly message: string;
 }
 
+/**
+ * Toutes les caravanes connues du monde, diffusé aux joueurs présents dans le
+ * monde à chaque changement et au plus une fois par `CARAVAN_TICK_MS`. Liste
+ * complète comme `world_settlements` : le client remplace la sienne.
+ */
+export interface WorldCaravansMessage {
+  readonly type: "world_caravans";
+  readonly caravans: readonly Caravan[];
+}
+
+/**
+ * Une caravane est arrivée sur la case d'une salle en jeu : envoyé à **l'hôte**
+ * de cette salle, qui doit émettre la commande d'entrée du convoi en lockstep
+ * puis répondre `caravan_delivered`. Le message est réémis si l'hôte change ou
+ * si la salle rouvre sans que la livraison ait été confirmée.
+ */
+export interface CaravanArriveMessage {
+  readonly type: "caravan_arrive";
+  readonly id: string;
+  /** Case d'arrivée : celle de la salle qui reçoit ce message. */
+  readonly tile: number;
+  /** Le manifeste tel qu'expédié, jamais décodé par le serveur. */
+  readonly manifest: Uint8Array;
+  readonly summary: CaravanSummary;
+}
+
 export type ServerMessage =
   | WelcomeMessage
   | PlayersMessage
@@ -369,7 +514,9 @@ export type ServerMessage =
   | WorldSettlementsMessage
   | WorldPlayersMessage
   | SettledMessage
-  | WorldErrorMessage;
+  | WorldErrorMessage
+  | WorldCaravansMessage
+  | CaravanArriveMessage;
 
 export type AnyMessage = ClientMessage | ServerMessage;
 
@@ -420,6 +567,16 @@ export const WORLD_ERROR_CODES = [
   "not_owner",
   /** Action de monde reçue avant `world_join`. */
   "not_in_world",
+  /** Caravane inconnue, ou dans un état qui ne se prête pas à l'action. */
+  "caravan_not_found",
+  /** Aucun itinéraire terrestre entre les deux cases (`findRoute` rend `null`). */
+  "caravan_no_route",
+  /** Départ et arrivée sont la même case. */
+  "caravan_same_tile",
+  /** Expédier ou livrer sans être dans la salle de la case concernée. */
+  "caravan_not_in_room",
+  /** Annulation demandée après la moitié du trajet. */
+  "caravan_too_late",
 ] as const;
 
 export type WorldErrorCode = (typeof WORLD_ERROR_CODES)[number];

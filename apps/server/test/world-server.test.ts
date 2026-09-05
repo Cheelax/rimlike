@@ -11,8 +11,8 @@ import { gunzipSync } from "node:zlib";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { NO_PLAYER } from "@rimlike/protocol";
-import { deserializeWorld, movementCost, tileCount, type WorldWire } from "@rimlike/world";
+import { NO_PLAYER, type Caravan, type CaravanSummary } from "@rimlike/protocol";
+import { deserializeWorld, findRoute, movementCost, tileCount, type WorldWire } from "@rimlike/world";
 
 import { startServer, type RunningServer } from "../src/server.js";
 import { DEFAULT_WORLD_SEED, sharedWorld } from "../src/world.js";
@@ -22,6 +22,30 @@ const SUBDIVISIONS = 2;
 const globe = sharedWorld(SUBDIVISIONS, DEFAULT_WORLD_SEED);
 const landTile = globe.tiles.findIndex((tile) => movementCost(tile.biome) !== null);
 const oceanTile = globe.tiles.findIndex((tile) => movementCost(tile.biome) === null);
+
+/**
+ * Cases terrestres atteignables depuis `landTile`, de la plus proche à la plus
+ * lointaine : `nearTile` sert de destination habitée, `emptyTile` de case vierge
+ * où une caravane fondera une colonie.
+ */
+const reachable = globe.tiles
+  .filter((tile) => tile.id !== landTile && movementCost(tile.biome) !== null)
+  .map((tile) => ({ id: tile.id, route: findRoute(globe, landTile, tile.id) }))
+  .filter((entry): entry is { id: number; route: NonNullable<typeof entry.route> } => entry.route !== null)
+  .sort((a, b) => a.route.hours - b.route.hours || a.id - b.id);
+const nearTile = reachable[0]!.id;
+const emptyTile = reachable[1]!.id;
+/** La destination la plus lointaine : un trajet assez long pour être annulé. */
+const farTile = reachable.at(-1)!.id;
+/** Case terrestre d'un autre continent : l'océan la rend inatteignable. */
+const unreachableTile = globe.tiles.find(
+  (tile) => tile.id !== landTile && movementCost(tile.biome) !== null && findRoute(globe, landTile, tile.id) === null,
+)!.id;
+
+/** Une heure de jeu en 20 ms : le trajet le plus court dure ~80 ms. */
+const HOUR_MS = 20;
+const manifest = bytes(7, 0, 255, 3);
+const summary: CaravanSummary = { pawns: 2, items: [[0, 30], [4, 5]] };
 
 
 interface RawResponse {
@@ -281,6 +305,220 @@ describe("salle d'une case", () => {
     const start = await alice.nth("start");
     // Hors monde, la graine reste celle du host.
     expect(start.seed).toBe(12_345);
+  });
+});
+
+describe("caravanes", () => {
+  /** Serveur à horloge de monde accélérée : les caravanes voyagent en ms. */
+  let fast: RunningServer;
+
+  beforeEach(async () => {
+    fast = await startServer({
+      port: 0,
+      log: () => {},
+      worldSubdivisions: SUBDIVISIONS,
+      worldHourMs: HOUR_MS,
+      caravanTickMs: 10,
+    });
+  });
+
+  afterEach(async () => {
+    await fast.close();
+  });
+
+  /** La dernière liste de caravanes reçue par un client. */
+  const caravansOf = (client: TestClient): readonly Caravan[] =>
+    client.ofType("world_caravans").at(-1)?.caravans ?? [];
+
+  /** Attend qu'une caravane atteigne un statut, et la renvoie. */
+  async function waitCaravan(client: TestClient, id: string, status: Caravan["status"]): Promise<Caravan> {
+    await client.waitUntil(
+      `caravane ${id} ${status}`,
+      () => caravansOf(client).some((c) => c.id === id && c.status === status),
+    );
+    return caravansOf(client).find((c) => c.id === id)!;
+  }
+
+  /** Un joueur entré dans le monde, installé sur une case, sa salle en jeu. */
+  async function openColony(name: string, tile: number): Promise<TestClient> {
+    const client = await joinWorld(name, fast);
+    client.send({ type: "settle", tile });
+    await client.next("settled");
+    client.send({ type: "join", room: `tile-${tile}`, name });
+    await client.nth("welcome");
+    client.send({ type: "start", seed: 1, width: 64, height: 64 });
+    await client.nth("start");
+    return client;
+  }
+
+  /** Expédie une caravane de `landTile` vers `toTile` et rend son identifiant. */
+  async function depart(client: TestClient, toTile: number): Promise<string> {
+    const known = new Set(caravansOf(client).map((c) => c.id));
+    client.send({ type: "caravan_depart", fromTile: landTile, toTile, manifest, summary });
+    await client.waitUntil("caravane annoncée", () => caravansOf(client).some((c) => !known.has(c.id)));
+    return caravansOf(client).find((c) => !known.has(c.id))!.id;
+  }
+
+  it("voyage d'une colonie à l'autre et se fait livrer par l'hôte d'arrivée", async () => {
+    const alice = await openColony("alice", landTile);
+    const bob = await openColony("bob", nearTile);
+
+    // Le monde annonce ses caravanes dès l'entrée, même vides.
+    expect(bob.ofType("world_caravans")[0]!.caravans).toEqual([]);
+
+    const id = await depart(alice, nearTile);
+    for (const client of [alice, bob]) {
+      const caravan = await waitCaravan(client, id, "travelling");
+      expect(caravan.owner).toBe("alice");
+      expect(caravan.fromTile).toBe(landTile);
+      expect(caravan.toTile).toBe(nearTile);
+      expect(caravan.route[0]).toBe(landTile);
+      expect(caravan.route.at(-1)).toBe(nearTile);
+      expect(caravan.summary).toEqual(summary);
+      expect(caravan.arrivesAt).toBeGreaterThan(caravan.departedAt);
+      expect(caravan.progress).toBeLessThan(1);
+    }
+
+    // L'horloge tourne : l'hôte de la case d'arrivée reçoit le manifeste.
+    const arrival = await bob.nth("caravan_arrive");
+    expect(arrival).toEqual({ type: "caravan_arrive", id, tile: nearTile, manifest, summary });
+    // Le serveur n'a rien décodé : les octets sont ceux d'alice, tels quels.
+    expect(alice.ofType("caravan_arrive")).toEqual([]);
+    expect((await waitCaravan(bob, id, "arrived")).progress).toBe(1);
+
+    // L'hôte a injecté le convoi dans sa carte : il le confirme.
+    bob.send({ type: "caravan_delivered", id });
+    for (const client of [alice, bob]) {
+      expect((await waitCaravan(client, id, "delivered")).currentTile).toBe(nearTile);
+    }
+  });
+
+  it("attend l'ouverture de la salle d'arrivée quand la colonie est fermée", async () => {
+    const alice = await openColony("alice", landTile);
+    // bob fonde sa colonie mais n'y entre pas : sa salle n'existe pas.
+    const bob = await joinWorld("bob", fast);
+    bob.send({ type: "settle", tile: nearTile });
+    await bob.next("settled");
+    expect(fast.roomCount).toBe(1);
+
+    const id = await depart(alice, nearTile);
+    await waitCaravan(alice, id, "arrived");
+    // Personne à qui livrer : l'arrivée patiente.
+    expect(bob.ofType("caravan_arrive")).toEqual([]);
+
+    // bob ouvre sa colonie : elle démarre en lobby, puis reçoit l'arrivée.
+    bob.send({ type: "join", room: `tile-${nearTile}`, name: "bob" });
+    expect((await bob.nth("welcome")).state).toBe("lobby");
+    expect(bob.ofType("caravan_arrive")).toEqual([]);
+    bob.send({ type: "start", seed: 1, width: 64, height: 64 });
+    await bob.nth("start");
+
+    const arrival = await bob.nth("caravan_arrive");
+    expect(arrival.id).toBe(id);
+    expect(arrival.manifest).toEqual(manifest);
+    bob.send({ type: "caravan_delivered", id });
+    await waitCaravan(bob, id, "delivered");
+  });
+
+  it("fonde la colonie du propriétaire en arrivant sur une case vierge", async () => {
+    const alice = await openColony("alice", landTile);
+    const id = await depart(alice, emptyTile);
+
+    // À l'arrivée, la case devient une colonie d'alice… sans salle : la
+    // colonie « naît » quand quelqu'un l'ouvre.
+    await alice.waitUntil("colonie fondée par la caravane", () =>
+      (alice.ofType("world_settlements").at(-1)?.settlements ?? []).some((s) => s.tile === emptyTile),
+    );
+    const settlements = alice.ofType("world_settlements").at(-1)!.settlements;
+    expect(settlements.find((s) => s.tile === emptyTile)!.owner).toBe("alice");
+    expect(fast.world.settlementCount).toBe(2);
+    expect(fast.roomCount).toBe(1);
+    await waitCaravan(alice, id, "arrived");
+    expect(alice.ofType("caravan_arrive")).toEqual([]);
+
+    // Alice ouvre sa nouvelle colonie : lobby, puis livraison après le start.
+    // Une connexion ne tient qu'une salle, alice en ouvre donc une seconde.
+    const owner = await connect(fast);
+    owner.send({ type: "join", room: `tile-${emptyTile}`, name: "alice" });
+    expect((await owner.nth("welcome")).state).toBe("lobby");
+    expect(owner.ofType("caravan_arrive")).toEqual([]);
+    owner.send({ type: "start", seed: 1, width: 64, height: 64 });
+    await owner.nth("start");
+    expect((await owner.nth("caravan_arrive")).id).toBe(id);
+  });
+
+  it("réémet l'arrivée au nouvel hôte si l'hôte change sans confirmer", async () => {
+    const alice = await openColony("alice", landTile);
+    const bob = await openColony("bob", nearTile);
+    const carol = await connect(fast);
+    carol.send({ type: "join", room: `tile-${nearTile}`, name: "carol" });
+    await carol.nth("welcome");
+
+    const id = await depart(alice, nearTile);
+    expect((await bob.nth("caravan_arrive")).id).toBe(id);
+    expect(carol.ofType("caravan_arrive")).toEqual([]);
+
+    // bob s'en va sans confirmer : carol devient hôte et reçoit l'arrivée.
+    bob.close();
+    expect((await carol.nth("caravan_arrive")).id).toBe(id);
+    carol.send({ type: "caravan_delivered", id });
+    await waitCaravan(alice, id, "delivered");
+  });
+
+  it("fait demi-tour sur caravan_cancel avant la moitié du trajet", async () => {
+    const alice = await openColony("alice", landTile);
+    // Une destination lointaine : de quoi partir vraiment avant de renoncer.
+    const id = await depart(alice, farTile);
+    await alice.waitUntil("caravane en chemin", () => {
+      const caravan = caravansOf(alice).find((c) => c.id === id);
+      return caravan !== undefined && caravan.currentTile !== landTile;
+    });
+
+    alice.send({ type: "caravan_cancel", id });
+    const returning = await waitCaravan(alice, id, "returning");
+    expect(returning.toTile).toBe(landTile);
+    expect(returning.fromTile).not.toBe(landTile);
+    expect(returning.route.at(-1)).toBe(landTile);
+    // Rentrer est une arrivée comme une autre : la salle de départ la reçoit.
+    expect((await alice.nth("caravan_arrive")).tile).toBe(landTile);
+    await waitCaravan(alice, id, "arrived");
+  });
+
+  it("refuse l'océan, la même case, une salle étrangère et une caravane inconnue", async () => {
+    const alice = await openColony("alice", landTile);
+
+    alice.send({ type: "caravan_depart", fromTile: landTile, toTile: unreachableTile, manifest, summary });
+    expect((await alice.next("world_error")).code).toBe("caravan_no_route");
+
+    alice.send({ type: "caravan_depart", fromTile: landTile, toTile: landTile, manifest, summary });
+    expect((await alice.next("world_error")).code).toBe("caravan_same_tile");
+
+    alice.send({ type: "caravan_depart", fromTile: landTile, toTile: 9999, manifest, summary });
+    expect((await alice.next("world_error")).code).toBe("bad_tile");
+
+    // bob est dans le monde mais dans aucune salle : il n'expédie rien.
+    const bob = await joinWorld("bob", fast);
+    bob.send({ type: "caravan_depart", fromTile: landTile, toTile: nearTile, manifest, summary });
+    expect((await bob.next("world_error")).code).toBe("caravan_not_in_room");
+
+    const id = await depart(alice, farTile);
+    bob.send({ type: "caravan_cancel", id });
+    expect((await bob.next("world_error")).code).toBe("not_owner");
+
+    alice.send({ type: "caravan_cancel", id: "c404" });
+    expect((await alice.next("world_error")).code).toBe("caravan_not_found");
+
+    alice.send({ type: "caravan_delivered", id: "c404" });
+    expect((await alice.next("world_error")).code).toBe("caravan_not_found");
+
+    // Une caravane en vol n'est pas livrable, même par sa salle de départ.
+    alice.send({ type: "caravan_delivered", id });
+    expect((await alice.next("world_error")).code).toBe("caravan_not_found");
+
+    // Hors monde, aucun ordre de caravane ne passe.
+    const dave = await connect(fast);
+    dave.send({ type: "caravan_depart", fromTile: landTile, toTile: nearTile, manifest, summary });
+    expect((await dave.next("world_error")).code).toBe("not_in_world");
   });
 });
 

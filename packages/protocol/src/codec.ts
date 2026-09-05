@@ -12,6 +12,9 @@ import {
   NO_PLAYER,
   PROTOCOL_VERSION,
   type Bundle,
+  type Caravan,
+  type CaravanStatus,
+  type CaravanSummary,
   type ClientMessage,
   type PlayerId,
   type PlayerInfo,
@@ -217,6 +220,102 @@ function asSettlements(value: unknown): Settlement[] | null {
   return settlements;
 }
 
+/** Entier de comptage : nombre de colons, quantité d'un objet, type d'objet. */
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1_000_000;
+}
+
+/**
+ * Heure de jeu du monde. Flottante — l'horloge du globe n'est pas en lockstep,
+ * le serveur fait autorité (`docs/world.md` §6).
+ */
+function isGameHours(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+/** Avancement d'une caravane : un flottant de `[0, 1]`. */
+function isProgress(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function asCaravanStatus(value: unknown): CaravanStatus | null {
+  return value === "travelling" || value === "returning" || value === "arrived" || value === "delivered"
+    ? value
+    : null;
+}
+
+/**
+ * Résumé d'affichage d'une caravane. Le serveur ne le produit pas — il le
+ * relaie depuis le client qui expédie — mais il le valide comme tout le reste :
+ * c'est une donnée extérieure qui finit par être rediffusée à tout le monde.
+ */
+function asCaravanSummary(value: unknown): CaravanSummary | null {
+  if (!isRecord(value) || !isCount(value.pawns) || !Array.isArray(value.items)) {
+    return null;
+  }
+  const items: [number, number][] = [];
+  for (const entry of value.items) {
+    if (!Array.isArray(entry) || entry.length !== 2 || !isCount(entry[0]) || !isCount(entry[1])) {
+      return null;
+    }
+    items.push([entry[0], entry[1]]);
+  }
+  return { pawns: value.pawns, items };
+}
+
+/** Cases traversées : au moins la case de départ, toutes des identifiants. */
+function asRoute(value: unknown): number[] | null {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  const route: number[] = [];
+  for (const entry of value) {
+    if (!isTileId(entry)) {
+      return null;
+    }
+    route.push(entry);
+  }
+  return route;
+}
+
+function asCaravans(value: unknown): Caravan[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const caravans: Caravan[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry) || !isName(entry.id) || !isName(entry.owner)) {
+      return null;
+    }
+    if (!isTileId(entry.fromTile) || !isTileId(entry.toTile) || !isTileId(entry.currentTile)) {
+      return null;
+    }
+    if (!isGameHours(entry.departedAt) || !isGameHours(entry.arrivesAt) || !isProgress(entry.progress)) {
+      return null;
+    }
+    const route = asRoute(entry.route);
+    const summary = asCaravanSummary(entry.summary);
+    const status = asCaravanStatus(entry.status);
+    if (route === null || summary === null || status === null) {
+      return null;
+    }
+    caravans.push({
+      id: entry.id,
+      owner: entry.owner,
+      fromTile: entry.fromTile,
+      toTile: entry.toTile,
+      route,
+      departedAt: entry.departedAt,
+      arrivesAt: entry.arrivesAt,
+      progress: entry.progress,
+      currentTile: entry.currentTile,
+      summary,
+      status,
+    });
+  }
+  return caravans;
+}
+
 /** Noms de joueurs du monde : l'identité v1 est le nom, pas un identifiant. */
 function asNames(value: unknown): string[] | null {
   if (!Array.isArray(value)) {
@@ -379,6 +478,27 @@ export function validateClientMessage(value: unknown): ClientMessage | null {
       return isTileId(value.tile) ? { type: "abandon", tile: value.tile } : null;
     case "world_leave":
       return { type: "world_leave" };
+    case "caravan_depart": {
+      const manifest = asBytes(value.manifest);
+      const summary = asCaravanSummary(value.summary);
+      if (manifest === null || manifest.length === 0 || summary === null) {
+        return null;
+      }
+      if (!isTileId(value.fromTile) || !isTileId(value.toTile)) {
+        return null;
+      }
+      return {
+        type: "caravan_depart",
+        fromTile: value.fromTile,
+        toTile: value.toTile,
+        manifest,
+        summary,
+      };
+    }
+    case "caravan_cancel":
+      return isName(value.id) ? { type: "caravan_cancel", id: value.id } : null;
+    case "caravan_delivered":
+      return isName(value.id) ? { type: "caravan_delivered", id: value.id } : null;
     default:
       return null;
   }
@@ -531,6 +651,21 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
         return null;
       }
       return { type: "world_error", code: value.code, message: value.message };
+    }
+    case "world_caravans": {
+      const caravans = asCaravans(value.caravans);
+      return caravans === null ? null : { type: "world_caravans", caravans };
+    }
+    case "caravan_arrive": {
+      const manifest = asBytes(value.manifest);
+      const summary = asCaravanSummary(value.summary);
+      if (manifest === null || manifest.length === 0 || summary === null) {
+        return null;
+      }
+      if (!isName(value.id) || !isTileId(value.tile)) {
+        return null;
+      }
+      return { type: "caravan_arrive", id: value.id, tile: value.tile, manifest, summary };
     }
     default:
       return null;

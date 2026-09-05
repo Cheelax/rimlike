@@ -267,8 +267,16 @@ en éventail, couleur par biome, léger relief), survol et sélection par raycas
 joueurs / colonies / case, connexion monde pure (`WorldClient`) gardée ouverte pendant la
 partie, installation ou visite puis entrée dans la salle `tile-N` à graine imposée, retour au
 globe sans rechargement, reprise d'une colonie depuis le snapshot vérifiée contre le serveur.
-57 tests client. `GET /world` sert désormais les en-têtes CORS. Reste : caravanes, avance
-rapide des cartes gelées, comptes, un seul contexte WebGL par onglet.
+57 tests client. `GET /world` sert désormais les en-têtes CORS. Caravanes livrées le 2026-09-05 côté sim
+(Opus) et côté serveur (Opus), interface client en cours : le sim sort un groupe de colons et
+des marchandises sous forme de manifeste postcard (`FormCaravan`, file des départs vidée par
+`ClearDepartures` pour rester en lockstep) et fait entrer un manifeste (`ArriveCaravan`,
+nouveaux ids, marchandises au sol) ; le serveur monde tient une horloge de jeu
+(`WORLD_HOUR_MS`), calcule l'itinéraire, fait voyager la caravane, la livre à l'hôte de la
+salle d'arrivée ou la met en attente si la salle est fermée, et fonde une colonie au nom du
+propriétaire sur une case vide ; annulation avant la moitié du trajet ; tout est persisté.
+Reste : interface des caravanes, avance rapide des cartes gelées, comptes, un seul contexte
+WebGL par onglet.
 - Globe hexagonal, rendu du globe, biomes, choix de case de départ.
 - Serveur autoritaire persistant : cases, propriétaires, horloge globale.
 - Cartes gelées + avance rapide abstraite.
@@ -323,6 +331,11 @@ commerce, mods de contenu, événements monde.
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-05 : caravanes. Le manifeste voyage dans la commande `ArriveCaravan` : tous les
+  clients d'une salle l'appliquent au même tick, le serveur ne le décode jamais. Les ids des
+  colons ne survivent pas au voyage (réattribués à l'arrivée). Le monde ne vieillit pas
+  serveur éteint. Les deux agents ont été coupés par la limite d'usage en fin de travail :
+  l'état sur disque était complet et vert, vérifié et commité après reprise.
 - 2026-09-05 : santé détaillée (sim). `hp` reste dans le tampon comme valeur dérivée pour ne
   rien casser côté client. La famine crée des blessures « faiblesse » déjà pansées : sans ça
   les colons affamés passaient leur temps à se soigner entre eux. Les pawns à terre sont
