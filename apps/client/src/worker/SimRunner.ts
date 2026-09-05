@@ -65,6 +65,8 @@ export interface RunnerSim extends SimLike {
   craftTargets(): Uint32Array;
   /** Arme équipée de chaque pawn armé : `[id, genre]` par pawn qui en porte une. */
   weapons(): Int32Array;
+  /** Habit porté de chaque pawn habillé : `[id, genre]` par pawn qui en porte un. */
+  apparel(): Int32Array;
   /** Nom du pawn, chaîne vide si l'id est inconnu. */
   pawnName(id: number): string;
   /** Manifestes de caravane en attente d'expédition. */
@@ -323,6 +325,7 @@ export class SimRunner {
       stored: sim.storedTotals(),
       craftTargets: sim.craftTargets(),
       weapons: sim.weapons(),
+      apparel: sim.apparel(),
       departures: sim.departuresCount(),
       lag: this.lag,
       tps: this.tpsValue,

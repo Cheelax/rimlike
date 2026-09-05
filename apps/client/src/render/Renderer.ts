@@ -19,6 +19,20 @@ import { PropBatch, PropLibrary, blueprintKey, doorRotation, surfaceTexture, pla
 const WEAPON_KIND = { Club: 6, Spear: 7, Bow: 8 } as const;
 /** Position de l'arme tenue, dans le repère local du pawn (main droite). */
 const WEAPON_HAND = new THREE.Vector3(0.2, 0.42, 0.06);
+/** Contrat avec `items::ItemKind` (habits seulement) : tunique, manteau. */
+const APPAREL_KIND = { Tunic: 14, Coat: 15 } as const;
+/**
+ * Teinte du corps selon l'habit porté : cuir clair pour la tunique (même
+ * teinte que la pile `ITEM_COLORS[13]`, le cuir brut), cuir sombre pour le
+ * manteau. Absent de la table (un colon en bras de chemise) : la couleur de
+ * faction courante, inchangée.
+ */
+const APPAREL_TINT: Readonly<Record<number, number>> = {
+  [APPAREL_KIND.Tunic]: ITEM_COLORS[13],
+  [APPAREL_KIND.Coat]: 0x4a3524,
+};
+/** Couleur du col du manteau : un cuir presque noir, pour qu'il se détache du corps. */
+const COAT_COLLAR_COLOR = 0x2a1c12;
 
 const FX_ONE = 256;
 export const PAWN_STRIDE = 12;
@@ -61,7 +75,8 @@ const SNOW_GROUND_MIX = 0.6;
 export const HEAT_COLD = -300;
 export const HEAT_HOT = 400;
 
-const PAWN_COLORS = [0xa85340, 0x527f98, 0xb59a4e, 0x8c718b, 0x6f8557, 0xb07845];
+/** Palette par id, indexée `id % PAWN_COLORS.length` : exportée pour que la barre des colons (`App.tsx`) reprenne la même couleur. */
+export const PAWN_COLORS = [0xa85340, 0x527f98, 0xb59a4e, 0x8c718b, 0x6f8557, 0xb07845];
 const SKIN = 0xf1c9a5;
 /** Contrat avec `pawn::HP_MAX` (colons et pillards ; les bêtes ont leur propre plafond, hors rendu). */
 const PAWN_HP_MAX = 1000;
@@ -106,6 +121,8 @@ interface PawnView {
   animal: boolean;
   /** Marqueur rouge visible quand la bête est marquée gibier (`animals` buffer). */
   huntMarker: THREE.Mesh;
+  /** Col du manteau, visible seulement quand l'habit porté est un manteau (`frame.apparel`). */
+  collar: THREE.Mesh;
 }
 
 export interface TilePos {
@@ -174,8 +191,12 @@ export class Renderer {
   private names: Record<number, string> = {};
   /** Arme équipée par id (`frame.weapons`), absent des mains nues. */
   private weaponByPawn = new Map<number, number>();
+  /** Habit porté par id (`frame.apparel`), absent du dos nu. */
+  private apparelByPawn = new Map<number, number>();
   /** Espèce et marquage gibier par id (`frame.animals`), absent pour un pawn qui n'est pas une bête. */
   private animalByPawn = new Map<number, { species: number; hunted: boolean }>();
+  /** Couleur de travail réutilisée pour teinter le corps selon l'habit porté, sans allouer à chaque frame. */
+  private readonly apparelColor = new THREE.Color();
   /** Textures d'étiquette de nom, mises en cache par nom : jamais recréées par frame. */
   private readonly nameTextures = new Map<string, THREE.CanvasTexture>();
   private mapW = 0;
@@ -506,6 +527,14 @@ export class Renderer {
     }
   }
 
+  /** Habit de chaque pawn habillé, `[id, genre]×n` (`frame.apparel`). `syncPawns` s'en sert au prochain rendu. */
+  setApparel(buf: Int32Array): void {
+    this.apparelByPawn.clear();
+    for (let o = 0; o + 2 <= buf.length; o += 2) {
+      this.apparelByPawn.set(buf[o], buf[o + 1]);
+    }
+  }
+
   /**
    * Faune vivante, `[id, espèce, chassée]×n` (`frame.animals`). `syncPawns` et
    * `createPawn` s'en servent : la forme d'une bête dépend de son espèce, son
@@ -670,6 +699,17 @@ export class Renderer {
   }
 
   /**
+   * Centre la caméra sur une position du monde (en cases), sans changer le
+   * zoom : seul `controls.target` bouge, `applyCameraOrbit` replace la caméra
+   * à la même distance et la même orbite. Sert la barre des colons (double
+   * clic sur une pastille, `App.tsx`).
+   */
+  focusOn(x: number, z: number): void {
+    this.controls.target.set(x, 0, z);
+    this.applyCameraOrbit();
+  }
+
+  /**
    * Synchronise les pawns depuis deux instantanés du tampon sim (tick
    * précédent et courant) interpolés par `alpha` dans `[0, 1]`.
    */
@@ -708,8 +748,13 @@ export class Renderer {
       const lyingDown = sleeping || downed;
       g.rotation.z = lyingDown ? Math.PI / 2 : 0;
       g.position.y = lyingDown ? 0.25 : 0;
-      // Teinte plus pâle pour un pawn à terre : on repart toujours de sa couleur d'origine.
-      view.bodyMat.color.copy(view.baseColor).lerp(WHITE, downed ? 0.55 : 0);
+      // Habit porté : teinte le corps (cuir clair/sombre), sinon la couleur de
+      // faction d'origine. Teinte plus pâle en plus pour un pawn à terre.
+      const apparel = this.apparelByPawn.get(id) ?? -1;
+      const tint = APPAREL_TINT[apparel];
+      const bodyBase = tint !== undefined ? this.apparelColor.setHex(tint) : view.baseColor;
+      view.bodyMat.color.copy(bodyBase).lerp(WHITE, downed ? 0.55 : 0);
+      view.collar.visible = apparel === APPAREL_KIND.Coat;
       const carrying = (flags & PAWN_FLAGS.CARRYING) !== 0;
       view.carry.visible = carrying;
       if (carrying) {
@@ -863,7 +908,18 @@ export class Renderer {
     bow.rotation.y = Math.PI / 2;
     bow.visible = false;
 
-    for (const m of [body, head, nose, hair, ...limbs, carry, club, spearShaft, spearTip, bow]) {
+    // Col du manteau : un tore complet autour du cou, visible seulement pour
+    // l'habit `APPAREL_KIND.Coat` (`syncPawns`). La tunique, elle, ne teinte
+    // que le corps : moins chaude, moins d'apparat.
+    const collar = new THREE.Mesh(
+      new THREE.TorusGeometry(0.14, 0.035, 6, 12),
+      new THREE.MeshLambertMaterial({ color: COAT_COLLAR_COLOR }),
+    );
+    collar.rotation.x = Math.PI / 2;
+    collar.position.y = 0.62;
+    collar.visible = false;
+
+    for (const m of [body, head, nose, hair, ...limbs, carry, club, spearShaft, spearTip, bow, collar]) {
       m.castShadow = true;
       m.userData.pawnId = id;
     }
@@ -872,7 +928,7 @@ export class Renderer {
     // ajouté au groupe — juste un objet détaché pour garder `PawnView` uniforme.
     const huntMarker = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.16, 6), new THREE.MeshBasicMaterial());
     huntMarker.visible = false;
-    group.add(body, head, nose, hair, ...limbs, carry, zz, hpBack, hpFill, nameSprite, club, spear, bow);
+    group.add(body, head, nose, hair, ...limbs, carry, zz, hpBack, hpFill, nameSprite, club, spear, bow, collar);
     this.pawnRoot.add(group);
     return {
       group,
@@ -893,6 +949,7 @@ export class Renderer {
       bow,
       animal: false,
       huntMarker,
+      collar,
     };
   }
 
@@ -986,6 +1043,8 @@ export class Renderer {
     spear.visible = false;
     const bow = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), new THREE.MeshBasicMaterial());
     bow.visible = false;
+    const collar = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), new THREE.MeshBasicMaterial());
+    collar.visible = false;
 
     return {
       group,
@@ -1006,6 +1065,7 @@ export class Renderer {
       bow,
       animal: true,
       huntMarker,
+      collar,
     };
   }
 

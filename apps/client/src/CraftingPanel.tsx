@@ -1,7 +1,9 @@
 /**
- * Le panneau « Fabrication » : un objectif de stock par arme, borné à 0..20
- * côté affichage (`render/terrain.ts::clampCraftTarget` — le sim, lui,
- * accepte n'importe quel entier, voir `Command::SetCraftTarget`).
+ * Le panneau « Fabrication » : un objectif de stock par arme ou par habit,
+ * borné à 0..20 côté affichage (`render/terrain.ts::clampCraftTarget` — le
+ * sim, lui, accepte n'importe quel entier, voir `Command::SetCraftTarget`).
+ * Les habits passent par la même commande que les armes : le sim ne fait pas
+ * la différence, seul `recipe_for` sait si un genre a une recette.
  *
  * Purement présentationnel, comme `CaravanPanel` : il reçoit le stock et les
  * objectifs courants du dernier `frame` et rend des rappels ; c'est `App.tsx`
@@ -12,8 +14,12 @@
 
 import { clampCraftTarget, ITEM_NAMES } from "./render/terrain";
 
-/** Contrat avec `sim::ItemKind` : les trois seuls genres avec une recette. */
-const WEAPON_KINDS = [6, 7, 8] as const;
+/**
+ * Contrat avec `sim::ItemKind` : les cinq genres avec une recette
+ * (`crates/sim/src/craft.rs::RECIPES`), armes puis habits — même ordre que le
+ * sim, qui fabrique les armes en premier à stock partagé.
+ */
+const CRAFTABLE_KINDS = [6, 7, 8, 14, 15] as const;
 
 export interface CraftingPanelProps {
   /** Stock rangé par genre, index = `items::ItemKind` (le `stored` du `frame`). */
@@ -32,7 +38,7 @@ export function CraftingPanel({ stored, targets, hasCraftingSpot, onSetTarget, o
       <div className="panel-title">Fabrication</div>
       {!hasCraftingSpot && <div className="help">nécessite un poste de fabrication</div>}
       <ul className="craft-list">
-        {WEAPON_KINDS.map((kind) => {
+        {CRAFTABLE_KINDS.map((kind) => {
           const target = targets[kind] ?? 0;
           return (
             <li key={kind} className="craft-row">

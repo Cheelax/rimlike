@@ -105,6 +105,9 @@ const SIM_API: ReadonlySet<string> = new Set([
   "pawnWeapon",
   "pawnCombatSkills",
   "weapons",
+  // Habits (mêmes contrats que les armes, voir `crates/sim/src/craft.rs`).
+  "pawnApparel",
+  "apparel",
   // Climat, saisons et température (`crates/sim/src/climate.rs`).
   "setClimate",
   "pawnComfort",

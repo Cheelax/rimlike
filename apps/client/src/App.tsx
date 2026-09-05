@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { TICKS_PER_DAY, type SettledMessage } from "@rimlike/protocol";
 import { BIOME_NAMES, findRoute, type World } from "@rimlike/world";
 import { CaravanPanel, type CaravanColonist, type CaravanDestination } from "./CaravanPanel";
+import { ColonistBar, type ColonistBadge } from "./ColonistBar";
 import { CraftingPanel } from "./CraftingPanel";
+import { JournalPanel, type JournalEntry, type JournalFilter } from "./JournalPanel";
 import {
   CaravanDispatcher,
   manifestSummary,
@@ -14,9 +16,19 @@ import { WebSocketTransport } from "./net/Transport";
 import { WorldClient, type WorldClientState } from "./net/WorldClient";
 import { fetchWorld, type WorldProgress } from "./net/worldFetch";
 import { WorldScreen, type CaravanOrder } from "./WorldScreen";
-import { HEAT_COLD, HEAT_HOT, PAWN_FLAGS, PAWN_STRIDE, Renderer, type TilePos, type TileRect } from "./render/Renderer";
+import {
+  HEAT_COLD,
+  HEAT_HOT,
+  PAWN_COLORS,
+  PAWN_FLAGS,
+  PAWN_STRIDE,
+  Renderer,
+  type TilePos,
+  type TileRect,
+} from "./render/Renderer";
 import {
   ANIMAL_STRIDE,
+  APPAREL_NAMES,
   BLUEPRINT_STRIDE,
   BUILD_KIND,
   clampCraftTarget,
@@ -73,6 +85,8 @@ const HP_MAX = 1000;
 const TOAST_MS = 6000;
 /** Contrat avec `pawn::Job::code()` : la crise de moral. */
 const JOB_BREAK = 14;
+/** Le Journal ne garde que les événements les plus récents (mission §3). */
+const MAX_JOURNAL_ENTRIES = 200;
 
 const DEFAULT_SERVER = "ws://localhost:8787";
 const DEFAULT_SEED = 42;
@@ -189,6 +203,8 @@ interface PawnInfo {
   skills: SkillInfo[];
   /** Genre d'arme équipée (`sim::ItemKind`), -1 à mains nues. Lu dans `frame.weapons`. */
   weapon: number;
+  /** Genre d'habit porté (`sim::ItemKind` 14 tunique, 15 manteau), -1 le dos nu. Lu dans `frame.apparel`. */
+  apparel: number;
   /** Niveaux de combat, rafraîchis à part par `rpc("pawnCombatSkills", id)`, même rythme que les blessures. */
   meleeLevel: number;
   meleeXp: number;
@@ -243,6 +259,10 @@ interface Stats {
   craftTargets: number[];
   /** Un `Feature::CraftingSpot` existe sur la carte (compté dans `features`). */
   hasCraftingSpot: boolean;
+  /** Une pastille par colon de la colonie, pour `ColonistBar` (voir §2 de la mission). */
+  colonistBadges: ColonistBadge[];
+  /** Ticks d'un jour de jeu (`frame.ticksPerDay`), pour l'horodatage du Journal. */
+  ticksPerDay: number;
 }
 
 const INITIAL: Stats = {
@@ -272,6 +292,8 @@ const INITIAL: Stats = {
   lag: 0,
   craftTargets: [0, 0, 0, 0, 0, 0, 0, 0, 0],
   hasCraftingSpot: false,
+  colonistBadges: [],
+  ticksPerDay: TICKS_PER_DAY,
 };
 
 interface Actions {
@@ -280,6 +302,10 @@ interface Actions {
   triggerRaid(): void;
   setPriority(pawn: number, work: number, priority: number): void;
   currentPriority(pawn: number, work: number): number | null;
+  /** Sélectionne un colon, comme un clic sur son pawn dans la scène (`ColonistBar`). */
+  selectPawn(id: number): void;
+  /** Centre la caméra sur un colon, sans changer le zoom (`ColonistBar`, double clic). */
+  focusPawn(id: number): void;
 }
 
 interface Toast {
@@ -361,11 +387,21 @@ export function App() {
   const rendererRef = useRef<Renderer | null>(null);
   const actionsRef = useRef<Actions | null>(null);
   const bridgeRef = useRef<SimBridge | null>(null);
+  /**
+   * Journal des événements depuis le début de la session : alimenté par la
+   * même boucle que les toasts (`notifyEvents`, dans l'effet de la partie),
+   * jamais un second lecteur de `sim.events()`. Lu directement en rendu (donc
+   * pas de `useState` qui dériverait), rafraîchi visuellement au rythme du
+   * HUD (`setStats` force un rendu toutes les 500 ms).
+   */
+  const eventLogRef = useRef<JournalEntry[]>([]);
   const [tool, setToolState] = useState<Tool>("select");
   const [material, setMaterialState] = useState<number>(0);
   const [stats, setStats] = useState<Stats>(INITIAL);
   const [showWork, setShowWork] = useState(false);
   const [showCraft, setShowCraft] = useState(false);
+  const [showJournal, setShowJournal] = useState(false);
+  const [journalFilter, setJournalFilter] = useState<JournalFilter>("all");
   const [notice, setNotice] = useState<string | null>(null);
   /** Mode d'affichage des températures (touche I, bouton « Chaleur »). */
   const [heatMode, setHeatMode] = useState(false);
@@ -641,12 +677,20 @@ export function App() {
         const seq = events[o];
         if (seq <= lastEventSeq) continue;
         lastEventSeq = seq;
-        const text = eventLabel(events[o + 2], events[o + 3], names);
+        const tick = events[o + 1];
+        const kind = events[o + 2];
+        const arg = events[o + 3];
+        const text = eventLabel(kind, arg, names);
         if (!text) continue;
         setToasts((prev) => [...prev, { id: seq, text }]);
         toastTimers.push(
           window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== seq)), TOAST_MS),
         );
+        // Journal : même texte que le toast, figé avec les `names` de l'instant
+        // (voir l'en-tête de `JournalPanel.tsx`) — pas un second lecteur d'événements.
+        const log = eventLogRef.current;
+        log.push({ seq, tick, kind, text });
+        if (log.length > MAX_JOURNAL_ENTRIES) log.splice(0, log.length - MAX_JOURNAL_ENTRIES);
       }
     };
 
@@ -694,6 +738,7 @@ export function App() {
         renderer.setTimeOfDay(f.timeOfDay / f.ticksPerDay);
         renderer.setNames(f.names);
         renderer.setWeapons(f.weapons);
+        renderer.setApparel(f.apparel);
         renderer.setAnimals(f.animals);
         confirmPriorities(f.priorities);
         notifyEvents(f.events, f.names, freshSim);
@@ -760,6 +805,9 @@ export function App() {
       onError: showError,
     });
     bridgeRef.current = bridge;
+    // Journal neuf pour cette session (solo neuf, ou nouvelle salle multi) :
+    // pas remis à zéro par un `load` ou une resynchronisation en cours de jeu.
+    eventLogRef.current = [];
     bridge.start(
       session.mode === "solo"
         ? { mode: "solo", seed: DEFAULT_SEED, width: MAP_SIZE, height: MAP_SIZE }
@@ -871,6 +919,20 @@ export function App() {
           if (pr[o] === pawn) return pr[o + 1 + work];
         }
         return null;
+      },
+      selectPawn(id) {
+        selected = id;
+        renderer.setSelected(id);
+      },
+      focusPawn(id) {
+        // Position courante du colon dans le dernier tampon reçu ; silencieux
+        // s'il a disparu entre-temps (mort, parti en caravane).
+        for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
+          if (curPawns[o] === id) {
+            renderer.focusOn(curPawns[o + 1] / 256, curPawns[o + 2] / 256);
+            break;
+          }
+        }
       },
     };
     actionsRef.current = actions;
@@ -1049,6 +1111,10 @@ export function App() {
         setShowCraft((v) => !v);
         return;
       }
+      if (k === "N") {
+        setShowJournal((v) => !v);
+        return;
+      }
       if (k === "I") {
         setHeatMode((v) => !v);
         return;
@@ -1120,6 +1186,8 @@ export function App() {
           selected = v;
           renderer.setSelected(v);
         },
+        /** Copie du Journal des événements accumulé depuis le début de la session. */
+        eventLog: () => eventLogRef.current.slice(),
       };
       // `WorldScreen` publie `__rimlike.world` de son côté : le crochet de la
       // partie ne doit pas l'emporter en le remplaçant.
@@ -1161,12 +1229,18 @@ export function App() {
       for (let w = 0; w + 2 <= f.weapons.length; w += 2) {
         weaponById.set(f.weapons[w], f.weapons[w + 1]);
       }
+      // Habit porté par id, depuis `frame.apparel` : même contrat que `weaponById`.
+      const apparelById = new Map<number, number>();
+      for (let a = 0; a + 2 <= f.apparel.length; a += 2) {
+        apparelById.set(f.apparel[a], f.apparel[a + 1]);
+      }
       // Espèce et marquage gibier par id, depuis `frame.animals` : pas de RPC non plus.
       const animalById = new Map<number, { species: number; hunted: boolean }>();
       for (let a = 0; a + ANIMAL_STRIDE <= f.animals.length; a += ANIMAL_STRIDE) {
         animalById.set(f.animals[a], { species: f.animals[a + 1], hunted: f.animals[a + 2] !== 0 });
       }
       const colonistList: CaravanColonist[] = [];
+      const colonistBadges: ColonistBadge[] = [];
       for (let o = 0; o + PAWN_STRIDE <= curPawns.length; o += PAWN_STRIDE) {
         const faction = curPawns[o + 10];
         const hostile = faction === FACTION_RAIDER;
@@ -1176,12 +1250,26 @@ export function App() {
         else colonists++;
         if (!hostile && !isAnimal) {
           const pid = curPawns[o];
+          const flags = curPawns[o + 3];
+          const name = f.names[pid] ?? "";
           colonistList.push({
             id: pid,
-            name: f.names[pid] ?? "",
-            downed: (curPawns[o + 3] & PAWN_FLAGS.DOWNED) !== 0,
+            name,
+            downed: (flags & PAWN_FLAGS.DOWNED) !== 0,
             hp: (curPawns[o + 11] * 100) / HP_MAX,
             blood: bloodById.get(pid) ?? 0,
+          });
+          const colorHex = PAWN_COLORS[pid % PAWN_COLORS.length];
+          colonistBadges.push({
+            id: pid,
+            name,
+            initial: (name || "?").charAt(0).toUpperCase(),
+            color: `#${colorHex.toString(16).padStart(6, "0")}`,
+            hp: (curPawns[o + 11] * 100) / HP_MAX,
+            downed: (flags & PAWN_FLAGS.DOWNED) !== 0,
+            sleeping: (flags & PAWN_FLAGS.SLEEPING) !== 0,
+            mood: curPawns[o + 6] / 10,
+            job: JOB_LABELS[curPawns[o + 7]] ?? "?",
           });
         }
         if (curPawns[o] !== selected) continue;
@@ -1232,6 +1320,7 @@ export function App() {
           injuries: selectedInjuriesId === id ? selectedInjuries : [],
           skills,
           weapon: weaponById.get(id) ?? -1,
+          apparel: apparelById.get(id) ?? -1,
           ...(selectedCombatId === id
             ? selectedCombat
             : { meleeLevel: 0, meleeXp: 0, rangedLevel: 0, rangedXp: 0 }),
@@ -1322,10 +1411,12 @@ export function App() {
         priorities: Array.from(f.priorities),
         names: f.names,
         colonistList,
+        colonistBadges,
         departures: f.departures,
         lag: f.lag,
         craftTargets: Array.from(f.craftTargets),
         hasCraftingSpot: craftingSpotCount > 0,
+        ticksPerDay: f.ticksPerDay,
       });
     }, 500);
 
@@ -1643,6 +1734,13 @@ export function App() {
             </div>
           </div>
 
+          <ColonistBar
+            colonists={stats.colonistBadges}
+            selected={sel && !sel.hostile && !sel.animal ? sel.id : null}
+            onSelect={(id) => actionsRef.current?.selectPawn(id)}
+            onFocus={(id) => actionsRef.current?.focusPawn(id)}
+          />
+
           {sel && sel.animal && (
             <div className="panel">
               <div className="panel-title">
@@ -1673,6 +1771,7 @@ export function App() {
               </div>
               <div className="panel-job">{sel.job}{sel.carrying ? ` · porte ${sel.carrying}` : ""}</div>
               <div className="panel-weapon">Arme : {sel.weapon >= 0 ? WEAPON_NAMES[sel.weapon] ?? "?" : "à mains nues"}</div>
+              <div className="panel-apparel">Habit : {sel.apparel >= 0 ? APPAREL_NAMES[sel.apparel] ?? "?" : "rien"}</div>
               <div className={`panel-comfort${sel.comfort < 50 ? " cold" : ""}`}>
                 Ressenti : {formatTemperature(sel.comfort)}
               </div>
@@ -1772,7 +1871,7 @@ export function App() {
             <button
               className={showCraft ? "active" : ""}
               onClick={() => setShowCraft((v) => !v)}
-              title="Touche K : fabrication d'armes"
+              title="Touche K : fabrication d'armes et d'habits"
             >
               Fabrication <span className="key">K</span>
             </button>
@@ -1782,6 +1881,13 @@ export function App() {
               title="Touche I : colore les cases par température"
             >
               Chaleur <span className="key">I</span>
+            </button>
+            <button
+              className={showJournal ? "active" : ""}
+              onClick={() => setShowJournal((v) => !v)}
+              title="Touche N : journal des événements"
+            >
+              Journal <span className="key">N</span>
             </button>
             <button
               className={caravanOpen ? "active" : ""}
@@ -1882,6 +1988,15 @@ export function App() {
               hasCraftingSpot={stats.hasCraftingSpot}
               onSetTarget={setCraftTarget}
               onClose={() => setShowCraft(false)}
+            />
+          )}
+          {showJournal && (
+            <JournalPanel
+              entries={eventLogRef.current}
+              ticksPerDay={stats.ticksPerDay}
+              filter={journalFilter}
+              onFilterChange={setJournalFilter}
+              onClose={() => setShowJournal(false)}
             />
           )}
           {caravanOpen && roomTile !== null && !caravanPicking && (

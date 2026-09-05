@@ -136,6 +136,12 @@ export interface FrameMessage {
    */
   readonly weapons: Int32Array;
   /**
+   * Habit de chaque pawn habillé, aplatie : `[id, genre]×n` (`sim::ItemKind`
+   * 14 tunique, 15 manteau). Absent sur le dos nu. Recalculé chaque frame
+   * depuis le tampon `pawns` (`SimHandle.apparel`), même limite que `weapons`.
+   */
+  readonly apparel: Int32Array;
+  /**
    * Manifestes de caravane en attente d'expédition (`Sim::departures`). C'est
    * le déclencheur de l'hôte : tant qu'il est non nul, il reste des départs à
    * envoyer au serveur monde puis à retirer de la file (`docs/protocol.md`
@@ -191,6 +197,7 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
         message.stored.buffer as ArrayBuffer,
         message.craftTargets.buffer as ArrayBuffer,
         message.weapons.buffer as ArrayBuffer,
+        message.apparel.buffer as ArrayBuffer,
       ];
     case "saved":
       return [message.bytes.buffer as ArrayBuffer];

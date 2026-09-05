@@ -365,7 +365,10 @@ l'espèce, cuir), viande crue ou cuisinée. Perf : le coût par tick suit le nom
 isolation qui s'ajoute au confort (+6 et +15 °C), habillage automatique quand il fait moins de
 6 °C (seuil mesuré : 12 °C faisait s'habiller la colonie la moitié du temps en climat doux),
 manteau préféré, habit qui tombe à la mort, pillards en tunique par temps froid. Pas de
-gestion de la chaleur (on garde son manteau). Interface à faire (habit dans le panneau, noms).
+gestion de la chaleur (on garde son manteau). Interface livrée le 2026-09-05 (Sonnet) : habit dans le panneau et sur le corps du colon,
+tuniques et manteaux dans la fabrication ; au passage une barre des colons (santé, humeur,
+à terre, endormi ; clic pour sélectionner, double clic pour centrer) et un journal des
+événements filtrable (touche N).
 Interface faune livrée le
 2026-09-05 (Sonnet) : bêtes dessinées par espèce, marquage de chasse au clic ou à la touche
 H, panneau animal, viande et cuir dans le stock ; chasse rejouée dans le navigateur : arc

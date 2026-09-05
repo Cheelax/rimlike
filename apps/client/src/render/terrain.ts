@@ -95,6 +95,16 @@ export const ITEM_COLORS: readonly number[] = [
  */
 export const WEAPON_NAMES: Readonly<Record<number, string>> = { 6: "gourdin", 7: "épieu", 8: "arc" };
 
+/**
+ * Contrat avec `items::ItemKind` (habits seulement, 14 tunique, 15 manteau) :
+ * noms au singulier, pour l'habit porté d'un colon (ligne « Habit : » du
+ * panneau) et l'événement 20 (`ItemCrafted`, voir `eventLabel`).
+ */
+export const APPAREL_NAMES: Readonly<Record<number, string>> = { 14: "tunique", 15: "manteau" };
+
+/** Vrai pour un habit féminin (« une tunique ») : accord de `eventLabel` (20). */
+const APPAREL_FEMININE: Readonly<Record<number, boolean>> = { 14: true, 15: false };
+
 /** Borne d'affichage d'un objectif de fabrication (le sim, lui, accepte n'importe quel entier). */
 export function clampCraftTarget(n: number): number {
   if (!Number.isFinite(n)) return 0;
@@ -246,6 +256,13 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
     case 19:
       // `arg` = l'id du sanglier qui charge (`sim::EventKind::BoarAttacks`), pas affiché.
       return "Un sanglier charge !";
+    case 20: {
+      // `arg` = le genre d'habit fabriqué (`sim::ItemKind`), pas un id de pawn.
+      // Les armes gardent l'événement 14 : celui-ci ne voit jamais 6, 7 ou 8.
+      const name = APPAREL_NAMES[arg];
+      if (!name) return "Un habit a été fabriqué";
+      return APPAREL_FEMININE[arg] ? `Une ${name} a été fabriquée` : `Un ${name} a été fabriqué`;
+    }
     default:
       return "";
   }
@@ -274,4 +291,52 @@ export function formatClimate(climate: TileClimate): string {
   const base = Math.round(climate.baseTemperature / 10);
   const amplitude = Math.round(climate.amplitude / 10);
   return `${base} °C en moyenne, ± ${amplitude} °C`;
+}
+
+/**
+ * Icône d'humeur textuelle pour la barre des colons (`App.tsx`), sur les
+ * mêmes seuils que `moodLabel` (70 heureux, 20 au bord de la crise) : les deux
+ * paliers intermédiaires (bien, morose) partagent un tiret neutre, une
+ * pastille n'ayant pas la place d'un mot.
+ */
+export function moodIcon(mood: number): "☺" | "─" | "☹" {
+  if (mood >= 70) return "☺";
+  if (mood < 20) return "☹";
+  return "─";
+}
+
+/**
+ * Horodatage d'une entrée du Journal des événements : « jour J hh:mm » depuis
+ * un tick absolu (`sim-wasm::EVENT_STRIDE` : le tick de l'événement, pas celui
+ * courant), sur le même calcul que l'horloge du HUD. Jour 1-indexé, comme
+ * `stats.day`.
+ */
+export function formatEventTime(tick: number, ticksPerDay: number): string {
+  const day = Math.floor(tick / ticksPerDay) + 1;
+  const timeOfDay = (tick % ticksPerDay) / ticksPerDay;
+  const minutes = Math.floor(timeOfDay * 24 * 60);
+  const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
+  const mm = String(minutes % 60).padStart(2, "0");
+  return `jour ${day} ${hh}:${mm}`;
+}
+
+/** Catégorie du filtre du Journal des événements (`App.tsx`). */
+export type EventCategory = "threat" | "colony";
+
+/**
+ * Classe un genre d'événement (`sim::EventKind`) pour le filtre du Journal :
+ * menace (raid, mort au combat, colon à terre, charge de sanglier) ou colonie
+ * (tout le reste : arrivées, artisanat, saisons, caravanes...).
+ */
+export function eventCategory(kind: number): EventCategory {
+  switch (kind) {
+    case 1: // Raid
+    case 2: // ColonistDied
+    case 3: // RaiderDied
+    case 8: // ColonistDowned
+    case 19: // BoarAttacks
+      return "threat";
+    default:
+      return "colony";
+  }
 }

@@ -6,11 +6,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  APPAREL_NAMES,
   clampCraftTarget,
+  eventCategory,
   eventLabel,
+  formatEventTime,
   formatInjury,
   formatTemperature,
   hKeyAction,
+  moodIcon,
   SEASON_LABELS,
   SPECIES_LABELS,
   WEAPON_NAMES,
@@ -98,6 +102,21 @@ describe("eventLabel", () => {
     // Contrat avec `sim::EventKind::BoarAttacks` (19) : `arg` = l'id du sanglier.
     expect(eventLabel(19, 7)).toBe("Un sanglier charge !");
   });
+
+  it("nomme l'habit fabriqué, accordé en genre, `arg` étant son genre et non un id", () => {
+    // Contrat avec `sim::EventKind::ItemCrafted` (20) : les armes gardent 14.
+    expect(eventLabel(20, 14)).toBe("Une tunique a été fabriquée");
+    expect(eventLabel(20, 15)).toBe("Un manteau a été fabriqué");
+    // Un nom connu ne doit pas s'y glisser : ce n'est pas un id de pawn.
+    expect(eventLabel(20, 14, { 14: "Alice" })).toBe("Une tunique a été fabriquée");
+  });
+});
+
+describe("APPAREL_NAMES", () => {
+  it("donne le nom singulier des deux habits, indexé par `ItemKind`", () => {
+    expect(APPAREL_NAMES[14]).toBe("tunique");
+    expect(APPAREL_NAMES[15]).toBe("manteau");
+  });
 });
 
 describe("SPECIES_LABELS", () => {
@@ -183,5 +202,47 @@ describe("hKeyAction", () => {
 
   it("retombe sur l'outil Récolter sans bête sélectionnée", () => {
     expect(hKeyAction(-1)).toBe("harvest");
+  });
+});
+
+describe("moodIcon", () => {
+  it("donne une icône selon les mêmes seuils que `moodLabel` (App.tsx)", () => {
+    expect(moodIcon(85)).toBe("☺");
+    expect(moodIcon(70)).toBe("☺"); // seuil inclus
+    expect(moodIcon(50)).toBe("─");
+    expect(moodIcon(20)).toBe("─"); // seuil bas inclus dans le neutre
+    expect(moodIcon(19)).toBe("☹");
+    expect(moodIcon(0)).toBe("☹");
+  });
+});
+
+describe("formatEventTime", () => {
+  it("formate « jour J hh:mm » depuis un tick absolu", () => {
+    const ticksPerDay = 14400;
+    expect(formatEventTime(0, ticksPerDay)).toBe("jour 1 00:00");
+    expect(formatEventTime(ticksPerDay / 2, ticksPerDay)).toBe("jour 1 12:00");
+    // Un tick multiple de `ticksPerDay` bascule au jour suivant, à minuit.
+    expect(formatEventTime(ticksPerDay, ticksPerDay)).toBe("jour 2 00:00");
+    // Jour 4 (1-indexé), 06:00 : trois jours pleins puis un quart de jour.
+    expect(formatEventTime(ticksPerDay * 3 + ticksPerDay / 4, ticksPerDay)).toBe("jour 4 06:00");
+  });
+});
+
+describe("eventCategory", () => {
+  it("classe les menaces : raid, morts au combat, à terre, sanglier", () => {
+    expect(eventCategory(1)).toBe("threat"); // Raid
+    expect(eventCategory(2)).toBe("threat"); // ColonistDied
+    expect(eventCategory(3)).toBe("threat"); // RaiderDied
+    expect(eventCategory(8)).toBe("threat"); // ColonistDowned
+    expect(eventCategory(19)).toBe("threat"); // BoarAttacks
+  });
+
+  it("classe le reste en colonie", () => {
+    // WandererJoined, ColonistBreak, LevelUp, RaiderLeft, ColonistRescued,
+    // ColonistTended, les deux caravanes, FastForwarded, les deux artisanats,
+    // saison, gelée, harde et chasse : rien de tout ça n'est une menace.
+    for (const kind of [4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20]) {
+      expect(eventCategory(kind)).toBe("colony");
+    }
   });
 });

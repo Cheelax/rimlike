@@ -143,6 +143,10 @@ class FakeSim implements RunnerSim {
     return new Int32Array(0);
   }
 
+  apparel(): Int32Array {
+    return new Int32Array(0);
+  }
+
   /** Manifestes de caravane en attente : pilotable, le `frame` les porte. */
   departures = 0;
 

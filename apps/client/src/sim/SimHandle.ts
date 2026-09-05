@@ -145,6 +145,14 @@ export class SimHandle implements SimLike {
     return this.inner.pawn_weapon(id);
   }
 
+  /**
+   * Habit porté d'un pawn, suivant `sim::ItemKind` (14 tunique, 15 manteau).
+   * -1 : le dos nu, ou id inconnu.
+   */
+  pawnApparel(id: number): number {
+    return this.inner.pawn_apparel(id);
+  }
+
   /** Compétences de combat d'un pawn : `[niveau mêlée, xp, niveau tir, xp]`. Vide si l'id est inconnu. */
   pawnCombatSkills(id: number): Int32Array {
     return this.inner.pawn_combat_skills(id);
@@ -162,6 +170,23 @@ export class SimHandle implements SimLike {
       const id = pawns[o];
       const weapon = this.inner.pawn_weapon(id);
       if (weapon >= 0) out.push(id, weapon);
+    }
+    return Int32Array.from(out);
+  }
+
+  /**
+   * Habit de chaque pawn habillé, aplatie : `[id, genre]` par pawn qui en
+   * porte un (`sim::ItemKind` 14 tunique, 15 manteau). Même limite que
+   * `weapons()` : pas de méthode dédiée côté sim-wasm, une recherche par id
+   * suffit tant que le nombre de pawns reste petit.
+   */
+  apparel(): Int32Array {
+    const pawns = this.pawns();
+    const out: number[] = [];
+    for (let o = 0; o + PAWN_STRIDE <= pawns.length; o += PAWN_STRIDE) {
+      const id = pawns[o];
+      const kind = this.inner.pawn_apparel(id);
+      if (kind >= 0) out.push(id, kind);
     }
     return Int32Array.from(out);
   }
