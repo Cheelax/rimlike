@@ -473,7 +473,9 @@ alliée à ≥ 50 n'attaque plus ; deux alliées : plus aucune bande), raid men�
 Guilde et +3 tribu rivale, troc +2, marchand frappé −30 ou tué −40, rancunes qui s'estompent de +1
 par jour, passage sous −50 qui avance le prochain raid, Guilde alliée qui vend à 110 %, réputation
 hostile qui éloigne les marchands ; tribut `Gift` prélevé en stockage (valeur / 20) ; événements
-41-43. Interface à faire (panneau Factions, tribut, libellés 41-43). Marchands itinérants côté serveur
+41-43. Interface livrée le 2026-09-05 (Sonnet) : panneau Factions (jauges de réputation par palier,
+tribut par faction avec aperçu du gain), tribu qui mène le raid dans l'annonce, événements 41-43 ;
+vérifié : 60 bois offerts au Clan des Cendres, réputation −20 → −17, journal à jour. Marchands itinérants côté serveur
 livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
 caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;

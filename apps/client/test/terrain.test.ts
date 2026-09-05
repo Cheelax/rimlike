@@ -241,6 +241,37 @@ describe("eventLabel", () => {
   });
 });
 
+describe("eventLabel : factions et réputation", () => {
+  it("accorde le raid repoussé selon le genre de la tribu qui le menait", () => {
+    // `arg` = la tribu (`sim::EventKind::RaidRepelled`), jamais un id de pawn.
+    expect(eventLabel(41, 0)).toBe("Le raid du Clan des Cendres a été repoussé");
+    expect(eventLabel(41, 1)).toBe("Le raid de la Fraternité du Fer a été repoussé");
+    // Un nom connu ne doit pas s'y glisser : ce n'est pas un id de pawn.
+    expect(eventLabel(41, 0, { 0: "Alice" })).toBe("Le raid du Clan des Cendres a été repoussé");
+  });
+
+  it("accorde le tribut offert selon le genre de la faction qui l'a reçu", () => {
+    // `arg` = la faction (`sim::EventKind::Gift`), les trois genres possibles.
+    expect(eventLabel(42, 0)).toBe("Tribut offert au Clan des Cendres");
+    expect(eventLabel(42, 1)).toBe("Tribut offert à la Fraternité du Fer");
+    expect(eventLabel(42, 2)).toBe("Tribut offert à la Guilde des Colporteurs");
+  });
+
+  it("nomme la faction et son palier de relation quand `goodwill` est fourni", () => {
+    // `arg` = la faction (`sim::EventKind::RelationChanged`).
+    expect(eventLabel(43, 0, undefined, [-60, 0, 0])).toBe("Clan des Cendres : relation hostile");
+    expect(eventLabel(43, 1, undefined, [0, 60, 0])).toBe("Fraternité du Fer : relation allié");
+    expect(eventLabel(43, 2, undefined, [0, 0, 0])).toBe("Guilde des Colporteurs : relation méfiant");
+  });
+
+  it("retombe sur une phrase neutre sans `goodwill`, et sur une faction inconnue", () => {
+    expect(eventLabel(43, 0)).toBe("Clan des Cendres : relation changée");
+    expect(eventLabel(43, 9)).toBe("Relation changée");
+    expect(eventLabel(41, 9)).toBe("Un raid a été repoussé");
+    expect(eventLabel(42, 9)).toBe("Un tribut a été offert");
+  });
+});
+
 describe("eventCategory : élevage", () => {
   it("classe l'apprivoisement, la naissance et l'abattage en colonie, jamais en menace", () => {
     expect(eventCategory(38)).toBe("colony");
@@ -427,6 +458,12 @@ describe("eventCategory", () => {
     expect(eventCategory(35)).toBe("threat"); // TrapSprung
     expect(eventCategory(36)).toBe("threat"); // FireStarted
     expect(eventCategory(37)).toBe("threat"); // FireOut
+  });
+
+  it("classe le raid repoussé et le changement de relation en menace, le tribut en colonie", () => {
+    expect(eventCategory(41)).toBe("threat"); // RaidRepelled
+    expect(eventCategory(42)).toBe("colony"); // Gift
+    expect(eventCategory(43)).toBe("threat"); // RelationChanged
   });
 
   it("classe le reste en colonie", () => {

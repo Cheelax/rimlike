@@ -217,3 +217,16 @@ export function encodeSetResearch(tech: number): Uint8Array {
 export function encodeIgnite(x: number, y: number): Uint8Array {
   return WasmSim.encode_ignite(x, y);
 }
+
+/**
+ * Tribut offert à une faction PNJ (`sim::Command::Gift`, `crates/sim/src/factions.rs`) :
+ * `count` unités de `kind` (`sim::ItemKind`) quittent le stockage de la
+ * colonie, et sa réputation auprès de `faction` (0 Clan des Cendres,
+ * 1 Fraternité du Fer, 2 Guilde des Colporteurs) monte à proportion de leur
+ * valeur. Un tribut refusé par le sim (faction inconnue, quantité nulle, stock
+ * insuffisant) est silencieux : voir `apps/client/src/factions.ts::giftGain`
+ * pour une estimation du gain avant d'émettre.
+ */
+export function encodeGift(faction: number, kind: number, count: number): Uint8Array {
+  return WasmSim.encode_gift(faction, kind, count);
+}

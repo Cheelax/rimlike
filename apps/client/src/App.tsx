@@ -4,6 +4,8 @@ import { BIOME_NAMES, findRoute, type World } from "@rimlike/world";
 import { CaravanPanel, type CaravanColonist, type CaravanDestination } from "./CaravanPanel";
 import { ColonistBar, type ColonistBadge } from "./ColonistBar";
 import { CraftingPanel } from "./CraftingPanel";
+import { factionDefinite } from "./factions";
+import { FactionsPanel } from "./FactionsPanel";
 import { JournalPanel, type JournalEntry, type JournalFilter } from "./JournalPanel";
 import { decodeResearch, researchPercent, TECHS } from "./research";
 import { ResearchPanel } from "./ResearchPanel";
@@ -82,6 +84,7 @@ import {
   encodeClearDepartures,
   encodeDesignate,
   encodeFormCaravan,
+  encodeGift,
   encodeHunt,
   encodeIgnite,
   encodeMoveTo,
@@ -403,6 +406,14 @@ interface Stats {
    * au-dessus de zéro.
    */
   livestockCount: number;
+  /**
+   * Réputation de la colonie auprès des trois factions PNJ, dans l'ordre des
+   * ids (`frame.goodwill`, −100..=100) : voir `FactionsPanel` et
+   * `apps/client/src/factions.ts`.
+   */
+  goodwill: number[];
+  /** Tribu du dernier raid (`frame.lastRaidFaction`), −1 si aucune. */
+  lastRaidFaction: number;
 }
 
 const INITIAL: Stats = {
@@ -446,6 +457,10 @@ const INITIAL: Stats = {
   researchState: [255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   fireCount: 0,
   livestockCount: 0,
+  // Réputation de départ (`sim::factions::START_GOODWILL`) : les deux tribus
+  // se méfient, la Guilde a entendu parler de la colonie en bien.
+  goodwill: [-20, -20, 10],
+  lastRaidFaction: -1,
 };
 
 interface Actions {
@@ -569,6 +584,8 @@ export function App() {
   const [showResearch, setShowResearch] = useState(false);
   /** Panneau Troc (bouton dans la barre, pas de raccourci : `T` est déjà pris par le matériau). */
   const [showTrade, setShowTrade] = useState(false);
+  /** Panneau Factions (bouton dans la barre, pas de raccourci : `F` est déjà pris par l'outil Feu). */
+  const [showFactions, setShowFactions] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
   const [journalFilter, setJournalFilter] = useState<JournalFilter>("all");
   /**
@@ -1023,8 +1040,19 @@ export function App() {
       }
     };
 
-    /** Un toast par événement du sim jamais vu. */
-    const notifyEvents = (events: Int32Array, names: Record<number, string>, fresh: boolean) => {
+    /**
+     * Un toast par événement du sim jamais vu. `goodwill` et `lastRaidFaction`
+     * sont ceux du `frame` courant : `eventLabel` (pure, sans sim) ne les
+     * connaît pas de lui-même, ils sont ceux au moment de l'affichage, pas
+     * forcément ceux du tick de l'événement (mission « factions » §4).
+     */
+    const notifyEvents = (
+      events: Int32Array,
+      names: Record<number, string>,
+      fresh: boolean,
+      goodwill: ArrayLike<number>,
+      lastRaidFaction: number,
+    ) => {
       if (fresh) {
         // Ce qu'un sim neuf porte déjà est du passé : on ne le notifie pas.
         lastEventSeq = events.length >= EVENT_STRIDE ? events[events.length - EVENT_STRIDE] : -1;
@@ -1037,7 +1065,15 @@ export function App() {
         const tick = events[o + 1];
         const kind = events[o + 2];
         const arg = events[o + 3];
-        const text = eventLabel(kind, arg, names);
+        let text = eventLabel(kind, arg, names, goodwill);
+        // L'annonce de raid (21) ne porte que la manière d'aborder la colonie
+        // (`arg`) : la tribu qui la mène est un champ à part du `frame`
+        // (`lastRaidFaction`), posé par le sim au même tick que l'événement —
+        // `eventLabel` ne le voit pas, on la complète ici plutôt que d'ajouter
+        // un paramètre de plus à une fonction pure pour un seul genre.
+        if (kind === 21 && lastRaidFaction >= 0) {
+          text += ` — mené par ${factionDefinite(lastRaidFaction)}`;
+        }
         if (!text) continue;
         setToasts((prev) => [...prev, { id: seq, text }]);
         toastTimers.push(
@@ -1109,7 +1145,7 @@ export function App() {
         renderer.setApparel(f.apparel);
         renderer.setAnimals(f.animals);
         confirmPriorities(f.priorities);
-        notifyEvents(f.events, f.names, freshSim);
+        notifyEvents(f.events, f.names, freshSim, f.goodwill, f.lastRaidFaction);
         freshSim = false;
         // Vider la file des départs est le travail de l'hôte de la case, et de
         // lui seul (docs/protocol.md §12.7). Hors de ce cas, `pump(0)` ne coûte
@@ -1942,6 +1978,8 @@ export function App() {
         researchState: Array.from(f.researchState),
         fireCount: f.fireCount,
         livestockCount: f.livestockCount,
+        goodwill: Array.from(f.goodwill),
+        lastRaidFaction: f.lastRaidFaction,
       });
     }, 500);
 
@@ -2047,6 +2085,15 @@ export function App() {
    */
   const proposeTrade = (give: number, giveCount: number, take: number, takeCount: number) => {
     bridgeRef.current?.issue(encodeTrade(give, giveCount, take, takeCount));
+  };
+
+  /**
+   * Offre un tribut à une faction PNJ (`FactionsPanel`). Le sim est seul juge
+   * (`crates/sim/src/factions.rs`) et ignore en silence un tribut mal formé ;
+   * `giftGain` du panneau n'est qu'une estimation.
+   */
+  const giftFaction = (faction: number, kind: number, count: number) => {
+    bridgeRef.current?.issue(encodeGift(faction, kind, count));
   };
 
   const formCaravan = (
@@ -2664,6 +2711,13 @@ export function App() {
             >
               Troc
             </button>
+            <button
+              className={showFactions ? "active" : ""}
+              onClick={() => setShowFactions((v) => !v)}
+              title="Réputation des trois factions PNJ et tribut"
+            >
+              Factions
+            </button>
             <button onClick={() => actionsRef.current?.save()} disabled={multi} title={multi ? MULTI_DISABLED : undefined}>
               Sauver
             </button>
@@ -2776,6 +2830,16 @@ export function App() {
               buyPrices={stats.buyPrices}
               onTrade={proposeTrade}
               onClose={() => setShowTrade(false)}
+            />
+          )}
+          {showFactions && (
+            <FactionsPanel
+              goodwill={stats.goodwill}
+              lastRaidFaction={stats.lastRaidFaction}
+              stored={stats.stored}
+              buyPrices={stats.buyPrices}
+              onGift={giftFaction}
+              onClose={() => setShowFactions(false)}
             />
           )}
           {showJournal && (

@@ -84,6 +84,8 @@ function frame(): FrameMessage {
     researchState: new Uint32Array([255, 0, 2000, 0, 0, 2500, 0, 0, 2500, 0, 0, 3000, 0, 0, 3000, 0]),
     fireCount: 2,
     livestockCount: 1,
+    goodwill: new Int32Array([-20, -20, 10]),
+    lastRaidFaction: -1,
   };
 }
 
@@ -167,7 +169,7 @@ describe("protocole du Worker de simulation", () => {
     for (const key of [
       "pawns", "items", "blueprints", "events", "priorities", "skills", "health", "animals", "stored",
       "craftTargets", "weapons", "apparel", "traits", "traderOffers", "buyPrices", "foodFreshness",
-      "researchState",
+      "researchState", "goodwill",
     ] as const) {
       expect(clone[key]).toEqual(original[key]);
       expect(clone[key]).not.toBe(original[key]);
@@ -202,6 +204,11 @@ describe("protocole du Worker de simulation", () => {
     // Bêtes de la colonie (`sim-wasm::livestock_count`) : même contrat que
     // `fireCount`, un simple nombre cloné tel quel.
     expect(clone.livestockCount).toBe(1);
+    // Tribu du dernier raid (`sim-wasm::last_raid_faction`) : même contrat
+    // qu'`traderPresent`, un simple nombre cloné tel quel.
+    expect(clone.lastRaidFaction).toBe(-1);
+    expect(Array.from(clone.goodwill)).toEqual([-20, -20, 10]);
+    expect(clone.goodwill).not.toBe(original.goodwill);
   });
 
   it("fait arriver la carte, les calques et l'intérieur copiés", () => {
@@ -237,9 +244,9 @@ describe("protocole du Worker de simulation", () => {
   it("annonce des tampons distincts, transférables sans copie", () => {
     const original = frame();
     const transfer = transferablesOf(original);
-    // Dix-sept tampons, tous différents : un tampon transféré deux fois lèverait.
-    expect(transfer.length).toBe(17);
-    expect(new Set(transfer).size).toBe(17);
+    // Dix-huit tampons, tous différents : un tampon transféré deux fois lèverait.
+    expect(transfer.length).toBe(18);
+    expect(new Set(transfer).size).toBe(18);
 
     const clone = structuredClone(original, { transfer });
     expect(Array.from(clone.stored)).toEqual([9, 8, 7, 6, 5, 4, 0, 0, 0]);

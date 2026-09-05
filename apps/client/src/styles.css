@@ -195,6 +195,30 @@ div.globe { position: fixed; inset: 0; touch-action: none; }
 .research-progress { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
 .research-percent { flex: none; opacity: .8; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .research-done { margin-top: 3px; color: #8fd18f; font-weight: 600; }
+
+/* --- Factions PNJ : réputation et tribut --- */
+.factions-panel { position: fixed; right: 12px; bottom: 60px; width: 280px; max-height: 76vh; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; overflow-y: auto; background: rgba(0,0,0,.72); border: 1px solid rgba(255,255,255,.12); border-radius: 8px; font: 12px/1.45 system-ui, sans-serif; }
+.factions-panel button.wide { width: 100%; background: rgba(255,255,255,.08); color: #e6e6e6; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 6px 10px; font: 12px system-ui, sans-serif; cursor: pointer; }
+.factions-panel button.wide:hover { background: rgba(255,255,255,.16); }
+.faction-list { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.faction-row { padding: 6px 8px; background: rgba(255,255,255,.06); border-radius: 6px; }
+.faction-head { display: flex; justify-content: space-between; align-items: baseline; }
+.faction-name { font-weight: 600; }
+.faction-gauge { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.faction-gauge .bar-track { flex: 1; }
+.faction-relation { flex: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.faction-relation.hostile, .faction-gauge .bar-fill.hostile { color: #ff6b6b; background: #d94f4f; }
+.faction-relation.wary, .faction-gauge .bar-fill.wary { color: #9aa4ad; background: #9aa4ad; }
+.faction-relation.ally, .faction-gauge .bar-fill.ally { color: #8fd18f; background: #6ab04c; }
+.faction-lastraid { margin-top: 4px; color: #ffe066; font-weight: 600; }
+.faction-gift { margin-top: 6px; }
+.faction-gift-row { display: flex; gap: 4px; align-items: center; }
+.faction-gift-row select { flex: 1; min-width: 0; background: rgba(0,0,0,.35); color: #e6e6e6; border: 1px solid rgba(255,255,255,.16); border-radius: 5px; padding: 3px 5px; font: 12px system-ui, sans-serif; }
+.faction-gift-row input[type="number"] { width: 52px; background: rgba(0,0,0,.35); color: #e6e6e6; border: 1px solid rgba(255,255,255,.16); border-radius: 5px; padding: 3px 5px; font: 12px ui-monospace, Menlo, monospace; }
+.faction-gift-row button { flex: none; background: rgba(255,255,255,.08); color: #e6e6e6; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 4px 8px; font: 12px system-ui, sans-serif; cursor: pointer; }
+.faction-gift-row button:hover:not(:disabled) { background: rgba(255,255,255,.16); }
+.faction-gift-row button:disabled { opacity: .45; cursor: default; }
+.faction-gift.help { margin-top: 6px; }
 .pick-banner { position: fixed; z-index: 6; top: 12px; left: 50%; transform: translateX(-50%); width: 320px; padding: 8px 14px; text-align: center; background: rgba(0,0,0,.82); border: 1px solid #4ad9ff; border-radius: 8px; font: 13px/1.4 system-ui, sans-serif; }
 .pick-banner button { margin-top: 6px; width: 100%; background: rgba(255,255,255,.08); color: #e6e6e6; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 5px 10px; font: 12px system-ui, sans-serif; cursor: pointer; }
 .pick-banner button:hover { background: rgba(255,255,255,.16); }

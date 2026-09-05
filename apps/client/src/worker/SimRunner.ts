@@ -115,6 +115,13 @@ export interface RunnerSim extends SimLike {
    * 16 entiers. `courante` vaut 255 quand personne ne cherche rien.
    */
   researchState(): Uint32Array;
+  /**
+   * Réputation de la colonie auprès des trois factions PNJ, dans l'ordre des
+   * ids (`sim-wasm::goodwill`).
+   */
+  goodwill(): Int32Array;
+  /** Tribu du dernier raid (`sim-wasm::last_raid_faction`), −1 si aucune. */
+  lastRaidFaction(): number;
   /** Change à chaque recalcul effectif de la couche « intérieur ». */
   indoorVersion(): number;
   /** Couche « intérieur » : un octet par case, 0 dehors, sinon le numéro de pièce. */
@@ -409,6 +416,8 @@ export class SimRunner {
       traderOffers: sim.traderOffers(),
       buyPrices: sim.buyPrices(),
       researchState: sim.researchState(),
+      goodwill: sim.goodwill(),
+      lastRaidFaction: sim.lastRaidFaction(),
     };
     return { ticks, map, overlays, indoor, fire, frame };
   }

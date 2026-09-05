@@ -345,6 +345,37 @@ export class SimHandle implements SimLike {
     this.inner.trade(give, giveCount, take, takeCount);
   }
 
+  // --- Factions PNJ (`crates/sim/src/factions.rs`) ---
+
+  /**
+   * Réputation de la colonie auprès des trois factions PNJ, dans l'ordre des
+   * ids (0 Clan des Cendres, 1 Fraternité du Fer, 2 Guilde des Colporteurs).
+   * Bornée à −100..=100 ; sous −50 la faction est hostile, à partir de +50
+   * elle est alliée (`apps/client/src/factions.ts::relationLabel`).
+   */
+  goodwill(): Int32Array {
+    return this.inner.goodwill();
+  }
+
+  /** Tribu du dernier raid, −1 si aucune (`sim::factions::Sim::last_raid_faction`). */
+  lastRaidFaction(): number {
+    return this.inner.last_raid_faction();
+  }
+
+  /**
+   * Offre un tribut à une faction PNJ : `count` unités de `kind`
+   * (`sim::ItemKind`) sont prélevées en stockage, la réputation monte à
+   * proportion de leur valeur (`factions.ts::giftGain` pour une estimation
+   * côté client). Le sim ignore la commande en silence si la faction est
+   * inconnue, la quantité nulle ou le stock insuffisant : relire `goodwill()`
+   * après coup pour savoir ce qu'elle a rapporté, comme `trade`. Outil de
+   * dev/console : en multi, cette commande doit passer par `encodeGift` puis
+   * `issue`, jamais être appliquée directement.
+   */
+  gift(faction: number, kind: number, count: number): void {
+    this.inner.gift(faction, kind, count);
+  }
+
   // --- Recherche (`crates/sim/src/research.rs`) ---
 
   /**

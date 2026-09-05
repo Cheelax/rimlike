@@ -1,4 +1,5 @@
 import type { TileClimate } from "@rimlike/world";
+import { factionDative, factionGenitive, factionName, relationLabel } from "../factions";
 import { TECHS } from "../research";
 
 /** Contrat avec `pawn::Faction` (0 colonie, 1 pillard, 2 bête sauvage, 3 marchand). */
@@ -377,9 +378,16 @@ export const EVENT_STRIDE = 4;
  * Texte de notification pour un événement du sim. `arg` est l'id d'un pawn
  * pour les genres 7 à 10 : `names` (voir `worker/protocol.ts`) permet d'y
  * mettre un nom plutôt qu'un id ; à défaut, un « Un colon » générique — ces
- * événements ne concernent que des colons côté sim.
+ * événements ne concernent que des colons côté sim. `goodwill` (copie de
+ * `frame.goodwill`, voir `apps/client/src/factions.ts`) sert au genre 43 pour
+ * afficher le palier atteint ; sans lui, une phrase neutre.
  */
-export function eventLabel(kind: number, arg: number, names?: Record<number, string>): string {
+export function eventLabel(
+  kind: number,
+  arg: number,
+  names?: Record<number, string>,
+  goodwill?: ArrayLike<number>,
+): string {
   const who = names?.[arg] || "Un colon";
   switch (kind) {
     case 1:
@@ -523,6 +531,26 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
       const species = SPECIES_LABELS[arg] ?? "bête";
       return `Un ${species} a été abattu`;
     }
+    case 41: {
+      // `arg` = la tribu qui menait la bande repoussée (`sim::EventKind::RaidRepelled`,
+      // toujours une des deux tribus : la Guilde ne mène jamais de raid).
+      const genitive = factionGenitive(arg);
+      return genitive ? `Le raid ${genitive} a été repoussé` : "Un raid a été repoussé";
+    }
+    case 42: {
+      // `arg` = la faction qui a reçu le tribut (`sim::EventKind::Gift`).
+      const dative = factionDative(arg);
+      return dative ? `Tribut offert ${dative}` : "Un tribut a été offert";
+    }
+    case 43: {
+      // `arg` = la faction dont la relation a franchi un seuil
+      // (`sim::EventKind::RelationChanged`). Le palier courant se lit dans
+      // `goodwill` au moment de l'affichage ; sans lui, une phrase neutre.
+      const name = factionName(arg);
+      if (!name) return "Relation changée";
+      const value = goodwill?.[arg];
+      return value === undefined ? `${name} : relation changée` : `${name} : relation ${relationLabel(value)}`;
+    }
     default:
       return "";
   }
@@ -614,8 +642,9 @@ export type EventCategory = "threat" | "colony";
 
 /**
  * Classe un genre d'événement (`sim::EventKind`) pour le filtre du Journal :
- * menace (raid, mort au combat, colon à terre, charge de sanglier) ou colonie
- * (tout le reste : arrivées, artisanat, saisons, caravanes...).
+ * menace (raid, mort au combat, colon à terre, charge de sanglier, relation
+ * qui bascule) ou colonie (tout le reste : arrivées, artisanat, saisons,
+ * caravanes, tribut...).
  */
 export function eventCategory(kind: number): EventCategory {
   switch (kind) {
@@ -629,6 +658,8 @@ export function eventCategory(kind: number): EventCategory {
     case 35: // TrapSprung
     case 36: // FireStarted
     case 37: // FireOut
+    case 41: // RaidRepelled
+    case 43: // RelationChanged
       return "threat";
     default:
       return "colony";

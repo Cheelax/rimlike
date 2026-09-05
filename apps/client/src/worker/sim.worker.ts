@@ -151,6 +151,11 @@ const SIM_API: ReadonlySet<string> = new Set([
   // Recherche (`crates/sim/src/research.rs`) : technologie cherchée et son avancement.
   "setResearch",
   "researchState",
+  // Factions PNJ et réputation (`crates/sim/src/factions.rs`) : tribut et
+  // dernière tribu à avoir mené un raid.
+  "gift",
+  "goodwill",
+  "lastRaidFaction",
   // Incendies (`crates/sim/src/fire.rs`) : la couche et son compteur voyagent
   // aussi par le `frame` (voir `SimRunner`), exposés ici pour le crochet de
   // debug (`rpc("ignite", x, y)`, `rpc("fireCount")`).

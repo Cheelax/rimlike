@@ -258,6 +258,18 @@ class FakeSim implements RunnerSim {
     return this.researchStateBuf;
   }
 
+  goodwillBuf = new Int32Array([-20, -20, 10]);
+
+  goodwill(): Int32Array {
+    return this.goodwillBuf;
+  }
+
+  lastRaidFactionValue = -1;
+
+  lastRaidFaction(): number {
+    return this.lastRaidFactionValue;
+  }
+
   dispose(): void {
     this.disposed = true;
   }
@@ -488,6 +500,21 @@ describe("SimRunner en solo", () => {
     const runner = new SimRunner();
     const out = runner.advance(1000);
     expect(out).toEqual({ ticks: 0, map: null, overlays: null, indoor: null, fire: null, frame: null });
+  });
+
+  it("porte la réputation des factions PNJ et la tribu du dernier raid dans chaque `frame`", () => {
+    const runner = new SimRunner();
+    const sim = new FakeSim();
+    sim.goodwillBuf = new Int32Array([-60, 40, 55]);
+    sim.lastRaidFactionValue = 1;
+    runner.setSim(sim);
+    const first = runner.advance(0);
+    expect(Array.from(first.frame?.goodwill ?? [])).toEqual([-60, 40, 55]);
+    expect(first.frame?.lastRaidFaction).toBe(1);
+
+    sim.lastRaidFactionValue = -1;
+    const changed = runner.advance(100);
+    expect(changed.frame?.lastRaidFaction).toBe(-1);
   });
 
   it("porte la fraîcheur la plus basse par genre dans le `frame`", () => {

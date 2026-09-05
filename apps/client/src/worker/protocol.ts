@@ -245,6 +245,15 @@ export interface FrameMessage {
    * Voir `apps/client/src/research.ts::decodeResearch`.
    */
   readonly researchState: Uint32Array;
+  /**
+   * Réputation de la colonie auprès des trois factions PNJ, dans l'ordre des
+   * ids (`sim-wasm::goodwill`, contrat `AGENTS.md` : 0 Clan des Cendres,
+   * 1 Fraternité du Fer, 2 Guilde des Colporteurs). Voir
+   * `apps/client/src/factions.ts::relationLabel` pour le palier affiché.
+   */
+  readonly goodwill: Int32Array;
+  /** Tribu du dernier raid (`sim-wasm::last_raid_faction`), −1 si aucune. */
+  readonly lastRaidFaction: number;
 }
 
 export type WorkerToMain =
@@ -298,6 +307,7 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
         message.buyPrices.buffer as ArrayBuffer,
         message.foodFreshness.buffer as ArrayBuffer,
         message.researchState.buffer as ArrayBuffer,
+        message.goodwill.buffer as ArrayBuffer,
       ];
     case "saved":
       return [message.bytes.buffer as ArrayBuffer];

@@ -127,6 +127,7 @@ côté client.
 | V | Caravane | former une caravane (seulement dans une colonie du monde partagé, voir §5) |
 | — | Options (bouton dans la barre, `Échap` pour fermer) | change la difficulté en cours de partie ; en multi, réservé à l'hôte |
 | — | Troc (bouton grisé sans marchand de passage, voir §3) | négocier avec le marchand présent |
+| — | Factions | réputation auprès des trois factions PNJ et tribut (voir « Factions et réputation » plus bas) |
 
 Le panneau d'un colon sélectionné montre son travail en cours, son arme et son
 habit, la température ressentie, ses besoins (PV, faim, repos, humeur), sa
@@ -253,6 +254,42 @@ demande (prix d'achat du genre cédé × quantité, comparé au prix de vente du
 genre pris × quantité) ; en dessous, le bouton Proposer reste grisé et le
 motif du refus s'affiche. Les marchandises reçues sont déposées au sol près
 de l'étal, à ranger comme n'importe quel butin.
+
+### Factions et réputation
+
+Trois factions PNJ fixes, jamais créées ni détruites : le Clan des Cendres et
+la Fraternité du Fer (deux bandes de pillards distinctes), et la Guilde des
+Colporteurs (qui envoie les marchands). Chacune garde une réputation propre,
+de −100 à 100, affichée par le bouton Factions de la barre d'outils : hostile
+sous −50, alliée à partir de +50, méfiante entre les deux. Les deux tribus
+commencent méfiantes, la Guilde a entendu parler de la colonie en bien.
+
+Ce qui la fait monter ou descendre :
+
+- une bande qui entre dans la colonie coûte de la réputation à la tribu qui
+  la mène (l'attaque se paie) ; la repousser entièrement (tous ses pillards
+  morts ou repartis) en rapporte à la Guilde, qui y voit une place forte, et
+  un peu à l'autre tribu, ravie du sort de sa rivale ;
+- un troc conclu avec un marchand rapporte un peu à la Guilde ; frapper un
+  marchand lui coûte cher, le tuer plus encore, et referme la porte à de
+  nouvelles visites (voir « Marchands et troc » plus haut) ;
+- le temps adoucit d'un point par jour toute rancune (jamais l'inverse) ;
+- un tribut volontaire (bouton Offrir du panneau Factions) rapporte à
+  proportion de sa valeur.
+
+Une tribu alliée ne mène plus aucun raid ; une tribu qui bascule sous le seuil
+hostile prépare des représailles (son prochain raid arrive plus tôt). La
+Guilde alliée vend moins cher (110 % de la valeur du genre, contre 120 %
+d'ordinaire) ; hostile, elle n'envoie plus personne. Le Journal note chaque
+raid repoussé, chaque tribut offert et chaque changement de palier
+(« méfiant » ↔ « hostile » ou « allié »), et l'annonce d'un raid en approche
+nomme désormais la tribu qui le mène.
+
+Offrir un tribut prélève en stockage : dans le panneau Factions, sous chaque
+faction, choisir un genre disponible et une quantité fait apparaître un
+aperçu (« ≈ +N de réputation ») avant de cliquer Offrir, grisé si le stock ne
+suit pas. La quantité qui compte est sa valeur, pas le nombre de piles : un
+manteau de cuir vaut nettement plus que le même poids de bois.
 
 ### Relations
 
