@@ -30,7 +30,10 @@
  * caravanes en voyage (`CaravanRegistry`), tous deux persistés avec le reste ;
  * puis, depuis la tranche « marchands » (§13), le registre des marchands
  * itinérants PNJ (`MerchantRegistry`) et le compte de marchands en attente sur
- * une colonie fermée (`StoredSettlement.pendingTraders`).
+ * une colonie fermée (`StoredSettlement.pendingTraders`) ; puis, depuis la
+ * tranche « réputation partagée » (§14), la réputation envers les factions PNJ
+ * **par joueur** (`goodwillOf`/`setGoodwill`), qui suit son propriétaire d'une
+ * case à l'autre du globe au lieu de rester enfermée dans chaque colonie.
  *
  * `toJSON` / `fromJSON` font l'aller-retour complet (colonies, dernier
  * snapshot de chaque salle, horloge, caravanes et joueurs) en un objet JSON :
@@ -47,11 +50,15 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import {
+  DEFAULT_GOODWILL,
+  FACTION_COUNT,
   MAX_PENDING_TRADERS,
   WORLD_HOUR_MS,
   base64ToBytes,
   bytesToBase64,
+  clampGoodwill,
   frozenTicksForHours,
+  type GoodwillValues,
   type Settlement,
 } from "@rimlike/protocol";
 import { generateWorld, movementCost, tileCount, type World } from "@rimlike/world";
@@ -313,6 +320,14 @@ export interface WorldStateJson {
    * PNJ, personne ne perd rien à les voir repartir d'ailleurs.
    */
   readonly merchants?: MerchantRegistryJson;
+  /**
+   * Réputation par joueur envers les trois factions PNJ (`docs/protocol.md`
+   * §14), indexée par **clé** de joueur. **Facultative** : un fichier écrit
+   * avant cette tranche se relit tel quel, tout le monde repart de
+   * `DEFAULT_GOODWILL` — c'est déjà ce que faisait chaque colonie dans son
+   * coin, on ne perd donc rien qui existait.
+   */
+  readonly goodwill?: Readonly<Record<string, readonly number[]>>;
 }
 
 export interface WorldStateOptions {
@@ -345,6 +360,14 @@ export class WorldState {
   private readonly snapshots = new Map<string, RoomSnapshot>();
   /** Joueurs connus du monde, par clé publique. */
   private readonly players = new Map<string, WorldPlayer>();
+  /**
+   * Réputation par joueur envers les trois factions PNJ (`docs/protocol.md`
+   * §14), par clé publique. Une clé absente vaut `DEFAULT_GOODWILL` : on
+   * n'écrit rien tant qu'un joueur n'a rien fait, et un joueur inconnu n'est
+   * pas un cas d'erreur. Elle suit le **joueur**, pas la colonie : elle
+   * survit donc à un abandon comme à la destruction d'une salle.
+   */
+  private readonly goodwill = new Map<string, GoodwillValues>();
 
   constructor(options: WorldStateOptions) {
     this.world = options.world;
@@ -633,6 +656,43 @@ export class WorldState {
     return this.players.get(key)?.name ?? key;
   }
 
+  // --- Réputation envers les factions PNJ (`docs/protocol.md` §14) ---
+  //
+  // Elle appartient au **joueur**, pas à la colonie : c'est ce qui la fait
+  // suivre d'une case à l'autre du globe. Le serveur ne la fait jamais bouger
+  // de lui-même — il ne simule pas — il ne fait que garder le dernier état
+  // qu'un hôte lui a remonté, et le réimposer à l'ouverture suivante.
+
+  /**
+   * Réputation d'un joueur, `DEFAULT_GOODWILL` s'il n'a encore rien remonté
+   * (ou si la clé est inconnue : un joueur qui n'existe pas n'a pas d'histoire
+   * derrière lui, il commence comme tout le monde).
+   */
+  goodwillOf(playerKey: string): GoodwillValues {
+    return this.goodwill.get(playerKey) ?? DEFAULT_GOODWILL;
+  }
+
+  /**
+   * Enregistre la réputation qu'un hôte vient de remonter : **le dernier
+   * rapport gagne**, sans moyenne ni arbitrage entre les colonies du joueur.
+   *
+   * C'est volontairement le choix le plus simple. L'alternative envisagée —
+   * une moyenne pondérée entre les colonies, chacune apportant la réputation
+   * de sa propre partie — supposerait de savoir laquelle a raison quand deux
+   * colonies divergent, donc de dater les rapports et de pondérer par on ne
+   * sait quoi (richesse ? temps joué ?), pour un résultat qu'aucun joueur ne
+   * pourrait prévoir. « La dernière colonie jouée fait foi » se raconte en une
+   * phrase, et c'est la seule règle qui rende un tribut ou un raid repoussé
+   * immédiatement visible ailleurs.
+   *
+   * Renvoie la valeur retenue, une fois rognée (`clampGoodwill`).
+   */
+  setGoodwill(playerKey: string, values: GoodwillValues): GoodwillValues {
+    const clamped = clampGoodwill(values);
+    this.goodwill.set(playerKey, clamped);
+    return clamped;
+  }
+
   /** Tous les joueurs déjà vus par le monde, triés par ancienneté puis par clé. */
   listPlayers(): readonly WorldPlayer[] {
     return [...this.players.values()].sort(
@@ -689,6 +749,13 @@ export class WorldState {
           ...(snapshot.savedAtHours !== undefined ? { savedAtHours: snapshot.savedAtHours } : {}),
         })),
       players: this.listPlayers().map((p) => ({ key: p.key, name: p.name, token: p.token, createdAt: p.createdAt })),
+      // Trié par clé : le fichier ne bouge pas d'une sauvegarde à l'autre si
+      // rien n'a changé, ce qui rend un `diff` lisible à l'exploitant.
+      goodwill: Object.fromEntries(
+        [...this.goodwill.entries()]
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([key, values]) => [key, [...values]]),
+      ),
     };
   }
 
@@ -794,6 +861,21 @@ export class WorldState {
     // tick du monde, sur une case tirée au sort comme au premier démarrage.
     if (json.merchants !== undefined) {
       state.merchants.restore(json.merchants);
+    }
+    // Réputations par joueur (§14). Absentes d'un fichier antérieur : tout le
+    // monde repart de `DEFAULT_GOODWILL`. Une entrée mal formée est **ignorée**
+    // plutôt que levée, comme une entrée de marchand incohérente : personne ne
+    // perd sa colonie parce qu'un triplet a été trafiqué, il repart au défaut.
+    if (json.goodwill !== undefined) {
+      for (const [key, values] of Object.entries(json.goodwill)) {
+        if (!Array.isArray(values) || values.length !== FACTION_COUNT) {
+          continue;
+        }
+        if (!values.every((value) => typeof value === "number" && Number.isFinite(value))) {
+          continue;
+        }
+        state.goodwill.set(key, clampGoodwill([values[0]!, values[1]!, values[2]!]));
+      }
     }
     return state;
   }

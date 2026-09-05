@@ -11,7 +11,9 @@ au-dessus sans rien modifier de ce qui précède. La section 12 décrit les
 **caravanes**, qui font voyager colons et marchandises d'une case à l'autre —
 et donc d'une salle à l'autre. La section 13 décrit les **marchands
 itinérants**, des caravanes PNJ que le serveur monde fait circuler de colonie
-en colonie.
+en colonie. La section 14 décrit la **réputation partagée** : ce que les
+factions PNJ pensent d'un joueur cesse d'être l'affaire d'une colonie pour
+devenir celle du joueur, sur tout le globe.
 
 ## 1. Principes
 
@@ -47,6 +49,9 @@ Constantes partagées (`packages/protocol/src/messages.ts`) :
 | `MERCHANT_COUNT` | 2 | Marchands itinérants entretenus sur le globe (§13) |
 | `MERCHANT_STAY_HOURS` | 24 | Heures de jeu qu'un marchand passe sur une colonie |
 | `MAX_PENDING_TRADERS` | 3 | Arrivées de marchands mises en attente pour une colonie fermée |
+| `FACTION_COUNT` | 3 | Factions PNJ du sim (§14), l'ordre du triplet de réputation |
+| `GOODWILL_MIN` / `GOODWILL_MAX` | −100 / 100 | Bornes d'une réputation (§14) |
+| `DEFAULT_GOODWILL` | `[-20, -20, 10]` | Réputation d'un joueur que le monde n'a jamais vu agir (§14) |
 
 ## 2. Transport et format
 
@@ -285,6 +290,14 @@ passés sur la case pendant que la colonie était fermée (§13), au plus
 autant de `Command::TriggerTraderVisit`. Omis quand il vaut 0, donc absent du
 cas courant et de toute salle simple.
 
+`goodwill` est la **réputation du propriétaire de la case** envers les trois
+factions PNJ (§14), dans l'ordre de leurs identifiants et bornée à
+`GOODWILL_MIN..=GOODWILL_MAX`. Comme `climate` et `dayOfYear`, il n'apparaît
+que dans une salle « case » — et, à la différence de `pendingTraders`, il est
+**toujours** présent dans une telle salle : il n'a pas de valeur « rien à
+faire », le défaut (`DEFAULT_GOODWILL`) est une consigne comme une autre.
+Même règle que les autres : l'hôte, et lui seul, émet `Command::SetGoodwill`.
+
 ```json
 { "type": "start", "seed": 12345, "width": 128, "height": 128, "tick": 0 }
 {
@@ -294,7 +307,8 @@ cas courant et de toute salle simple.
   "height": 64,
   "tick": 0,
   "climate": { "baseTemperature": -340, "amplitude": 200 },
-  "dayOfYear": 1
+  "dayOfYear": 1,
+  "goodwill": [-20, -20, 10]
 }
 ```
 
@@ -337,10 +351,18 @@ le premier arrivant rattrape avec une commande d'avance rapide.
 itinérants passés pendant le sommeil de la colonie (§13). Une réouverture ne
 diffuse aucun `start`, c'est donc ce message-là qui porte le compte.
 
+`goodwill` l'accompagne aussi, pour la même raison de plomberie — et pour une
+raison de fond, elle, propre à la réputation : c'est la valeur **du joueur**
+(§14), pas celle que le sim restauré porte dans `data`. Contrairement au climat
+et au calendrier, qu'on se garde bien de réémettre puisque le snapshot les a
+déjà, la réputation a continué de vivre dans les **autres** colonies du joueur
+pendant que celle-ci dormait.
+
 ```json
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=" }
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000 }
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000, "pendingTraders": 1 }
+{ "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000, "goodwill": [-45, 12, 55] }
 ```
 
 **`desync`** — premier écart de hash constaté. Les clés de `hashes` sont des
@@ -1135,10 +1157,14 @@ autre.
   faire une fois, jamais des opérations locales, la même règle que
   `FastForward` ci-dessous.
 - **Ordre si les trois s'appliquent** : `SetClimate` **puis** `SetCalendar`
-  **puis** `FastForward` — le climat et le calendrier d'abord, l'avance rapide
-  ensuite, parce qu'elle fait tourner des formules de rattrapage (croissance,
-  péremption…) qui dépendent de la température et donc de la saison, pas
-  l'inverse ; entre les deux premières, l'ordre ne change rien au résultat
+  **puis** `FastForward` **puis** `SetGoodwill` (§14) — le climat et le
+  calendrier d'abord, l'avance rapide ensuite, parce qu'elle fait tourner des
+  formules de rattrapage (croissance, péremption…) qui dépendent de la
+  température et donc de la saison, pas l'inverse ; la réputation **après**
+  l'avance rapide, parce que celle-ci adoucit les rancunes d'un point par jour
+  (`sim::factions::FADE_PER_DAY`) et que la valeur imposée est déjà à jour à
+  l'instant présent — la laisser revieillir la compterait deux fois ; entre les
+  deux premières, l'ordre ne change rien au résultat
   (deux champs indépendants de `Sim`) mais en fixe un pour ne rien laisser
   d'implicite. Avec l'implémentation actuelle, ce cas ne se produit pas :
   `start` (colonie neuve) et `restore` (réouverture, `frozenTicks`) sont
@@ -1147,8 +1173,10 @@ autre.
   change un jour.
 - **Sur une réouverture, `start` n'est pas envoyé** (voir plus haut) : donc ni
   `SetClimate` ni `SetCalendar` ne sont émis, seulement `FastForward` s'il y a
-  du temps gelé. Ni le climat ni le calendrier n'ont besoin d'être réémis — et
-  **`snapshot` ne gagne aucun champ symétrique à `start`** : `Command::SetClimate`
+  du temps gelé, puis `SetGoodwill` (§14 — la seule des trois consignes qui,
+  elle, se réémet à la réouverture, parce qu'elle vient du **joueur** et non de
+  la case). Ni le climat ni le calendrier n'ont besoin d'être réémis — et
+  **`snapshot` ne gagne aucun champ symétrique à `start`** pour eux : `Command::SetClimate`
   et `Command::SetCalendar` modifient des champs persistants de `Sim`
   (`climate::Climate` et `calendar_offset_days`, sérialisés par serde comme le
   reste de l'état, `crates/sim/src/climate.rs`), donc le sim restauré depuis le
@@ -1244,7 +1272,7 @@ pour l'horloge et les caravanes) :
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "worldSeed": 1,
   "subdivisions": 4,
   "savedAt": 1757000000000,
@@ -1262,7 +1290,8 @@ pour l'horloge et les caravanes) :
     ],
     "players": [
       { "key": "8a1b2c3d-...-e4", "name": "alice", "token": "6UZ0y9F1qk…3aXw", "createdAt": 1757000000000 }
-    ]
+    ],
+    "goodwill": { "8a1b2c3d-...-e4": [-45, 12, 55] }
   }
 }
 ```
@@ -1274,22 +1303,25 @@ porte les noms, en face de la clé qui leur correspond ; `state.ts` la résout �
 la volée (`WorldState.nameOf`) chaque fois qu'une colonie ou une caravane part
 sur le fil.
 
-`clock`, `caravans`, `merchants`, le `pendingTraders` d'une colonie et le
-`savedAtHours` d'un snapshot sont **facultatifs à la lecture** : un fichier
-écrit avant les caravanes se relit tel quel, le monde repart d'une horloge
-neuve et sans convoi en vol ; un fichier écrit avant les marchands se relit de
-même, ils renaissent au premier tick du monde (§13) ; un snapshot sans
-`savedAtHours` rouvre sa colonie sans avance rapide (§11.6).
+`clock`, `caravans`, `merchants`, `goodwill`, le `pendingTraders` d'une colonie
+et le `savedAtHours` d'un snapshot sont **facultatifs à la lecture** : un
+fichier écrit avant les caravanes se relit tel quel, le monde repart d'une
+horloge neuve et sans convoi en vol ; un fichier écrit avant les marchands se
+relit de même, ils renaissent au premier tick du monde (§13) ; un fichier écrit
+avant la réputation partagée aussi, chacun repartant de `DEFAULT_GOODWILL`
+(§14) ; un snapshot sans `savedAtHours` rouvre sa colonie sans avance rapide
+(§11.6).
 
-**Versions du fichier.** Trois numéros existent, et les trois se lisent
+**Versions du fichier.** Quatre numéros existent, et les quatre se lisent
 (`SUPPORTED_WORLD_STATE_FILE_VERSIONS`) ; la sauvegarde suivante réécrit
-toujours dans la version courante (`WORLD_STATE_FILE_VERSION`, 3).
+toujours dans la version courante (`WORLD_STATE_FILE_VERSION`, 4).
 
 | version | ce qu'elle a introduit | relue par ce serveur |
 |---|---|---|
 | 1 | l'état d'origine : `owner` y est un **nom** | oui, **migrée** (voir plus bas) |
 | 2 | identité par jeton : `players`, `owner` devient une **clé** | oui, telle quelle |
-| 3 | marchands itinérants : `state.merchants`, `settlements[].pendingTraders` (§13) | oui, c'est la version écrite |
+| 3 | marchands itinérants : `state.merchants`, `settlements[].pendingTraders` (§13) | oui, telle quelle |
+| 4 | réputation partagée : `state.goodwill`, par clé de joueur (§14) | oui, c'est la version écrite |
 
 **Migration v1 → v2 (identité par jeton).** `players` change les choses : dans
 un fichier v1, `owner` (colonies et caravanes) est un **nom** ; à partir de v2
@@ -1949,9 +1981,10 @@ la colonie. Deux cas, **jamais les deux à la fois** :
   autant de `Command::TriggerTraderVisit` que le champ l'indique, une seule
   fois, exactement comme `FastForward` pour `frozenTicks`.
 - **Ordre avec les autres commandes d'ouverture** : `SetClimate`, puis
-  `SetCalendar`, puis `FastForward`, puis les `TriggerTraderVisit` — les
-  marchands en dernier, une visite se jouant dans le présent de la colonie, pas
-  dans le temps qu'elle vient de rattraper.
+  `SetCalendar`, puis `FastForward`, puis `SetGoodwill` (§14), puis les
+  `TriggerTraderVisit` — les marchands en dernier, une visite se jouant dans le
+  présent de la colonie, pas dans le temps qu'elle vient de rattraper ; et
+  après la réputation, dont dépendent les prix qu'ils proposeront.
 - Le compte est rangé **dans la colonie** (`settlements[].pendingTraders`), pas
   dans une seconde structure, et il est persisté avec elle (§11.8). Il ne part
   **jamais** sur le fil dans un `Settlement` : `world_settlements` n'en sait
@@ -2015,3 +2048,186 @@ for (let i = 0; i < (message.pendingTraders ?? 0); i += 1) {
 - distinguer `visiting` (à l'étal, il ne bouge pas) de `travelling`, et le cas
   `toTile === tile` — un marchand qui attend qu'une colonie soit fondée quelque
   part à sa portée.
+
+## 14. Réputation partagée (phase 4, quatrième tranche)
+
+Le sim connaît trois **factions PNJ** (`crates/sim/src/factions.rs`) : le Clan
+des Cendres (0) et la Fraternité du Fer (1), qui mènent des raids, et la Guilde
+des Colporteurs (2), qui envoie des marchands. Chacune a une **réputation**
+envers la colonie, un entier de `GOODWILL_MIN` à `GOODWILL_MAX` (−100 à 100),
+qui décide de qui attaque, à quel prix on troque, et ce que coûte un tribut.
+Elle part de `DEFAULT_GOODWILL` (`[-20, -20, 10]`).
+
+Jusqu'ici cette réputation était **locale à une colonie** : un joueur pouvait
+massacrer trois caravanes de la Guilde sur une case et se faire accueillir en
+ami sur la case d'à côté, le même jour, sur le même globe. Le serveur monde la
+porte maintenant **par joueur** et l'impose à chaque colonie qu'il ouvre —
+exactement comme il impose déjà le climat (§11.6) et le jour de l'année
+(§12.1).
+
+- le **sim** sait imposer une réputation d'un coup : `Command::SetGoodwill
+  { values: [i32; 3] }` remplace les trois valeurs, chacune bornée, sans rien
+  annoncer ni déclencher de représailles — c'est un état de départ, pas un
+  franchissement de seuil ;
+- le **serveur monde** garde une réputation par **clé de joueur** (§11.2), la
+  persiste, et la met dans le `start` (colonie neuve) ou le `snapshot`
+  (colonie gelée qui rouvre) de chaque salle « case » ;
+- l'**hôte** — et lui seul — émet `Command::SetGoodwill` en lockstep, puis
+  remonte au serveur ce que son sim porte, par `goodwill_report`.
+
+Messages et champs de cette tranche :
+
+| message | sens | ce qui change |
+|---|---|---|
+| `goodwill_report` | **hôte** d'une salle « case » → serveur | nouveau (§14.2) |
+| `start` | serveur → salle | champ `goodwill` en plus (§3.2, §14.1) |
+| `snapshot` | serveur → premier arrivant d'une colonie rouverte | champ `goodwill` en plus (§3.2, §14.1) |
+
+### 14.1 Ce que le serveur impose
+
+```
+   alice joue la case A          serveur monde              alice ouvre la case B
+        │                             │                              │
+        │  goodwill_report            │                              │
+        │  { values: [-45,12,55] }    │                              │
+        ├────────────────────────────▶│  goodwill[cléAlice]          │
+        │                             │    = [-45, 12, 55]           │
+        │                             │                              │
+        │                             │  start { …, goodwill } ─────▶│
+        │                             │                              │ Command::SetGoodwill
+        │                             │                              │ en lockstep
+```
+
+- **Le triplet est indexé par identifiant de faction**, dans l'ordre du sim :
+  `[Clan des Cendres, Fraternité du Fer, Guilde des Colporteurs]`. Sa longueur
+  est `FACTION_COUNT` (3) et chaque valeur tient dans
+  `GOODWILL_MIN..=GOODWILL_MAX`. Une valeur hors bornes dans un message
+  **serveur → client** fait refuser la trame : elle mentirait sur ce que le sim
+  appliquera, comme un `climate` aberrant (§3.2).
+- **La réputation appartient au joueur, pas à la colonie.** C'est celle du
+  **propriétaire** de la case qui part, jamais celle du visiteur qui ouvre la
+  salle : un invité n'apporte pas son passé chez quelqu'un d'autre. Elle
+  survit à l'abandon d'une colonie comme à la destruction d'une salle.
+- **Un joueur inconnu vaut `DEFAULT_GOODWILL`.** Le serveur n'écrit rien tant
+  que personne n'a rien remonté, et une clé absente n'est pas un cas d'erreur.
+- **`goodwill` est toujours présent dans une salle « case »**, contrairement à
+  `frozenTicks` ou `pendingTraders` qui s'omettent quand ils valent 0 : il n'a
+  pas de valeur « rien à faire », le défaut est une consigne comme une autre.
+  Il est en revanche **absent de toute salle simple** (`join { room: "demo" }`),
+  qui n'a pas de case et donc pas de joueur dont la réputation suivrait — le
+  sim y garde la sienne, comme il garde son climat par défaut.
+- **Sur une réouverture, c'est la valeur du joueur qui fait foi, pas celle du
+  snapshot.** C'est toute la différence avec le climat et le calendrier, qui
+  sont des champs persistants de `Sim` et que le sim restauré porte donc déjà
+  (§11.6). La réputation, elle, a continué de vivre dans les **autres**
+  colonies du joueur pendant que celle-ci dormait : celle du sim conservé est
+  périmée par construction.
+- **Ordre d'émission par l'hôte** : `SetClimate`, `SetCalendar`,
+  `SetDifficulty` (celle-là purement locale, le serveur ne la transporte pas),
+  puis `FastForward` s'il y a du temps gelé, puis **`SetGoodwill`**, puis les
+  `TriggerTraderVisit`. La réputation **après** l'avance rapide : celle-ci
+  adoucit les rancunes d'un point par jour (`sim::factions::FADE_PER_DAY`), et
+  la valeur imposée est déjà celle de l'instant présent — la laisser
+  revieillir de deux mois de gel la compterait deux fois. Et **avant** les
+  marchands, dont les prix dépendent de la réputation de la Guilde.
+
+### 14.2 `goodwill_report`
+
+```json
+{ "type": "goodwill_report", "values": [-45, 12, 55] }
+```
+
+- **La salle n'est pas dans le message** : c'est celle de la connexion qui
+  l'envoie. Il doit donc voyager sur la connexion **de salle** — celle du
+  Worker, là où vit le sim — et non sur la connexion monde, qui ne dit pas de
+  quelle colonie on parle (un joueur peut en avoir plusieurs).
+- **Seul l'hôte est écouté** (`error { code: "not_host" }` sinon, y compris
+  hors salle et dans une salle simple). Un invité verrait la même réputation,
+  mais rien ne dit qu'il joue cette colonie de son propre compte : la créditer
+  à son nom lui ferait hériter du passé d'un autre.
+- Le serveur doit aussi savoir **à qui** créditer la valeur. Il prend la clé de
+  joueur de la connexion si elle a fait `world_join`, sinon il retombe sur le
+  repli v1 par le nom (`join.name` contre le nom d'affichage d'un joueur du
+  monde, la règle de §12.3). Sans personne à qui l'attribuer :
+  `world_error { code: "not_in_world" }`.
+- **Les valeurs sont rognées, pas refusées** (`clampGoodwill`) : le serveur les
+  ramène dans `GOODWILL_MIN..=GOODWILL_MAX` et tronque les décimales. Le sens
+  est inverse de celui d'un `start` : ici c'est un client qui parle, et faire
+  dépendre sa connexion des bornes que le sim se donne ne rapporterait rien.
+- **Au plus un rapport toutes les dix secondes par salle**
+  (`DEFAULT_GOODWILL_REPORT_MS`, option `goodwillReportMs` du serveur). Les
+  suivants sont **ignorés en silence** : le client en envoie régulièrement, ce
+  n'est pas une faute de sa part et le prochain passera. Le compteur est par
+  salle et disparaît avec elle.
+- **Rien n'est renvoyé** en cas de succès : pas d'accusé de réception. La
+  valeur retenue se lira au `start` ou au `snapshot` de la prochaine colonie.
+
+**Le dernier rapport gagne.** Le serveur ne fusionne rien : la réputation du
+joueur *devient* la valeur remontée. C'est délibérément la règle la plus
+simple, et elle se raconte en une phrase — « la dernière colonie jouée fait
+foi ». L'alternative écartée était une **moyenne pondérée** entre les colonies
+d'un même joueur, chacune apportant la réputation de sa propre partie : il
+faudrait alors décider quoi pondérer (la richesse ? le temps joué ? la date du
+dernier rapport ?), gérer deux colonies qui divergent sans qu'aucune n'ait
+tort, et le joueur ne pourrait plus prévoir l'effet d'un tribut. « Le dernier
+gagne » rend au contraire un raid repoussé ou un marchand assassiné
+immédiatement visible partout ailleurs, ce qui est exactement l'effet
+recherché.
+
+### 14.3 Ce que le serveur garde
+
+`WorldState.toJSON()` porte, en plus de ce que décrivent §12.6 et §13.6 :
+
+- `goodwill` : un objet `{ "<clé de joueur>": [g0, g1, g2] }`, trié par clé
+  pour qu'un `diff` de deux sauvegardes reste lisible. Absent de la lecture
+  d'un fichier antérieur (version 3 ou moins) : tout le monde repart de
+  `DEFAULT_GOODWILL`, c'est-à-dire exactement ce que chaque colonie faisait
+  déjà dans son coin — rien de ce qui existait n'est perdu.
+
+Une entrée **mal formée** relue d'un fichier (mauvaise longueur, valeur non
+numérique) est simplement **ignorée**, comme une entrée de marchand incohérente
+(§13.6) : ce joueur repart au défaut, personne ne perd sa colonie parce qu'un
+triplet a été trafiqué. Une entrée valide mais hors bornes est rognée à la
+lecture.
+
+`GET /health` **n'expose rien** de tout cela : la réputation d'un joueur n'est
+ni un compteur d'exploitation ni une donnée publique.
+
+### 14.4 Ce dont le client aura besoin
+
+**À l'ouverture d'une colonie**, une fois le sim construit et **seulement si le
+client est l'hôte** (`welcome.isHost`), dans l'ordre de §14.1 :
+
+```ts
+// `start.goodwill` (colonie neuve) ou `snapshot.goodwill` (colonie gelée qui
+// rouvre) : jamais les deux, ces deux chemins s'excluent (§11.6).
+const goodwill = message.goodwill;
+if (goodwill !== undefined) {
+  issue(WasmSim.encode_set_goodwill(goodwill[0], goodwill[1], goodwill[2]));
+}
+```
+
+Comme `SetClimate` et `FastForward`, c'est une **commande**, pas une opération
+locale : deux clients qui l'émettraient chacun l'appliqueraient deux fois — sans
+dommage ici (elle est idempotente), mais la règle reste la même, l'hôte et lui
+seul.
+
+**Pendant la partie**, l'hôte remonte ce que son sim porte
+(`WasmSim.goodwill()`, trois valeurs) :
+
+```ts
+socket.send(encodeMessage({ type: "goodwill_report", values: [g0, g1, g2] }));
+```
+
+- à **intervalle régulier** — une fois par minute suffit largement, le serveur
+  n'en accepte de toute façon qu'un toutes les dix secondes ;
+- et **à la fermeture** de la colonie (quitter la salle, revenir au globe,
+  fermer l'onglet), pour ne pas perdre le dernier raid repoussé ;
+- **seulement si `welcome.isHost`**, et en cessant dès qu'un changement d'hôte
+  le rétrograde (`players.hostId`).
+
+Rien à attendre en retour : pas d'accusé, et un rapport ignoré pour cause de
+limite ne produit aucune erreur. Un `error { code: "not_host" }` ou un
+`world_error { code: "not_in_world" }` en réponse signale un bug de câblage
+côté client — un rapport envoyé par un invité, ou depuis la connexion monde —
+et se traite comme tel, pas comme un message à afficher au joueur.

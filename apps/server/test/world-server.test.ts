@@ -12,6 +12,7 @@ import { gunzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_GOODWILL,
   NO_PLAYER,
   TICKS_PER_HOUR,
   WORLD_HOUR_MS,
@@ -373,7 +374,9 @@ describe("salle d'une case", () => {
       const start = await client.nth("start");
       expect(start.seed).toBe(settled.seed);
       // Le monde vient de naître pour ce test (horloge réelle, non pilotée) :
-      // pas une heure de jeu ne s'est encore écoulée, donc le jour 0.
+      // pas une heure de jeu ne s'est encore écoulée, donc le jour 0. alice
+      // n'a encore rien remonté : sa réputation est celle de tout le monde
+      // (§14).
       expect(start).toEqual({
         type: "start",
         seed: settled.seed,
@@ -382,6 +385,7 @@ describe("salle d'une case", () => {
         tick: 0,
         climate,
         dayOfYear: 0,
+        goodwill: DEFAULT_GOODWILL,
       });
     }
   });
@@ -452,9 +456,11 @@ describe("salle d'une case", () => {
     const start = await alice.nth("start");
     // Hors monde, la graine reste celle du host.
     expect(start.seed).toBe(12_345);
-    // Ni climat ni jour de l'année : une salle simple n'a pas de case.
+    // Ni climat, ni jour de l'année, ni réputation : une salle simple n'a pas
+    // de case, donc personne dont la réputation suivrait (§14).
     expect(start).not.toHaveProperty("climate");
     expect(start).not.toHaveProperty("dayOfYear");
+    expect(start).not.toHaveProperty("goodwill");
   });
 });
 
@@ -844,7 +850,9 @@ describe("conservation du snapshot d'une colonie", () => {
       expect(welcome.isHost).toBe(true);
 
       const snapshot = await bob.nth("snapshot");
-      expect(snapshot).toEqual({ type: "snapshot", tick, data: bytes(1, 2, 3, 4) });
+      // `goodwill` accompagne toute réouverture de colonie : c'est la valeur
+      // du **joueur**, pas celle du sim conservé (§14).
+      expect(snapshot).toEqual({ type: "snapshot", tick, data: bytes(1, 2, 3, 4), goodwill: DEFAULT_GOODWILL });
 
       // Puis les bundles reprennent à ce tick, sans rejeu de l'historique.
       await bob.waitUntil("des bundles après la réouverture", () => bob.ofType("bundle").length >= 2);

@@ -119,6 +119,15 @@ export interface ServerOptions {
    */
   readonly maxListedRooms?: number;
 
+  /**
+   * Délai minimal entre deux `goodwill_report` acceptés pour une même salle
+   * (`docs/protocol.md` §14). Défaut : `DEFAULT_GOODWILL_REPORT_MS` (10 s).
+   * Injectable pour qu'un test vérifie la limite sans attendre dix vraies
+   * secondes — l'horloge du transport (`options.now`) se pilote de la même
+   * façon.
+   */
+  readonly goodwillReportMs?: number;
+
   // --- Garde-fous avant hébergement public (`docs/protocol.md` §2, « Limites ») ---
 
   /**
@@ -229,7 +238,8 @@ type WorldClientMessage = Extract<
       | "world_leave"
       | "caravan_depart"
       | "caravan_cancel"
-      | "caravan_delivered";
+      | "caravan_delivered"
+      | "goodwill_report";
   }
 >;
 
@@ -242,7 +252,8 @@ function isWorldMessage(message: ClientMessage): message is WorldClientMessage {
     message.type === "world_leave" ||
     message.type === "caravan_depart" ||
     message.type === "caravan_cancel" ||
-    message.type === "caravan_delivered"
+    message.type === "caravan_delivered" ||
+    message.type === "goodwill_report"
   );
 }
 
@@ -262,6 +273,15 @@ export const DEFAULT_MAX_CONNECTIONS_PER_IP = 16;
 export const DEFAULT_MAX_ROOMS = 500;
 /** Salles renvoyées au plus par `GET /rooms` (les plus récemment créées). */
 export const DEFAULT_MAX_LISTED_ROOMS = 200;
+/**
+ * Délai minimal entre deux `goodwill_report` acceptés **pour une même salle**
+ * (`docs/protocol.md` §14). Le client remonte sa réputation à intervalle
+ * régulier et à la fermeture de la colonie : dix secondes suffisent largement
+ * à suivre, et un client bavard (ou hostile) ne fait pas réécrire le fichier
+ * du monde à chaque tick. Les rapports trop rapprochés sont ignorés **en
+ * silence** — ce n'est pas une erreur du joueur, et le suivant passera.
+ */
+export const DEFAULT_GOODWILL_REPORT_MS = 10_000;
 
 /** Fenêtre glissante du limiteur de débit. */
 const RATE_WINDOW_MS = 1000;
@@ -394,6 +414,9 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const maxConnectionsPerIp = options.maxConnectionsPerIp ?? DEFAULT_MAX_CONNECTIONS_PER_IP;
   const maxRooms = options.maxRooms ?? DEFAULT_MAX_ROOMS;
   const maxListedRooms = options.maxListedRooms ?? DEFAULT_MAX_LISTED_ROOMS;
+  const goodwillReportMs = options.goodwillReportMs ?? DEFAULT_GOODWILL_REPORT_MS;
+  /** Dernier `goodwill_report` accepté par salle, pour `goodwillReportMs`. */
+  const lastGoodwillReport = new Map<string, number>();
   const trustProxy = options.trustProxy ?? false;
   const maxPlayersPerRoom = options.roomOptions?.maxPlayers ?? MAX_PLAYERS;
   /** Connexions ouvertes par adresse IP, pour `maxConnectionsPerIp`. */
@@ -719,6 +742,9 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     if (room.isEmpty) {
       room.stop();
       rooms.delete(room.name);
+      // La salle disparaît, son compteur anti-spam avec elle : la prochaine
+      // ouverture accepte tout de suite un premier rapport de réputation.
+      lastGoodwillReport.delete(room.name);
       // Le snapshot conservé de la salle, lui, survit : c'est ce qui permet de
       // rouvrir la colonie plus tard.
       log(`[${room.name}] salle détruite — ${rooms.size} salle(s) active(s)`);
@@ -839,6 +865,29 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       return other.worldPlayerKey !== null ? other.worldPlayerKey === key : other.roomJoinName === name;
     }
     return false;
+  };
+
+  /**
+   * Clé du joueur du monde derrière une connexion de **salle** : la sienne si
+   * elle a fait `world_join`, sinon celle d'un joueur du monde qui porte le
+   * même nom d'affichage (repli v1, la règle de `isPresentInRoom`, §12.3).
+   * `null` si personne ne correspond — le serveur n'invente pas un joueur pour
+   * lui attribuer quoi que ce soit.
+   */
+  const worldKeyOfRoomConnection = (connection: Connection): string | null => {
+    if (connection.worldPlayerKey !== null) {
+      return connection.worldPlayerKey;
+    }
+    const name = connection.roomJoinName;
+    if (name === null) {
+      return null;
+    }
+    for (const member of worldMembers) {
+      if (member.worldName === name && member.worldPlayerKey !== null) {
+        return member.worldPlayerKey;
+      }
+    }
+    return null;
   };
 
   /**
@@ -1111,6 +1160,40 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       return;
     }
 
+    if (message.type === "goodwill_report") {
+      // La salle n'est pas dans le message : c'est celle de cette connexion,
+      // et son **hôte** est le seul écouté (docs/protocol.md §14). Un invité
+      // verrait la même réputation, mais elle n'est pas la sienne : la créditer
+      // à son compte lui ferait hériter du passé d'un autre.
+      const room = connection.room;
+      if (room === null || tileFromRoomName(room.name) === null || connection.playerId !== room.host) {
+        fail(socket, "not_host", "seul l'hôte d'une salle de case remonte la réputation de sa colonie");
+        return;
+      }
+      // Il faut aussi savoir **à qui** la créditer : la réputation appartient à
+      // un joueur du monde, pas à un siège dans une salle. La clé de cette
+      // connexion si elle a fait `world_join`, sinon le repli v1 par le nom,
+      // comme pour `caravan_depart` (§12.3).
+      const reporter = worldKeyOfRoomConnection(connection);
+      if (reporter === null) {
+        worldFail(socket, "not_in_world", "envoyer d'abord `world_join` : la réputation appartient à un joueur");
+        return;
+      }
+      // Anti-spam : un rapport par salle et par `goodwillReportMs`. Les
+      // suivants sont ignorés sans rien répondre — le client en renvoie un
+      // régulièrement, ce n'est pas une faute et le prochain passera.
+      const previous = lastGoodwillReport.get(room.name);
+      const at = wallNow();
+      if (previous !== undefined && at - previous < goodwillReportMs) {
+        return;
+      }
+      lastGoodwillReport.set(room.name, at);
+      const stored = worldState.setGoodwill(reporter, message.values);
+      store?.scheduleSave(worldState);
+      log(`[monde] ${worldState.nameOf(reporter)} remonte sa réputation depuis ${room.name} : ${stored.join(", ")}`);
+      return;
+    }
+
     const name = connection.worldName;
     const key = connection.worldPlayerKey;
     if (name === null || key === null) {
@@ -1272,11 +1355,18 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     if (pendingTraders > 0) {
       store?.scheduleSave(worldState);
     }
+    // La réputation du **propriétaire** de la case, pas de qui ouvre la salle
+    // (§14) : elle appartient à la colonie parce qu'elle appartient à son
+    // joueur, et un visiteur n'apporte pas la sienne. Relevée maintenant, comme
+    // le climat et le jour de l'année — sur une réouverture elle part dans le
+    // `snapshot`, faute de `start`, et c'est bien la valeur du joueur qui fait
+    // foi, pas celle que le sim conservé traîne depuis la dernière session.
+    const goodwill = worldState.goodwillOf(settlement.owner);
     return new Room({
       name,
       log,
       ...options.roomOptions,
-      tile: { id: tileId, seed: settlement.seed, climate, dayOfYear },
+      tile: { id: tileId, seed: settlement.seed, climate, dayOfYear, goodwill },
       ...(snapshot !== undefined
         ? {
             restore: {
@@ -1288,6 +1378,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
               // arrivant émettra l'avance rapide correspondante (§11.6).
               frozenTicks: worldState.frozenTicksFor(name),
               ...(pendingTraders > 0 ? { pendingTraders } : {}),
+              goodwill,
             },
           }
         : {}),

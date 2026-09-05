@@ -529,6 +529,15 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-06 : la réputation suit le joueur, pas la colonie. Le serveur monde tient une
+  réputation par `playerKey`, l'impose à la fondation (`start.goodwill`) et à la réouverture
+  d'une colonie gelée (`snapshot.goodwill` : la valeur du joueur, pas celle du sim conservé,
+  qui a vécu ailleurs pendant le gel), et reçoit `goodwill_report` de l'hôte seul (un par
+  salle et par dix secondes, dernier rapport gagnant : la moyenne pondérée entre colonies est
+  écartée, documentée en §14.2 du protocole). L'hôte émet `SetGoodwill` **après**
+  `FastForward` (l'avance rapide adoucit déjà les rancunes : l'imposer avant compterait le gel
+  deux fois) et **avant** `TriggerTraderVisit` (les prix dépendent de la Guilde).
+
 - 2026-09-06 : la lutte contre le feu a un budget. Un colon inactif ne réévalue la lutte qu'un
   tick sur dix (même phase pour tous : le « je lâche ma besogne » et le « je prends les
   flammes » se jouent dans le même tick), six recherches de chemin au plus par appel (foyers et

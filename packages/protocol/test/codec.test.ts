@@ -5,6 +5,11 @@ import {
   bytesToBase64,
   CLIMATE_AMPLITUDE_MAX,
   CLIMATE_BASE_MIN,
+  DEFAULT_GOODWILL,
+  FACTION_COUNT,
+  GOODWILL_MAX,
+  GOODWILL_MIN,
+  clampGoodwill,
   frozenTicksForHours,
   MAX_FROZEN_TICKS,
   MAX_PENDING_TRADERS,
@@ -24,6 +29,7 @@ import {
   YEAR_DAYS,
   type Caravan,
   type ClientMessage,
+  type GoodwillValues,
   type Merchant,
   type ServerMessage,
   type Settlement,
@@ -141,6 +147,10 @@ describe("encodeMessage / decodeMessage", () => {
     },
     { type: "caravan_cancel", id: "c1" },
     { type: "caravan_delivered", id: "c1" },
+    // Réputation remontée par l'hôte d'une colonie (§14) : les trois valeurs
+    // dans l'ordre des factions, bornes comprises.
+    { type: "goodwill_report", values: [-20, -20, 10] },
+    { type: "goodwill_report", values: [GOODWILL_MIN, 0, GOODWILL_MAX] },
   ];
 
   const serverMessages: ServerMessage[] = [
@@ -176,6 +186,9 @@ describe("encodeMessage / decodeMessage", () => {
     { type: "start", seed: 7, width: 128, height: 128, tick: 0, climate, dayOfYear: 1 },
     // Colonie rouverte en lobby après le passage de marchands (§13).
     { type: "start", seed: 7, width: 64, height: 64, tick: 0, climate, dayOfYear: 1, pendingTraders: 2 },
+    // Réputation du propriétaire, imposée à la fondation (§14).
+    { type: "start", seed: 7, width: 64, height: 64, tick: 0, climate, dayOfYear: 1, goodwill: [-45, 0, 60] },
+    { type: "start", seed: 7, width: 64, height: 64, tick: 0, goodwill: DEFAULT_GOODWILL },
     { type: "bundle", from: 0, to: 2, ticks: [] },
     {
       type: "bundle",
@@ -199,6 +212,9 @@ describe("encodeMessage / decodeMessage", () => {
     // les deux champs voyagent ensemble, chacun sa commande à émettre (§13).
     { type: "snapshot", tick: 1800, data: new Uint8Array([1]), frozenTicks: 3000, pendingTraders: 1 },
     { type: "snapshot", tick: 1800, data: new Uint8Array([1]), pendingTraders: MAX_PENDING_TRADERS },
+    // Colonie gelée qui rouvre : la réputation du joueur voyage à côté du
+    // temps gelé, et s'impose **après** lui (§14).
+    { type: "snapshot", tick: 1800, data: new Uint8Array([1]), frozenTicks: 3000, goodwill: [-100, 5, 100] },
     { type: "desync", tick: 600, hashes: { 1: "aaaa", 2: "bbbb" } },
     { type: "desync", tick: 600, hashes: { 1: "aaaa", 2: "zzzz", 3: "aaaa" }, outliers: [2] },
     { type: "resynced", player: 2, tick: 900 },
@@ -486,6 +502,17 @@ describe("validation", () => {
       { type: "start", seed: 1, width: 64, height: 64, tick: 0, pendingTraders: 1.5 },
       { type: "snapshot", tick: 1, data: "AQID", pendingTraders: "2" },
       { type: "snapshot", tick: 1, data: "AQID", pendingTraders: MAX_PENDING_TRADERS + 1 },
+      // Réputation (§14) : le serveur la borne avant de l'envoyer, une valeur
+      // hors bornes mentirait sur ce que le sim appliquera.
+      { type: "start", seed: 1, width: 8, height: 8, tick: 0, goodwill: [GOODWILL_MIN - 1, 0, 0] },
+      { type: "start", seed: 1, width: 8, height: 8, tick: 0, goodwill: [0, GOODWILL_MAX + 1, 0] },
+      { type: "start", seed: 1, width: 8, height: 8, tick: 0, goodwill: [0, 0] },
+      { type: "start", seed: 1, width: 8, height: 8, tick: 0, goodwill: [0, 0, 0, 0] },
+      { type: "start", seed: 1, width: 8, height: 8, tick: 0, goodwill: [0, 0, 1.5] },
+      { type: "start", seed: 1, width: 8, height: 8, tick: 0, goodwill: [0, 0, "10"] },
+      { type: "start", seed: 1, width: 8, height: 8, tick: 0, goodwill: { 0: 0, 1: 0, 2: 0 } },
+      { type: "snapshot", tick: 1, data: "AQID", goodwill: [0, 0, GOODWILL_MAX + 1] },
+      { type: "snapshot", tick: 1, data: "AQID", goodwill: null },
     ];
     for (const value of bad) {
       expect(validateServerMessage(value), JSON.stringify(value)).toBeNull();
@@ -734,5 +761,70 @@ describe("calendrier des colonies", () => {
     expect(validateServerMessage({ ...base, dayOfYear: "1" })).toBeNull();
     expect(validateServerMessage({ ...base, dayOfYear: 0 })).toEqual({ ...base, dayOfYear: 0 });
     expect(validateServerMessage({ ...base, dayOfYear: YEAR_DAYS - 1 })).toEqual({ ...base, dayOfYear: YEAR_DAYS - 1 });
+  });
+});
+
+describe("réputation partagée (§14)", () => {
+  it("annonce les trois factions du sim et leur réputation de départ", () => {
+    // Contrat avec `sim::factions` : trois factions, réputation de départ
+    // −20 / −20 / +10, bornée à −100..=100.
+    expect(FACTION_COUNT).toBe(3);
+    expect(DEFAULT_GOODWILL).toEqual([-20, -20, 10]);
+    expect(DEFAULT_GOODWILL).toHaveLength(FACTION_COUNT);
+    expect(GOODWILL_MIN).toBe(-100);
+    expect(GOODWILL_MAX).toBe(100);
+  });
+
+  it("rogne aux bornes du sim, tronque et neutralise le non fini", () => {
+    expect(clampGoodwill([0, 0, 0])).toEqual([0, 0, 0]);
+    expect(clampGoodwill([-500, 500, 42])).toEqual([GOODWILL_MIN, GOODWILL_MAX, 42]);
+    expect(clampGoodwill([1.9, -1.9, 0])).toEqual([1, -1, 0]);
+    expect(clampGoodwill([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])).toEqual([0, 0, 0]);
+    // Les bornes elles-mêmes passent telles quelles.
+    expect(clampGoodwill([GOODWILL_MIN, GOODWILL_MAX, 0])).toEqual([GOODWILL_MIN, GOODWILL_MAX, 0]);
+  });
+
+  it("fait l'aller-retour d'un goodwill_report et refuse une forme invalide", () => {
+    const message: ClientMessage = { type: "goodwill_report", values: [-45, 12, 60] };
+    expect(decodeClientMessage(encodeMessage(message))).toEqual(message);
+    // Un `goodwill_report` ne vient jamais du serveur.
+    expect(validateServerMessage(message)).toBeNull();
+
+    for (const values of [[0, 0], [0, 0, 0, 0], [0, 0, "3"], [0, 0, 1.5], "0,0,0", null, { a: 1 }]) {
+      expect(validateClientMessage({ type: "goodwill_report", values }), JSON.stringify(values)).toBeNull();
+    }
+  });
+
+  it("accepte du client une valeur hors bornes : c'est le serveur qui rogne", () => {
+    // Asymétrie voulue (`asReportedGoodwill` contre `asGoodwill`) : refuser la
+    // trame ferait dépendre la connexion des bornes que le sim se donne, alors
+    // que le serveur monde les applique de toute façon avec `clampGoodwill`.
+    const wild = validateClientMessage({ type: "goodwill_report", values: [-4000, 4000, 0] });
+    expect(wild).toEqual({ type: "goodwill_report", values: [-4000, 4000, 0] });
+    expect(clampGoodwill((wild as { values: GoodwillValues }).values)).toEqual([GOODWILL_MIN, GOODWILL_MAX, 0]);
+  });
+
+  it("laisse passer start et snapshot sans goodwill, et gardent le champ sinon", () => {
+    const plainStart = validateServerMessage({ type: "start", seed: 7, width: 64, height: 64, tick: 0 });
+    expect(plainStart !== null && "goodwill" in plainStart).toBe(false);
+    const plainSnapshot = validateServerMessage({ type: "snapshot", tick: 9, data: "AQID" });
+    expect(plainSnapshot !== null && "goodwill" in plainSnapshot).toBe(false);
+
+    const start = decodeServerMessage(
+      encodeMessage({ type: "start", seed: 7, width: 64, height: 64, tick: 0, goodwill: [-20, -20, 10] }),
+    );
+    expect(start?.type === "start" ? start.goodwill : null).toEqual([-20, -20, 10]);
+
+    const snapshot = decodeServerMessage(
+      encodeMessage({
+        type: "snapshot",
+        tick: 1800,
+        data: new Uint8Array([1, 2, 3]),
+        frozenTicks: 3000,
+        goodwill: [40, -60, 0],
+      }),
+    );
+    expect(snapshot?.type === "snapshot" ? snapshot.goodwill : null).toEqual([40, -60, 0]);
+    expect(snapshot?.type === "snapshot" ? snapshot.frozenTicks : null).toBe(3000);
   });
 });

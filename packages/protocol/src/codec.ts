@@ -13,6 +13,9 @@ import {
   CLIMATE_AMPLITUDE_MIN,
   CLIMATE_BASE_MAX,
   CLIMATE_BASE_MIN,
+  FACTION_COUNT,
+  GOODWILL_MAX,
+  GOODWILL_MIN,
   MAX_FROZEN_TICKS,
   MAX_PENDING_TRADERS,
   NO_PLAYER,
@@ -23,6 +26,7 @@ import {
   type CaravanStatus,
   type CaravanSummary,
   type ClientMessage,
+  type GoodwillValues,
   type Merchant,
   type MerchantStatus,
   type PlayerId,
@@ -220,6 +224,49 @@ function asStartClimate(value: unknown): StartClimate | null {
  */
 function isPendingTraders(value: unknown): value is number {
   return isInRange(value, 0, MAX_PENDING_TRADERS);
+}
+
+/**
+ * Un triplet de réputations (`docs/protocol.md` §14), quel qu'en soit le
+ * contenu numérique : exactement `FACTION_COUNT` entiers sûrs. Sert de base
+ * aux deux formes ci-dessous, qui diffèrent seulement par les bornes qu'elles
+ * exigent.
+ */
+function asGoodwillTriplet(value: unknown): [number, number, number] | null {
+  if (!Array.isArray(value) || value.length !== FACTION_COUNT) {
+    return null;
+  }
+  for (const entry of value) {
+    if (typeof entry !== "number" || !Number.isSafeInteger(entry)) {
+      return null;
+    }
+  }
+  return [value[0] as number, value[1] as number, value[2] as number];
+}
+
+/**
+ * `start.goodwill` / `snapshot.goodwill` : trois réputations que le serveur a
+ * déjà bornées. Hors de `GOODWILL_MIN..=GOODWILL_MAX`, la trame est **refusée**
+ * plutôt que rognée — même principe que `asStartClimate` : elle mentirait sur
+ * ce que le sim appliquera.
+ */
+function asGoodwill(value: unknown): GoodwillValues | null {
+  const triplet = asGoodwillTriplet(value);
+  if (triplet === null) {
+    return null;
+  }
+  return triplet.every((entry) => entry >= GOODWILL_MIN && entry <= GOODWILL_MAX) ? triplet : null;
+}
+
+/**
+ * `goodwill_report.values` : ce qu'un **client** remonte de son sim. Trois
+ * entiers, sans borne exigée ici — c'est le serveur monde qui les ramène dans
+ * `GOODWILL_MIN..=GOODWILL_MAX` (`clampGoodwill`), parce que c'est lui qui les
+ * réimposera. Refuser la trame ferait dépendre la connexion des bornes que le
+ * sim se donne, alors que rogner ne coûte rien et ne perd rien de sensé.
+ */
+function asReportedGoodwill(value: unknown): GoodwillValues | null {
+  return asGoodwillTriplet(value);
 }
 
 function isName(value: unknown): value is string {
@@ -632,6 +679,10 @@ export function validateClientMessage(value: unknown): ClientMessage | null {
       return isName(value.id) ? { type: "caravan_cancel", id: value.id } : null;
     case "caravan_delivered":
       return isName(value.id) ? { type: "caravan_delivered", id: value.id } : null;
+    case "goodwill_report": {
+      const values = asReportedGoodwill(value.values);
+      return values === null ? null : { type: "goodwill_report", values };
+    }
     default:
       return null;
   }
@@ -708,6 +759,14 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       if (value.pendingTraders !== undefined && !isPendingTraders(value.pendingTraders)) {
         return null;
       }
+      let goodwill: GoodwillValues | undefined;
+      if (value.goodwill !== undefined) {
+        const parsed = asGoodwill(value.goodwill);
+        if (parsed === null) {
+          return null;
+        }
+        goodwill = parsed;
+      }
       return {
         type: "start",
         seed: value.seed,
@@ -717,6 +776,7 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
         ...(climate === undefined ? {} : { climate }),
         ...(value.dayOfYear === undefined ? {} : { dayOfYear: value.dayOfYear }),
         ...(value.pendingTraders === undefined ? {} : { pendingTraders: value.pendingTraders }),
+        ...(goodwill === undefined ? {} : { goodwill }),
       };
     }
     case "bundle": {
@@ -742,12 +802,21 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       if (value.pendingTraders !== undefined && !isPendingTraders(value.pendingTraders)) {
         return null;
       }
+      let restored: GoodwillValues | undefined;
+      if (value.goodwill !== undefined) {
+        const parsed = asGoodwill(value.goodwill);
+        if (parsed === null) {
+          return null;
+        }
+        restored = parsed;
+      }
       return {
         type: "snapshot",
         tick: value.tick,
         data,
         ...(value.frozenTicks === undefined ? {} : { frozenTicks: value.frozenTicks }),
         ...(value.pendingTraders === undefined ? {} : { pendingTraders: value.pendingTraders }),
+        ...(restored === undefined ? {} : { goodwill: restored }),
       };
     }
     case "desync": {

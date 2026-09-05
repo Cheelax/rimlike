@@ -37,6 +37,7 @@ import {
   type PlayerId,
   type PlayerInfo,
   type RoomState,
+  type GoodwillValues,
   type ServerMessage,
   type StartClimate,
 } from "@rimlike/protocol";
@@ -71,6 +72,15 @@ export interface TileRoom {
    * champ ne sert qu'au chemin lobby → running d'une colonie neuve.
    */
   readonly dayOfYear?: number;
+  /**
+   * Réputation du **propriétaire** de la case envers les factions PNJ, relevée
+   * par le serveur monde à la création de la salle (`docs/protocol.md` §14).
+   * Portée par le même `start` que `climate` et `dayOfYear`, et pour la même
+   * raison : la colonie hérite de ce que son joueur traîne derrière lui.
+   * Absente d'une réouverture, qui ne diffuse aucun `start` et porte la valeur
+   * dans son `snapshot` (`RoomRestore.goodwill`).
+   */
+  readonly goodwill?: GoodwillValues;
 }
 
 /**
@@ -98,6 +108,13 @@ export interface RoomRestore {
    * reçoit aucun `start`, c'est donc ce message-là qui porte le compte.
    */
   readonly pendingTraders?: number;
+  /**
+   * Réputation du propriétaire de la case (`docs/protocol.md` §14), à
+   * réimposer même sur une réouverture : contrairement au climat, elle a
+   * continué de vivre dans les **autres** colonies du joueur pendant que
+   * celle-ci dormait, et la valeur du sim restauré est donc périmée.
+   */
+  readonly goodwill?: GoodwillValues;
 }
 
 /** Snapshot de conservation remonté par l'hôte d'une salle « case ». */
@@ -357,6 +374,10 @@ export class Room {
           data: opening.data,
           ...(frozenTicks > 0 ? { frozenTicks } : {}),
           ...(pendingTraders > 0 ? { pendingTraders } : {}),
+          // Toujours présente si le serveur monde l'a fournie : elle n'a pas
+          // de valeur « rien à faire » — le défaut lui-même est une consigne
+          // (docs/protocol.md §14).
+          ...(opening.goodwill !== undefined ? { goodwill: opening.goodwill } : {}),
         });
         player.synced = true;
         this.restore = null;
@@ -461,8 +482,11 @@ export class Room {
       case "caravan_depart":
       case "caravan_cancel":
       case "caravan_delivered":
+      case "goodwill_report":
         // Les actions de monde sont traitées par le serveur avant d'atteindre
-        // une salle : en arriver ici est un bug de câblage.
+        // une salle : en arriver ici est un bug de câblage. `goodwill_report`
+        // en fait partie bien qu'il parle d'une salle — c'est le serveur qui
+        // sait à quel joueur du monde créditer la réputation (§14).
         this.fail(player, "bad_message", "action de monde adressée à une salle");
         return;
     }
@@ -543,6 +567,7 @@ export class Room {
       ...(this.tile?.climate !== undefined ? { climate: this.tile.climate } : {}),
       ...(this.tile?.dayOfYear !== undefined ? { dayOfYear: this.tile.dayOfYear } : {}),
       ...(pendingTraders > 0 ? { pendingTraders } : {}),
+      ...(this.tile?.goodwill !== undefined ? { goodwill: this.tile.goodwill } : {}),
     });
     this.log(
       `[${this.name}] démarrage — seed ${effectiveSeed}${this.tile === null ? "" : " (imposé par la case)"}, carte ${width}x${height}, ${this.players.length} joueur(s)`,

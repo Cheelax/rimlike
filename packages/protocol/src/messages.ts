@@ -166,6 +166,55 @@ export const MERCHANT_STAY_HOURS = 24;
  */
 export const MAX_PENDING_TRADERS = 3;
 
+// --- Réputation envers les factions PNJ (`docs/protocol.md` §14) ---
+
+/**
+ * Factions PNJ du sim (`sim::factions::FACTION_COUNT`) : 0 Clan des Cendres,
+ * 1 Fraternité du Fer, 2 Guilde des Colporteurs. Fixe — la réputation voyage
+ * comme un triplet dans l'ordre de leurs identifiants, jamais comme une table
+ * indexée par nom. Contrat avec le sim, à changer des deux côtés.
+ */
+export const FACTION_COUNT = 3;
+
+/**
+ * Bornes de la réputation, en points (`sim::factions::GOODWILL_MIN`/`MAX`) :
+ * hostile en dessous de −50, allié à partir de 50. Dupliquées ici comme
+ * `MAX_FROZEN_TICKS` duplique `sim::MAX_FAST_FORWARD` — ce paquet n'a pas de
+ * dépendance runtime.
+ */
+export const GOODWILL_MIN = -100;
+export const GOODWILL_MAX = 100;
+
+/**
+ * Réputation d'une colonie envers les trois factions PNJ, dans l'ordre de
+ * leurs identifiants. C'est la forme de `Command::SetGoodwill`
+ * (`crates/sim/src/factions.rs`), et celle sous laquelle le serveur monde la
+ * garde **par joueur** (`docs/protocol.md` §14).
+ */
+export type GoodwillValues = readonly [number, number, number];
+
+/**
+ * Réputation d'un joueur que le monde n'a encore jamais vu agir
+ * (`sim::factions::START_GOODWILL`) : les deux tribus se méfient, la Guilde
+ * commerce volontiers. Un joueur inconnu du serveur monde repart de là, comme
+ * une colonie solo.
+ */
+export const DEFAULT_GOODWILL: GoodwillValues = [-20, -20, 10];
+
+/**
+ * Ramène trois réputations dans `GOODWILL_MIN..=GOODWILL_MAX`, en entiers.
+ * Le serveur monde s'en sert sur ce qu'un client lui **remonte**
+ * (`goodwill_report`) : il ne refuse pas une valeur excentrique, il la rogne,
+ * puisque c'est lui qui la réimposera ensuite — les bornes du sim sont les
+ * siennes, un client qui les dépasserait n'a pas à couper la connexion. Une
+ * entrée non finie compte pour 0.
+ */
+export function clampGoodwill(values: GoodwillValues): GoodwillValues {
+  const clamp = (value: number): number =>
+    Number.isFinite(value) ? Math.min(GOODWILL_MAX, Math.max(GOODWILL_MIN, Math.trunc(value))) : 0;
+  return [clamp(values[0]), clamp(values[1]), clamp(values[2])];
+}
+
 /** Identifiant de joueur, attribué par le serveur, unique dans la salle. */
 export type PlayerId = number;
 
@@ -511,6 +560,27 @@ export interface CaravanDeliveredMessage {
   readonly id: string;
 }
 
+/**
+ * L'hôte d'une salle « case » remonte la réputation de sa colonie envers les
+ * trois factions PNJ, pour que le serveur monde la porte **par joueur** et la
+ * réimpose à la colonie suivante (`docs/protocol.md` §14).
+ *
+ * La salle n'est pas dans le message : c'est celle de la connexion qui
+ * l'envoie, et seul son **hôte** est écouté — un invité verrait la même
+ * réputation, mais rien ne dit qu'il joue la colonie de son propre compte.
+ * `values` est ce que le sim rend (`WasmSim.goodwill()`), dans l'ordre des
+ * identifiants de faction ; le serveur le rogne à `GOODWILL_MIN..=GOODWILL_MAX`
+ * plutôt que de refuser la trame (`clampGoodwill`).
+ *
+ * Le client le renvoie à intervalle régulier et à la fermeture de la colonie ;
+ * le serveur n'a pas à le savoir et n'accepte qu'un rapport toutes les dix
+ * secondes par salle — les suivants sont ignorés en silence.
+ */
+export interface GoodwillReportMessage {
+  readonly type: "goodwill_report";
+  readonly values: GoodwillValues;
+}
+
 export type ClientMessage =
   | JoinMessage
   | ClientStartMessage
@@ -527,7 +597,8 @@ export type ClientMessage =
   | WorldLeaveMessage
   | CaravanDepartMessage
   | CaravanCancelMessage
-  | CaravanDeliveredMessage;
+  | CaravanDeliveredMessage
+  | GoodwillReportMessage;
 
 // --- Serveur → client ---
 
@@ -611,6 +682,16 @@ export interface ServerStartMessage {
    * serveur ne simule pas, il ne fait que compter. Omis quand il vaut 0.
    */
   readonly pendingTraders?: number;
+  /**
+   * Réputation du **propriétaire** de la case envers les trois factions PNJ
+   * (`docs/protocol.md` §14), portée par le serveur monde d'une colonie à
+   * l'autre. Présente dans toute salle « case », absente en salle simple —
+   * comme `climate` et `dayOfYear`, et pour la même raison : hors du globe, il
+   * n'y a personne dont la réputation suivrait. Présente, elle n'impose rien
+   * par elle-même : l'hôte, et lui seul, émet `Command::SetGoodwill` après ce
+   * `start`, une seule fois.
+   */
+  readonly goodwill?: GoodwillValues;
 }
 
 /** Le message central : tous les clients reçoivent la même suite de bundles. */
@@ -656,6 +737,19 @@ export interface ServerSnapshotMessage {
    * marchand. Omis quand il vaut 0.
    */
   readonly pendingTraders?: number;
+  /**
+   * Réputation du propriétaire de la case, comme `start.goodwill` — mais ici
+   * elle est **la valeur du joueur**, pas celle que le sim porte dans `data`
+   * (`docs/protocol.md` §14). C'est toute la différence avec le climat et le
+   * calendrier, que le snapshot restauré porte déjà et qu'on se garde bien de
+   * réémettre : la réputation, elle, a continué de vivre dans les **autres**
+   * colonies du joueur pendant que celle-ci dormait, et c'est cette
+   * valeur-là qui fait foi. L'hôte — le premier arrivant — émet
+   * `Command::SetGoodwill` une seule fois, **après** `FastForward` : l'avance
+   * rapide adoucit les rancunes d'un point par jour (`sim::factions::FADE_PER_DAY`),
+   * et la valeur imposée ici est déjà à jour, elle n'a pas à revieillir.
+   */
+  readonly goodwill?: GoodwillValues;
 }
 
 /**

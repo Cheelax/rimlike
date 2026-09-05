@@ -18,7 +18,10 @@
  *   un joueur avec un jeton neuf. La prochaine sauvegarde réécrit le fichier
  *   dans la version courante (`WORLD_STATE_FILE_VERSION`) ;
  * - `version: 2` (avant les marchands itinérants, §13) → relu tel quel : les
- *   marchands renaissent au premier tick du monde, personne ne perd rien.
+ *   marchands renaissent au premier tick du monde, personne ne perd rien ;
+ * - `version: 3` (avant la réputation partagée, §14) → relu tel quel : chaque
+ *   joueur repart de `DEFAULT_GOODWILL`, comme le faisait déjà chaque colonie
+ *   avant que le monde ne porte la réputation.
  *
  * Dans les deux derniers cas le fichier est renommé
  * `<fichier>.ignored-<horodatage>.json` plutôt que supprimé (l'opérateur peut
@@ -47,17 +50,21 @@ import { WorldState, type WorldStateJson, type WorldStateOptions } from "./world
  *   `state.players`.
  * - **3**, tranche « marchands itinérants » (§13) : `state.merchants` (les
  *   marchands PNJ en circulation) et `pendingTraders` sur une colonie.
+ * - **4**, tranche « réputation partagée » (§14) : `state.goodwill`, la
+ *   réputation envers les factions PNJ **par joueur**, qui suit son
+ *   propriétaire d'une colonie à l'autre.
  *
  * `SUPPORTED_WORLD_STATE_FILE_VERSIONS` liste les versions qu'un fichier peut
  * porter en lecture : un v1 est accepté et migré par `WorldState.fromJSON`
  * (nouveaux joueurs, jetons neufs), un v2 est relu tel quel (les marchands
- * renaissent) — aucun des deux n'est rejeté, et la prochaine sauvegarde les
- * réécrit dans la version courante.
+ * renaissent), un v3 aussi (tout le monde repart de la réputation par défaut,
+ * exactement ce que faisait chaque colonie dans son coin) — aucun n'est
+ * rejeté, et la prochaine sauvegarde les réécrit dans la version courante.
  */
-export const WORLD_STATE_FILE_VERSION = 3;
+export const WORLD_STATE_FILE_VERSION = 4;
 
 /** Versions de fichier acceptées en lecture (voir `WORLD_STATE_FILE_VERSION`). */
-const SUPPORTED_WORLD_STATE_FILE_VERSIONS = [1, 2, 3] as const;
+const SUPPORTED_WORLD_STATE_FILE_VERSIONS = [1, 2, 3, 4] as const;
 
 /** Délai de débounce par défaut entre deux écritures, en millisecondes. */
 export const SAVE_DEBOUNCE_MS = 2000;
