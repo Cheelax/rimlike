@@ -203,6 +203,13 @@ impl WasmSim {
         });
     }
 
+    /// Rattrape le temps passé carte gelée (voir `sim::fastforward`).
+    /// Émise une seule fois par l'hôte à la réouverture d'une colonie, avec le
+    /// `frozenTicks` du `snapshot` reçu du serveur.
+    pub fn fast_forward(&mut self, ticks: u32) {
+        self.pending.push(sim::Command::FastForward { ticks });
+    }
+
     // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
     //
     // Fonctions **associées** : le client doit pouvoir encoder avant même
@@ -288,6 +295,12 @@ impl WasmSim {
         encode(&sim::Command::ArriveCaravan {
             manifest: manifest.to_vec(),
         })
+    }
+
+    /// Avance rapide abstraite d'une carte gelée, en ticks. Bornée à
+    /// 60 jours côté sim ; le client émet le `frozenTicks` du `snapshot`.
+    pub fn encode_fast_forward(ticks: u32) -> Vec<u8> {
+        encode(&sim::Command::FastForward { ticks })
     }
 
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
@@ -772,6 +785,10 @@ mod tests {
                 Command::ArriveCaravan {
                     manifest: vec![7, 8, 9],
                 },
+            ),
+            (
+                WasmSim::encode_fast_forward(3_000),
+                Command::FastForward { ticks: 3_000 },
             ),
         ];
         for (bytes, expected) in cases {

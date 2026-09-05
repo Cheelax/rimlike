@@ -31,7 +31,13 @@
  * n'y touche pas lui-même — il reste pur — voir `docs/protocol.md` §11.8.
  */
 
-import { WORLD_HOUR_MS, base64ToBytes, bytesToBase64, type Settlement } from "@rimlike/protocol";
+import {
+  WORLD_HOUR_MS,
+  base64ToBytes,
+  bytesToBase64,
+  frozenTicksForHours,
+  type Settlement,
+} from "@rimlike/protocol";
 import { generateWorld, movementCost, tileCount, type World } from "@rimlike/world";
 
 import { CaravanRegistry, type CaravanRegistryJson } from "./caravans.js";
@@ -98,6 +104,15 @@ export interface RoomSnapshot {
   readonly height: number;
   /** Date d'enregistrement, en millisecondes epoch. */
   readonly savedAt: number;
+  /**
+   * Heure de jeu du monde (`WorldClock.hours`) au moment de l'enregistrement.
+   * C'est l'origine du temps gelé : à la réouverture, l'écart avec l'heure
+   * courante devient le `frozenTicks` du `snapshot` (`docs/protocol.md`
+   * §11.6). **Facultatif** : un snapshot relu d'un fichier écrit avant cette
+   * tranche n'en a pas, et ne donne alors aucune avance rapide — mieux vaut
+   * une colonie qui reprend où elle en était qu'un rattrapage inventé.
+   */
+  readonly savedAtHours?: number;
 }
 
 /** Forme JSON de l'horloge du monde. */
@@ -201,6 +216,12 @@ export interface WorldStateJson {
     readonly width: number;
     readonly height: number;
     readonly savedAt: number;
+    /**
+     * Heure de jeu du monde à l'enregistrement. **Facultative** : un fichier
+     * écrit avant l'avance rapide se relit tel quel, ses colonies rouvrent
+     * simplement sans rattrapage.
+     */
+    readonly savedAtHours?: number;
   }[];
   /** Horloge de jeu du monde ; absente d'un fichier antérieur aux caravanes. */
   readonly clock?: WorldClockJson;
@@ -368,7 +389,7 @@ export class WorldState {
    * - un snapshot **plus ancien** que celui déjà connu : le temps ne remonte
    *   pas, et deux hôtes peuvent répondre à des instants différents.
    */
-  saveSnapshot(room: string, snapshot: Omit<RoomSnapshot, "savedAt">): boolean {
+  saveSnapshot(room: string, snapshot: Omit<RoomSnapshot, "savedAt" | "savedAtHours">): boolean {
     if (this.settlementOfRoom(room) === undefined) {
       return false;
     }
@@ -376,12 +397,29 @@ export class WorldState {
     if (known !== undefined && known.tick > snapshot.tick) {
       return false;
     }
-    this.snapshots.set(room, { ...snapshot, savedAt: this.now() });
+    this.snapshots.set(room, { ...snapshot, savedAt: this.now(), savedAtHours: this.clock.hours() });
     return true;
   }
 
   snapshotFor(room: string): RoomSnapshot | undefined {
     return this.snapshots.get(room);
+  }
+
+  /**
+   * Ticks d'avance rapide dus à une salle « case » qui rouvre : le temps
+   * passé sans personne, en heures de jeu du monde, converti en ticks de carte
+   * (`frozenTicksForHours`, borné à 60 jours). Vaut 0 sans snapshot conservé,
+   * et 0 pour un snapshot d'avant cette tranche, qui n'a pas d'heure d'origine.
+   *
+   * Le serveur ne fait que **calculer** ce nombre : c'est l'hôte qui, après
+   * avoir restauré l'état, émet `FastForward` en lockstep (§11.6).
+   */
+  frozenTicksFor(room: string): number {
+    const snapshot = this.snapshots.get(room);
+    if (snapshot?.savedAtHours === undefined) {
+      return 0;
+    }
+    return frozenTicksForHours(this.clock.hours() - snapshot.savedAtHours);
   }
 
   dropSnapshot(room: string): void {
@@ -405,6 +443,7 @@ export class WorldState {
           width: snapshot.width,
           height: snapshot.height,
           savedAt: snapshot.savedAt,
+          ...(snapshot.savedAtHours !== undefined ? { savedAtHours: snapshot.savedAtHours } : {}),
         })),
     };
   }
@@ -450,6 +489,7 @@ export class WorldState {
         width: entry.width,
         height: entry.height,
         savedAt: entry.savedAt,
+        ...(typeof entry.savedAtHours === "number" ? { savedAtHours: entry.savedAtHours } : {}),
       });
     }
     if (json.caravans !== undefined) {

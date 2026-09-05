@@ -9,6 +9,7 @@
  */
 
 import {
+  MAX_FROZEN_TICKS,
   NO_PLAYER,
   PROTOCOL_VERSION,
   type Bundle,
@@ -155,6 +156,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isTick(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * Temps gelé d'une colonie, en ticks : un entier positif borné à la même
+ * limite que le sim (60 jours). Un serveur qui annoncerait plus mentirait sur
+ * ce que le sim appliquera — la trame est refusée plutôt que rognée.
+ */
+function isFrozenTicks(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_FROZEN_TICKS;
 }
 
 function isName(value: unknown): value is string {
@@ -586,7 +596,12 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       if (data === null || !isTick(value.tick)) {
         return null;
       }
-      return { type: "snapshot", tick: value.tick, data };
+      if (value.frozenTicks !== undefined && !isFrozenTicks(value.frozenTicks)) {
+        return null;
+      }
+      return value.frozenTicks === undefined
+        ? { type: "snapshot", tick: value.tick, data }
+        : { type: "snapshot", tick: value.tick, data, frozenTicks: value.frozenTicks };
     }
     case "desync": {
       if (!isTick(value.tick) || !isRecord(value.hashes)) {

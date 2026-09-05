@@ -8,6 +8,12 @@ use sim::{
 
 const TICKS: u64 = 10_000;
 
+/// Tick où le scénario gèle puis dégèle la carte, et durée du gel : l'avance
+/// rapide consomme du RNG (la météo est retirée) et touche à tout l'état, elle
+/// a donc sa place dans le scénario de référence.
+const FAST_FORWARD_AT: u64 = 8_000;
+const FAST_FORWARD_TICKS: u32 = 3_000;
+
 /// Scénario de commandes reproductible : déplacements, désignations et zones
 /// dérivés du numéro de tick.
 fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
@@ -127,6 +133,13 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
         // L'hôte a expédié le manifeste : tout le monde vide la file au même tick.
         cmds.push(Command::ClearDepartures { count: 1 });
     }
+    if t == FAST_FORWARD_AT {
+        // La colonie rouvre après une absence : le rattrapage est une commande
+        // comme les autres, appliquée au même tick chez tout le monde.
+        cmds.push(Command::FastForward {
+            ticks: FAST_FORWARD_TICKS,
+        });
+    }
     if t % 900 == 0 {
         for (k, p) in sim.pawns().iter().enumerate() {
             cmds.push(Command::MoveTo {
@@ -162,7 +175,8 @@ fn same_seed_same_commands_same_hash() {
         }
     }
     assert!(caravan_left, "le scénario n'a pas fait partir de caravane");
-    assert_eq!(a.tick(), TICKS);
+    // Les ticks joués, plus ceux que l'avance rapide a sautés.
+    assert_eq!(a.tick(), TICKS + u64::from(FAST_FORWARD_TICKS));
     assert_eq!(a.state_hash(), b.state_hash());
     assert_eq!(a, b);
     // Le scénario a bien produit du gameplay, pas seulement de la marche.

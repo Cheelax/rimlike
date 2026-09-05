@@ -1,13 +1,18 @@
 //! Boucle de ressources et besoins, sur des cartes dessinées à la main.
 
 use sim::combat::HEAL_INTERVAL;
+use sim::farm::GROW_TICKS;
+use sim::fastforward::{FROZEN_HUNGER, FROZEN_REST};
 use sim::health::{BLEED_TICKS, BLOOD_MAX, DOWNED_BLOOD};
 use sim::pawn::RESTED;
-use sim::pawn::{BREAK_TICKS, HP_MAX, HP_WOUNDED, HUNGRY, MOOD_BREAK, NEED_MAX, TIRED};
+use sim::pawn::{
+    BREAK_TICKS, HP_MAX, HP_WOUNDED, HUNGER_DECAY, HUNGRY, MOOD_BREAK, NEED_MAX, REST_DECAY, TIRED,
+};
 use sim::testmap::map_from;
 use sim::{
     BodyPart, BuildKind, CaravanManifest, Command, Designation, EventKind, Faction, Feature,
-    ItemKind, Job, Material, Pawn, Sim, Terrain, Weather, WorkType, Zone,
+    ItemKind, Job, MAX_FAST_FORWARD, Material, Pawn, Sim, TICKS_PER_DAY, Terrain, Weather,
+    WorkType, Zone,
 };
 
 const DAY: u64 = sim::TICKS_PER_DAY as u64;
@@ -1312,6 +1317,55 @@ fn mobility_slows_walking() {
     );
 }
 
+/// Statistique sur plusieurs graines : un premier raid reste dangereux (des
+/// blessés, parfois un mort) sans être une hécatombe systématique. Le seuil
+/// « 3 jours » borne le pire cas (pillards qui traînent) sans jamais couper
+/// un combat encore en cours : `run_until` s'arrête dès que la carte n'a
+/// plus de pillard vivant.
+#[test]
+fn first_raid_is_dangerous_but_survivable() {
+    const SEEDS: u64 = 12;
+    let mut wiped_out = 0u32;
+    let mut total_deaths = 0u32;
+    let mut wounded_survivors = 0u32;
+    for seed in 1..=SEEDS {
+        let mut s = Sim::new(seed, 32, 32);
+        // Baies au centre de la carte : la faim ne doit pas peser sur l'issue
+        // du combat, seul le combat lui-même compte.
+        let (bx, by) = s
+            .map()
+            .nearest_passable(16, 16)
+            .expect("carte 32x32 sans centre franchissable");
+        s.spawn_item(ItemKind::Berries, 60, bx, by);
+        let before = colonists(&s);
+        s.step(&[Command::TriggerRaid]);
+        run_until(&mut s, 3 * DAY, |s| raiders(s) == 0);
+        let after = colonists(&s);
+        total_deaths += before.saturating_sub(after) as u32;
+        if after == 0 {
+            wiped_out += 1;
+        }
+        if s.pawns()
+            .iter()
+            .any(|p| p.faction == Faction::Colony && !p.injuries.is_empty())
+        {
+            wounded_survivors += 1;
+        }
+    }
+    assert!(
+        wiped_out <= 2,
+        "colonie anéantie sur {wiped_out}/{SEEDS} graines (max 2 tolérées)"
+    );
+    assert!(
+        total_deaths <= SEEDS as u32,
+        "{total_deaths} morts au total sur {SEEDS} graines : moyenne > 1,0"
+    );
+    assert!(
+        wounded_survivors >= 4,
+        "seulement {wounded_survivors}/{SEEDS} graines avec un blessé qui survit"
+    );
+}
+
 // ----------------------------------------------------------------------
 // Caravanes : sortir d'une carte, entrer sur une autre
 // ----------------------------------------------------------------------
@@ -1569,4 +1623,249 @@ fn caravan_roundtrip_preserves_health_and_skills() {
     );
     assert!(p.hp < HP_MAX, "les PV dérivent des blessures");
     assert!(p.blood < BLOOD_MAX, "la plaie saigne toujours");
+}
+
+// ----------------------------------------------------------------------
+// Avance rapide d'une carte gelée
+// ----------------------------------------------------------------------
+
+/// Remet faim et repos au maximum : ces tests-là regardent le storyteller,
+/// pas la famine.
+fn feed(s: &mut Sim) {
+    let ids: Vec<u32> = s
+        .pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Colony)
+        .map(|p| p.id)
+        .collect();
+    for id in ids {
+        if let Some(p) = s.pawn_mut(id) {
+            p.hunger = NEED_MAX;
+            p.rest = NEED_MAX;
+        }
+    }
+}
+
+/// Vrai si un pillard apparaît dans les `ticks` qui suivent.
+fn raid_within(s: &mut Sim, ticks: u64) -> bool {
+    for _ in 0..ticks {
+        feed(s);
+        s.step(&[]);
+        if raiders(s) > 0 {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn fast_forward_murit_les_plants_et_gate_les_vivres() {
+    let mut s = clearing();
+    s.step(&[
+        Command::SetZone {
+            zone: Zone::Growing,
+            x0: 4,
+            y0: 5,
+            x1: 5,
+            y1: 6,
+        },
+        Command::Designate {
+            kind: Designation::Harvest,
+            x0: 11,
+            y0: 2,
+            x1: 11,
+            y1: 3,
+        },
+    ]);
+    assert!(
+        run_until(&mut s, 2 * DAY, |s| s.crops().len() == 4
+            && s.map().feature(11, 2) == Feature::BushUnripe),
+        "semis ou récolte inachevés : {:?}",
+        s.crops()
+    );
+    assert!(
+        s.crops().iter().all(|c| c.growth < GROW_TICKS),
+        "les plants sont déjà mûrs avant le gel"
+    );
+    s.spawn_item(ItemKind::Berries, 20, 0, 7);
+    // Les piles déjà là au moment du gel : aucune ne doit survivre à quatre
+    // jours (les baies tiennent trois jours). On suit les ids, parce qu'un
+    // colon qui lâche sa charge repose une pile **fraîche** au dégel.
+    let perishable: Vec<u32> = s
+        .items()
+        .iter()
+        .filter(|i| i.kind == ItemKind::Berries)
+        .map(|i| i.id)
+        .collect();
+    assert!(!perishable.is_empty(), "aucune baie sur la carte");
+
+    s.step(&[Command::FastForward {
+        ticks: 4 * TICKS_PER_DAY,
+    }]);
+
+    assert!(
+        s.crops()
+            .iter()
+            .all(|c| c.growth == GROW_TICKS && s.map().feature(c.x, c.y) == Feature::CropRipe),
+        "des plants n'ont pas mûri : {:?}",
+        s.crops()
+    );
+    assert_eq!(
+        s.map().feature(11, 2),
+        Feature::Bush,
+        "le buisson récolté n'a pas repoussé"
+    );
+    assert!(
+        s.items().iter().all(|i| !perishable.contains(&i.id)),
+        "des baies ont tenu quatre jours : {:?}",
+        s.items()
+    );
+    assert!(
+        has_event(&s, EventKind::FastForwarded),
+        "événements : {:?}",
+        s.events()
+    );
+}
+
+#[test]
+fn fast_forward_soigne_les_blesses_et_remonte_les_besoins() {
+    // Cellule fermée : personne ne vient panser ni nourrir le blessé.
+    let mut s = walled_clearing();
+    let id = s.pawns()[0].id;
+    s.inflict_injury(id, BodyPart::Torso, 200);
+    {
+        let p = s.pawn_mut(id).unwrap();
+        // Assez vidé de son sang pour s'écrouler au tick suivant.
+        p.blood = DOWNED_BLOOD - 1;
+        p.hunger = 0;
+        p.rest = 0;
+        p.grief_ticks = 3 * DAY as u32;
+        p.relief_ticks = 100;
+    }
+    s.step(&[]);
+    assert!(
+        find_pawn(&s, id).is_some_and(|p| p.is_downed() && p.is_bleeding()),
+        "le blessé devrait être à terre et saigner : {:?}",
+        find_pawn(&s, id)
+    );
+
+    // Deux jours gelés : 480 points de cicatrisation, bien plus que les 200
+    // de la blessure.
+    s.step(&[Command::FastForward {
+        ticks: 2 * TICKS_PER_DAY,
+    }]);
+
+    let p = find_pawn(&s, id).expect("le blessé n'a pas survécu au gel");
+    assert!(!p.is_bleeding(), "la plaie saigne encore");
+    assert_eq!(p.blood, BLOOD_MAX, "le sang ne s'est pas refait");
+    assert!(
+        p.injuries.is_empty(),
+        "blessures restantes : {:?}",
+        p.injuries
+    );
+    assert_eq!(p.hp, HP_MAX, "les PV n'ont pas suivi les blessures");
+    assert!(!p.is_downed(), "le colon aurait dû se relever");
+    assert!(!matches!(p.job, Job::Downed), "job = {:?}", p.job);
+    // La colonie s'est débrouillée hors écran : besoins raisonnables, à un
+    // tick de décroissance près (celui du `step` qui porte la commande).
+    assert!(
+        p.hunger >= FROZEN_HUNGER - HUNGER_DECAY,
+        "faim = {}, attendue proche de {FROZEN_HUNGER}",
+        p.hunger
+    );
+    assert!(
+        p.rest >= FROZEN_REST - REST_DECAY,
+        "repos = {}, attendu proche de {FROZEN_REST}",
+        p.rest
+    );
+    // Le deuil s'écoule du temps passé, il ne s'efface pas.
+    assert!(
+        p.grief_ticks > DAY as u32 - 100 && p.grief_ticks < DAY as u32,
+        "deuil = {}, attendu proche d'un jour",
+        p.grief_ticks
+    );
+    assert_eq!(p.relief_ticks, 0, "le bonus d'humeur aurait dû expirer");
+}
+
+#[test]
+fn fast_forward_renvoie_les_pillards() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Berries, 60, 6, 6);
+    s.step(&[Command::TriggerRaid]);
+    assert_eq!(raiders(&s), 2, "pillards : {:?}", s.pawns());
+    let colony_before = colonists(&s);
+
+    s.step(&[Command::FastForward {
+        ticks: TICKS_PER_DAY,
+    }]);
+
+    assert_eq!(
+        raiders(&s),
+        0,
+        "les pillards campent encore : {:?}",
+        s.pawns()
+    );
+    assert_eq!(
+        colonists(&s),
+        colony_before,
+        "la colonie a changé de taille"
+    );
+    assert!(
+        has_event(&s, EventKind::RaiderLeft),
+        "événements : {:?}",
+        s.events()
+    );
+    assert!(
+        !s.items().iter().any(|i| i.kind == ItemKind::Corpse),
+        "un pillard parti ne laisse pas de cadavre"
+    );
+}
+
+#[test]
+fn fast_forward_ne_declenche_pas_de_raid_en_rafale() {
+    // Une colonie gelée dix jours ne doit encaisser aucun raid au dégel : les
+    // échéances du storyteller ont glissé du temps gelé, elles ne se sont pas
+    // accumulées. Le premier raid, programmé entre le 3e et le 3,5e jour,
+    // reste donc à plus de deux jours du dégel.
+    let mut frozen = clearing();
+    frozen.step(&[Command::FastForward {
+        ticks: 10 * TICKS_PER_DAY,
+    }]);
+    assert_eq!(frozen.tick(), 10 * DAY + 1);
+    assert!(
+        !raid_within(&mut frozen, 2 * DAY),
+        "un raid a suivi le dégel : les dix jours gelés ont été rejoués"
+    );
+
+    // Sans gel, la même colonie est bien attaquée dans un laps de temps de jeu
+    // plus court : le test compare deux histoires, pas deux hasards.
+    let mut base = clearing();
+    assert!(
+        raid_within(&mut base, 4 * DAY),
+        "aucun raid en quatre jours : le test ne prouverait rien"
+    );
+}
+
+#[test]
+fn fast_forward_est_borne_et_ignore_zero() {
+    assert_eq!(MAX_FAST_FORWARD, 60 * TICKS_PER_DAY);
+    let mut s = clearing();
+    s.step(&[Command::FastForward { ticks: u32::MAX }]);
+    // Le tick du `step` lui-même s'ajoute à l'avance tronquée.
+    assert_eq!(s.tick(), u64::from(MAX_FAST_FORWARD) + 1);
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::FastForwarded && e.arg == 60),
+        "événements : {:?}",
+        s.events()
+    );
+
+    let mut z = clearing();
+    z.step(&[Command::FastForward { ticks: 0 }]);
+    assert_eq!(z.tick(), 1, "une avance nulle n'avance rien");
+    assert!(
+        !has_event(&z, EventKind::FastForwarded),
+        "une avance nulle n'est pas un événement"
+    );
 }

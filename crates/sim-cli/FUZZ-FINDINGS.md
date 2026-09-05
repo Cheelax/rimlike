@@ -75,11 +75,26 @@ cargo run -p sim-cli --release -- fuzz --seed 1 --size 24 --ticks 40000 --runs 1
   sans bug pour autant. À retenir : les recherches d'objets sont en O(piles), un index spatial
   s'imposera si une colonie dépasse quelques milliers de piles.
 
-## Total des trois campagnes
+## Campagne 4 — sim avec avance rapide (2026-09-05)
 
-- 1 200 000 ticks simulés (deux sims indépendantes comparées à chaque fois,
-  donc 2 400 000 ticks de simulation réelle).
-- 6 000 000 de commandes aléatoires générées et appliquées identiquement aux
+```bash
+cargo run -p sim-cli --release -- fuzz --seed 1 --size 24 --ticks 40000 --runs 3 --commands-per-tick 6
+```
+
+- 3/3 runs OK, 120 000 ticks, 720 000 commandes, 2,0 s.
+- Le générateur couvre la nouvelle variante `FastForward` (45 737 tirages) avec des durées
+  plausibles (0 à 4 jours), des valeurs proches de `u32::MAX` et des valeurs juste au-delà de
+  `sim::MAX_FAST_FORWARD` : la borne à 60 jours doit tronquer sans faire boucler le sim ni
+  déborder un compteur. Une campagne fait ainsi sauter le tick du sim de plusieurs milliers
+  de jours, ce qui presse aussi la péremption, la repousse et les échéances du storyteller
+  loin dans le futur.
+- Ni désync, ni panique, ni snapshot invalide.
+
+## Total des quatre campagnes
+
+- 1 320 000 ticks simulés (deux sims indépendantes comparées à chaque fois,
+  donc 2 640 000 ticks de simulation réelle).
+- 6 720 000 de commandes aléatoires générées et appliquées identiquement aux
   deux sims de chaque run.
 - 0 désync, 0 panique, 0 snapshot invalide.
 

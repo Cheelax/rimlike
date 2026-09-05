@@ -441,6 +441,26 @@ describe("salle de case", () => {
     expect(bob.ofType("snapshot")).toEqual([]);
   });
 
+  it("porte le temps gelé au premier arrivant, et rien quand il n'y en a pas", () => {
+    const { room: tile } = tileRoom({
+      restore: { tick: 1800, data: bytes(7, 7, 7), width: 128, height: 128, frozenTicks: 3000 },
+    });
+    const alice = new Recorder();
+    tile.join("alice", alice.send);
+    // C'est à ce joueur — l'hôte — d'émettre l'avance rapide en lockstep.
+    expect(alice.ofType("snapshot")).toEqual([
+      { type: "snapshot", tick: 1800, data: bytes(7, 7, 7), frozenTicks: 3000 },
+    ]);
+
+    // Colonie rouverte dans la foulée : pas de champ du tout, rien à rattraper.
+    const { room: warm } = tileRoom({
+      restore: { tick: 60, data: bytes(1), width: 64, height: 64, frozenTicks: 0 },
+    });
+    const bob = new Recorder();
+    warm.join("bob", bob.send);
+    expect(bob.ofType("snapshot")).toEqual([{ type: "snapshot", tick: 60, data: bytes(1) }]);
+  });
+
   it("refuse une réouverture hors salle de case", () => {
     expect(
       () =>

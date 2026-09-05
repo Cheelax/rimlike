@@ -10,7 +10,7 @@ use sim::{
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 12;
+pub const VARIANT_COUNT: usize = 13;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -27,6 +27,7 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "FormCaravan",
     "ClearDepartures",
     "ArriveCaravan",
+    "FastForward",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -291,7 +292,7 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
                 _ => rng.below(4),
             },
         },
-        _ => Command::ArriveCaravan {
+        11 => Command::ArriveCaravan {
             // Un vrai manifeste sur 50, sinon des octets sans queue ni tête refusés au
             // décodage strict : assez pour couvrir l'arrivée sans noyer la carte sous des
             // milliers de piles (voir FUZZ-FINDINGS.md).
@@ -299,6 +300,17 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
                 random_manifest(rng)
             } else {
                 (0..rng.below(64)).map(|_| rng.below(256) as u8).collect()
+            },
+        },
+        _ => Command::FastForward {
+            // 0 (sans effet), des durées plausibles, et des valeurs aberrantes
+            // bien au-delà de `sim::MAX_FAST_FORWARD` : la borne doit tronquer
+            // sans jamais faire boucler le sim ni déborder un compteur.
+            ticks: match rng.below(6) {
+                0 => 0,
+                1 => u32::MAX - rng.below(1_000),
+                2 => sim::MAX_FAST_FORWARD.saturating_add(rng.below(1_000_000)),
+                _ => rng.below(4 * sim::TICKS_PER_DAY),
             },
         },
     };

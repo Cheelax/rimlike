@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   base64ToBytes,
   bytesToBase64,
+  frozenTicksForHours,
+  MAX_FROZEN_TICKS,
   decodeClientMessage,
   decodeMessage,
   decodeServerMessage,
@@ -10,6 +12,8 @@ import {
   isCompatibleProtocol,
   NO_PLAYER,
   PROTOCOL_VERSION,
+  TICKS_PER_DAY,
+  TICKS_PER_HOUR,
   validateClientMessage,
   validateServerMessage,
   WORLD_ERROR_CODES,
@@ -153,6 +157,7 @@ describe("encodeMessage / decodeMessage", () => {
     { type: "request_snapshot", forPlayer: 3 },
     { type: "request_snapshot", forPlayer: NO_PLAYER },
     { type: "snapshot", tick: 42, data: new Uint8Array([1, 2, 3, 4, 5, 6, 7]) },
+    { type: "snapshot", tick: 1800, data: new Uint8Array([1]), frozenTicks: 3000 },
     { type: "desync", tick: 600, hashes: { 1: "aaaa", 2: "bbbb" } },
     { type: "error", code: "bad_message", message: "champ manquant" },
     { type: "ping" },
@@ -335,6 +340,11 @@ describe("validation", () => {
       { type: "caravan_arrive", id: "c1", tile: 3, summary: { pawns: 1, items: [] } },
       { type: "caravan_arrive", id: "c1", manifest: "AQID", summary: { pawns: 1, items: [] } },
       { type: "caravan_arrive", id: "c1", tile: 3, manifest: "AQID" },
+      { type: "snapshot", tick: 1, data: "AQID", frozenTicks: -1 },
+      { type: "snapshot", tick: 1, data: "AQID", frozenTicks: 1.5 },
+      { type: "snapshot", tick: 1, data: "AQID", frozenTicks: "3000" },
+      // Au-delà de 60 jours, le sim tronquerait : la trame ment, on la refuse.
+      { type: "snapshot", tick: 1, data: "AQID", frozenTicks: MAX_FROZEN_TICKS + 1 },
     ];
     for (const value of bad) {
       expect(validateServerMessage(value), JSON.stringify(value)).toBeNull();
@@ -428,5 +438,43 @@ describe("caravanes", () => {
       arrivesAt: 12.75,
       progress: 0.125,
     });
+  });
+});
+
+describe("colonie gelée", () => {
+  it("compte 600 ticks par heure de jeu et 14 400 par jour", () => {
+    // Contrat avec `sim::TICKS_PER_DAY` et l'horloge du monde (§11.6, §12.1).
+    expect(TICKS_PER_DAY).toBe(14_400);
+    expect(TICKS_PER_HOUR).toBe(600);
+    expect(MAX_FROZEN_TICKS).toBe(TICKS_PER_DAY * 60);
+  });
+
+  it("convertit des heures de jeu en ticks d'avance rapide", () => {
+    expect(frozenTicksForHours(5)).toBe(3000);
+    expect(frozenTicksForHours(0.5)).toBe(300);
+    // Arrondi au tick, pas de troncature.
+    expect(frozenTicksForHours(1 / 1200)).toBe(1);
+    // Rien à rattraper : horloge à l'arrêt, ou qui a reculé.
+    expect(frozenTicksForHours(0)).toBe(0);
+    expect(frozenTicksForHours(-3)).toBe(0);
+    expect(frozenTicksForHours(Number.NaN)).toBe(0);
+    // Deux mois de gel au plus, comme `sim::MAX_FAST_FORWARD`.
+    expect(frozenTicksForHours(24 * 60)).toBe(MAX_FROZEN_TICKS);
+    expect(frozenTicksForHours(24 * 365)).toBe(MAX_FROZEN_TICKS);
+  });
+
+  it("laisse passer un snapshot sans frozenTicks et garde le champ sinon", () => {
+    const plain = validateServerMessage({ type: "snapshot", tick: 9, data: "AQID" });
+    expect(plain).toEqual({ type: "snapshot", tick: 9, data: new Uint8Array([1, 2, 3]) });
+    expect(plain !== null && "frozenTicks" in plain).toBe(false);
+
+    const wire = encodeMessage({
+      type: "snapshot",
+      tick: 1800,
+      data: new Uint8Array([1, 2, 3]),
+      frozenTicks: 3000,
+    });
+    const back = decodeServerMessage(wire);
+    expect(back?.type === "snapshot" ? back.frozenTicks : null).toBe(3000);
   });
 });

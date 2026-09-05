@@ -275,8 +275,15 @@ nouveaux ids, marchandises au sol) ; le serveur monde tient une horloge de jeu
 (`WORLD_HOUR_MS`), calcule l'itinéraire, fait voyager la caravane, la livre à l'hôte de la
 salle d'arrivée ou la met en attente si la salle est fermée, et fonde une colonie au nom du
 propriétaire sur une case vide ; annulation avant la moitié du trajet ; tout est persisté.
-Reste : interface des caravanes, avance rapide des cartes gelées, comptes, un seul contexte
-WebGL par onglet.
+Avance rapide livrée le 2026-09-05 (Opus) : `FastForward { ticks }` en O(entités) (plants
+mûrissent, vivres pourrissent, plaies se referment et guérissent, pillards quittent la
+carte, besoins remis à un niveau raisonnable, raids et voyageurs décalés, météo retirée) ;
+le serveur date chaque snapshot de conservation en heures monde et envoie `frozenTicks` à la
+réouverture, l'hôte émet l'avance rapide comme première commande. Équilibrage du combat
+(Sonnet) : les pillards décrochent à 60 % de PV (mesuré sur 200 graines, plus aucun raid à
+deux morts quand les colons sont dispersés) et un test statistique sur douze graines garde
+le premier raid dangereux mais survivable. Reste : interface des caravanes et de l'avance
+rapide côté client (en cours), comptes, un seul contexte WebGL par onglet.
 - Globe hexagonal, rendu du globe, biomes, choix de case de départ.
 - Serveur autoritaire persistant : cases, propriétaires, horloge globale.
 - Cartes gelées + avance rapide abstraite.
@@ -331,6 +338,11 @@ commerce, mods de contenu, événements monde.
   (il ne fait que lire l'état du sim). Le **sim** ne l'est pas, d'où le soin mis
   dessus dès la phase 0.
 - 2026-09-04 : en multi, horloge globale continue, pas de pause.
+- 2026-09-05 : avance rapide abstraite plutôt que rejouée : O(entités), déterministe, sans
+  rien semer ni récolter (personne n'était là) ; la commande est ajoutée en fin d'enum pour
+  ne pas décaler les indices postcard des manifestes et snapshots existants. Équilibrage :
+  on a mesuré avant de régler ; le scénario groupé passait déjà, le scénario dispersé a
+  révélé l'acharnement des pillards sur une cible isolée.
 - 2026-09-05 : caravanes. Le manifeste voyage dans la commande `ArriveCaravan` : tous les
   clients d'une salle l'appliquent au même tick, le serveur ne le décode jamais. Les ids des
   colons ne survivent pas au voyage (réattribués à l'arrivée). Le monde ne vieillit pas

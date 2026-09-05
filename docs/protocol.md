@@ -31,6 +31,9 @@ Constantes partagées (`packages/protocol/src/messages.ts`) :
 | `BUNDLE_TICKS` | 3 | Ticks par bundle, donc 20 bundles/s |
 | `BUNDLE_INTERVAL_MS` | 50 | Période d'émission d'un bundle |
 | `HASH_EVERY_TICKS` | 300 | Période d'envoi du hash d'état (5 s) |
+| `TICKS_PER_DAY` | 14400 | Ticks d'une journée de jeu sur une carte (contrat avec le sim) |
+| `TICKS_PER_HOUR` | 600 | Ticks d'une **heure de jeu du monde** : le taux de change du temps gelé (§11.6) |
+| `MAX_FROZEN_TICKS` | 864000 | Avance rapide maximale d'une colonie gelée : 60 jours |
 | `SNAPSHOT_EVERY_TICKS` | 1800 | Période du snapshot de conservation d'une case (30 s) |
 | `MAX_HISTORY_BUNDLES` | 2000 | Historique conservé par salle (100 s) |
 | `HEARTBEAT_MS` | 5000 | Période du `ping` serveur |
@@ -175,9 +178,13 @@ doit alors omettre `forPlayer`.
 ```
 
 **`snapshot`** — relayé au joueur qui rejoint, avant le rejeu des bundles.
+`frozenTicks` est facultatif et n'apparaît qu'à la **réouverture d'une colonie
+gelée** (§11.6) : c'est le temps passé sans personne sur la case, en ticks, que
+le premier arrivant rattrape avec une commande d'avance rapide.
 
 ```json
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=" }
+{ "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000 }
 ```
 
 **`desync`** — premier écart de hash constaté. Les clés de `hashes` sont des
@@ -677,14 +684,58 @@ le seul état existant est celui des clients, donc il le leur demande.
   mais le snapshot reste. Au retour du propriétaire ou d'un visiteur, la salle
   est recréée directement en `running`, à partir du snapshot : le premier
   arrivant reçoit son `welcome` (`state: "running"`, `tick`, `seed` de la case,
-  `width`/`height` du snapshot) puis `snapshot { tick, data }`, et les bundles
-  reprennent à ce tick. **Aucun hôte n'est sollicité et il n'y a rien à
-  rejouer** : l'historique repart de zéro à ce tick.
+  `width`/`height` du snapshot) puis `snapshot { tick, data, frozenTicks? }`,
+  et les bundles reprennent à ce tick. **Aucun hôte n'est sollicité et il n'y a
+  rien à rejouer** : l'historique repart de zéro à ce tick.
 - Sans snapshot connu (colonie toute neuve), la salle s'ouvre en `lobby` et
   l'hôte fait `start` normalement — avec la graine de la case.
-- **Le temps ne s'est pas écoulé** pendant l'absence : la colonie reprend
-  exactement où elle s'était arrêtée. L'avance rapide abstraite des cartes
-  gelées (croissance, décomposition, faim) est une tranche future.
+
+**Le temps gelé et son rattrapage.** Le monde, lui, a continué de tourner
+pendant l'absence (§12.1). À la réouverture, la colonie rattrape ce temps de
+façon **abstraite** : pas en rejouant les ticks, mais en appliquant des
+formules à l'état (croissance des plants, repousse, péremption, cicatrisation,
+échéances du storyteller décalées), comme RimWorld le fait de ses cartes
+déchargées. Le sim s'en charge dans `Command::FastForward { ticks }`
+(`crates/sim/src/fastforward.rs`) ; le serveur, lui, ne fait que compter le
+temps.
+
+```
+   (la salle se vide)                                   (quelqu'un revient)
+        │                                                       │
+   savedAtHours = worldHours()          frozenTicks = round(
+        │                                 (worldHours() − savedAtHours) × 600)
+        ▼                                                       ▼
+   snapshot conservé  ────────── heures de jeu du monde ────▶ snapshot { tick, data, frozenTicks }
+                                                                │
+                                          restore(data) puis, en PREMIÈRE
+                                          commande : FastForward { frozenTicks }
+```
+
+- Chaque snapshot de conservation est daté **en heures de jeu du monde**
+  (`savedAtHours`, l'horloge de §12.1), en plus de sa date réelle `savedAt`.
+- `frozenTicks` = `round((worldHours() − savedAtHours) × TICKS_PER_HOUR)`, avec
+  `TICKS_PER_HOUR = 600` (`TICKS_PER_DAY = 14 400` ticks pour un jour de carte,
+  divisés par 24 heures de monde). Le champ est **borné à 60 jours**
+  (`MAX_FROZEN_TICKS`, la même borne que `sim::MAX_FAST_FORWARD`) et **omis
+  quand il vaut 0**.
+- Un snapshot **sans `savedAtHours`** — relu d'un fichier écrit avant cette
+  tranche — ne donne aucune avance rapide : mieux vaut une colonie qui reprend
+  où elle en était qu'un rattrapage inventé.
+- **Le serveur ne fait rien de plus.** Il ne simule pas, donc il ne peut pas
+  appliquer l'avance rapide : c'est le premier arrivant — qui est l'hôte de la
+  salle rouverte — qui, après `WasmSim.restore(data)`, émet
+  `encode_fast_forward(frozenTicks)` **une seule fois**, en première commande.
+  Elle revient dans un bundle et tous les clients l'appliquent au même tick,
+  comme n'importe quel ordre : le rattrapage est dans le lockstep, pas à côté.
+- L'horloge du monde s'arrête quand le serveur s'éteint (§12.1) : un
+  redémarrage ne vieillit donc pas les colonies gelées, il reprend le compte.
+- **Le tick du lockstep n'est pas celui du sim.** L'avance rapide fait sauter le
+  compteur interne du sim de `frozenTicks` d'un coup, alors que la salle, elle,
+  continue de numéroter ses ticks un par un. Tout ce qui part sur le fil —
+  `snapshot.tick`, `hash.tick` — reste donc le **tick de la salle** (le
+  `nextTick` du `LockstepClient`), jamais `WasmSim.tick()`. L'écart entre les
+  deux est identique chez tous les clients, puisqu'ils appliquent la même
+  commande au même tick : le hash reste comparable.
 
 ### 11.7 Enchaînement complet, côté client
 
@@ -710,6 +761,12 @@ Ce que le client doit gérer en plus du mode salle :
 
 - `request_snapshot { forPlayer: 0 }` → répondre `snapshot { tick, data }`
   **sans** `forPlayer` (un `forPlayer: 0` dans la réponse est refusé) ;
+- `snapshot { frozenTicks }` → après `restore`, émettre
+  `WasmSim.encode_fast_forward(frozenTicks)` **une seule fois**, comme première
+  commande, et seulement si le client est l'hôte (`welcome.isHost`) et que
+  `frozenTicks > 0` (§11.6). Deux clients qui l'émettraient chacun feraient
+  vieillir la colonie deux fois — c'est une commande, pas une opération
+  locale ;
 - `world_settlements` → remplacer la liste et recolorer les cases possédées ;
 - `world_error` → un message à l'écran, pas une déconnexion.
 
@@ -739,17 +796,19 @@ pour l'horloge et les caravanes) :
       { "tile": 1732, "owner": "alice", "room": "tile-1732", "seed": 2007225770, "createdAt": 1757000000000 }
     ],
     "snapshots": [
-      { "room": "tile-1732", "tick": 1800, "data": "AQIDBA==", "width": 64, "height": 64, "savedAt": 1757000000000 }
+      { "room": "tile-1732", "tick": 1800, "data": "AQIDBA==", "width": 64, "height": 64, "savedAt": 1757000000000, "savedAtHours": 412.5 }
     ]
   }
 }
 ```
 
-`clock` et `caravans` sont **facultatifs à la lecture** : un fichier écrit
-avant les caravanes se relit tel quel, le monde repart d'une horloge neuve et
-sans convoi en vol. C'est pour cela que la version du fichier reste à 1 —
-ajouter des champs optionnels ne casse rien, et une migration ne se justifie
-que le jour où un champ existant change de sens.
+`clock`, `caravans` et le `savedAtHours` d'un snapshot sont **facultatifs à la
+lecture** : un fichier écrit avant les caravanes se relit tel quel, le monde
+repart d'une horloge neuve et sans convoi en vol ; un snapshot sans
+`savedAtHours` rouvre sa colonie sans avance rapide (§11.6). C'est pour cela
+que la version du fichier reste à 1 — ajouter des champs optionnels ne casse
+rien, et une migration ne se justifie que le jour où un champ existant change
+de sens.
 
 **Configuration**, lue une fois par `index.ts` (`startServer` lui-même ne lit
 jamais l'environnement, il reçoit des options explicites) :
@@ -787,8 +846,6 @@ précisent pas.
 
 ### 11.9 Ce qui n'est pas encore fait
 
-- **Avance rapide abstraite** des cartes gelées : le temps du monde passe (§12.1),
-  mais celui d'une colonie vide non — elle reprend au tick où elle s'était arrêtée.
 - **Comptes** : l'identité est le nom, sans mot de passe ni jeton.
 - **Bateaux** : l'océan reste infranchissable, une caravane ne quitte pas son
   continent (`docs/world.md` §4).

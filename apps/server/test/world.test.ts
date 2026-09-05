@@ -8,6 +8,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { MAX_FROZEN_TICKS } from "@rimlike/protocol";
 import { movementCost } from "@rimlike/world";
 
 import {
@@ -161,6 +162,8 @@ describe("snapshots conservés", () => {
       width: 96,
       height: 96,
       savedAt: 1_757_000_000_000,
+      // Horloge de jeu neuve : le monde vient de naître.
+      savedAtHours: 0,
     });
 
     expect(state.saveSnapshot(room, { tick: 3600, data: new Uint8Array([8]), width: 96, height: 96 })).toBe(true);
@@ -184,6 +187,55 @@ describe("snapshots conservés", () => {
     state.abandon(landTile, "alice");
     expect(state.saveSnapshot(room, { tick: 120, data: new Uint8Array([2]), width: 64, height: 64 })).toBe(false);
     expect(state.snapshotCount).toBe(0);
+  });
+});
+
+describe("temps gelé d'une colonie", () => {
+  /** Un monde où une heure de jeu dure une seconde réelle. */
+  function clocked(startAt: number): { state: WorldState; advance: (ms: number) => void } {
+    let real = startAt;
+    const state = new WorldState({ world: globe, now: () => real, hourMs: 1000 });
+    return { state, advance: (ms) => (real += ms) };
+  }
+
+  it("compte les ticks gelés depuis l'heure de jeu du snapshot", () => {
+    const { state: world, advance } = clocked(10_000);
+    world.settle(landTile, "alice");
+    const room = `tile-${landTile}`;
+    advance(2000); // deux heures de jeu avant le snapshot
+    world.saveSnapshot(room, { tick: 1800, data: new Uint8Array([1]), width: 64, height: 64 });
+    expect(world.snapshotFor(room)?.savedAtHours).toBe(2);
+    // Snapshot pris à l'instant : rien à rattraper.
+    expect(world.frozenTicksFor(room)).toBe(0);
+
+    // Cinq heures de jeu sans personne sur la case : 5 × 600 ticks.
+    advance(5000);
+    expect(world.frozenTicksFor(room)).toBe(3000);
+
+    // Une colonie oubliée un an ne rattrape que soixante jours.
+    advance(10_000_000);
+    expect(world.frozenTicksFor(room)).toBe(MAX_FROZEN_TICKS);
+  });
+
+  it("ne rattrape rien sans snapshot, ni pour un snapshot d'avant cette tranche", () => {
+    const { state: world, advance } = clocked(10_000);
+    world.settle(landTile, "alice");
+    const room = `tile-${landTile}`;
+    expect(world.frozenTicksFor(room)).toBe(0);
+    expect(world.frozenTicksFor("tile-9999")).toBe(0);
+
+    world.saveSnapshot(room, { tick: 60, data: new Uint8Array([1]), width: 64, height: 64 });
+    const json = JSON.parse(JSON.stringify(world.toJSON())) as ReturnType<WorldState["toJSON"]>;
+    // Un fichier écrit avant l'avance rapide : pas d'heure d'origine.
+    const older = {
+      ...json,
+      snapshots: json.snapshots.map(({ savedAtHours: _ignored, ...rest }) => rest),
+    };
+    advance(50_000);
+
+    const back = WorldState.fromJSON(older, { world: globe, now: () => now, hourMs: 1000 });
+    expect(back.snapshotFor(room)?.savedAtHours).toBeUndefined();
+    expect(back.frozenTicksFor(room)).toBe(0);
   });
 });
 

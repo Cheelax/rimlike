@@ -55,14 +55,21 @@ export interface TileRoom {
 /**
  * Dernier état connu d'une colonie, pour rouvrir la salle sans repasser par un
  * lobby. `tick` est le prochain tick à exécuter : les bundles reprennent là,
- * sans rejeu. Le temps ne s'est **pas** écoulé pendant l'absence (l'avance
- * rapide abstraite des cartes gelées est une tranche future).
+ * sans rejeu.
+ *
+ * `frozenTicks` est le temps que la colonie a passé **sans personne**, converti
+ * en ticks de carte par le serveur monde. Il part tel quel dans le `snapshot`
+ * du premier arrivant, qui émet alors une commande d'avance rapide en lockstep
+ * (`docs/protocol.md` §11.6) : la salle, elle, ne simule rien et son horloge
+ * repart bien du `tick` du snapshot.
  */
 export interface RoomRestore {
   readonly tick: number;
   readonly data: Uint8Array;
   readonly width: number;
   readonly height: number;
+  /** Temps gelé en ticks, 0 ou absent s'il n'y a rien à rattraper. */
+  readonly frozenTicks?: number;
 }
 
 /** Snapshot de conservation remonté par l'hôte d'une salle « case ». */
@@ -259,11 +266,20 @@ export class Room {
       if (opening !== null && this.players.length === 1) {
         // Réouverture d'une colonie : le serveur a l'état, l'hôte n'a rien à
         // fournir. Aucun bundle à rejouer, l'historique repart de ce tick.
-        this.sendTo(player, { type: "snapshot", tick: opening.tick, data: opening.data });
+        // `frozenTicks` n'est transporté que s'il y a du temps à rattraper :
+        // c'est à ce joueur, qui est l'hôte, d'émettre l'avance rapide.
+        const frozenTicks = opening.frozenTicks ?? 0;
+        this.sendTo(player, {
+          type: "snapshot",
+          tick: opening.tick,
+          data: opening.data,
+          ...(frozenTicks > 0 ? { frozenTicks } : {}),
+        });
         player.synced = true;
         this.restore = null;
         this.log(
-          `[${this.name}] rouverte au tick ${opening.tick} depuis un snapshot conservé (${opening.data.length} octets)`,
+          `[${this.name}] rouverte au tick ${opening.tick} depuis un snapshot conservé (${opening.data.length} octets` +
+            `${frozenTicks > 0 ? `, ${frozenTicks} ticks gelés à rattraper` : ""})`,
         );
       } else {
         this.requestSnapshotFor(player.id);

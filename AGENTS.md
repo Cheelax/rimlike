@@ -96,7 +96,11 @@ Ils sont imposés par les lints là où c'est possible, et par le test de déter
 - **Les ordres du joueur sont des `Command`** appliquées au début d'un tick. Aucune
   mutation directe de l'état depuis l'extérieur en dehors des tests.
 - Un test nouveau par comportement nouveau. Les cartes ASCII de `sim::testmap` servent à
-  écrire des scénarios reproductibles.
+  écrire des scénarios reproductibles. **On mesure avant de régler** : un équilibrage se
+  fait avec un test statistique sur plusieurs graines (voir
+  `first_raid_is_dangerous_but_survivable`), jamais à l'intuition.
+- **Ajouter une variante de `Command` en fin d'enum** : postcard encode l'index, les
+  manifestes et snapshots existants en dépendent.
 
 ## Contrats entre Rust et TypeScript
 
@@ -111,6 +115,7 @@ Les valeurs numériques des enums sont un contrat, à modifier des deux côtés 
 | `work::WorkType` (6 types), `weather::Weather` (0 clair, 1 pluie, 2 orage) | `terrain.ts` (`WORK_LABELS`, `WEATHER_LABELS`), `Renderer.ts` (`setWeather`) |
 | `work::Skill` (niveau 0-20, xp), `EventKind::LevelUp = 7`, `pawn_name(id)` | tampon `skills`, stride 13 : id puis niveau/xp par type dans l'ordre de `WorkType::ALL` |
 | `health::BodyPart` (0 tête … 5 jambe droite), `EventKind` 8 à terre / 9 secouru / 10 soigné, jobs 15 à terre / 16 secourt / 17 soigne, drapeau pawn `DOWNED = 32` | tampon `health`, stride 4 : id, sang 0-1000, conscience %, nombre de blessures ; `pawn_injuries(id)` : partie, sévérité, saignement, pansée |
+| `Command::FastForward { ticks }` (borne 60 jours), `EventKind::FastForwarded = 13` (`arg` = jours écoulés) | `encode_fast_forward(ticks)` ; le serveur envoie `snapshot.frozenTicks` à la réouverture d'une colonie gelée, l'hôte l'émet une seule fois en première commande |
 | `caravan::CaravanManifest` (octets postcard opaques), `Command::FormCaravan` / `ClearDepartures` / `ArriveCaravan`, `EventKind` 11 départ / 12 arrivée | `departures_count`, `departure(i)`, `describe_manifest(bytes)` → `[colons, genres, kind, count, …]` ; le manifeste part au serveur monde (`caravan_depart`) et revient dans la commande `ArriveCaravan` de l'hôte d'arrivée (voir `docs/protocol.md` §12) |
 | `pawn::Job::code()` | `terrain.ts` (`JOB_LABELS`) |
 | `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, `PRIORITY_STRIDE` = 7, `SKILL_STRIDE` = 13, `HEALTH_STRIDE` = 4, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |

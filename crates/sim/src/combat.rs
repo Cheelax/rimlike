@@ -22,8 +22,18 @@ pub const COLONIST_DAMAGE: (i32, i32) = (80, 121);
 pub const RAIDER_DAMAGE: (i32, i32) = (70, 111);
 /// Un colon attaque de lui-même un ennemi jusqu'à cette distance.
 pub const DEFEND_RADIUS: u32 = 8;
-/// En dessous de ces PV, un pillard décroche et quitte la carte.
-pub const FLEE_HP: u32 = 300;
+/// En dessous de ces PV, un pillard décroche et quitte la carte. Assez haut
+/// pour qu'un pillard lâche prise après une bonne raclée (environ 40 % de
+/// sévérité cumulée) plutôt que de s'acharner jusqu'à l'agonie : un colon
+/// pris à part (occupé loin des autres au moment du raid, cas courant en
+/// vraie partie) a le temps de se faire mal sans que ça tourne
+/// systématiquement au drame. `first_raid_is_dangerous_but_survivable`
+/// (colons groupés à l'arrivée du raid) passe déjà à 300 : c'est un scénario
+/// mesuré à part (trois colons envoyés aux coins de la carte avant le raid,
+/// hors suite de tests) qui a servi de vraie jauge — à 300, ce scénario
+/// dispersé perdait souvent deux colons sur 200 graines ; à 600, plus aucun
+/// double mort, pour une baisse de moitié seulement du total des morts.
+pub const FLEE_HP: u32 = 600;
 /// Un pawn à jeun perd 1 PV tous ces ticks.
 pub const STARVE_DAMAGE_INTERVAL: u64 = 28;
 /// Un pawn nourri regagne 1 PV tous ces ticks.

@@ -62,6 +62,13 @@ export interface ServerOptions {
    */
   readonly worldHourMs?: number;
   /**
+   * Horloge murale du monde (dates de fondation, d'enregistrement, et surtout
+   * l'horloge de jeu). Défaut : `Date.now`. Injectable pour piloter le temps
+   * depuis un test — c'est ce qui permet de vérifier au tick près le
+   * `frozenTicks` d'une colonie rouverte.
+   */
+  readonly worldNow?: () => number;
+  /**
    * Période du tick du monde : avancement des caravanes et diffusion de
    * `world_caravans`. Défaut : `CARAVAN_TICK_MS` (5 s).
    */
@@ -220,7 +227,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   // serveur éteint.
   const worldHourMs = options.worldHourMs;
   const caravanTickMs = options.caravanTickMs ?? CARAVAN_TICK_MS;
-  const clockOptions = worldHourMs === undefined ? {} : { hourMs: worldHourMs };
+  const clockOptions = {
+    ...(worldHourMs === undefined ? {} : { hourMs: worldHourMs }),
+    ...(options.worldNow === undefined ? {} : { now: options.worldNow }),
+  };
 
   let worldState: WorldState;
   if (store !== null) {
@@ -680,6 +690,9 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
               data: snapshot.data,
               width: snapshot.width,
               height: snapshot.height,
+              // Le monde a vieilli pendant que la colonie dormait : le premier
+              // arrivant émettra l'avance rapide correspondante (§11.6).
+              frozenTicks: worldState.frozenTicksFor(name),
             },
           }
         : {}),

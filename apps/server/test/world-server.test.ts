@@ -11,7 +11,13 @@ import { gunzipSync } from "node:zlib";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { NO_PLAYER, type Caravan, type CaravanSummary } from "@rimlike/protocol";
+import {
+  NO_PLAYER,
+  TICKS_PER_HOUR,
+  WORLD_HOUR_MS,
+  type Caravan,
+  type CaravanSummary,
+} from "@rimlike/protocol";
 import { deserializeWorld, findRoute, movementCost, tileCount, type WorldWire } from "@rimlike/world";
 
 import { startServer, type RunningServer } from "../src/server.js";
@@ -531,6 +537,9 @@ describe("conservation du snapshot d'une colonie", () => {
       log: () => {},
       worldSubdivisions: SUBDIVISIONS,
       roomOptions: { tickRate: 60_000, bundleTicks: 600 },
+      // Horloge du monde figée : la colonie rouvre sans temps gelé, donc le
+      // `snapshot` de réouverture n'emporte aucun `frozenTicks`.
+      worldNow: () => 1_757_000_000_000,
     });
     try {
       const alice = await joinWorld("alice", fast);
@@ -590,6 +599,55 @@ describe("conservation du snapshot d'une colonie", () => {
       expect(bundles[1]!.from).toBe(bundles[0]!.to + 1);
       // Personne n'a été sollicité pour un snapshot : le serveur avait l'état.
       expect(bob.ofType("request_snapshot")).toEqual([]);
+    } finally {
+      await fast.close();
+    }
+  });
+
+  it("annonce le temps gelé au premier arrivant après une absence", async () => {
+    // Horloge du monde pilotée par le test : cinq heures de jeu s'écoulent
+    // pendant que la colonie est fermée (une heure de jeu = WORLD_HOUR_MS).
+    let worldNow = 1_757_000_000_000;
+    const fast = await startServer({
+      port: 0,
+      log: () => {},
+      worldSubdivisions: SUBDIVISIONS,
+      roomOptions: { tickRate: 60_000, bundleTicks: 600 },
+      worldNow: () => worldNow,
+    });
+    try {
+      const alice = await joinWorld("alice", fast);
+      alice.send({ type: "settle", tile: landTile });
+      const settled = await alice.next("settled");
+      alice.send({ type: "join", room: settled.room, name: "alice" });
+      await alice.nth("welcome");
+      alice.send({ type: "start", seed: 1, width: 64, height: 64 });
+      await alice.nth("start");
+      await alice.nth("request_snapshot");
+
+      const tick = alice.ofType("bundle").at(-1)!.to + 1;
+      alice.send({ type: "snapshot", tick, data: bytes(1, 2, 3, 4) });
+      await until("snapshot stocké", () => fast.world.snapshotFor(settled.room) !== undefined);
+      expect(fast.world.snapshotFor(settled.room)?.savedAtHours).toBe(0);
+
+      alice.close();
+      await until("salle détruite", () => fast.roomCount === 0);
+      worldNow += 5 * WORLD_HOUR_MS;
+      expect(fast.world.frozenTicksFor(settled.room)).toBe(5 * TICKS_PER_HOUR);
+
+      const bob = await joinWorld("bob", fast);
+      bob.send({ type: "visit", tile: landTile });
+      const destination = await bob.next("settled");
+      bob.send({ type: "join", room: destination.room, name: "bob" });
+      const welcome = await bob.nth("welcome");
+      expect(welcome.isHost).toBe(true);
+
+      // L'hôte reçoit l'état **et** le temps à rattraper : c'est lui qui
+      // émettra `FastForward` en première commande (docs/protocol.md §11.6).
+      const snapshot = await bob.nth("snapshot");
+      expect(snapshot.tick).toBe(tick);
+      expect(snapshot.data).toEqual(bytes(1, 2, 3, 4));
+      expect(snapshot.frozenTicks).toBe(3000);
     } finally {
       await fast.close();
     }

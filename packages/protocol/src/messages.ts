@@ -24,6 +24,40 @@ export const BUNDLE_INTERVAL_MS = (1000 / TICK_RATE) * BUNDLE_TICKS;
 export const HASH_EVERY_TICKS = 300;
 
 /**
+ * Ticks d'une **journée de jeu** sur une carte (`sim::TICKS_PER_DAY`) : quatre
+ * minutes réelles à 60 ticks/s. Contrat avec le sim, à changer des deux côtés.
+ */
+export const TICKS_PER_DAY = 14_400;
+
+/**
+ * Ticks d'une **heure de jeu du monde** : `TICKS_PER_DAY / 24`. C'est le taux
+ * de change entre l'horloge du globe (en heures de jeu, `WORLD_HOUR_MS`) et
+ * les ticks d'une carte — il ne sert qu'à ça : convertir le temps qu'une
+ * colonie a passé gelée en ticks d'avance rapide (`frozenTicks`, §11.6).
+ */
+export const TICKS_PER_HOUR = TICKS_PER_DAY / 24;
+
+/**
+ * Avance rapide maximale d'une colonie gelée, en ticks : 60 jours de jeu.
+ * Même borne que `sim::MAX_FAST_FORWARD` — au-delà, le sim tronquerait de
+ * toute façon, autant ne pas transporter un nombre qui ment.
+ */
+export const MAX_FROZEN_TICKS = TICKS_PER_DAY * 60;
+
+/**
+ * Convertit un temps gelé, en **heures de jeu du monde**, en ticks d'avance
+ * rapide : arrondi au tick, jamais négatif (une horloge qui recule ne fait pas
+ * remonter le temps d'une colonie), et borné à `MAX_FROZEN_TICKS`. Une entrée
+ * non finie donne 0. C'est le calcul de `snapshot.frozenTicks` (§11.6).
+ */
+export function frozenTicksForHours(elapsedHours: number): number {
+  if (!Number.isFinite(elapsedHours) || elapsedHours <= 0) {
+    return 0;
+  }
+  return Math.min(MAX_FROZEN_TICKS, Math.round(elapsedHours * TICKS_PER_HOUR));
+}
+
+/**
  * Dans une salle « case » du monde, le serveur demande à l'hôte un snapshot de
  * conservation tous les N ticks (1800 ticks = 30 s à 60 ticks/s). Ce snapshot
  * ne sert personne en particulier : il est stocké pour rouvrir la colonie plus
@@ -398,11 +432,24 @@ export interface RequestSnapshotMessage {
   readonly forPlayer: PlayerId;
 }
 
-/** Snapshot relayé au joueur qui rejoint, avant le rejeu des bundles. */
+/**
+ * Snapshot relayé au joueur qui rejoint, avant le rejeu des bundles.
+ *
+ * `frozenTicks` n'apparaît qu'à la **réouverture d'une colonie gelée**
+ * (`docs/protocol.md` §11.6) et vaut le temps passé sans personne sur la case,
+ * converti en ticks (`frozenTicksForHours`). Le premier arrivant — qui est
+ * l'hôte — émet alors `FastForward { ticks: frozenTicks }` en **première
+ * commande** après avoir restauré l'état : le rattrapage passe par le lockstep
+ * comme n'importe quel ordre, donc tous les clients l'appliquent au même tick.
+ * Absent (ou 0) : rien à rattraper, la colonie reprend où elle s'était
+ * arrêtée. Le champ est facultatif : un serveur qui ne le connaît pas et un
+ * client qui l'ignore restent compatibles.
+ */
 export interface ServerSnapshotMessage {
   readonly type: "snapshot";
   readonly tick: number;
   readonly data: Uint8Array;
+  readonly frozenTicks?: number;
 }
 
 /**

@@ -17,6 +17,7 @@ pub mod build;
 pub mod caravan;
 pub mod combat;
 pub mod farm;
+pub mod fastforward;
 pub mod fixed;
 pub mod hash;
 pub mod health;
@@ -37,6 +38,7 @@ use serde::{Deserialize, Serialize};
 pub use build::{Blueprint, BuildKind, Material};
 pub use caravan::{CaravanManifest, MANIFEST_VERSION};
 pub use farm::Crop;
+pub use fastforward::MAX_FAST_FORWARD;
 pub use health::{BodyPart, Injury};
 pub use items::{ItemKind, ItemStack};
 pub use jobs::{Regrow, Reservation};
@@ -82,6 +84,9 @@ pub enum EventKind {
     /// Une caravane vient d'arriver. `arg` : le nombre de colons débarqués
     /// (0 pour un simple envoi de marchandises).
     CaravanArrived = 12,
+    /// La carte gelée a rattrapé le temps passé sans joueur
+    /// (`Command::FastForward`). `arg` : le nombre de jours entiers écoulés.
+    FastForwarded = 13,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -156,6 +161,12 @@ pub enum Command {
     /// cette carte. Le manifeste voyage **dans** la commande : tous les
     /// clients de la salle l'appliquent au même tick. Illisible : ignoré.
     ArriveCaravan { manifest: Vec<u8> },
+    /// Rattrape d'un coup le temps passé carte gelée, par des formules et non
+    /// par des ticks (voir `fastforward`). Émise par l'hôte à la réouverture
+    /// d'une colonie, en première commande, avec le `frozenTicks` que le
+    /// serveur monde a calculé (`docs/protocol.md` §11.6). Bornée à
+    /// `MAX_FAST_FORWARD` (60 jours) ; 0 ne fait rien.
+    FastForward { ticks: u32 },
 }
 
 #[derive(Debug)]
@@ -438,6 +449,7 @@ impl Sim {
             } => self.form_caravan(pawns, items),
             Command::ClearDepartures { count } => self.clear_departures(count),
             Command::ArriveCaravan { ref manifest } => self.arrive_caravan(manifest),
+            Command::FastForward { ticks } => self.fast_forward(ticks),
         }
     }
 
