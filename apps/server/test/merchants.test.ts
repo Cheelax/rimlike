@@ -176,9 +176,11 @@ describe("naissance et destination", () => {
     const merchants = merchantsOf(world);
     expect(merchants).toHaveLength(2);
     const settled = new Set(continents);
+    const names = new Set<string>();
     for (const merchant of merchants) {
       expect(merchant.id).toMatch(/^m[0-9]+$/);
       expect(MERCHANT_COMPANY_NAMES).toContain(merchant.name);
+      names.add(merchant.name);
       expect(merchant.status).toBe("travelling");
       // Une vraie route, du point de naissance jusqu'à une colonie.
       expect(merchant.route.length).toBeGreaterThanOrEqual(2);
@@ -188,6 +190,8 @@ describe("naissance et destination", () => {
       expect(merchant.arrivesAt).toBeGreaterThan(merchant.departedAt);
       expect(merchant.visits).toBe(0);
     }
+    // Deux compagnies d'une même graine portent des noms différents.
+    expect(names.size).toBe(merchants.length);
     // Deux marchands, deux identifiants : jamais réutilisés.
     expect(new Set(merchants.map((m) => m.id)).size).toBe(2);
 

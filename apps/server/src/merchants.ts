@@ -319,7 +319,14 @@ export class MerchantRegistry {
     }
     const index = this.nextId++;
     const rng = createRng(deriveSeed(this.world.seed, MERCHANT_SALT + index));
-    const name = rng.pick(MERCHANT_COMPANY_NAMES);
+    // Le nom tourne dans la liste à partir d'un décalage propre au globe : deux
+    // compagnies nées d'une même graine ne partagent jamais leur nom tant qu'il y
+    // a moins de marchands que de noms (un tirage indépendant par marchand en
+    // donnait deux « Convoi des Trois Rivières » sur deux).
+    const nameOffset = createRng(deriveSeed(this.world.seed, MERCHANT_SALT)).int(
+      MERCHANT_COMPANY_NAMES.length,
+    );
+    const name = MERCHANT_COMPANY_NAMES[(nameOffset + index) % MERCHANT_COMPANY_NAMES.length];
     const settled = new Set(this.settlements());
     const free = this.landTiles.filter((id) => !settled.has(id));
     // Un globe entièrement colonisé n'existera jamais, mais on ne tire pas
