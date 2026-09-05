@@ -21,7 +21,7 @@ fn parse_scenario(opts: &Options) -> Result<Scenario, CliError> {
     })
 }
 
-fn check_size(size: u32) -> Result<(), CliError> {
+pub(crate) fn check_size(size: u32) -> Result<(), CliError> {
     if size == 0 {
         return Err(CliError::new("--size doit être un entier positif"));
     }
@@ -51,7 +51,7 @@ fn counts(sim: &Sim) -> (usize, usize, usize, usize) {
     (colons, pillards, sim.items().len(), sim.blueprints().len())
 }
 
-fn ticks_per_sec(ticks: u64, elapsed: std::time::Duration) -> f64 {
+pub(crate) fn ticks_per_sec(ticks: u64, elapsed: std::time::Duration) -> f64 {
     let secs = elapsed.as_secs_f64();
     if secs > 0.0 { ticks as f64 / secs } else { 0.0 }
 }

@@ -133,7 +133,7 @@ fn top_level_help_exits_zero() {
 
 #[test]
 fn subcommand_help_exits_zero() {
-    for sub in ["run", "verify", "snapshot", "bench", "fuzz"] {
+    for sub in ["run", "verify", "snapshot", "bench", "fuzz", "campaign"] {
         let output = bin()
             .args([sub, "--help"])
             .output()
@@ -303,4 +303,67 @@ fn bench_prints_three_scenarios() {
             "scénario « {label} » absent du tableau : {stdout}"
         );
     }
+}
+
+#[test]
+fn campaign_prints_a_line_per_seed_and_a_summary() {
+    let output = bin()
+        .args([
+            "campaign",
+            "--seeds",
+            "2",
+            "--days",
+            "1",
+            "--size",
+            "32",
+            "--difficulty",
+            "1",
+        ])
+        .output()
+        .expect("le binaire doit s'exécuter");
+    assert!(output.status.success(), "code = {:?}", output.status.code());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("graine"), "en-tête absent : {stdout}");
+    assert!(stdout.contains("résumé :"), "résumé absent : {stdout}");
+    // Une ligne par graine, en plus de l'en-tête.
+    let rows = stdout
+        .lines()
+        .filter(|l| l.trim_start().starts_with('1') || l.trim_start().starts_with('2'))
+        .count();
+    assert!(rows >= 2, "moins de deux lignes de graine : {stdout}");
+}
+
+#[test]
+fn campaign_json_is_machine_readable() {
+    let output = bin()
+        .args([
+            "campaign", "--seeds", "1", "--days", "1", "--size", "32", "--json",
+        ])
+        .output()
+        .expect("le binaire doit s'exécuter");
+    assert!(output.status.success(), "code = {:?}", output.status.code());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.trim_start().starts_with('{'),
+        "pas du JSON : {stdout}"
+    );
+    assert!(stdout.trim_end().ends_with('}'), "JSON tronqué : {stdout}");
+    assert!(stdout.contains("\"runs\""), "pas de runs : {stdout}");
+    assert!(
+        stdout.contains("\"colonists_end\""),
+        "champ manquant : {stdout}"
+    );
+    // Un mot français dans une sortie machine trahirait un `println!` oublié.
+    assert!(!stdout.contains("résumé"), "résumé dans le JSON : {stdout}");
+}
+
+#[test]
+fn campaign_rejects_an_impossible_difficulty() {
+    let output = bin()
+        .args(["campaign", "--difficulty", "9"])
+        .output()
+        .expect("le binaire doit s'exécuter");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--difficulty"), "stderr : {stderr}");
 }

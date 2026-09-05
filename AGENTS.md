@@ -58,7 +58,9 @@ cargo run -p sim-cli --release -- fuzz --seed 1 --size 24 --ticks 40000 --runs 1
 `crates/sim-cli` (binaire `rimlike-sim`) exécute le sim en natif : `run` (stats et hash),
 `verify` (deux sims comparées), `snapshot` (aller-retour), `bench`, `fuzz` (commandes
 aléatoires et aberrantes, deux sims comparées, paniques attrapées ; bilan dans
-`crates/sim-cli/FUZZ-FINDINGS.md`). Après tout changement du sim, relancer une campagne
+`crates/sim-cli/FUZZ-FINDINGS.md`), `campaign` (N graines × D jours avec un joueur scripté,
+causes de mort, raids, vivres, technologies, bétail, feux ; constats dans
+`crates/sim-cli/CAMPAIGN-FINDINGS.md` : tout réglage d'équilibrage part de là). Après tout changement du sim, relancer une campagne
 de fuzz courte. Référence mesurée le
 2026-09-05 sur carte 128×128 en release : ~2,2 M ticks/s à vide, ~0,6 M en pleine
 activité, ~0,2 M avec 15 colons. Toute régression nette sur ces chiffres se justifie.

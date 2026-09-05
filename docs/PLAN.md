@@ -473,7 +473,9 @@ alliée à ≥ 50 n'attaque plus ; deux alliées : plus aucune bande), raid men�
 Guilde et +3 tribu rivale, troc +2, marchand frappé −30 ou tué −40, rancunes qui s'estompent de +1
 par jour, passage sous −50 qui avance le prochain raid, Guilde alliée qui vend à 110 %, réputation
 hostile qui éloigne les marchands ; tribut `Gift` prélevé en stockage (valeur / 20) ; événements
-41-43. Interface livrée le 2026-09-05 (Sonnet) : panneau Factions (jauges de réputation par palier,
+41-43. Campagne d'équilibrage livrée le 2026-09-05 (Opus, sim-cli) : `rimlike-sim campaign`, joueur
+scripté, cinq constats chiffrés dans `crates/sim-cli/CAMPAIGN-FINDINGS.md` (voir journal) ; les
+réglages suivent, mesurés un par un. Interface livrée le 2026-09-05 (Sonnet) : panneau Factions (jauges de réputation par palier,
 tribut par faction avec aperçu du gain), tribu qui mène le raid dans l'annonce, événements 41-43 ;
 vérifié : 60 bois offerts au Clan des Cendres, réputation −20 → −17, journal à jour. Mini-carte
 livrée le 2026-09-05 (Sonnet) : canvas 2D en bas à droite (fond repeint au changement de version,
@@ -524,6 +526,19 @@ hors du frame), job « bavarde », événements 32-34 ; vérifié : avis mutuels
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-05 : la partie longue se mesure avec un joueur scripté. `rimlike-sim campaign` joue N
+  graines × D jours avec un joueur pur et déterministe (zones, coupe, culture, feu, lits, poste,
+  enceinte et pièges, recherche, arcs, chasse, élevage, troc, tribut) et déduit la cause des
+  morts de l'état du tick précédent ; rapport dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`. Cinq
+  constats chiffrés, aucun réglage appliqué dans la même tranche : (1) entrepôt plein ⇒ un
+  balayage de carte par pile au sol et par tick (1 870× plus lent à 60 piles : défaut du sim,
+  `find_stockpile_dest` sans court-circuit et compteur d'essais jamais incrémenté) ; (2) difficile
+  éteint 30 colonies sur 30, 25 avant le jour 10 ; (3) la richesse ne pèse que 3 % sur la taille
+  des bandes ; (4) le feu est surcritique en été (jusqu'à 2 339 cases sur 4 096) et éteint
+  aussitôt par temps froid ; (5) un mort sur trois succombe à ses plaies après le combat, faute
+  de débit de pansement. Une année de 60 jours : une campagne de 30 jours partie du jour 0 ne
+  voit que printemps et été, d'où `--day-of-year`.
 
 - 2026-09-05 : factions PNJ dans le sim, pas encore dans le monde. Trois factions fixes et une
   réputation par colonie : suffisant pour la boucle « payer sa paix » en solo ; la réputation
