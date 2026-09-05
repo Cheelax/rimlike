@@ -536,6 +536,11 @@ pub struct Sim {
     /// hash, ni égalité.
     #[serde(skip)]
     bury_scans: WorkCounter,
+    /// A\* lancés par la lutte contre le feu depuis le début de la partie
+    /// (`fire::Sim::path_beside_fire`). Même facture que `haul_scans` :
+    /// **hors état**, ni snapshot, ni hash, ni égalité.
+    #[serde(skip)]
+    firefight_paths: WorkCounter,
 }
 
 /// Compteur d'observation. Il compte du **travail**, jamais de l'état : il
@@ -636,6 +641,7 @@ impl Sim {
             raid_unresolved: false,
             haul_scans: WorkCounter::default(),
             bury_scans: WorkCounter::default(),
+            firefight_paths: WorkCounter::default(),
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -940,6 +946,12 @@ impl Sim {
         // Aucun pawn n'apparaît ni ne disparaît pendant cette boucle (le
         // ménage se fait après), les indices restent donc valides.
         let trapped = self.map.trap_count() > 0;
+        // Ce que la lutte contre le feu apprend pendant ce tick, et rien de
+        // plus : un foyer jugé inatteignable par un colon n'est pas retesté
+        // par les suivants (voir `fire::Salvo`). Créée ici, jetée en
+        // sortant : ce n'est pas de l'état, elle ne va ni au snapshot ni au
+        // hash.
+        let mut salvo = fire::Salvo::default();
         for i in 0..self.pawns.len() {
             // Case occupée avant son tour : le piège se déclenche à l'entrée,
             // pas au séjour (voir `Sim::spring_trap`). Sans piège sur la
@@ -949,7 +961,7 @@ impl Sim {
             } else {
                 None
             };
-            self.tick_pawn(i, outdoor, corpses);
+            self.tick_pawn(i, outdoor, corpses, &mut salvo);
             if let Some(before) = before {
                 self.spring_trap(i, before);
             }
@@ -1124,5 +1136,17 @@ impl Sim {
 
     pub(crate) fn count_bury_scan(&mut self, n: u64) {
         self.bury_scans.add(n);
+    }
+
+    /// A\* lancés depuis le début de la partie par la lutte contre le feu.
+    /// Même usage que `haul_scans` (`tests/firefight_perf.rs`) : le coût de la
+    /// lutte par tick doit rester borné par le nombre de colons, jamais par le
+    /// nombre de foyers ni par la surface de la carte.
+    pub fn firefight_paths(&self) -> u64 {
+        self.firefight_paths.get()
+    }
+
+    pub(crate) fn count_firefight_path(&mut self, n: u64) {
+        self.firefight_paths.add(n);
     }
 }

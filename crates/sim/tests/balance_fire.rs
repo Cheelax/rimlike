@@ -20,9 +20,16 @@
 //! mesurable et rapide : leur barycentre ne bouge plus, le bosquet reste donc
 //! toujours au-delà de `FIREFIGHT_RADIUS`, personne ne vient éteindre, et
 //! surtout `fire_to_fight` s'arrête au filtre de distance. Sans l'enclos, les
-//! colons dérivent, le bosquet entre dans leur rayon et chaque colon inactif
-//! relance jusqu'à quarante-huit A\* **par tick** : mesuré, le même incendie
-//! passe de 0,3 à 66 secondes en `debug`.
+//! colons dérivent, le bosquet entre dans leur rayon, et ce qu'on mesure n'est
+//! plus la distribution du feu mais celle des colons qui l'éteignent.
+//!
+//! C'était aussi, jusqu'au 2026-09-06, ce qui rendait le banc utilisable :
+//! chaque colon inactif relançait jusqu'à quarante-huit A\* **par tick**, et le
+//! fichier passait de 2,2 s à 106 s en `debug`. La lutte est depuis bornée et
+//! mise à la cadence du feu (voir `fire::FIREFIGHT_RETRY` et
+//! `crates/sim/tests/firefight_perf.rs`) : sans enclos, le banc ne demanderait
+//! plus que 24 s. L'enclos reste, pour la première raison — pas pour la
+//! seconde.
 //!
 //! Le climat est imposé sans amplitude saisonnière : la température annoncée
 //! est celle qu'il fait, à la courbe journalière près (±4 °C).

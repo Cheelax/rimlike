@@ -615,8 +615,8 @@ banc utilisable : **sans lui, le même incendie passe de 0,3 s à 66 s en
 dans `find_job` → `try_start_firefight` → `fire_to_fight` → `path_beside_fire`
 → `path::find_path_for`. C'est le constat n°1 sous un autre nom — un colon
 inactif relance sa recherche à chaque tick, et ici cette recherche vaut jusqu'à
-**48 A\*** (6 foyers candidats × 8 voisines). Défaut à part entière, non corrigé
-ici.
+**48 A\*** (6 foyers candidats × 8 voisines). Défaut à part entière,
+**corrigé le 2026-09-06** : voir « Le coût de la lutte » en fin de section.
 
 ### Ce qui a été fait
 
@@ -750,6 +750,78 @@ arbre à l'autre que si les arbres se touchent. La campagne normale, elle, monte
 Faire brûler l'herbe plus froide est un autre réglage, avec son propre risque
 (il rendrait les cartes froides plus dangereuses que les tempérées) : il n'est
 pas fait ici.
+
+### Le coût de la lutte (corrigé le 2026-09-06)
+
+**C'est un défaut du sim, pas un réglage** — le même que le constat n°1, sur une
+autre recherche.
+
+Ce qui coûtait n'était pas l'A\* qui aboutit (il s'arrête sur sa cible) mais
+celui qui **échoue** : il explore toute la région où se tient le colon avant de
+rendre `None`. Un foyer inatteignable — muré, de l'autre côté d'un étang, ou
+simplement au fond d'une poche de terre nue que l'incendie vient d'ouvrir au
+milieu d'un bosquet — en déclenchait un par voisine tenable, pour chaque colon
+inactif, **à chaque tick**.
+
+Quatre changements, dans `crates/sim/src/fire.rs` et l'appel de
+`crates/sim/src/jobs.rs` :
+
+1. **Une évaluation sur dix.** `FIREFIGHT_RETRY` = `FIRE_INTERVAL` = 10 : la
+   lutte n'est réévaluée qu'un tick sur dix, comme le feu lui-même et comme
+   l'interruption de travail (`drop_work_for_fire`) l'était déjà. Rien ne bouge
+   entre deux évaluations du feu ; chercher à chaque tick payait dix fois la
+   même réponse. Le pas se lit dans `Sim::tick`, **sans état** : pas de champ de
+   plus dans `Pawn`, pas de ligne de plus au snapshot. Il est le même pour tous
+   les colons — décaler la phase par identité (`(tick + id) % 10`) étalerait la
+   charge, mais casserait l'enchaînement « je lâche ma besogne » → « je prends
+   les flammes » qui se joue dans le même tick.
+2. **Un budget d'A\*, pas seulement un nombre de foyers.** `fire_to_fight`
+   examinait déjà au plus `PATH_ATTEMPTS` = 6 foyers, mais chacun pouvait coûter
+   ses huit voisines. Le budget de six recherches de chemin vaut maintenant pour
+   **tout l'appel**, foyers et voisines confondus, comme le rangement.
+3. **Un cache d'inatteignabilité par salve.** Un foyer dont un colon vient de
+   démontrer qu'aucune de ses voisines n'est atteignable est inscrit dans une
+   liste locale au tick (`fire::Salvo`), que les colons suivants consultent
+   avant de lancer quoi que ce soit. C'est déterministe parce que les colons
+   sont parcourus par indice, toujours dans le même ordre : ce que le premier y
+   écrit, le deuxième le lit, partout et à toutes les exécutions. Ce n'est pas
+   de l'état — la salve naît et meurt dans `Sim::update`, elle n'entre ni au
+   snapshot ni au hash.
+4. **Une seule recherche par colon et par salve.** `drop_work_for_fire` posait
+   la question, `find_job` la reposait aussitôt pour le même colon et sur le
+   même état : la réponse est mémorisée dans la salve, et le chemin est rendu
+   avec le foyer au lieu d'être recalculé.
+
+Deux court-circuits étaient déjà là et le restent : `Map::fire_count` (sans feu
+sur la carte, rien n'est comparé) et la distance au barycentre (aucun foyer à
+`FIREFIGHT_RADIUS`, aucune recherche de chemin).
+
+### Mesure (après) — la lutte
+
+Banc : `crates/sim/tests/firefight_perf.rs`. Un réduit de roche hermétique à
+quinze cases de trois colons inactifs, où alternent colonnes d'arbres en feu et
+colonnes de terre nue — les colonnes de terre sont franchissables, ne brûlent
+pas, jouxtent les flammes, et aucune n'est atteignable : c'est le pire cas, et
+il y en a autant qu'on veut. 600 ticks, `release` :
+
+| scène | A\* avant | A\* après | ticks/s avant | ticks/s après |
+|---|---|---|---|---|
+| 96×96, 40 foyers | 10 688 | **461** | 49 | **1 153** |
+| 96×96, 200 foyers | 11 208 | **461** | 48 | **1 196** |
+| 192×192, 40 foyers | 10 688 | **461** | 11 | **272** |
+
+Le plafond que le test impose vaut `colons × PATH_ATTEMPTS × ticks /
+FIREFIGHT_RETRY` = 1 080 : la mesure est à 461, et elle ne bouge ni avec le
+nombre de foyers ni avec la surface. Les colons éteignent quand même le bosquet
+libre du décor — la borne ne les empêche pas de travailler.
+
+Le banc du feu, lui, **garde son enclos**. Sans lui, `cargo test --test
+balance_fire` en `debug` passait de 2,2 s à 106 s ; il n'en demande plus que 24,
+mais c'est encore onze fois la version enclose, et surtout l'enclos n'est pas
+qu'une commodité de vitesse : il garantit que personne ne vient éteindre, donc
+que la distribution mesurée est bien celle du feu et pas celle des colons.
+
+---
 
 ---
 

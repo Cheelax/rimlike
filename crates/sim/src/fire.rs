@@ -179,6 +179,20 @@ pub const EXTINGUISH_STEP: u32 = 100;
 /// affaire : la forêt qui brûle à l'autre bout de la carte brûlera sans eux.
 pub const FIREFIGHT_RADIUS: u32 = 25;
 
+/// Cadence de réévaluation de la lutte, en ticks. C'est celle du feu
+/// (`FIRE_INTERVAL`), et pour la même raison : entre deux évaluations, ni les
+/// foyers, ni les murs, ni les distances ne changent — un colon inactif qui
+/// relance sa recherche à chaque tick paie dix fois le même prix pour la même
+/// réponse.
+///
+/// **Sans état.** Le pas se lit dans `Sim::tick`, pas dans un champ de `Pawn` :
+/// `tick % FIREFIGHT_RETRY == 0` suffit et vaut pour tout le monde en même
+/// temps. Décaler la phase par colon (`(tick + id) % …`) étalerait mieux la
+/// charge, mais casserait l'enchaînement `drop_work_for_fire` → `find_job`
+/// **dans le même tick** dont dépend l'interruption de travail : un colon
+/// lâcherait sa besogne sans pouvoir prendre les flammes.
+pub const FIREFIGHT_RETRY: u64 = FIRE_INTERVAL;
+
 /// Chance par évaluation qu'un éclair mette le feu pendant un orage.
 ///
 /// **Mesurée, pas déduite.** `weather::tick_weather` tire une durée d'orage de
@@ -367,6 +381,69 @@ pub fn spread_chance(offset: (i32, i32), wind: (i32, i32), wet: bool, cold: bool
 /// `FIRE_MAX`.
 pub fn level_for(ticks: u32) -> u8 {
     (ticks / FIRE_GROWTH + 1).min(u32::from(FIRE_MAX)) as u8
+}
+
+/// Un foyer à battre et le chemin pour aller se poster à côté. Les deux vont
+/// ensemble : qui trouve l'un a payé l'autre.
+type FireTarget = ((u32, u32), Vec<path::Tile>);
+
+/// Ce que la lutte contre le feu apprend pendant **une salve** — un tick — et
+/// rien de plus. `Sim::update` en crée une par tick, la passe à chaque colon
+/// dans l'ordre des indices, et la jette à la fin.
+///
+/// Ce n'est **pas** de l'état : rien n'en sort, elle n'entre ni dans le
+/// snapshot ni dans le hash, et le tick suivant repart d'une salve vide. Elle
+/// est déterministe pour la même raison que le reste du sim : les colons sont
+/// parcourus par indice, toujours dans le même ordre, donc ce que le colon 0 y
+/// écrit, le colon 1 le lit — partout, et à toutes les exécutions.
+#[derive(Debug, Default)]
+pub(crate) struct Salvo {
+    /// Foyers dont un colon a démontré, ce tick-ci, qu'aucune de leurs
+    /// voisines n'est atteignable. Les autres ne relancent pas l'A\* qui vient
+    /// d'échouer : c'est le plus cher de tous, il explore **toute** la région
+    /// où se tient le colon avant de rendre `None`, et ses camarades partent
+    /// du même bout de carte. La liste est courte par construction — on n'y
+    /// inscrit un foyer qu'en dépensant des essais, eux-mêmes bornés.
+    blocked: Vec<(u32, u32)>,
+    /// Réponse déjà calculée pour un colon dans ce tick, et le colon en
+    /// question : `drop_work_for_fire` pose la question, `find_job` la repose
+    /// aussitôt après, pour le même colon et sur un état que rien n'a bougé
+    /// entre les deux.
+    memo: Option<(u32, Option<FireTarget>)>,
+}
+
+impl Salvo {
+    fn is_blocked(&self, x: u32, y: u32) -> bool {
+        self.blocked.contains(&(x, y))
+    }
+
+    fn block(&mut self, x: u32, y: u32) {
+        self.blocked.push((x, y));
+    }
+
+    fn recall(&self, pawn: u32) -> Option<Option<FireTarget>> {
+        match &self.memo {
+            Some((id, found)) if *id == pawn => Some(found.clone()),
+            _ => None,
+        }
+    }
+
+    fn remember(&mut self, pawn: u32, found: Option<FireTarget>) {
+        self.memo = Some((pawn, found));
+    }
+}
+
+/// Ce que `Sim::path_beside_fire` a pu conclure. La différence entre les deux
+/// derniers n'est pas cosmétique : seul `Unreachable` est une **démonstration**,
+/// et seule une démonstration autorise à inscrire le foyer au tableau des
+/// inatteignables de la salve.
+enum Beside {
+    /// Chemin trouvé vers une voisine tenable du foyer.
+    Path(Vec<path::Tile>),
+    /// Toutes les voisines tenables ont été essayées, aucune n'est atteignable.
+    Unreachable,
+    /// Le budget d'A\* s'est épuisé avant la fin : on ne sait pas.
+    OutOfBudget,
 }
 
 impl Sim {
@@ -674,14 +751,40 @@ impl Sim {
     // Lutte contre le feu
     // ------------------------------------------------------------------
 
-    /// Le foyer que le colon `i` irait combattre : le plus proche de lui parmi
-    /// ceux qui sont dans `FIREFIGHT_RADIUS` du barycentre des colons, non
-    /// réservés et **atteignables**. Ne mute rien, ce qui permet de poser la
-    /// question avant de faire lâcher son travail à quelqu'un.
+    /// Le foyer que le colon `i` irait combattre, et le chemin pour aller le
+    /// battre : le plus proche de lui parmi ceux qui sont dans
+    /// `FIREFIGHT_RADIUS` du barycentre des colons, non réservés et
+    /// **atteignables**. Rend le chemin avec le foyer parce que celui qui pose
+    /// la question l'a déjà payé : le calculer deux fois doublait la note.
     ///
-    /// Court-circuité par `Map::fire_count` : sans feu sur la carte, un colon
-    /// inactif ne compare rien.
-    pub(crate) fn fire_to_fight(&self, i: usize) -> Option<(u32, u32)> {
+    /// Quatre court-circuits, du plus grossier au plus fin, avant qu'un seul
+    /// A\* ne parte :
+    ///
+    /// 1. `Map::fire_count` : sans feu sur la carte, un colon inactif ne
+    ///    compare rien ;
+    /// 2. la distance au barycentre : aucun foyer à `FIREFIGHT_RADIUS` et la
+    ///    liste des candidats est vide — la forêt qui brûle à l'autre bout de
+    ///    la carte ne coûte pas une recherche de chemin ;
+    /// 3. la mémoire de la salve (`Salvo`) : un foyer qu'un camarade vient de
+    ///    juger inatteignable **ce tick-ci** n'est pas retesté, et une réponse
+    ///    déjà calculée pour ce colon dans ce tick est rendue telle quelle ;
+    /// 4. le budget d'A\* : `PATH_ATTEMPTS` recherches de chemin pour tout
+    ///    l'appel, foyers et voisines confondus. Un colon qui a épuisé ses
+    ///    essais passe à la suite — il repassera à la prochaine salve.
+    pub(crate) fn fire_to_fight(&mut self, i: usize, salvo: &mut Salvo) -> Option<FireTarget> {
+        let pawn = self.pawns[i].id;
+        // `drop_work_for_fire` pose la question, `find_job` la repose aussitôt
+        // après pour le même colon, sur un état que rien n'a bougé entre les
+        // deux : la deuxième fois est gratuite.
+        if let Some(found) = salvo.recall(pawn) {
+            return found;
+        }
+        let found = self.search_fire_to_fight(i, salvo);
+        salvo.remember(pawn, found.clone());
+        found
+    }
+
+    fn search_fire_to_fight(&mut self, i: usize, salvo: &mut Salvo) -> Option<FireTarget> {
         if self.map.fire_count() == 0 {
             return None;
         }
@@ -689,28 +792,58 @@ impl Sim {
         let from = self.pawns[i].tile();
         let mut fires: Vec<(u32, u32, u32)> = Vec::new();
         for f in &self.burning {
-            if chebyshev(center, (f.x, f.y)) > FIREFIGHT_RADIUS || self.is_reserved(f.x, f.y) {
+            if chebyshev(center, (f.x, f.y)) > FIREFIGHT_RADIUS
+                || self.is_reserved(f.x, f.y)
+                || salvo.is_blocked(f.x, f.y)
+            {
                 continue;
             }
             fires.push((chebyshev(from, (f.x, f.y)), f.x, f.y));
         }
+        // Rien à portée : on sort **avant** le tri comme avant le premier A\*.
+        if fires.is_empty() {
+            return None;
+        }
         fires.sort_unstable();
-        fires
+        // Même ordre qu'ailleurs — `(distance, x, y)` — et même borne que le
+        // rangement : les `PATH_ATTEMPTS` foyers les plus proches, pas un de
+        // plus. Le budget, lui, est partagé par tout l'appel.
+        let candidates: Vec<(u32, u32, u32)> = fires
             .iter()
             .take(crate::jobs::PATH_ATTEMPTS)
-            .find(|&&(_, x, y)| self.path_beside_fire(from, (x, y)).is_some())
-            .map(|&(_, x, y)| (x, y))
+            .copied()
+            .collect();
+        let mut budget = crate::jobs::PATH_ATTEMPTS;
+        for (_, x, y) in candidates {
+            match self.path_beside_fire(from, (x, y), &mut budget) {
+                Beside::Path(p) => return Some(((x, y), p)),
+                // Démonstration faite, et elle a coûté cher : aucun autre colon
+                // de la salve ne la refera.
+                Beside::Unreachable => salvo.block(x, y),
+                Beside::OutOfBudget => break,
+            }
+        }
+        None
     }
 
     /// Part battre les flammes du foyer choisi par `fire_to_fight`. La case est
     /// réservée comme celle d'un travail désigné : deux colons ne battent pas
     /// le même foyer.
-    pub(crate) fn try_start_firefight(&mut self, i: usize) -> bool {
-        let Some((x, y)) = self.fire_to_fight(i) else {
+    ///
+    /// La lutte n'est réévaluée qu'un tick sur `FIREFIGHT_RETRY`, comme
+    /// l'interruption de travail (`drop_work_for_fire`) et pour la même raison :
+    /// rien
+    /// ne bouge dans l'incendie entre deux évaluations du feu, un colon
+    /// inactif qui recherche à chaque tick paie soixante fois le même prix
+    /// pour la même réponse. Le pas est **le même pour tout le monde** (le
+    /// tick, pas l'identité du colon) : c'est ce qui fait que
+    /// `drop_work_for_fire` lâche le travail et que `find_job` enchaîne sur les
+    /// flammes dans le même tick.
+    pub(crate) fn try_start_firefight(&mut self, i: usize, salvo: &mut Salvo) -> bool {
+        if self.tick % FIREFIGHT_RETRY != 0 {
             return false;
-        };
-        let from = self.pawns[i].tile();
-        let Some(p) = self.path_beside_fire(from, (x, y)) else {
+        }
+        let Some(((x, y), p)) = self.fire_to_fight(i, salvo) else {
             return false;
         };
         let pawn = self.pawns[i].id;
@@ -727,7 +860,12 @@ impl Sim {
     /// depuis le bord du foyer, jamais depuis le foyer. C'est pour cela que la
     /// fonction ne peut pas être `path_adjacent_for` : celle-là accepterait
     /// une voisine en feu, franchissable mais intenable.
-    fn path_beside_fire(&self, from: (u32, u32), at: (u32, u32)) -> Option<Vec<path::Tile>> {
+    ///
+    /// Chaque A\* lancé retire un essai à `budget` et s'ajoute à
+    /// `Sim::firefight_paths`. La distinction entre `Unreachable` et
+    /// `OutOfBudget` n'est pas cosmétique : seule la première autorise à
+    /// inscrire le foyer au tableau des inatteignables de la salve.
+    fn path_beside_fire(&mut self, from: (u32, u32), at: (u32, u32), budget: &mut usize) -> Beside {
         let mut neighbours: Vec<(u32, u32, u32)> = Vec::new();
         for dy in -1i32..=1 {
             for dx in -1i32..=1 {
@@ -747,9 +885,20 @@ impl Sim {
             }
         }
         neighbours.sort_unstable();
-        neighbours
-            .iter()
-            .find_map(|&(_, x, y)| path::find_path_for(&self.map, from, (x, y), Walker::COLONIST))
+        for (_, x, y) in neighbours {
+            if *budget == 0 {
+                return Beside::OutOfBudget;
+            }
+            *budget -= 1;
+            self.count_firefight_path(1);
+            if let Some(p) = path::find_path_for(&self.map, from, (x, y), Walker::COLONIST) {
+                return Beside::Path(p);
+            }
+        }
+        // Aucune voisine tenable, ou toutes essayées en vain : le foyer est
+        // hors d'atteinte pour ce colon, et donc pour ses camarades — ils
+        // partent du même bout de carte.
+        Beside::Unreachable
     }
 
     /// Bat les flammes depuis une case voisine. `EXTINGUISH_TICKS` par cran
@@ -799,11 +948,14 @@ impl Sim {
     ///
     /// - on n'interrompt que si `fire_to_fight` trouve un foyer **atteignable**
     ///   — sinon chacun lâcherait son travail à chaque tick pour rien ;
-    /// - et seulement un tick sur `FIRE_INTERVAL`, comme le feu lui-même : la
-    ///   recherche coûte un A*, et rien ne bouge entre deux évaluations.
-    pub(crate) fn drop_work_for_fire(&mut self, i: usize) {
+    /// - et seulement un tick sur `FIREFIGHT_RETRY`, comme le feu lui-même : la
+    ///   recherche coûte un A*, et rien ne bouge entre deux évaluations. C'est
+    ///   la même cadence que `try_start_firefight`, et il le faut : la réponse
+    ///   calculée ici est celle que `find_job` réutilise dans le même tick
+    ///   (voir `Salvo`).
+    pub(crate) fn drop_work_for_fire(&mut self, i: usize, salvo: &mut Salvo) {
         if self.map.fire_count() == 0
-            || self.tick % FIRE_INTERVAL != 0
+            || self.tick % FIREFIGHT_RETRY != 0
             || self.pawns[i].faction != Faction::Colony
             || matches!(
                 self.pawns[i].job,
@@ -819,7 +971,7 @@ impl Sim {
         {
             return;
         }
-        if self.fire_to_fight(i).is_some() {
+        if self.fire_to_fight(i, salvo).is_some() {
             self.abandon_job(i);
         }
     }

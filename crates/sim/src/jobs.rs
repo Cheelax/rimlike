@@ -78,7 +78,13 @@ fn yield_of(kind: Designation) -> Option<(ItemKind, u32)> {
 }
 
 impl Sim {
-    pub(crate) fn tick_pawn(&mut self, i: usize, outdoor: i32, corpses: u32) {
+    pub(crate) fn tick_pawn(
+        &mut self,
+        i: usize,
+        outdoor: i32,
+        corpses: u32,
+        salvo: &mut crate::fire::Salvo,
+    ) {
         if !self.pawns[i].is_alive() {
             return;
         }
@@ -155,10 +161,10 @@ impl Sim {
         // Le feu qui menace la colonie fait tout lâcher, comme la famine
         // ci-dessus : un colon qui range du bois pendant que le toit brûle n'a
         // aucun sens. Court-circuité par `Map::fire_count` (voir `fire`).
-        self.drop_work_for_fire(i);
+        self.drop_work_for_fire(i, salvo);
         self.break_if_desperate(i);
         match self.pawns[i].job.clone() {
-            Job::Idle => self.find_job(i),
+            Job::Idle => self.find_job(i, salvo),
             Job::Move { .. } => {
                 self.pawns[i].advance(&self.map);
                 if !self.pawns[i].is_moving() {
@@ -381,7 +387,7 @@ impl Sim {
     // Recherche de travail
     // ------------------------------------------------------------------
 
-    fn find_job(&mut self, i: usize) {
+    fn find_job(&mut self, i: usize, salvo: &mut crate::fire::Salvo) {
         if self.pawns[i].is_tired() {
             self.start_sleep(i);
             return;
@@ -393,7 +399,7 @@ impl Sim {
         // sera pas mieux au lit dans une colonie qui brûle. Seuls les besoins
         // critiques ci-dessus le devancent : un colon épuisé ou affamé ne bat
         // pas les flammes.
-        if self.try_start_firefight(i) {
+        if self.try_start_firefight(i, salvo) {
             return;
         }
         // Un blessé qui saigne se panse **là où il est tombé**. Le porter au

@@ -476,7 +476,8 @@ hostile qui éloigne les marchands ; tribut `Gift` prélevé en stockage (valeur
 41-43. Campagne d'équilibrage livrée le 2026-09-05 (Opus, sim-cli) : `rimlike-sim campaign`, joueur
 scripté, cinq constats chiffrés dans `crates/sim-cli/CAMPAIGN-FINDINGS.md` (voir journal), tous
 traités le 2026-09-05/06 par des tranches mesurées : rangement saturé sans balayage, feu qui suit
-le vent, soins d'urgence et inhumation indexée, difficulté plafonnée et richesse qui pèse. Interface livrée le 2026-09-05 (Sonnet) : panneau Factions (jauges de réputation par palier,
+le vent, soins d'urgence et inhumation indexée, difficulté plafonnée et richesse qui pèse, lutte
+contre le feu à budget d'A*. Interface livrée le 2026-09-05 (Sonnet) : panneau Factions (jauges de réputation par palier,
 tribut par faction avec aperçu du gain), tribu qui mène le raid dans l'annonce, événements 41-43 ;
 vérifié : 60 bois offerts au Clan des Cendres, réputation −20 → −17, journal à jour. Mini-carte
 livrée le 2026-09-05 (Sonnet) : canvas 2D en bas à droite (fond repeint au changement de version,
@@ -527,6 +528,16 @@ hors du frame), job « bavarde », événements 32-34 ; vérifié : avis mutuels
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-06 : la lutte contre le feu a un budget. Un colon inactif ne réévalue la lutte qu'un
+  tick sur dix (même phase pour tous : le « je lâche ma besogne » et le « je prends les
+  flammes » se jouent dans le même tick), six recherches de chemin au plus par appel (foyers et
+  voisines confondus), une « salve » locale au tick mémorise les foyers démontrés inatteignables
+  et la réponse d'un colon (déterministe : ordre fixe des colons), sans champ nouveau dans
+  `Sim`. Mesuré : 10 688 → 461 A* sur 600 ticks, 49 → 1 153 ticks/s, indépendant du nombre de
+  foyers et de la surface ; scénario `demo` bit-identique. Les compteurs d'observation
+  (`haul_scans`, `bury_scans`, `firefight_paths`) hors snapshot et hors hash sont désormais la
+  façon de tester le travail plutôt que le temps.
 
 - 2026-09-06 : la difficulté se règle par un plafond, pas par un sursis. Allonger le délai de
   grâce en difficile faisait l'inverse de l'effet voulu (un voyageur arrivait avant le premier
