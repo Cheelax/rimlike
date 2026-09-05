@@ -359,6 +359,11 @@ commerce, mods de contenu, événements monde.
 - 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
   par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
   libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
+- 2026-09-05 : armes (sim). La fabrication s'appuie sur la compétence Construire plutôt
+  qu'un septième type de travail : `WORK_TYPES` et les tampons de priorités ne bougent pas.
+  Les compteurs du bill incluent les armes équipées par les colons, pas celles des pillards.
+  Champs ajoutés en fin de structures : un vieux snapshot échoue proprement au lieu d'être
+  relu de travers.
 - 2026-09-05 : avance rapide abstraite plutôt que rejouée : O(entités), déterministe, sans
   rien semer ni récolter (personne n'était là) ; la commande est ajoutée en fin d'enum pour
   ne pas décaler les indices postcard des manifestes et snapshots existants. Équilibrage :
