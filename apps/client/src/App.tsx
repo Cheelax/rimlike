@@ -7,6 +7,7 @@ import { CraftingPanel } from "./CraftingPanel";
 import { eventTarget, type EventFocusCtx, type EventTarget } from "./eventFocus";
 import { factionDefinite } from "./factions";
 import { FactionsPanel } from "./FactionsPanel";
+import { HelpPanel } from "./HelpPanel";
 import { JournalPanel, type JournalEntry, type JournalFilter } from "./JournalPanel";
 import { Minimap, type MinimapHandle } from "./Minimap";
 import { decodeResearch, researchPercent, TECHS } from "./research";
@@ -104,7 +105,9 @@ import {
 } from "./sim/commands";
 import { initSim, SimHandle } from "./sim/SimHandle";
 import { selectInRect, spreadTargets, toggle, type RectPawn } from "./selection";
+import { hasSeenHelp, KEY, markHelpSeen } from "./shortcuts";
 import { tradeOffers } from "./trade";
+import { TOOLS, type Tool } from "./tools";
 import { SimBridge } from "./worker/SimBridge";
 import type { FrameMessage } from "./worker/protocol";
 
@@ -120,6 +123,8 @@ const FACTION_TRADER = 3;
 const HP_MAX = 1000;
 /** Durée d'affichage d'une notification. */
 const TOAST_MS = 6000;
+/** Durée du rappel « Appuyez sur ? pour l'aide » (première partie solo, `shortcuts.ts`). */
+const HELP_HINT_MS = 4000;
 /** Contrat avec `pawn::Job::code()` : la crise de moral. */
 const JOB_BREAK = 14;
 /** Le Journal ne garde que les événements les plus récents (mission §3). */
@@ -183,64 +188,6 @@ function nextPriority(p: number, dir: 1 | -1): number {
   if (dir === 1) return p === 0 ? 1 : p === 4 ? 0 : p + 1;
   return p === 1 ? 0 : p === 0 ? 4 : p - 1;
 }
-
-type Tool =
-  | "select"
-  | "chop"
-  | "mine"
-  | "harvest"
-  | "stockpile"
-  | "growing"
-  | "wall"
-  | "door"
-  | "floor"
-  | "bed"
-  | "campfire"
-  | "craftingSpot"
-  | "researchBench"
-  | "grave"
-  | "spikeTrap"
-  | "cancel";
-
-const TOOLS: {
-  id: Tool;
-  label: string;
-  key: string;
-  color: number;
-  group: "orders" | "build";
-  /** Coût affiché dans l'infobulle du bouton, à la place de « Touche X » (mission tombes : « 5 pierre »). */
-  hint?: string;
-}[] = [
-  { id: "select", label: "Sélection", key: "S", color: 0xffffff, group: "orders" },
-  { id: "chop", label: "Couper", key: "C", color: 0xff9a2e, group: "orders" },
-  { id: "mine", label: "Miner", key: "M", color: 0xff9a2e, group: "orders" },
-  // Touche H : Récolter, sauf si un animal est sélectionné, où elle bascule
-  // la chasse à la place (voir `hKeyAction` et le gestionnaire de `keydown`).
-  { id: "harvest", label: "Récolter", key: "H", color: 0xff9a2e, group: "orders" },
-  { id: "stockpile", label: "Stockage", key: "Z", color: 0x4a90d9, group: "orders" },
-  { id: "growing", label: "Culture", key: "G", color: 0x5cc25c, group: "orders" },
-  { id: "wall", label: "Mur", key: "B", color: 0x4ad9ff, group: "build" },
-  { id: "door", label: "Porte", key: "P", color: 0x4ad9ff, group: "build" },
-  { id: "floor", label: "Sol", key: "O", color: 0x4ad9ff, group: "build" },
-  { id: "bed", label: "Lit", key: "L", color: 0x4ad9ff, group: "build" },
-  { id: "campfire", label: "Feu", key: "F", color: 0x4ad9ff, group: "build" },
-  { id: "craftingSpot", label: "Poste", key: "A", color: 0x4ad9ff, group: "build" },
-  // Aucune lettre libre ne rappelle « établi » ou « recherche » (E est prise
-  // par la rotation de caméra, R par le panneau Recherche) : pas de raccourci
-  // clavier, un bouton suffit, comme pour la tombe ci-dessous.
-  { id: "researchBench", label: "Établi de recherche", key: "", color: 0x4ad9ff, group: "build", hint: "15 bois" },
-  // Aucune lettre libre ne rappelle « tombe » (T, O, G... sont déjà pris) :
-  // pas de raccourci clavier, un bouton suffit (mission tombes §1).
-  { id: "grave", label: "Tombe", key: "", color: 0x4ad9ff, group: "build", hint: "5 pierre" },
-  // Aucune lettre libre ne rappelle « piège » (P est pris par la porte, T par
-  // le matériau) : pas de raccourci clavier, un bouton suffit, comme la tombe
-  // et l'établi de recherche ci-dessus.
-  {
-    id: "spikeTrap", label: "Piège à pointes", key: "", color: 0x4ad9ff, group: "build",
-    hint: "5 bois · blesse le premier ennemi qui marche dessus, vos colons le contournent",
-  },
-  { id: "cancel", label: "Annuler", key: "X", color: 0xff4040, group: "orders" },
-];
 
 const BUILD_TOOL_KIND: Partial<Record<Tool, number>> = {
   wall: BUILD_KIND.Wall,
@@ -682,6 +629,19 @@ export function App() {
     setShowOptionsState(v);
   };
   /**
+   * Aide des raccourcis (touche `?`/`F1`, bouton « ? » de la barre) : ouverte
+   * et fermée par un effet à part (voir plus bas, comme la touche `V` de la
+   * Caravane), donc valable même hors partie. `showHelpRef` la rend lisible
+   * depuis le gestionnaire de `keydown` de la partie, qui la ferme en
+   * priorité sur `Échap` (même besoin que `showOptionsRef`).
+   */
+  const [showHelp, setShowHelpState] = useState(false);
+  const showHelpRef = useRef(false);
+  const setShowHelp = (v: boolean) => {
+    showHelpRef.current = v;
+    setShowHelpState(v);
+  };
+  /**
    * Réglages graphiques (menu Options → Graphismes, §settings.ts) : relus au
    * premier rendu, sauvés à chaque changement. `pixelRatio` et `propDensity`
    * s'appliquent à la volée (`gl.ts::setPixelRatio`,
@@ -1041,6 +1001,16 @@ export function App() {
     renderer.setPropDensity(savedGraphics.propDensity);
     gl.setPixelRatio(effectivePixelRatio(savedGraphics.pixelRatio, window.devicePixelRatio));
     renderer.setLeftDragPans(toolRef.current === "select");
+
+    // Première partie solo lancée sur ce navigateur : un rappel discret vers
+    // l'aide des raccourcis, jamais répété ensuite (`shortcuts.ts`). Solo
+    // seulement (mission) : une partie multi rejointe en premier ne compte
+    // pas, l'hôte l'a peut-être déjà vu ailleurs.
+    if (!isMulti && !hasSeenHelp()) {
+      markHelpSeen();
+      setNotice("Appuyez sur ? pour l'aide");
+      window.setTimeout(() => setNotice(null), HELP_HINT_MS);
+    }
 
     // --- État vu du thread principal. Le sim, lui, vit dans le Worker ---
     let speed = 1;
@@ -1846,7 +1816,7 @@ export function App() {
         return;
       }
       const k = e.key.toUpperCase();
-      if ((e.metaKey || e.ctrlKey) && k === "A") {
+      if ((e.metaKey || e.ctrlKey) && k === KEY.selectAll) {
         // Ctrl/Cmd + A : tous les colons de la colonie (faction 0, pas de bête).
         e.preventDefault();
         const ids: number[] = [];
@@ -1875,27 +1845,27 @@ export function App() {
         setTool(toolHit.id);
         return;
       }
-      if (k === "T") {
+      if (k === KEY.material) {
         setMaterial(materialRef.current === 0 ? 1 : 0);
         return;
       }
-      if (k === "J") {
+      if (k === KEY.work) {
         setShowWork((v) => !v);
         return;
       }
-      if (k === "K") {
+      if (k === KEY.craft) {
         setShowCraft((v) => !v);
         return;
       }
-      if (k === "R") {
+      if (k === KEY.research) {
         setShowResearch((v) => !v);
         return;
       }
-      if (k === "N") {
+      if (k === KEY.journal) {
         setShowJournal((v) => !v);
         return;
       }
-      if (k === "I") {
+      if (k === KEY.heat) {
         setHeatMode((v) => !v);
         return;
       }
@@ -1915,10 +1885,12 @@ export function App() {
           }
           break;
         case "ESCAPE":
-          // Le menu Options se ferme en premier : le reste (outil, sélection)
-          // n'a pas bougé pendant qu'il était ouvert. L'outil « Mettre le
-          // feu » désarmé ensuite, avant l'outil courant.
-          if (showOptionsRef.current) setShowOptions(false);
+          // L'aide se ferme en tout premier (elle recouvre le reste), puis le
+          // menu Options : ni l'un ni l'autre n'a bougé l'outil ou la
+          // sélection pendant qu'il était ouvert. L'outil « Mettre le feu »
+          // désarmé ensuite, avant l'outil courant.
+          if (showHelpRef.current) setShowHelp(false);
+          else if (showOptionsRef.current) setShowOptions(false);
           else if (igniteArmedRef.current) setIgniteArmed(false);
           else if (toolRef.current !== "select") setTool("select");
           else applySelection([]);
@@ -2500,7 +2472,7 @@ export function App() {
         setCaravanPicking(false);
         return;
       }
-      if (k === "V" && roomTile !== null) {
+      if (k === KEY.caravan && roomTile !== null) {
         setCaravanOpen((open) => !open);
         setCaravanPicking(false);
       }
@@ -2517,6 +2489,31 @@ export function App() {
       setCaravanTo(null);
     }
   }, [roomTile]);
+
+  /**
+   * Touche `?` ou `F1` : ouvre ou ferme l'aide des raccourcis, à tout moment
+   * (accueil, lobby, écran Monde ou en partie) — écouteur à part de celui de
+   * la partie, comme la touche `V` ci-dessus, puisqu'elle n'a besoin d'aucun
+   * état de sim. `Échap` la ferme ; en partie, le gestionnaire de `keydown`
+   * de la partie s'en charge aussi en priorité (voir `showHelpRef`), ce
+   * doublon est sans effet (`setShowHelp(false)` deux fois de suite).
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement) return;
+      if (e.metaKey || e.ctrlKey) return;
+      if (e.key === KEY.helpAlt || e.key === KEY.help) {
+        e.preventDefault();
+        setShowHelp(!showHelpRef.current);
+        return;
+      }
+      if (e.key.toUpperCase() === "ESCAPE" && showHelpRef.current) {
+        setShowHelp(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   /**
    * Le marchand reprend la route ou meurt (`frame.traderPresent` passe à −1,
@@ -2626,6 +2623,9 @@ export function App() {
   return (
     <>
       <div ref={sceneHostRef} className="scene" />
+      {/* Hors du bloc `running` exprès : l'aide (touche `?`/`F1`) doit rester
+          consultable depuis l'accueil ou le lobby, pas seulement en partie. */}
+      {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
       {inWorld && globe !== null && worldSession !== null && (
         <WorldScreen
           world={globe}
@@ -3059,6 +3059,13 @@ export function App() {
               title="Dose de menace du storyteller · Échap pour fermer"
             >
               Options
+            </button>
+            <button
+              className={showHelp ? "active" : ""}
+              onClick={() => setShowHelp(!showHelp)}
+              title="Touche ? ou F1 : aide des raccourcis · Échap pour fermer"
+            >
+              Aide <span className="key">?</span>
             </button>
             <button
               className={caravanOpen ? "active" : ""}

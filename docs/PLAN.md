@@ -487,7 +487,9 @@ déterministe) ou les fait tous attaquer la même cible ; module `selection.ts` 
 graphiques (Sonnet, 2026-09-05) : rapport de pixels et densité des props appliqués à chaud, ombres
 lues au démarrage (jamais basculées à chaud), compteur fps et draw calls, mémorisés en
 `localStorage` ; densité « moyenne » sans rochers ni buissons ni joints de sol, « basse » sans
-cultures en plus. Marchands itinérants côté serveur
+cultures en plus. Écran d'aide (Sonnet, 2026-09-05) : touche `?` ou `F1`, table des raccourcis
+construite à partir des mêmes constantes que la barre d'outils et le clavier (`tools.ts`,
+`shortcuts.ts`, test d'unicité des touches), rappel à la première partie. Marchands itinérants côté serveur
 livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
 caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;

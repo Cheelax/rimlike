@@ -75,6 +75,7 @@ le globe, colonies gelées).
   cours pour revenir à la sélection ; en sélection, désélectionne.
 - Barre des colons (bas d'écran) : clic pour sélectionner un colon, double
   clic pour centrer la caméra sur lui.
+- `?` ou `F1`, à tout moment : ouvre l'aide des raccourcis (bouton « ? » de la barre, `Échap` pour la refermer).
 
 ### Outils (glisser un rectangle pour les appliquer)
 
