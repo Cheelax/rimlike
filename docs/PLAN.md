@@ -289,8 +289,13 @@ et saignement qui se referme seul, sang, `hp` dérivé, mobilité et manipulatio
 conscience, colons à terre, sauvetage vers un lit et soins par les camarades, pillards qui
 ignorent les colons à terre, mort par hémorragie ou coup fatal. Fuzz : `rimlike-sim fuzz`
 (Sonnet), aucune panique ni désync sur des millions de commandes aberrantes.
-À venir : interface de ces données (noms, compétences, blessures), recherche, traits et
-relations, storyteller adaptatif, factions PNJ et commerce, mods de contenu, événements monde.
+Interface livrée le 2026-09-05 (Sonnet) : noms partout (panneau, tableau Travail,
+notifications, étiquettes au-dessus des pawns quand la caméra est proche), panneau du colon
+avec Besoins, Santé (sang, conscience, blessures détaillées) et Compétences (niveau et XP),
+pose « à terre ». À surveiller : les raids tuent vite depuis les saignements (deux colons sur
+trois perdus dans un essai de 2 500 ticks), l'équilibrage viendra avec les soins actifs et
+l'armement. À venir : recherche, traits et relations, storyteller adaptatif, factions PNJ et
+commerce, mods de contenu, événements monde.
 
 ## 7. Risques identifiés
 

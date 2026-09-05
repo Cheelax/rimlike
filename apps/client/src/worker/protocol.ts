@@ -94,6 +94,15 @@ export interface FrameMessage {
   readonly blueprints: Int32Array;
   readonly events: Int32Array;
   readonly priorities: Int32Array;
+  /** Compétences : `[id, (niveau, xp)×6]` par colon (`sim-wasm::SKILL_STRIDE`). */
+  readonly skills: Int32Array;
+  /** Santé : `[id, sang, conscience %, blessures]` par pawn (`sim-wasm::HEALTH_STRIDE`). */
+  readonly health: Int32Array;
+  /**
+   * Nom de chaque pawn vivant, par id. Recalculé seulement quand la liste des
+   * ids change (voir `SimRunner`) : pas un appel à `pawn_name` par frame.
+   */
+  readonly names: Record<number, string>;
   readonly stored: Uint32Array;
   /** Retard du lockstep en ticks. Toujours 0 en solo. */
   readonly lag: number;
@@ -134,6 +143,8 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
         message.blueprints.buffer as ArrayBuffer,
         message.events.buffer as ArrayBuffer,
         message.priorities.buffer as ArrayBuffer,
+        message.skills.buffer as ArrayBuffer,
+        message.health.buffer as ArrayBuffer,
         message.stored.buffer as ArrayBuffer,
       ];
     case "saved":

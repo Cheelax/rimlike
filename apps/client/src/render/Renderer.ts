@@ -16,7 +16,9 @@ import {
 const FX_ONE = 256;
 export const PAWN_STRIDE = 12;
 export const ITEM_STRIDE = 5;
-export const PAWN_FLAGS = { MOVING: 1, SLEEPING: 2, WORKING: 4, STARVING: 8, CARRYING: 16 } as const;
+export const PAWN_FLAGS = { MOVING: 1, SLEEPING: 2, WORKING: 4, STARVING: 8, CARRYING: 16, DOWNED: 32 } as const;
+/** Caméra à ce niveau de zoom ou plus : les étiquettes de nom deviennent visibles. */
+const NAME_LABEL_MIN_ZOOM = 1.6;
 const MAX_ITEMS = 2048;
 /** `ItemKind::Corpse` côté sim. */
 const ITEM_CORPSE = 5;
@@ -46,6 +48,8 @@ const RAIDER_COLOR = 0x7a1f1f;
 const HP_BAR_WIDTH = 0.5;
 const HP_BAR_EMPTY = new THREE.Color(0xd94f4f);
 const HP_BAR_FULL = new THREE.Color(0x6ab04c);
+/** Vers quoi la couleur d'un pawn tire quand il est à terre. */
+const WHITE = new THREE.Color(0xffffff);
 
 interface PawnView {
   group: THREE.Group;
@@ -55,6 +59,15 @@ interface PawnView {
   hpBack: THREE.Mesh;
   hpFill: THREE.Mesh;
   hpMat: THREE.MeshBasicMaterial;
+  /** Matériau du corps : sa couleur se pâlit quand le pawn est à terre. */
+  bodyMat: THREE.MeshLambertMaterial;
+  baseColor: THREE.Color;
+  hostile: boolean;
+  /** Étiquette de nom, cachée sous le seuil de zoom. */
+  nameSprite: THREE.Sprite;
+  nameMat: THREE.SpriteMaterial;
+  /** Dernier nom peint sur la texture de l'étiquette, pour ne la refaire que si besoin. */
+  nameShown: string | null;
 }
 
 export interface TilePos {
@@ -93,6 +106,10 @@ export class Renderer {
   private readonly rainPos = new Float32Array(RAIN_DROPS * 3);
   private mapMeshes: THREE.Object3D[] = [];
   private overlayMeshes: THREE.Object3D[] = [];
+  /** Nom de chaque pawn vivant, par id (voir `worker/protocol.ts::FrameMessage.names`). */
+  private names: Record<number, string> = {};
+  /** Textures d'étiquette de nom, mises en cache par nom : jamais recréées par frame. */
+  private readonly nameTextures = new Map<string, THREE.CanvasTexture>();
   private mapW = 0;
   private mapH = 0;
   private framed = false;
@@ -476,6 +493,39 @@ export class Renderer {
     if (this.blueprints.instanceColor) this.blueprints.instanceColor.needsUpdate = true;
   }
 
+  /** Nom de chaque pawn vivant, par id. Recopié tel quel : `syncPawns` s'en sert au prochain rendu. */
+  setNames(names: Record<number, string>): void {
+    this.names = names;
+  }
+
+  /**
+   * Texture d'étiquette de nom, mise en cache par nom (et couleur, hostile ou
+   * non) : le canvas ne se redessine jamais deux fois pour le même texte.
+   */
+  private nameTexture(name: string, hostile: boolean): THREE.CanvasTexture {
+    const key = hostile ? `r:${name}` : `c:${name}`;
+    const cached = this.nameTextures.get(key);
+    if (cached) return cached;
+    const canvas = document.createElement("canvas");
+    canvas.width = 160;
+    canvas.height = 40;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.font = "bold 26px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
+      ctx.strokeText(name, canvas.width / 2, canvas.height / 2);
+      ctx.fillStyle = hostile ? "#ff6b6b" : "#ffffff";
+      ctx.fillText(name, canvas.width / 2, canvas.height / 2);
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    this.nameTextures.set(key, texture);
+    return texture;
+  }
+
   /** Météo courante (`sim::Weather`) : pilote la pluie, les éclairs et la lumière. */
   setWeather(kind: number): void {
     if (kind === this.weather) return;
@@ -589,6 +639,8 @@ export class Renderer {
   syncPawns(cur: Int32Array, prev: Int32Array | null, alpha: number): void {
     const seen = new Set<number>();
     const count = Math.floor(cur.length / PAWN_STRIDE);
+    // Un seul calcul par frame : les étiquettes de nom n'encombrent pas la vue large.
+    const showNames = this.camera.zoom >= NAME_LABEL_MIN_ZOOM;
     for (let i = 0; i < count; i++) {
       const o = i * PAWN_STRIDE;
       const id = cur[o];
@@ -612,13 +664,26 @@ export class Renderer {
       if (dx * dx + dz * dz > 1e-6) g.rotation.y = Math.atan2(dx, dz);
       g.position.set(x, 0, z);
       const sleeping = (flags & PAWN_FLAGS.SLEEPING) !== 0;
+      const downed = (flags & PAWN_FLAGS.DOWNED) !== 0;
       view.zz.visible = sleeping;
       view.zz.position.y = 1.05 + Math.sin(this.clock * 3) * 0.06;
-      g.rotation.z = sleeping ? Math.PI / 2 : 0;
-      g.position.y = sleeping ? 0.25 : 0;
+      // À terre comme endormi : couché au sol. Seul le sommeil affiche les « zzz ».
+      const lyingDown = sleeping || downed;
+      g.rotation.z = lyingDown ? Math.PI / 2 : 0;
+      g.position.y = lyingDown ? 0.25 : 0;
+      // Teinte plus pâle pour un pawn à terre : on repart toujours de sa couleur d'origine.
+      view.bodyMat.color.copy(view.baseColor).lerp(WHITE, downed ? 0.55 : 0);
       const carrying = (flags & PAWN_FLAGS.CARRYING) !== 0;
       view.carry.visible = carrying;
       if (carrying) view.carryMat.color.setHex(ITEM_COLORS[cur[o + 8]] ?? 0xffffff);
+      // Étiquette de nom : cachée de loin, sinon rafraîchie seulement si le nom a changé.
+      const name = this.names[id];
+      view.nameSprite.visible = showNames && !!name;
+      if (name && view.nameShown !== name) {
+        view.nameMat.map = this.nameTexture(name, view.hostile);
+        view.nameMat.needsUpdate = true;
+        view.nameShown = name;
+      }
       // Barre de vie : visible seulement quand le pawn est blessé.
       const hp = cur[o + 11];
       const wounded = hp < PAWN_HP_MAX;
@@ -659,7 +724,8 @@ export class Renderer {
   private createPawn(id: number, hostile: boolean): PawnView {
     const group = new THREE.Group();
     const color = hostile ? RAIDER_COLOR : PAWN_COLORS[id % PAWN_COLORS.length];
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.32, 4, 10), new THREE.MeshLambertMaterial({ color }));
+    const bodyMat = new THREE.MeshLambertMaterial({ color });
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.32, 4, 10), bodyMat);
     body.position.y = 0.4;
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), new THREE.MeshLambertMaterial({ color: SKIN }));
     head.position.y = 0.78;
@@ -686,13 +752,33 @@ export class Renderer {
     // Un cheveu au-dessus du fond : pas de faces coplanaires qui scintillent.
     hpFill.position.set(0, 1.03, 0);
     hpFill.visible = false;
+    // Étiquette de nom : sa texture arrive plus tard, dès que `syncPawns` connaît le nom.
+    const nameMat = new THREE.SpriteMaterial({ transparent: true, depthWrite: false });
+    const nameSprite = new THREE.Sprite(nameMat);
+    nameSprite.scale.set(1.4, 0.35, 1);
+    nameSprite.position.set(0, 1.24, 0);
+    nameSprite.visible = false;
     for (const m of [body, head, nose, carry]) {
       m.castShadow = true;
       m.userData.pawnId = id;
     }
-    group.add(body, head, nose, carry, zz, hpBack, hpFill);
+    group.add(body, head, nose, carry, zz, hpBack, hpFill, nameSprite);
     this.pawnRoot.add(group);
-    return { group, carry, carryMat, zz, hpBack, hpFill, hpMat };
+    return {
+      group,
+      carry,
+      carryMat,
+      zz,
+      hpBack,
+      hpFill,
+      hpMat,
+      bodyMat,
+      baseColor: new THREE.Color(color),
+      hostile,
+      nameSprite,
+      nameMat,
+      nameShown: null,
+    };
   }
 
   setSelected(id: number | null): void {
@@ -816,5 +902,7 @@ export class Renderer {
     window.removeEventListener("resize", this.onResize);
     this.controls.dispose();
     this.renderer.dispose();
+    for (const texture of this.nameTextures.values()) texture.dispose();
+    this.nameTextures.clear();
   }
 }

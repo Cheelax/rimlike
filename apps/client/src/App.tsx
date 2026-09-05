@@ -6,19 +6,23 @@ import { WebSocketTransport } from "./net/Transport";
 import { WorldClient, type WorldClientState } from "./net/WorldClient";
 import { fetchWorld, type WorldProgress } from "./net/worldFetch";
 import { WorldScreen } from "./WorldScreen";
-import { PAWN_STRIDE, Renderer, type TilePos, type TileRect } from "./render/Renderer";
+import { PAWN_FLAGS, PAWN_STRIDE, Renderer, type TilePos, type TileRect } from "./render/Renderer";
 import {
   BLUEPRINT_STRIDE,
   BUILD_KIND,
   DESIGNATION,
   EVENT_STRIDE,
   eventLabel,
+  formatInjury,
+  HEALTH_STRIDE,
   ITEM_NAMES,
   JOB_LABELS,
   MATERIAL_NAMES,
   PRIORITY_STRIDE,
+  SKILL_STRIDE,
   WEATHER_LABELS,
   WORK_LABELS,
+  xpToNext,
   ZONE,
 } from "./render/terrain";
 import {
@@ -104,8 +108,25 @@ const BUILD_TOOL_KIND: Partial<Record<Tool, number>> = {
 };
 const WOOD_ONLY: ReadonlySet<Tool> = new Set<Tool>(["bed", "campfire"]);
 
+/** Une ligne de blessure du panneau Santé, depuis `pawn_injuries` (voir `pawnInjuries`). */
+interface InjuryInfo {
+  part: number;
+  severity: number;
+  bleeding: number;
+  tended: boolean;
+}
+
+/** Une ligne de compétence du panneau Compétences, vide pour un pillard. */
+interface SkillInfo {
+  work: number;
+  level: number;
+  xp: number;
+  xpToNext: number;
+}
+
 interface PawnInfo {
   id: number;
+  name: string;
   tile: TilePos;
   hunger: number;
   rest: number;
@@ -116,6 +137,16 @@ interface PawnInfo {
   hostile: boolean;
   job: string;
   carrying: string | null;
+  /** Drapeau `PAWN_FLAGS.DOWNED` : à terre, hors combat. */
+  downed: boolean;
+  /** Pourcentage 0-100, dérivé de `health::BLOOD_MAX`. */
+  blood: number;
+  /** Pourcentage 0-100, déjà tel quel côté sim. */
+  consciousness: number;
+  /** Rafraîchi à part par `rpc("pawnInjuries", id)`, au plus 4 fois par seconde. */
+  injuries: InjuryInfo[];
+  /** Vide pour un pillard : le tampon `skills` ne les concerne pas. */
+  skills: SkillInfo[];
 }
 
 interface Stats {
@@ -135,6 +166,8 @@ interface Stats {
   selected: PawnInfo | null;
   /** Copie du tampon des priorités : `[id, p0..p5]` par colon. */
   priorities: number[];
+  /** Nom de chaque pawn vivant, par id (voir `FrameMessage.names`). */
+  names: Record<number, string>;
   /** Retard du lockstep, en ticks. Toujours 0 en solo. */
   lag: number;
 }
@@ -155,6 +188,7 @@ const INITIAL: Stats = {
   hostiles: 0,
   selected: null,
   priorities: [],
+  names: {},
   lag: 0,
 };
 
@@ -393,6 +427,13 @@ export function App() {
     let freshSim = true;
     /** Priorités cliquées, en attente de confirmation par un `frame`. */
     const pendingPriority = new Map<string, number>();
+    /**
+     * Blessures du colon sélectionné, rafraîchies par `rpc("pawnInjuries", id)`
+     * au rythme du HUD (2 fois par seconde, sous la limite de 4 imposée par le
+     * sim) plutôt qu'à chaque frame : le tampon `health` ne porte qu'un compte.
+     */
+    let selectedInjuries: InjuryInfo[] = [];
+    let selectedInjuriesId: number | null = null;
     let lastRenderAt = performance.now();
     let framesInWindow = 0;
     let windowStart = lastRenderAt;
@@ -422,7 +463,7 @@ export function App() {
     };
 
     /** Un toast par événement du sim jamais vu. */
-    const notifyEvents = (events: Int32Array, fresh: boolean) => {
+    const notifyEvents = (events: Int32Array, names: Record<number, string>, fresh: boolean) => {
       if (fresh) {
         // Ce qu'un sim neuf porte déjà est du passé : on ne le notifie pas.
         lastEventSeq = events.length >= EVENT_STRIDE ? events[events.length - EVENT_STRIDE] : -1;
@@ -432,7 +473,7 @@ export function App() {
         const seq = events[o];
         if (seq <= lastEventSeq) continue;
         lastEventSeq = seq;
-        const text = eventLabel(events[o + 2], events[o + 3]);
+        const text = eventLabel(events[o + 2], events[o + 3], names);
         if (!text) continue;
         setToasts((prev) => [...prev, { id: seq, text }]);
         toastTimers.push(
@@ -469,8 +510,9 @@ export function App() {
         renderer.syncBlueprints(f.blueprints);
         renderer.setWeather(f.weather);
         renderer.setTimeOfDay(f.timeOfDay / f.ticksPerDay);
+        renderer.setNames(f.names);
         confirmPriorities(f.priorities);
-        notifyEvents(f.events, freshSim);
+        notifyEvents(f.events, f.names, freshSim);
         freshSim = false;
       },
       onNet: (state) => {
@@ -831,10 +873,32 @@ export function App() {
         if (hostile) hostiles++;
         else colonists++;
         if (curPawns[o] !== selected) continue;
+        const id = curPawns[o];
         const ck = curPawns[o + 8];
         const mood = curPawns[o + 6] / 10;
+        let blood = 0;
+        let consciousness = 0;
+        for (let h = 0; h + HEALTH_STRIDE <= f.health.length; h += HEALTH_STRIDE) {
+          if (f.health[h] !== id) continue;
+          blood = f.health[h + 1] / 10;
+          consciousness = f.health[h + 2];
+          break;
+        }
+        const skills: SkillInfo[] = [];
+        if (!hostile) {
+          for (let s = 0; s + SKILL_STRIDE <= f.skills.length; s += SKILL_STRIDE) {
+            if (f.skills[s] !== id) continue;
+            for (let w = 0; w < WORK_LABELS.length; w++) {
+              const level = f.skills[s + 1 + w * 2];
+              const xp = f.skills[s + 1 + w * 2 + 1];
+              skills.push({ work: w, level, xp, xpToNext: xpToNext(level) });
+            }
+            break;
+          }
+        }
         info = {
-          id: curPawns[o],
+          id,
+          name: f.names[id] ?? "",
           tile: { x: Math.floor(curPawns[o + 1] / 256), y: Math.floor(curPawns[o + 2] / 256) },
           hunger: curPawns[o + 4] / 10,
           rest: curPawns[o + 5] / 10,
@@ -845,7 +909,38 @@ export function App() {
           hostile,
           job: JOB_LABELS[curPawns[o + 7]] ?? "?",
           carrying: ck >= 0 ? `${curPawns[o + 9]} ${ITEM_NAMES[ck]}` : null,
+          downed: (curPawns[o + 3] & PAWN_FLAGS.DOWNED) !== 0,
+          blood,
+          consciousness,
+          injuries: selectedInjuriesId === id ? selectedInjuries : [],
+          skills,
         };
+      }
+      // Blessures du colon sélectionné : rafraîchies ici (2 fois par seconde),
+      // affichées à la prochaine passe pour ne pas attendre l'aller-retour.
+      if (info !== null) {
+        if (selectedInjuriesId !== info.id) {
+          selectedInjuriesId = info.id;
+          selectedInjuries = [];
+        }
+        const id = info.id;
+        void bridge
+          .rpc("pawnInjuries", id)
+          .then((raw) => {
+            if (selectedInjuriesId !== id) return; // sélection changée entre-temps
+            const buf = raw as Int32Array;
+            const list: InjuryInfo[] = [];
+            for (let o = 0; o + 4 <= buf.length; o += 4) {
+              list.push({ part: buf[o], severity: buf[o + 1], bleeding: buf[o + 2], tended: buf[o + 3] !== 0 });
+            }
+            selectedInjuries = list;
+          })
+          .catch(() => {
+            /* colon disparu entre-temps : rien à afficher au prochain tour */
+          });
+      } else {
+        selectedInjuriesId = null;
+        selectedInjuries = [];
       }
       setStats({
         tick: f.tick,
@@ -864,6 +959,7 @@ export function App() {
         hostiles,
         selected: info,
         priorities: Array.from(f.priorities),
+        names: f.names,
         lag: f.lag,
       });
     }, 500);
@@ -1006,17 +1102,56 @@ export function App() {
           {sel && (
             <div className="panel">
               <div className="panel-title">
-                {sel.hostile ? "Ennemi" : "Colon"} {sel.id} · ({sel.tile.x}, {sel.tile.y})
+                {sel.hostile
+                  ? `Ennemi ${sel.name || "inconnu"}`
+                  : `${sel.name || "Colon " + sel.id} · (${sel.tile.x}, ${sel.tile.y})`}
               </div>
               <div className="panel-job">{sel.job}{sel.carrying ? ` · porte ${sel.carrying}` : ""}</div>
-              <Bar label="PV" value={sel.hp} />
-              <Bar label="Faim" value={sel.hunger} />
-              <Bar label="Repos" value={sel.rest} />
-              <Bar label="Humeur" value={sel.mood} />
-              <div className="panel-mood">
-                {sel.moodLabel}
-                {sel.breaking ? <b> · craque !</b> : ""}
-              </div>
+
+              {!sel.hostile && (
+                <>
+                  <div className="panel-section">Besoins</div>
+                  <Bar label="PV" value={sel.hp} />
+                  <Bar label="Faim" value={sel.hunger} />
+                  <Bar label="Repos" value={sel.rest} />
+                  <Bar label="Humeur" value={sel.mood} />
+                  <div className="panel-mood">
+                    {sel.moodLabel}
+                    {sel.breaking ? <b> · craque !</b> : ""}
+                  </div>
+                </>
+              )}
+
+              <div className="panel-section">Santé</div>
+              <Bar label="Sang" value={sel.blood} />
+              <Bar label="Conscience" value={sel.consciousness} />
+              {sel.downed && <div className="panel-downed">à terre</div>}
+              {sel.injuries.length > 0 && (
+                <ul className="panel-injuries">
+                  {sel.injuries.map((inj, i) => (
+                    <li key={i}>{formatInjury(inj.part, inj.severity, inj.bleeding, inj.tended ? 1 : 0)}</li>
+                  ))}
+                </ul>
+              )}
+
+              {!sel.hostile && sel.skills.length > 0 && (
+                <>
+                  <div className="panel-section">Compétences</div>
+                  {sel.skills.map((s) => (
+                    <div className="skill-row" key={s.work}>
+                      <span className="skill-label">{WORK_LABELS[s.work]}</span>
+                      <span className="skill-level">niv. {s.level}</span>
+                      <span className="bar-track">
+                        <span
+                          className="bar-fill"
+                          style={{ width: `${Math.min(100, (s.xp / s.xpToNext) * 100)}%` }}
+                        />
+                      </span>
+                    </div>
+                  ))}
+                </>
+              )}
+
               <div className="help">clic droit : y aller, ou attaquer un ennemi</div>
             </div>
           )}
@@ -1095,7 +1230,7 @@ export function App() {
                 <tbody>
                   {workRows.map((row) => (
                     <tr key={row.id}>
-                      <th>Colon {row.id}</th>
+                      <th>{stats.names[row.id] ?? `Colon ${row.id}`}</th>
                       {row.prio.map((p, w) => (
                         <td key={w}>
                           <button

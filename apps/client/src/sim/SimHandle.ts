@@ -189,6 +189,34 @@ export class SimHandle implements SimLike {
     );
   }
 
+  /** Compétences : `[id, (niveau, xp)×6]` par colon. Copie. */
+  skills(): Int32Array {
+    return new Int32Array(
+      new Int32Array(this.wasm.memory.buffer, this.inner.skills_ptr(), this.inner.skills_len()),
+    );
+  }
+
+  /** Santé : `[id, sang, conscience %, nombre de blessures]` par pawn. Copie. */
+  health(): Int32Array {
+    return new Int32Array(
+      new Int32Array(this.wasm.memory.buffer, this.inner.health_ptr(), this.inner.health_len()),
+    );
+  }
+
+  /** Nom du colon ou du pillard, chaîne vide si l'id est inconnu. */
+  pawnName(id: number): string {
+    return this.inner.pawn_name(id);
+  }
+
+  /**
+   * Blessures d'un pawn, à plat : `[partie, sévérité, saignement, pansée]`
+   * par blessure. Copie ponctuelle : à n'appeler que pour le colon
+   * sélectionné, pas à chaque frame.
+   */
+  pawnInjuries(id: number): Int32Array {
+    return this.inner.pawn_injuries(id);
+  }
+
   dispose(): void {
     this.inner.free();
   }

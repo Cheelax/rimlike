@@ -55,6 +55,29 @@ export const ITEM_COLORS: readonly number[] = [0x9c6b3c, 0x8d8d8d, 0xc9304a, 0x5
 export const WORK_LABELS = ["Construire", "Livrer", "Cuisiner", "Désignations", "Cultiver", "Ranger"] as const;
 /** Contrat avec `sim-wasm::PRIORITY_STRIDE` : [id, p0..p5] par colon. */
 export const PRIORITY_STRIDE = 7;
+/** Contrat avec `sim-wasm::SKILL_STRIDE` : [id, (niveau, xp)×6] par colon. */
+export const SKILL_STRIDE = 13;
+/** Expérience nécessaire pour passer du niveau `level` au suivant (`sim::work::xp_to_next`). */
+export function xpToNext(level: number): number {
+  return 1000 * (level + 1);
+}
+
+/** Contrat avec `sim-wasm::HEALTH_STRIDE` : [id, sang, conscience %, blessures] par pawn. */
+export const HEALTH_STRIDE = 4;
+/** Contrat avec `sim::health::BodyPart` : index = valeur de l'enum. */
+export const BODY_PART_LABELS = ["tête", "torse", "bras gauche", "bras droit", "jambe gauche", "jambe droite"] as const;
+
+/**
+ * Texte d'une ligne du panneau du colon pour une blessure du tampon
+ * `pawn_injuries` : `[partie, sévérité, saignement, pansée]`. La sévérité va
+ * de 0 à 1000 (`sim::health::SEVERITY_MAX`), affichée en pourcentage.
+ */
+export function formatInjury(part: number, severity: number, bleeding: number, tended: number): string {
+  const label = BODY_PART_LABELS[part] ?? "?";
+  const pct = Math.round(severity / 10);
+  const state = bleeding > 0 ? "saigne" : tended !== 0 ? "pansée" : "stable";
+  return `${label} · ${pct} % · ${state}`;
+}
 
 /** Contrat avec `sim::Weather` : index = valeur de l'enum. */
 export const WEATHER_LABELS = ["Clair", "Pluie", "Orage"] as const;
@@ -75,13 +98,22 @@ export const JOB_LABELS = [
   "attaque",
   "fuit",
   "craque",
+  "à terre",
+  "secourt",
+  "soigne",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
 export const EVENT_STRIDE = 4;
 
-/** Texte de notification pour un événement du sim. */
-export function eventLabel(kind: number, arg: number): string {
+/**
+ * Texte de notification pour un événement du sim. `arg` est l'id d'un pawn
+ * pour les genres 7 à 10 : `names` (voir `worker/protocol.ts`) permet d'y
+ * mettre un nom plutôt qu'un id ; à défaut, un « Un colon » générique — ces
+ * événements ne concernent que des colons côté sim.
+ */
+export function eventLabel(kind: number, arg: number, names?: Record<number, string>): string {
+  const who = names?.[arg] || "Un colon";
   switch (kind) {
     case 1:
       return `Raid ! ${arg} pillard(s) approchent`;
@@ -95,6 +127,14 @@ export function eventLabel(kind: number, arg: number): string {
       return "Un voyageur rejoint la colonie";
     case 6:
       return "Un colon craque";
+    case 7:
+      return `${who} monte en niveau`;
+    case 8:
+      return `${who} est à terre`;
+    case 9:
+      return `${who} a été secouru`;
+    case 10:
+      return `${who} a été soigné`;
     default:
       return "";
   }

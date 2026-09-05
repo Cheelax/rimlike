@@ -22,6 +22,9 @@ import {
   type OverlaysMessage,
 } from "./protocol";
 
+/** Entiers par pawn dans le tampon `pawns()` ; seul l'id (offset 0) sert ici. */
+const PAWN_STRIDE = 12;
+
 /** 60 ticks de jeu par seconde à la vitesse x1. */
 export const TICKS_PER_SECOND = 60;
 export const BASE_TICK_MS = 1000 / TICKS_PER_SECOND;
@@ -51,6 +54,12 @@ export interface RunnerSim extends SimLike {
   blueprints(): Int32Array;
   events(): Int32Array;
   priorities(): Int32Array;
+  /** `[id, (niveau, xp)×6]` par colon. */
+  skills(): Int32Array;
+  /** `[id, sang, conscience %, blessures]` par pawn. */
+  health(): Int32Array;
+  /** Nom du pawn, chaîne vide si l'id est inconnu. */
+  pawnName(id: number): string;
   storedTotals(): Uint32Array;
   weather(): number;
   timeOfDay(): number;
@@ -108,6 +117,10 @@ export class SimRunner {
   private ticksInWindow = 0;
   private windowStart = 0;
   private tpsValue = 0;
+  /** Ids connus au dernier calcul de `knownNames` : sert à détecter un changement. */
+  private knownIds = new Set<number>();
+  /** Nom par id, recalculé seulement quand `knownIds` change (pas de `pawn_name` par frame). */
+  private knownNames: Record<number, string> = {};
 
   constructor(options: SimRunnerOptions = {}) {
     this.lockstep = options.lockstep ?? null;
@@ -150,8 +163,35 @@ export class SimRunner {
     this.current = next;
     this.knownMapVersion = -1;
     this.knownOverlayVersion = -1;
+    this.knownIds = new Set();
+    this.knownNames = {};
     this.acc = 0;
     this.needFirstFrame = next !== null;
+  }
+
+  /**
+   * Nom de chaque pawn du tampon `pawns`, recalculé seulement quand la liste
+   * des ids a changé depuis le dernier appel : `pawn_name` ne coûte rien tant
+   * que personne n'apparaît ni ne disparaît.
+   */
+  private namesFor(sim: RunnerSim, pawns: Int32Array): Record<number, string> {
+    const ids = new Set<number>();
+    for (let o = 0; o + PAWN_STRIDE <= pawns.length; o += PAWN_STRIDE) ids.add(pawns[o]);
+    let changed = ids.size !== this.knownIds.size;
+    if (!changed) {
+      for (const id of ids) {
+        if (!this.knownIds.has(id)) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (!changed) return this.knownNames;
+    this.knownIds = ids;
+    const names: Record<number, string> = {};
+    for (const id of ids) names[id] = sim.pawnName(id);
+    this.knownNames = names;
+    return names;
   }
 
   /**
@@ -229,6 +269,7 @@ export class SimRunner {
 
     const withHash = this.frameCount % this.hashEveryFrames === 0;
     this.frameCount += 1;
+    const pawns = sim.pawns();
     const frame: FrameMessage = {
       type: "frame",
       tick: sim.tick(),
@@ -236,11 +277,14 @@ export class SimRunner {
       ticksPerDay: sim.ticksPerDay(),
       weather: sim.weather(),
       hash: withHash ? sim.hash() : null,
-      pawns: sim.pawns(),
+      pawns,
       items: sim.items(),
       blueprints: sim.blueprints(),
       events: sim.events(),
       priorities: sim.priorities(),
+      skills: sim.skills(),
+      health: sim.health(),
+      names: this.namesFor(sim, pawns),
       stored: sim.storedTotals(),
       lag: this.lag,
       tps: this.tpsValue,

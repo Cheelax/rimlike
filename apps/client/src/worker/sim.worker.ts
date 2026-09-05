@@ -80,6 +80,10 @@ const SIM_API: ReadonlySet<string> = new Set([
   "blueprints",
   "events",
   "priorities",
+  "skills",
+  "health",
+  "pawnName",
+  "pawnInjuries",
 ]);
 
 /** Idem pour le `LockstepClient`, préfixé `lockstep.` côté appelant. */

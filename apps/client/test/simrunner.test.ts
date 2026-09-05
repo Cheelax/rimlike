@@ -78,8 +78,15 @@ class FakeSim implements RunnerSim {
     return this.cells(0);
   }
 
+  /** Ids simulés dans le tampon `pawns` : muable, pour éprouver le cache des noms. */
+  pawnIds: number[] = [1];
+  /** Nombre d'appels à `pawnName`, pour vérifier qu'il n'est pas fait à chaque frame. */
+  nameCalls = 0;
+
   pawns(): Int32Array {
-    return new Int32Array([1, 256, 512, 0, 800, 900, 700, 0, -1, 0, 0, 1000]);
+    const out: number[] = [];
+    for (const id of this.pawnIds) out.push(id, 256, 512, 0, 800, 900, 700, 0, -1, 0, 0, 1000);
+    return new Int32Array(out);
   }
 
   items(): Int32Array {
@@ -96,6 +103,19 @@ class FakeSim implements RunnerSim {
 
   priorities(): Int32Array {
     return new Int32Array([1, 3, 3, 3, 3, 3, 3]);
+  }
+
+  skills(): Int32Array {
+    return new Int32Array([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  }
+
+  health(): Int32Array {
+    return new Int32Array([1, 1000, 100, 0]);
+  }
+
+  pawnName(id: number): string {
+    this.nameCalls += 1;
+    return `pawn${id}`;
   }
 
   storedTotals(): Uint32Array {
@@ -258,6 +278,30 @@ describe("SimRunner en solo", () => {
     expect(out.map).not.toBeNull();
     expect(out.overlays).not.toBeNull();
     expect(out.frame).not.toBeNull();
+  });
+
+  it("ne recalcule les noms que si la liste des ids change", () => {
+    const { runner, sim } = soloStarted();
+    expect(sim.nameCalls).toBe(1); // premier `frame` : un pawn, un appel
+    const first = runner.advance(100);
+    expect(first.frame?.names).toEqual({ 1: "pawn1" });
+    expect(sim.nameCalls).toBe(1); // même id : pas de nouvel appel
+
+    // Même liste d'ids sur plusieurs frames : toujours pas de recalcul.
+    runner.advance(200);
+    runner.advance(300);
+    expect(sim.nameCalls).toBe(1);
+
+    // Un pawn de plus : la liste change, les noms sont recalculés.
+    sim.pawnIds = [1, 2];
+    const grown = runner.advance(400);
+    expect(grown.frame?.names).toEqual({ 1: "pawn1", 2: "pawn2" });
+    expect(sim.nameCalls).toBe(3); // les deux ids relus
+
+    // Un pawn disparu : la liste change encore, même sans en ajouter.
+    sim.pawnIds = [2];
+    const shrunk = runner.advance(500);
+    expect(shrunk.frame?.names).toEqual({ 2: "pawn2" });
   });
 
   it("ne fait rien tant qu'aucun sim n'est adopté", () => {

@@ -49,6 +49,9 @@ function frame(): FrameMessage {
     blueprints: new Int32Array([1, 0, 0, 3, 4, 0, 5, 0]),
     events: new Int32Array([1, 10, 0, 2]),
     priorities: new Int32Array([1, 3, 3, 3, 3, 3, 3]),
+    skills: new Int32Array([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+    health: new Int32Array([1, 1000, 100, 0]),
+    names: { 1: "Alice" },
     stored: new Uint32Array([9, 8, 7, 6, 5, 4]),
     lag: 3,
     tps: 60,
@@ -114,7 +117,7 @@ describe("protocole du Worker de simulation", () => {
   it("fait arriver les tampons d'un `frame` copiés, jamais partagés", () => {
     const original = frame();
     const clone = structuredClone(original);
-    for (const key of ["pawns", "items", "blueprints", "events", "priorities", "stored"] as const) {
+    for (const key of ["pawns", "items", "blueprints", "events", "priorities", "skills", "health", "stored"] as const) {
       expect(clone[key]).toEqual(original[key]);
       expect(clone[key]).not.toBe(original[key]);
       expect(clone[key].buffer).not.toBe(original[key].buffer);
@@ -124,6 +127,9 @@ describe("protocole du Worker de simulation", () => {
     expect(clone.pawns[0]).toBe(1);
     expect(clone.hash).toBe("deadbeef");
     expect(clone.tps).toBe(60);
+    // `names` est un simple objet : cloné en donnée, pas en tampon.
+    expect(clone.names).toEqual({ 1: "Alice" });
+    expect(clone.names).not.toBe(original.names);
   });
 
   it("fait arriver la carte et les calques copiés", () => {
@@ -145,9 +151,9 @@ describe("protocole du Worker de simulation", () => {
   it("annonce des tampons distincts, transférables sans copie", () => {
     const original = frame();
     const transfer = transferablesOf(original);
-    // Six tampons, tous différents : un tampon transféré deux fois lèverait.
-    expect(transfer.length).toBe(6);
-    expect(new Set(transfer).size).toBe(6);
+    // Huit tampons, tous différents : un tampon transféré deux fois lèverait.
+    expect(transfer.length).toBe(8);
+    expect(new Set(transfer).size).toBe(8);
 
     const clone = structuredClone(original, { transfer });
     expect(Array.from(clone.stored)).toEqual([9, 8, 7, 6, 5, 4]);
