@@ -21,10 +21,19 @@
 //! feu de camp par temps chaud et sec, et `Command::Ignite` (débogage et
 //! futur outil du joueur). La propagation, elle, est silencieuse : un seul
 //! `FireStarted` par incendie, un seul `FireOut` à la fin.
+//!
+//! **Le feu suit le vent.** C'est ce qui l'empêche d'être un processus de
+//! branchement surcritique : une case en feu prend presque sûrement sa voisine
+//! sous le vent, rarement celles des côtés, presque jamais celle d'amont
+//! (`CROSS_SPREAD_DIVISOR`, `BACK_SPREAD_DIVISOR`). Un incendie court donc en
+//! panache, traverse ce qu'il a devant lui et s'arrête — au lieu de s'étaler
+//! en tache jusqu'à manquer de combustible. Le vent n'est **pas** un champ de
+//! plus dans `Sim` : il se lit dans le bruit de température de la période
+//! météo courante (`wind_direction`), et tourne donc quand le temps change.
 
 use serde::{Deserialize, Serialize};
 
-use crate::climate::FREEZING;
+use crate::climate::{FREEZING, WEATHER_NOISE};
 use crate::health::{self, HIT_WEIGHT_TOTAL};
 use crate::items::ItemKind;
 use crate::jobs::Reservation;
@@ -56,32 +65,78 @@ pub const FIRE_BURN_TICKS: u32 = 900;
 /// À partir de cette intensité, une case enflamme ses voisines.
 pub const SPREAD_MIN: u8 = 2;
 
-/// Chance qu'une case à intensité `SPREAD_MIN` ou plus enflamme un voisin
-/// combustible donné, par évaluation.
+/// Chance qu'une case à intensité `SPREAD_MIN` ou plus enflamme le voisin
+/// **sous le vent**, par évaluation. Les trois autres directions divisent ce
+/// chiffre (voir `CROSS_SPREAD_DIVISOR` et `BACK_SPREAD_DIVISOR`).
 ///
-/// **Posé sur la géométrie, puis mesuré.** Une case passe environ
+/// **Posé sur la géométrie, puis mesuré.** Une case passe
 /// `(FIRE_BURN_TICKS - FIRE_GROWTH) / FIRE_INTERVAL` = 75 évaluations à
-/// intensité ≥ 2 avant de s'éteindre : à 1/40, elle finit par prendre un
-/// voisin donné dans `1 - (39/40)^75` ≈ 85 % des cas. Mesure sur dix graines,
-/// un bosquet de 8×8 arbres allumé en son centre, météo forcée :
-///
-/// | temps  | cases brûlées / 640 | durée moyenne |
-/// |---|---|---|
-/// | clair  | **628** (98 %) | 3 984 ticks |
-/// | pluie  | 0 | 44 ticks |
-/// | neige  | 0 | 44 ticks |
-///
-/// Un bosquet part donc entièrement en quelques milliers de ticks à sec, et
-/// pas du tout dès qu'il tombe quelque chose : la pluie divise la propagation
-/// par `WET_SPREAD_DIVISOR` **et** éteint une case sur quatre par évaluation,
-/// si bien qu'un foyer ne vit pas assez longtemps pour atteindre
-/// `SPREAD_MIN`.
+/// intensité ≥ 2 avant de s'éteindre : à 1/40, elle finit par prendre le
+/// voisin sous le vent dans `1 - (39/40)^75` ≈ 85 % des cas. Un front avance
+/// donc presque sûrement, et c'est voulu : un départ de feu doit coûter
+/// quelque chose. Ce qu'il ne doit plus faire, c'est s'élargir dans les quatre
+/// directions à la fois — voir `CROSS_SPREAD_DIVISOR`.
 pub const FIRE_SPREAD_NUM: u32 = 1;
 pub const FIRE_SPREAD_DEN: u32 = 40;
+
+/// Le feu suit le vent. Vers les deux côtés, la chance de propagation est
+/// divisée par ce facteur ; vers l'amont, par `BACK_SPREAD_DIVISOR`.
+///
+/// **C'est ce qui empêche l'incendie d'être un processus de branchement
+/// surcritique.** Sans vent, une case en feu tire 75 fois vers chacune de ses
+/// quatre voisines : l'espérance d'allumages dépasse 1,9 et le feu croît
+/// jusqu'à manquer de combustible (mesuré : 99 % d'un bosquet de 20×20).
+/// Avec le vent, l'espérance vers l'aval reste 0,85 mais tombe à 0,46 de
+/// chaque côté et à 0,10 en amont : le feu court en panache au lieu de
+/// s'étaler en tache, et il s'arrête quand il a traversé le bosquet.
+///
+/// Mesure, vingt graines, bosquet de 20×20 arbres isolé sur de la terre nue,
+/// allumé au centre, 30 °C, temps clair, personne pour éteindre
+/// (`crates/sim/tests/balance_fire.rs`) :
+///
+/// | côtés / amont | médiane brûlée | min | max | dans 15-60 % |
+/// |---|---|---|---|---|
+/// | 1 / 1 (sans vent) | 399 (99 %) | 397 | 400 | 0/20 |
+/// | 2 / 4 | 350 (87 %) | 124 | 390 (97 %) | 2/20 |
+/// | 2 / 8 | 175 (43 %) | 112 | 351 (88 %) | 15/20 |
+/// | 3 / 6 | 162 (40 %) | 1 | 248 (62 %) | 17/20 |
+/// | 3 / 12 | 125 (31 %) | 1 | 237 (59 %) | 17/20 |
+/// | **3 / 16** | **112 (28 %)** | 1 | **168 (42 %)** | **17/20** |
+/// | 4 / 8 | 80 (20 %) | 1 | 179 | 13/20 |
+///
+/// 3 / 16 tient la bande 15-60 % pour dix-sept graines sur vingt **et** garde
+/// la pire à 42 % : c'est le seul palier qui laisse de la marge des deux
+/// côtés. Élargir le panache (2 sur les côtés) laisse repasser des graines
+/// au-dessus de 85 % ; le rétrécir (4) fait mourir treize feux sur vingt avant
+/// d'avoir pris. Le facteur d'amont compte autant que celui des côtés : à
+/// côtés égaux, passer de 6 à 16 en amont fait tomber le pire cas de 62 % à
+/// 42 % — c'est le retour de flamme qui remplissait la tache.
+pub const CROSS_SPREAD_DIVISOR: u32 = 3;
+pub const BACK_SPREAD_DIVISOR: u32 = 16;
 
 /// Sous la pluie (ou la neige), la chance de propagation est divisée par ce
 /// facteur.
 pub const WET_SPREAD_DIVISOR: u32 = 4;
+
+/// Sous `FREEZING`, elle l'est par celui-ci. Le gel **ne tue plus** un feu
+/// (voir `quench_chance`) : du bois sec brûle par −10 °C, il brûle seulement
+/// plus lentement. C'est la différence entre « le feu n'existe pas en hiver »
+/// et « le feu est moins vif en hiver ».
+///
+/// Même bosquet, même mesure, temps clair et sec :
+///
+/// | climat | médiane brûlée | moyenne | maximum |
+/// |---|---|---|---|
+/// | 30 °C | 112 (28 %) | 105 | 168 |
+/// | 0 °C (il gèle la nuit) | 73 (18 %) | 63 | 139 |
+/// | −5 °C (il gèle toujours) | **5 (1 %)** | **13,9** | 45 |
+///
+/// Avant, la troisième ligne valait 0 partout : sous zéro, une case avait une
+/// chance sur quatre de s'éteindre par évaluation et n'atteignait jamais
+/// `SPREAD_MIN`. Le feu d'hiver reste huit fois plus petit que celui d'été,
+/// mais il existe — et une moitié des départs s'éteint encore sans rien
+/// prendre, ce qui est le bon régime pour un accident d'hiver.
+pub const COLD_SPREAD_DIVISOR: u32 = 2;
 
 /// Dénominateur des chances d'extinction naturelle (voir `quench_chance`).
 pub const QUENCH_DEN: u32 = 4;
@@ -245,27 +300,65 @@ pub fn item_burns(kind: ItemKind) -> bool {
 }
 
 /// Chance qu'une case en feu s'éteigne d'elle-même à chaque évaluation, en
-/// `(numérateur, dénominateur)`. Rien par temps clair et doux ; la pluie et
-/// l'orage éteignent une fois sur quatre ; le gel autant ; la neige, qui
-/// tombe forcément sous zéro, cumule les deux et éteint trois fois sur quatre.
-pub fn quench_chance(weather: Weather, freezing: bool) -> (u32, u32) {
+/// `(numérateur, dénominateur)`. **Seul ce qui tombe du ciel éteint** : rien
+/// par temps clair, la pluie et l'orage une fois sur quatre, la neige deux
+/// fois sur quatre.
+///
+/// Le froid, lui, n'éteint plus rien. Il éteignait : une case gelée avait une
+/// chance sur quatre de s'éteindre par évaluation, soit une espérance de vie
+/// de 40 ticks quand il en faut `FIRE_GROWTH` = 150 pour atteindre
+/// `SPREAD_MIN`. Aucun feu ne franchissait donc jamais le premier palier sous
+/// zéro — mesuré en campagne : **exactement une case brûlée par départ**,
+/// trente-neuf pour trente-neuf feux. Le froid ralentit maintenant la
+/// propagation (`COLD_SPREAD_DIVISOR`) au lieu de la supprimer.
+pub fn quench_chance(weather: Weather) -> (u32, u32) {
     let wet = match weather {
         Weather::Clear => 0,
         Weather::Rain | Weather::Storm => 1,
         Weather::Snow => 2,
     };
-    (wet + u32::from(freezing), QUENCH_DEN)
+    (wet, QUENCH_DEN)
 }
 
-/// Chance de propagation vers un voisin combustible donné, par évaluation :
-/// `FIRE_SPREAD_NUM / FIRE_SPREAD_DEN`, divisée par `WET_SPREAD_DIVISOR`
-/// quand il tombe de l'eau.
-pub fn spread_chance(wet: bool) -> (u32, u32) {
-    let den = if wet {
-        FIRE_SPREAD_DEN * WET_SPREAD_DIVISOR
+/// Direction du vent, en décalage de case. Elle se lit dans le bruit de
+/// température de la période météo courante (`Sim::weather_noise`, tiré par
+/// `tick_weather` à chaque changement de temps) : **aucun champ de plus dans
+/// `Sim`**, et le vent tourne naturellement quand le temps change, quelques
+/// heures à une journée. Un incendie qui dure assez longtemps voit donc son
+/// panache s'infléchir.
+pub fn wind_direction(weather_noise: i32) -> (i32, i32) {
+    // `weather_noise` vit dans `-WEATHER_NOISE..WEATHER_NOISE` : quatre
+    // tranches égales, une par direction. La saturation et le `clamp` sont là
+    // pour un vieux snapshot au bruit aberrant, pas pour le jeu ; le `max(1)`
+    // pour qui rétrécirait un jour `WEATHER_NOISE`.
+    let width = (2 * WEATHER_NOISE / NEIGHBOURS.len() as i32).max(1);
+    let slice = weather_noise
+        .saturating_add(WEATHER_NOISE)
+        .clamp(0, 2 * WEATHER_NOISE - 1)
+        / width;
+    NEIGHBOURS[(slice as usize).min(NEIGHBOURS.len() - 1)]
+}
+
+/// Chance de propagation d'une case en feu vers la voisine `offset`, par
+/// évaluation : `FIRE_SPREAD_NUM / FIRE_SPREAD_DEN` sous le vent, divisée
+/// par `CROSS_SPREAD_DIVISOR` sur les côtés et `BACK_SPREAD_DIVISOR` à
+/// contre-vent, puis encore par `WET_SPREAD_DIVISOR` s'il tombe de l'eau et
+/// par `COLD_SPREAD_DIVISOR` s'il gèle.
+pub fn spread_chance(offset: (i32, i32), wind: (i32, i32), wet: bool, cold: bool) -> (u32, u32) {
+    let wind_divisor = if offset == wind {
+        1
+    } else if offset == (-wind.0, -wind.1) {
+        BACK_SPREAD_DIVISOR
     } else {
-        FIRE_SPREAD_DEN
+        CROSS_SPREAD_DIVISOR
     };
+    let mut den = FIRE_SPREAD_DEN * wind_divisor;
+    if wet {
+        den *= WET_SPREAD_DIVISOR;
+    }
+    if cold {
+        den *= COLD_SPREAD_DIVISOR;
+    }
     (FIRE_SPREAD_NUM, den)
 }
 
@@ -365,8 +458,9 @@ impl Sim {
     /// ses propres voisines.
     fn burn_step(&mut self, outdoor: i32) {
         let wet = self.weather.is_wet();
-        let (spread_num, spread_den) = spread_chance(wet);
-        let (quench_num, quench_den) = quench_chance(self.weather, outdoor < FREEZING);
+        let cold = outdoor < FREEZING;
+        let wind = wind_direction(self.weather_noise);
+        let (quench_num, quench_den) = quench_chance(self.weather);
 
         // 1. Qui prend, à partir de qui brûle assez fort.
         let mut caught: Vec<(u32, u32)> = Vec::new();
@@ -381,9 +475,10 @@ impl Sim {
                     continue;
                 }
                 let (nx, ny) = (nx as u32, ny as u32);
+                let (num, den) = spread_chance((dx, dy), wind, wet, cold);
                 if self.map.fire_at(nx, ny) != 0
                     || !self.tile_has_fuel(nx, ny, outdoor)
-                    || !self.rng.chance(spread_num, spread_den)
+                    || !self.rng.chance(num, den)
                 {
                     continue;
                 }
@@ -736,20 +831,61 @@ mod tests {
 
     #[test]
     fn la_neige_eteint_plus_vite_que_la_pluie() {
-        let (rain, den) = quench_chance(Weather::Rain, false);
-        let (snow, _) = quench_chance(Weather::Snow, true);
-        let (clear, _) = quench_chance(Weather::Clear, false);
-        assert_eq!(clear, 0, "un temps clair et doux n'éteint rien");
+        let (rain, den) = quench_chance(Weather::Rain);
+        let (snow, _) = quench_chance(Weather::Snow);
+        let (clear, _) = quench_chance(Weather::Clear);
+        assert_eq!(clear, 0, "un temps clair n'éteint rien");
         assert!(snow > rain, "{snow}/{den} devrait dépasser {rain}/{den}");
         assert!(rain > 0);
     }
 
     #[test]
-    fn la_pluie_ralentit_la_propagation() {
-        let (num, dry) = spread_chance(false);
-        let (_, wet) = spread_chance(true);
+    fn la_pluie_et_le_froid_ralentissent_la_propagation() {
+        let wind = (1, 0);
+        let (num, dry) = spread_chance(wind, wind, false, false);
+        let (_, wet) = spread_chance(wind, wind, true, false);
+        let (_, cold) = spread_chance(wind, wind, false, true);
+        let (_, both) = spread_chance(wind, wind, true, true);
         assert_eq!(num, FIRE_SPREAD_NUM);
+        assert_eq!(dry, FIRE_SPREAD_DEN);
         assert_eq!(wet, dry * WET_SPREAD_DIVISOR);
+        assert_eq!(cold, dry * COLD_SPREAD_DIVISOR);
+        assert_eq!(both, dry * WET_SPREAD_DIVISOR * COLD_SPREAD_DIVISOR);
+    }
+
+    #[test]
+    fn le_feu_suit_le_vent() {
+        let wind = (0, 1);
+        let (_, down) = spread_chance(wind, wind, false, false);
+        let (_, cross) = spread_chance((1, 0), wind, false, false);
+        let (_, back) = spread_chance((0, -1), wind, false, false);
+        assert!(down < cross, "le feu devrait courir sous le vent");
+        assert!(
+            cross < back,
+            "il devrait remonter le vent encore moins vite"
+        );
+    }
+
+    #[test]
+    fn le_vent_couvre_les_quatre_directions() {
+        let mut seen: Vec<(i32, i32)> = Vec::new();
+        for noise in -WEATHER_NOISE..WEATHER_NOISE {
+            let d = wind_direction(noise);
+            assert!(NEIGHBOURS.contains(&d), "direction {d:?} hors des voisines");
+            if !seen.contains(&d) {
+                seen.push(d);
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            NEIGHBOURS.len(),
+            "une direction n'est jamais tirée"
+        );
+        // Un bruit aberrant (vieux snapshot, climat trafiqué) reste une
+        // direction valable.
+        for noise in [i32::MIN, -1_000, 1_000, i32::MAX] {
+            assert!(NEIGHBOURS.contains(&wind_direction(noise)));
+        }
     }
 
     #[test]
