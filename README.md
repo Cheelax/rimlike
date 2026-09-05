@@ -1,13 +1,45 @@
 # rimlike
 
-Jeu de gestion de colonie à la RimWorld, multijoueur sur un globe partagé.
-Sim déterministe en Rust (WASM + natif), client Three.js/React, serveur Node.
+Jeu de gestion de colonie à la RimWorld, en vue du dessus pseudo-3D, avec un
+multijoueur lockstep et un globe partagé où chaque case est une carte de
+colonie possible. Sim déterministe en Rust (WASM + natif), client Three.js/React,
+serveur relais Node.
 
-**Jouer sans rien installer** : https://cheelax.github.io/rimlike/ (solo complet dans le
-navigateur ; le multijoueur et le monde partagé demandent un serveur, voir plus bas).
+**Jouer sans rien installer** : https://cheelax.github.io/rimlike/ (solo complet dans
+le navigateur ; le multijoueur et le monde partagé demandent un serveur, voir « Essayer
+le multijoueur et le monde » plus bas).
 
-Plan complet et journal des décisions : [docs/PLAN.md](docs/PLAN.md).
-Guide du joueur (contrôles, survie, dangers, monde partagé) : [docs/GUIDE.md](docs/GUIDE.md).
+## Ce qu'on peut y faire aujourd'hui
+
+- Diriger une colonie de colons avec besoins (faim, repos, humeur), traits de
+  caractère, compétences et montée de niveau.
+- Construire (murs, portes, sols, lits, postes), cultiver, cuisiner et conserver
+  les vivres par le froid.
+- Une santé détaillée : parties du corps, blessures, saignements, soins, colons à
+  terre, morts et tombes.
+- Des raids gérés par un storyteller à difficulté réglable, des armes (mêlée et
+  arc) et des pièges à pointes.
+- De la faune à chasser et dépecer (viande, cuir), des vêtements à fabriquer et à
+  porter selon la température.
+- Des saisons et un climat propre à chaque case du globe.
+- De la recherche (technologies à bonus, pas de verrous), des relations entre
+  colons (avis, disputes, amitiés).
+- Des marchands de passage et du troc, des caravanes entre colonies, des
+  marchands itinérants qui circulent sur le globe.
+- Un multijoueur lockstep dans une colonie et un monde partagé avec colonies
+  gelées (avance rapide au retour) et reconnexion automatique.
+
+Détail complet du point de vue du joueur (contrôles, survie, dangers, monde
+partagé) : [docs/GUIDE.md](docs/GUIDE.md).
+
+## Essayer le multijoueur et le monde
+
+Le client publié ne fournit pas de serveur : sur l'écran d'accueil, saisir
+l'adresse d'un serveur relais (`ws://...` ou `wss://...`) rejoint une salle
+multijoueur ou le monde partagé. Pour un essai local, voir « Démarrer »
+ci-dessous puis `AGENTS.md` (sections « Essayer le multijoueur » et « Essayer le
+monde partagé »). Pour héberger son propre serveur, voir « Héberger un
+serveur » plus bas.
 
 ## Démarrer
 
@@ -16,50 +48,39 @@ Prérequis : Rust via rustup (la toolchain est pinnée par `rust-toolchain.toml`
 
 ```bash
 pnpm install
-pnpm dev        # compile le WASM puis lance Vite
-pnpm test       # tests natifs du sim, dont le test de déterminisme
-pnpm lint       # clippy (anti-float, anti-HashMap) + tsc
+pnpm dev          # compile le WASM puis lance Vite sur :5173 (solo direct)
+pnpm dev:server   # relais + serveur monde sur :8787, pour le multi et le monde
+pnpm test         # cargo test --workspace, dont le test de déterminisme
+pnpm lint         # cargo clippy -D warnings + tsc --noEmit
 ```
 
-En jeu : glisser droit ou flèches pour déplacer la vue, molette pour zoomer, Q/E pour
-tourner, espace pour la pause, 1/2/3 pour la vitesse. Clic gauche pour sélectionner un
-colon, clic droit pour l'envoyer quelque part. Outils (C couper, M miner, H récolter,
-Z zone de stockage, G zone de culture, X annuler) et constructions (B mur, P porte, O sol,
-L lit, F feu de camp, T pour alterner bois et pierre) : tracer un rectangle au glisser
-gauche, Échap ou clic droit pour revenir à la sélection. Les colons cherchent seuls le
-travail : ils construisent, livrent les matériaux aux chantiers, cuisinent au feu de camp,
-exécutent les désignations, sèment et récoltent les cultures, puis rangent les objets dans
-les zones de stockage. Un colon affamé mange le meilleur plat disponible, un colon fatigué
-va dormir dans un lit libre. La nourriture se gâte avec le temps. Après trois jours, des
-pillards attaquent régulièrement : les colons menacés se défendent seuls, et un clic droit
-sur un ennemi avec un colon sélectionné ordonne l'attaque. Un colon qui ne mange plus
-meurt en deux jours. La touche J ouvre le tableau des priorités de travail par colon. Un
-colon au moral trop bas craque et erre un moment ; la pluie fait pousser les cultures, l'orage
-pèse sur le moral ; des voyageurs rejoignent la colonie de temps en temps.
+Détail des commandes (tests par paquet, variables d'environnement du serveur,
+outils en ligne de commande du sim) : `AGENTS.md`.
 
-## Multijoueur (expérimental)
+## Architecture
 
-```bash
-pnpm dev:server
-```
+- `crates/sim` : la simulation, en Rust. Déterministe, sans rendu, sans réseau,
+  sans horloge, compilée en natif et en WASM.
+- `crates/sim-wasm` : frontière wasm-bindgen, seule porte entre Rust et JavaScript.
+- `apps/client` : Vite + React + Three.js. Lit l'état du sim, envoie des commandes.
+- `packages/protocol` (types, codec, logique lockstep pure) et `apps/server`
+  (relais WebSocket : salles, horloge, ordre des commandes, snapshots) portent le
+  multijoueur.
+- `packages/world` : géométrie du globe, biomes, itinéraires de caravanes.
 
-puis, dans deux navigateurs, `http://localhost:5173/?server=ws://localhost:8787&room=demo&name=alice`
-et la même adresse avec `name=bob`. L'hôte démarre la partie ; chacun voit les actions de
-l'autre, la simulation tourne à l'identique chez tous (lockstep déterministe).
+Plan complet, phases et journal des décisions : [docs/PLAN.md](docs/PLAN.md).
+Protocole réseau : [docs/protocol.md](docs/protocol.md). Le globe :
+[docs/world.md](docs/world.md). Guide du joueur : [docs/GUIDE.md](docs/GUIDE.md).
+Guide de contribution (ordre de travail, invariants du sim, conventions) :
+[AGENTS.md](AGENTS.md).
 
-## Monde partagé (expérimental)
+## Héberger un serveur
 
-Avec le serveur lancé, `http://localhost:5173/?server=ws://localhost:8787&name=alice&world=1`
-affiche le globe : survolez et cliquez une case terrestre pour vous y installer, ou visitez la
-colonie d'un autre joueur. Chaque case a sa propre carte et sa propre graine ; une colonie
-fermée reprend là où elle en était quand quelqu'un y revient.
+Image Docker, variables d'environnement, sauvegarde et restauration, `wss://`
+derrière un reverse proxy : [deploy/README.md](deploy/README.md).
 
-## Structure
+## Mode de travail
 
-- `crates/sim` : la simulation. Aucun flottant, aucune horloge, aucune dépendance au rendu.
-- `crates/sim-wasm` : frontière wasm-bindgen, seule porte entre Rust et JS.
-- `apps/client` : rendu et UI.
-- `packages/protocol` : messages et logique lockstep du multijoueur, sans I/O.
-- `apps/server` : serveur relais WebSocket (ne simule pas, ne décode pas les commandes).
-- `packages/world` : le globe, ses biomes et les itinéraires de caravanes.
-- `docs/` : plan, décisions, protocole réseau.
+Le projet est mené avec des agents (Claude, aux côtés du développeur) ; les
+décisions d'architecture et d'équilibrage sont consignées et datées dans
+`docs/PLAN.md` plutôt que reprises à chaque session.
