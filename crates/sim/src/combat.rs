@@ -168,8 +168,13 @@ impl Sim {
         // `HEAL_INTERVAL` est un multiple de `HEAL_INTERVAL_BED` : hors de ces
         // ticks-là, aucune cicatrisation n'est possible et on s'épargne le
         // coup d'œil à la carte (le saignement, lui, s'écoule à chaque tick).
+        // Sous `HYPOTHERMIA_TEMP`, plus rien ne cicatrise : le froid entretient
+        // les plaies, et c'est ce qui rend l'hypothermie dangereuse — sans
+        // cela, une atteinte de `COLD_SEVERITY` toutes les
+        // `HYPOTHERMIA_INTERVAL` guérirait plus vite qu'elle ne s'aggrave.
         let heals = self.tick % HEAL_INTERVAL_BED == 0
             && !self.pawns[i].is_starving()
+            && self.pawns[i].comfort >= crate::climate::HYPOTHERMIA_TEMP
             && self.tick % self.heal_interval(i) == 0;
         let p = &mut self.pawns[i];
         for inj in &mut p.injuries {

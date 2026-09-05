@@ -909,7 +909,8 @@ fn rain_doubles_crop_growth() {
 #[test]
 fn weather_eventually_changes() {
     let mut s = Sim::new(7, 32, 32);
-    let mut seen = [false; 3];
+    // Un drapeau par temps, neige comprise : `Weather::Snow` indexe ce tableau.
+    let mut seen = [false; sim::weather::WEATHER_COUNT];
     for _ in 0..6 * DAY {
         seen[s.weather() as usize] = true;
         s.step(&[]);
@@ -2128,5 +2129,319 @@ fn fast_forward_est_borne_et_ignore_zero() {
     assert!(
         !has_event(&z, EventKind::FastForwarded),
         "une avance nulle n'est pas un événement"
+    );
+}
+
+// ----------------------------------------------------------------------
+// Saisons, température et intérieur
+// ----------------------------------------------------------------------
+
+/// Une année entière en soixante bonds d'un jour. Chaque bond tombe **pile**
+/// sur le premier tick d'un jour (`day × TICKS_PER_DAY - décalage de départ`),
+/// donc le tick de calendrier qui suit voit bien le changement de saison :
+/// c'est le seul moyen de traverser 864 000 ticks sans les jouer.
+#[test]
+fn seasons_cycle_and_temperature_follows() {
+    let mut s = Sim::new(9, 24, 24);
+    // `time_of_day()` au tick 0, c'est le décalage de départ du sim.
+    let offset = u64::from(s.time_of_day());
+    let mut last_seq: i64 = -1;
+    let mut season_args: Vec<u32> = Vec::new();
+    let mut frosts = 0;
+    let mut sum = [0i64; 4];
+    let mut count = [0i64; 4];
+
+    assert_eq!(s.season(), sim::Season::Spring, "on commence au printemps");
+    assert_eq!(s.day_of_year(), 0);
+
+    for day in 1..=u64::from(sim::YEAR_DAYS) {
+        let target = day * DAY - offset;
+        let jump = (target - s.tick()) as u32;
+        s.step(&[Command::FastForward { ticks: jump }]);
+        assert_eq!(s.tick(), target + 1);
+        assert_eq!(u64::from(s.day_of_year()), day % u64::from(sim::YEAR_DAYS));
+        // Le journal est borné : on suit les `seq` déjà vus, comme le client.
+        for e in s.events() {
+            if i64::from(e.seq) <= last_seq {
+                continue;
+            }
+            last_seq = i64::from(e.seq);
+            match e.kind {
+                EventKind::SeasonChanged => season_args.push(e.arg),
+                EventKind::FirstFrost => frosts += 1,
+                _ => {}
+            }
+        }
+        sum[s.season() as usize] += i64::from(s.outdoor_temperature());
+        count[s.season() as usize] += 1;
+    }
+
+    assert_eq!(
+        season_args,
+        vec![
+            sim::Season::Summer as u32,
+            sim::Season::Autumn as u32,
+            sim::Season::Winter as u32,
+            sim::Season::Spring as u32,
+        ],
+        "les quatre saisons doivent défiler dans l'ordre"
+    );
+    assert!(
+        count.iter().all(|&c| c > 0),
+        "saison jamais visitée : {count:?}"
+    );
+    let avg: Vec<i64> = (0..4).map(|k| sum[k] / count[k]).collect();
+    assert!(
+        avg[sim::Season::Summer as usize] > avg[sim::Season::Winter as usize] + 100,
+        "été {} vs hiver {} : l'écart saisonnier ne se voit pas",
+        avg[sim::Season::Summer as usize],
+        avg[sim::Season::Winter as usize]
+    );
+    assert!(
+        avg[sim::Season::Winter as usize] < 0,
+        "l'hiver tempéré doit passer sous 0 °C : {avg:?}"
+    );
+    assert_eq!(frosts, 1, "une seule première gelée par automne");
+}
+
+/// Sous le gel, un champ ne pousse plus et finit par mourir. Amplitude nulle :
+/// le test ne dépend que du froid, pas de la date.
+#[test]
+fn crops_stop_growing_in_frost_and_can_die() {
+    let map = map_from(&[
+        "............",
+        "............",
+        "............",
+        "............",
+        "............",
+        "............",
+        "............",
+        "............",
+    ]);
+    let mut s = Sim::from_map_with_climate(1, map, sim::Climate::new(-100, 0));
+    assert!(s.outdoor_temperature() < -50, "{}", s.outdoor_temperature());
+    s.step(&[Command::SetZone {
+        zone: Zone::Growing,
+        x0: 4,
+        y0: 5,
+        x1: 5,
+        y1: 6,
+    }]);
+    assert!(
+        run_until(&mut s, DAY, |s| !s.crops().is_empty()),
+        "rien n'a été semé"
+    );
+
+    let mut deaths = 0;
+    let mut previous = s.crops().len();
+    for _ in 0..DAY {
+        s.step(&[]);
+        let now = s.crops().len();
+        deaths += previous.saturating_sub(now);
+        previous = now;
+        assert!(
+            s.crops().iter().all(|c| c.growth == 0),
+            "un plant a poussé sous le gel : {:?}",
+            s.crops()
+        );
+        assert!(
+            !s.map().features().contains(&(Feature::CropRipe as u8)),
+            "un plant a mûri sous le gel"
+        );
+    }
+    assert!(deaths > 0, "aucun plant n'a gelé en une journée");
+}
+
+/// Quatre murs et un feu font une pièce, et la pièce est plus chaude. Le bord
+/// de la carte, lui, compte comme ouvert : une zone qui l'atteint reste dehors.
+#[test]
+fn walls_and_campfire_make_a_room_warmer() {
+    let map = map_from(&[
+        "..............",
+        "..............",
+        "..............",
+        "..............",
+        "..............",
+        "..............",
+        "..............",
+        "..............",
+        "..............",
+        "..............",
+    ]);
+    let mut s = Sim::from_map(3, map);
+    // Anneau de murs 5×5 en pleine carte : intérieur 3×3 (4..6, 4..6).
+    for x in 3..=7u32 {
+        for y in 3..=7u32 {
+            if x == 3 || x == 7 || y == 3 || y == 7 {
+                s.map_mut().set_feature(x, y, Feature::WallWood);
+            }
+        }
+    }
+    s.map_mut().set_feature(4, 4, Feature::Campfire);
+    // Deuxième « pièce » adossée au bord de la carte : elle ne compte pas.
+    for (x, y) in [(3, 0), (3, 1), (0, 2), (1, 2), (2, 2), (3, 2)] {
+        s.map_mut().set_feature(x, y, Feature::WallWood);
+    }
+    s.step(&[]);
+
+    assert!(s.map().is_indoor(5, 5), "le centre de la pièce est dedans");
+    assert_eq!(
+        s.map().indoor_count(),
+        9,
+        "3×3, la case du feu comprise : un feu ne délimite rien"
+    );
+    assert!(
+        !s.map().is_indoor(1, 1),
+        "une zone qui touche le bord est dehors"
+    );
+    assert!(!s.map().is_indoor(11, 8), "la plaine est dehors");
+
+    let outdoor = s.outdoor_temperature();
+    assert_eq!(s.tile_temperature(11, 8), outdoor, "dehors = extérieur");
+    assert_eq!(
+        s.tile_temperature(5, 5),
+        outdoor + 60 + 80,
+        "isolation + un feu de camp"
+    );
+    assert!(s.tile_temperature(5, 5) > s.tile_temperature(11, 8));
+
+    // Une porte ferme la pièce autant qu'un mur, bien qu'on la traverse : rien
+    // ne change, donc rien n'est recalculé.
+    let version = s.map().indoor_version();
+    s.map_mut().set_feature(3, 5, Feature::DoorWood);
+    s.step(&[]);
+    assert_eq!(
+        s.map().indoor_version(),
+        version,
+        "une porte à la place d'un mur ne change aucune pièce"
+    );
+    assert!(s.map().is_indoor(5, 5), "une porte ne perce pas la pièce");
+    assert_eq!(s.tile_temperature(5, 5), s.outdoor_temperature() + 60 + 80);
+
+    // Un trou dans le mur, et la pièce n'en est plus une.
+    s.map_mut().set_feature(3, 5, Feature::None);
+    s.step(&[]);
+    assert!(s.map().indoor_version() > version, "couche non recalculée");
+    assert!(!s.map().is_indoor(5, 5), "la pièce est éventrée");
+    assert_eq!(s.map().indoor_count(), 0);
+    assert_eq!(s.tile_temperature(5, 5), s.outdoor_temperature());
+
+    // Rebouché : la pièce revient, et la couche est refaite.
+    let version = s.map().indoor_version();
+    s.map_mut().set_feature(3, 5, Feature::WallWood);
+    s.step(&[]);
+    assert!(s.map().indoor_version() > version, "couche non recalculée");
+    assert!(s.map().is_indoor(5, 5));
+    assert_eq!(s.tile_temperature(5, 5), s.outdoor_temperature() + 60 + 80);
+}
+
+/// Par −15 °C, dehors on prend le froid et le moral s'effondre ; dans une pièce
+/// chauffée, non.
+#[test]
+fn cold_hurts_mood_and_causes_hypothermia_indoors_is_safer() {
+    let map = map_from(&[
+        "....................",
+        "....................",
+        "............#######.",
+        "............#.....#.",
+        "............#.....#.",
+        "............#.....#.",
+        "............#.....#.",
+        "............#.....#.",
+        "............#######.",
+        "....................",
+        "....................",
+        "....................",
+    ]);
+    let mut s = Sim::from_map_with_climate(4, map, sim::Climate::new(-150, 0));
+    // Trois feux dans la pièce : le gain d'une pièce est plafonné à +25 °C.
+    for x in 13..=15u32 {
+        s.map_mut().set_feature(x, 3, Feature::Campfire);
+    }
+    let inside = s.spawn_pawn(15, 5, Faction::Colony);
+    let outside = s.pawns()[0].id;
+    s.step(&[]);
+    assert!(s.map().is_indoor(15, 5), "le colon abrité doit être dedans");
+    assert!(!s.map().is_indoor(
+        find_pawn(&s, outside).unwrap().tile().0,
+        find_pawn(&s, outside).unwrap().tile().1
+    ));
+
+    for _ in 0..2_000 {
+        s.step(&[]);
+    }
+
+    let warm = find_pawn(&s, inside).expect("le colon abrité est là");
+    let cold = find_pawn(&s, outside).expect("le colon exposé est là");
+    assert!(
+        warm.comfort > cold.comfort + 200,
+        "abrité {} vs exposé {}",
+        warm.comfort,
+        cold.comfort
+    );
+    assert!(
+        cold.comfort < -50,
+        "dehors il devrait geler : {}",
+        cold.comfort
+    );
+    assert!(
+        warm.comfort > -50,
+        "la pièce chauffée devrait protéger : {}",
+        warm.comfort
+    );
+    assert!(
+        cold.total_severity() > 0,
+        "aucune atteinte du froid dehors : {:?}",
+        cold.injuries
+    );
+    assert!(
+        cold.injuries
+            .iter()
+            .any(|i| i.part == BodyPart::Torso && i.bleeding == 0 && i.tended),
+        "l'atteinte du froid est une usure du torse, pansée et sans saignement : {:?}",
+        cold.injuries
+    );
+    assert!(
+        warm.injuries.is_empty(),
+        "le colon abrité ne devrait rien avoir : {:?}",
+        warm.injuries
+    );
+    assert!(
+        warm.mood() > cold.mood(),
+        "abrité {} vs exposé {}",
+        warm.mood(),
+        cold.mood()
+    );
+}
+
+/// Le climat s'impose à la construction comme en cours de partie, et les
+/// valeurs venues du réseau sont bornées avant de toucher quoi que ce soit.
+#[test]
+fn climate_is_configurable_and_bounded() {
+    let hot = sim::Climate::new(300, 0);
+    let mut s = Sim::new_with_climate(2, 16, 16, hot);
+    assert_eq!(s.climate(), hot);
+    assert!(
+        s.outdoor_temperature() > 200,
+        "climat chaud : {}",
+        s.outdoor_temperature()
+    );
+
+    // Une commande aberrante ne doit ni paniquer ni faire déborder un calcul.
+    s.step(&[Command::SetClimate {
+        base_temperature: i32::MIN,
+        amplitude: i32::MAX,
+    }]);
+    assert_eq!(
+        s.climate(),
+        sim::Climate {
+            base_temperature: sim::climate::TEMPERATURE_MIN,
+            amplitude: sim::Climate::AMPLITUDE_MAX,
+        }
+    );
+    let cold = s.outdoor_temperature();
+    assert!(
+        (sim::climate::TEMPERATURE_MIN..=sim::climate::TEMPERATURE_MAX).contains(&cold),
+        "température hors bornes : {cold}"
     );
 }

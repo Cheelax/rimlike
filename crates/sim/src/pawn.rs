@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::TICKS_PER_DAY;
+use crate::climate::{
+    COLD_MOOD_MALUS, COLD_MOOD_TEMP, Climate, FREEZING_MOOD_MALUS, HOT_MOOD_MALUS, HOT_MOOD_TEMP,
+    HYPOTHERMIA_TEMP, SNOW_MOOD_MALUS,
+};
 use crate::craft::CraftStage;
 use crate::fixed::{self, FX_HALF, Fx};
 use crate::health::{BLOOD_MAX, Injury};
@@ -234,6 +238,12 @@ pub struct Pawn {
     pub melee: Skill,
     /// Compétence de tir, même statut que `melee`.
     pub ranged: Skill,
+    /// Température ressentie, en dixièmes de degré : celle de la case où il se
+    /// trouve, recopiée à chaque tick depuis `Sim::tile_temperature` (comme
+    /// `outdoor_storm`, parce que `mood()` ne voit que le pawn).
+    pub comfort: i32,
+    /// Il neige sur la carte. Recopié du sim à chaque tick.
+    pub in_snow: bool,
 }
 
 impl Pawn {
@@ -269,6 +279,10 @@ impl Pawn {
             weapon: None,
             melee: Skill::default(),
             ranged: Skill::default(),
+            // Une valeur tempérée en attendant le premier tick : zéro voudrait
+            // dire 0 °C, et un pawn tout juste créé grelotterait pour rien.
+            comfort: Climate::TEMPERATE_BASE,
+            in_snow: false,
         }
     }
 
@@ -335,6 +349,18 @@ impl Pawn {
         // Tout le monde est dehors sous l'orage : les toits viendront plus tard.
         if self.outdoor_storm {
             m -= 50_000;
+        }
+        // Le froid et la chaleur ne se cumulent pas : on garde le pire des
+        // trois seuils. Pas de vêtements dans cette tranche.
+        if self.comfort < HYPOTHERMIA_TEMP {
+            m -= FREEZING_MOOD_MALUS;
+        } else if self.comfort < COLD_MOOD_TEMP {
+            m -= COLD_MOOD_MALUS;
+        } else if self.comfort > HOT_MOOD_TEMP {
+            m -= HOT_MOOD_MALUS;
+        }
+        if self.in_snow {
+            m -= SNOW_MOOD_MALUS;
         }
         m.clamp(0, i64::from(NEED_MAX)) as u32
     }

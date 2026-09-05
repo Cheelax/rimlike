@@ -340,6 +340,14 @@ tir hors tableau de travail, tir à l'arc à 8 cases avec ligne de vue entière 
 rochers bloquent), pillards armés selon la taille du raid, butin à leur mort ; seuil de fuite
 des pillards 600 → 650 mesuré sur 60 graines pour garder « jamais deux morts d'un coup ».
 Interface à faire (noms et couleurs des armes, poste, ordres de fabrication, arme équipée).
+Saisons et température livrées le 2026-09-05 (Opus, sim) : année de 60 jours en quatre
+saisons, courbe annuelle en table entière plus variation journalière, météo et bruit lent ;
+climat réglable par carte (`SetClimate`, pour que chaque case du globe ait le sien) ; pièces
+détectées par remplissage paresseux (murs, portes, rochers ; le bord de carte est ouvert),
+isolation et chaleur des feux par pièce ; gel qui arrête les cultures et peut tuer les plants,
+buissons qui ne repoussent pas sous zéro, neige ; froid qui pèse sur l'humeur, hypothermie par
+blessures « froid » dont la cicatrisation est bloquée sous −5 °C, chaleur excessive. Pas encore
+de vêtements ni de toits explicites. Interface à faire (température, saison, neige, pièces).
 À venir : recherche, traits et relations, storyteller adaptatif, factions PNJ et commerce,
 mods de contenu, événements monde.
 
@@ -372,6 +380,10 @@ mods de contenu, événements monde.
 - 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
   par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
   libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
+- 2026-09-05 : climat (sim). Le calendrier démarre au printemps pour ne pas commencer dans
+  le gel ; le remplissage des pièces ignore arbres, feux et eau pour rester rarement
+  invalidé ; une seule lecture de la température extérieure par tick partagée par tous les
+  systèmes (10 % de perf en jeu). Champs ajoutés en fin de `Pawn`, commande en fin d'enum.
 - 2026-09-05 : déploiement (Sonnet) : image Docker qui n'embarque que du JavaScript compilé
   et `ws`, compose avec volume ; vérifié hors conteneur faute de démon Docker sur la machine
   (serveur compilé démarré, `/health` et `/world` répondent).

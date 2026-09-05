@@ -232,6 +232,23 @@ impl Pawn {
     /// « pansée » : il n'y a rien à bander sur un ventre vide, ça se soigne en
     /// mangeant — et personne ne perd son temps à venir l'examiner.
     pub fn starve_torso(&mut self) {
+        self.wear_torso(1);
+    }
+
+    /// Le grand froid ronge le torse, exactement comme la famine : une seule
+    /// atteinte « pansée », sans saignement, qui s'aggrave par paliers et
+    /// cicatrise comme les autres dès qu'on est au chaud
+    /// (`climate::COLD_SEVERITY`).
+    pub fn chill_torso(&mut self) {
+        self.wear_torso(crate::climate::COLD_SEVERITY);
+    }
+
+    /// Aggrave (ou crée) l'atteinte sourde du torse : celle qui ne saigne pas
+    /// et qu'on ne panse pas. Partagée par la famine et le froid.
+    fn wear_torso(&mut self, amount: u32) {
+        if amount == 0 {
+            return;
+        }
         let existing = self
             .injuries
             .iter()
@@ -239,14 +256,14 @@ impl Pawn {
         match existing {
             Some(k) => {
                 let inj = &mut self.injuries[k];
-                inj.severity = (inj.severity + 1).min(SEVERITY_MAX);
+                inj.severity = (inj.severity + amount).min(SEVERITY_MAX);
             }
             None if self.injuries.len() < MAX_INJURIES => {
-                let mut weakness = Injury::new(BodyPart::Torso, 1, 0);
+                let mut weakness = Injury::new(BodyPart::Torso, amount, 0);
                 weakness.tended = true;
                 self.injuries.push(weakness);
             }
-            None => self.add_injury(BodyPart::Torso, 1, 0),
+            None => self.add_injury(BodyPart::Torso, amount, 0),
         }
         self.recompute_hp();
     }

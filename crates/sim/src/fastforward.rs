@@ -58,7 +58,8 @@ impl Sim {
         self.tick += elapsed;
         self.grow_plants(ticks);
         // Les buissons récoltés avant le gel ont repoussé pendant l'absence.
-        self.tick_regrowth();
+        let outdoor = self.outdoor_temperature();
+        self.tick_regrowth(outdoor);
         self.raiders_leave();
         self.recover_pawns(ticks);
         // Après les colons : ce qu'ils ont lâché en abandonnant leur job vient
@@ -71,12 +72,19 @@ impl Sim {
         // La météo d'il y a deux mois ne veut plus rien dire : on retire.
         self.weather_until = self.tick;
         self.tick_weather();
+        // Le calendrier avance tout seul : `day_of_year` et la saison sont des
+        // fonctions du tick, qui vient de bondir. Restent à remettre à jour les
+        // valeurs recopiées dans les pawns.
+        self.refresh_comfort();
         self.push_event(EventKind::FastForwarded, ticks / TICKS_PER_DAY);
     }
 
     /// Les plants poussent du temps écoulé et mûrissent. Le bonus de pluie
     /// n'est pas rejoué : personne ne sait quel temps il a fait sur une carte
-    /// que personne ne simulait.
+    /// que personne ne simulait. **Le froid non plus** : les hivers traversés
+    /// ne ralentissent pas la pousse et surtout ne tuent aucun plant
+    /// rétroactivement — il faudrait pour cela rejouer une météo qui n'a jamais
+    /// existé. Une colonie oubliée retrouve son champ intact.
     fn grow_plants(&mut self, ticks: u32) {
         for k in 0..self.crops.len() {
             if self.crops[k].growth >= farm::GROW_TICKS {

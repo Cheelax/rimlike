@@ -111,6 +111,22 @@ impl Feature {
         matches!(self, Feature::WallWood | Feature::WallStone)
     }
 
+    /// L'élément ferme-t-il une pièce ? Les murs, les portes (qu'on traverse,
+    /// mais qui ferment) et la roche, pas les arbres ni les buissons : une
+    /// futaie n'est pas un abri, et surtout couper un arbre ne doit pas faire
+    /// recalculer la couche « intérieur » toutes les quatre secondes.
+    pub fn blocks_room(self) -> bool {
+        self.is_wall() || self.is_door() || self == Feature::Rock
+    }
+
+    /// Ce que l'élément change pour la couche « intérieur » : le fait de
+    /// fermer une pièce, et celui d'être un feu (il chauffe la sienne). Deux
+    /// éléments de même clé sont interchangeables pour `refresh_indoor` :
+    /// c'est ce qui évite de tout recalculer quand un buisson est cueilli.
+    fn room_key(self) -> u8 {
+        u8::from(self.blocks_room()) | (u8::from(self == Feature::Campfire) << 1)
+    }
+
     pub fn is_door(self) -> bool {
         matches!(self, Feature::DoorWood | Feature::DoorStone)
     }
@@ -221,7 +237,29 @@ pub struct Map {
     bed_count: u32,
     campfire_count: u32,
     crafting_spot_count: u32,
+    /// Couche « intérieur », une valeur par case : 0 dehors, sinon le numéro
+    /// de la pièce (1..=`ROOM_ID_MAX`). Lue en zéro-copie par le client, qui
+    /// n'a qu'à tester le zéro. Recalculée paresseusement (`refresh_indoor`).
+    /// **Champs ajoutés en fin de structure** : un vieux snapshot est refusé
+    /// net plutôt que relu de travers.
+    indoor: Vec<u8>,
+    /// La couche est périmée : un mur, une porte, une roche ou un feu a changé
+    /// depuis le dernier calcul.
+    indoor_dirty: bool,
+    /// Nombre de cases intérieures, pour court-circuiter les lectures.
+    indoor_count: u32,
+    /// Incrémenté à chaque recalcul effectif de la couche.
+    indoor_version: u32,
+    /// Feux de camp par pièce, indexé par le numéro de pièce (l'entrée 0,
+    /// « dehors », reste à zéro).
+    room_campfires: Vec<u32>,
 }
+
+/// Au-delà, la zone est trop vaste pour être une pièce : c'est le dehors.
+pub const ROOM_MAX_TILES: usize = 200;
+/// Numéro de pièce maximal. Les pièces surnuméraires partagent ce numéro :
+/// une carte n'en a jamais autant, et la couche reste un octet par case.
+pub const ROOM_ID_MAX: u8 = 255;
 
 impl Map {
     pub fn generate(seed: u64, width: u32, height: u32) -> Map {
@@ -319,6 +357,11 @@ impl Map {
             bed_count,
             campfire_count,
             crafting_spot_count,
+            indoor: vec![0; n],
+            indoor_dirty: true,
+            indoor_count: 0,
+            indoor_version: 0,
+            room_campfires: Vec::new(),
         }
     }
 
@@ -378,6 +421,9 @@ impl Map {
                 Feature::Campfire => self.campfire_count += 1,
                 Feature::CraftingSpot => self.crafting_spot_count += 1,
                 _ => {}
+            }
+            if old.room_key() != f.room_key() {
+                self.indoor_dirty = true;
             }
             self.features[i] = f as u8;
             self.version += 1;
@@ -477,6 +523,136 @@ impl Map {
 
     pub fn crafting_spot_count(&self) -> u32 {
         self.crafting_spot_count
+    }
+
+    /// Couche « intérieur », une valeur par case : 0 dehors, sinon le numéro
+    /// de la pièce. Vue plate, comme `zones`.
+    pub fn indoor(&self) -> &[u8] {
+        &self.indoor
+    }
+
+    /// Numéro de la pièce d'une case, 0 si elle est dehors.
+    pub fn room(&self, x: u32, y: u32) -> u8 {
+        self.indoor[self.index(x, y)]
+    }
+
+    pub fn is_indoor(&self, x: u32, y: u32) -> bool {
+        self.room(x, y) != 0
+    }
+
+    pub fn indoor_count(&self) -> u32 {
+        self.indoor_count
+    }
+
+    /// Change à chaque recalcul effectif de la couche « intérieur ».
+    pub fn indoor_version(&self) -> u32 {
+        self.indoor_version
+    }
+
+    /// Feux de camp de la pièce `room` (0 pour le dehors, qui n'en a jamais).
+    pub fn room_campfires(&self, room: u8) -> u32 {
+        self.room_campfires
+            .get(room as usize)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// La couche « intérieur » attend un recalcul.
+    pub fn indoor_dirty(&self) -> bool {
+        self.indoor_dirty
+    }
+
+    /// Une case ouverte au sens des pièces : ni mur, ni porte, ni roche. Le
+    /// sol ne compte pas — un arbre, un feu de camp ou un étang n'arrêtent pas
+    /// le remplissage, faute de quoi une île serait « à l'intérieur ».
+    fn room_open(&self, i: usize) -> bool {
+        !Feature::from_u8(self.features[i]).blocks_room()
+    }
+
+    /// Recalcule la couche « intérieur » si elle est périmée, sinon ne fait
+    /// rien. Un remplissage par pile explicite (jamais de récursion) : chaque
+    /// composante connexe de cases ouvertes est une pièce si elle ne touche
+    /// pas le bord de la carte (le bord compte comme ouvert : une zone qui
+    /// l'atteint est dehors) et si elle tient en `ROOM_MAX_TILES` cases.
+    ///
+    /// Coût : O(cases), payé au plus une fois par tick et seulement après un
+    /// changement qui compte (mur, porte, roche, feu) — couper un arbre,
+    /// cueillir un buisson, semer un plant ou poser un sol ne salit rien.
+    pub fn refresh_indoor(&mut self) {
+        if !self.indoor_dirty {
+            return;
+        }
+        self.indoor_dirty = false;
+        self.indoor_version += 1;
+        self.indoor_count = 0;
+        let n = (self.width * self.height) as usize;
+        self.indoor.clear();
+        self.indoor.resize(n, 0);
+        let mut visited = vec![false; n];
+        let mut stack: Vec<u32> = Vec::new();
+        let mut members: Vec<u32> = Vec::new();
+        let mut next_room: u32 = 1;
+        for start in 0..n {
+            if visited[start] || !self.room_open(start) {
+                continue;
+            }
+            members.clear();
+            stack.clear();
+            stack.push(start as u32);
+            visited[start] = true;
+            let mut open = false;
+            while let Some(t) = stack.pop() {
+                members.push(t);
+                let (x, y) = (t % self.width, t / self.width);
+                if x == 0 || y == 0 || x + 1 == self.width || y + 1 == self.height {
+                    open = true;
+                }
+                for (dx, dy) in [(0i32, -1i32), (0, 1), (-1, 0), (1, 0)] {
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if !self.in_bounds(nx, ny) {
+                        continue;
+                    }
+                    let j = (ny as u32 * self.width + nx as u32) as usize;
+                    if visited[j] || !self.room_open(j) {
+                        continue;
+                    }
+                    visited[j] = true;
+                    stack.push(j as u32);
+                }
+            }
+            if open || members.len() > ROOM_MAX_TILES {
+                continue;
+            }
+            let id = if next_room < u32::from(ROOM_ID_MAX) {
+                let id = next_room as u8;
+                next_room += 1;
+                id
+            } else {
+                ROOM_ID_MAX
+            };
+            for &t in &members {
+                self.indoor[t as usize] = id;
+            }
+            self.indoor_count += members.len() as u32;
+        }
+        self.refresh_room_campfires(next_room);
+    }
+
+    /// Compte les feux de camp de chaque pièce. Un feu ne délimite rien : sa
+    /// case porte donc elle-même le numéro de sa pièce.
+    fn refresh_room_campfires(&mut self, next_room: u32) {
+        let rooms = next_room.min(u32::from(ROOM_ID_MAX)) as usize + 1;
+        self.room_campfires.clear();
+        self.room_campfires.resize(rooms, 0);
+        if self.campfire_count == 0 || self.indoor_count == 0 {
+            return;
+        }
+        for i in 0..self.indoor.len() {
+            let room = self.indoor[i];
+            if room != 0 && self.features[i] == Feature::Campfire as u8 {
+                self.room_campfires[room as usize] += 1;
+            }
+        }
     }
 
     /// Sol cultivable.

@@ -15,6 +15,7 @@
 
 pub mod build;
 pub mod caravan;
+pub mod climate;
 pub mod combat;
 pub mod craft;
 pub mod farm;
@@ -38,13 +39,14 @@ use serde::{Deserialize, Serialize};
 
 pub use build::{Blueprint, BuildKind, Material};
 pub use caravan::{CaravanManifest, MANIFEST_VERSION};
+pub use climate::{Climate, Season, YEAR_DAYS};
 pub use craft::{CraftStage, RECIPES, Recipe};
 pub use farm::Crop;
 pub use fastforward::MAX_FAST_FORWARD;
 pub use health::{BodyPart, Injury};
 pub use items::{ItemKind, ItemStack};
 pub use jobs::{Regrow, Reservation};
-pub use map::{Designation, Feature, Map, Rect, Terrain, Zone};
+pub use map::{Designation, Feature, Map, ROOM_MAX_TILES, Rect, Terrain, Zone};
 pub use pawn::{Faction, Job, Pawn};
 pub use rng::Rng;
 pub use weather::Weather;
@@ -92,6 +94,11 @@ pub enum EventKind {
     /// Une arme vient de sortir d'un poste de fabrication. `arg` : le genre
     /// fabriqué (`ItemKind`).
     WeaponCrafted = 14,
+    /// La saison a changé. `arg` : la nouvelle saison (`climate::Season`).
+    SeasonChanged = 15,
+    /// Première gelée de l'automne : la première fois de la saison que la
+    /// température extérieure passe sous 0 °C. `arg` : le jour de l'année.
+    FirstFrost = 16,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -178,6 +185,15 @@ pub enum Command {
     /// (`craft::recipe_for`) est ignoré. Tout est à 0 au départ : sans ordre,
     /// aucune arme n'est fabriquée.
     SetCraftTarget { kind: ItemKind, target: u32 },
+    /// Impose le climat de la carte : moyenne annuelle et écart saisonnier, en
+    /// dixièmes de degré. C'est ainsi qu'une salle du globe reçoit le climat de
+    /// sa case (`docs/PLAN.md` §3) sans changer la construction de la carte :
+    /// l'hôte l'émet en lockstep, tout le monde l'applique au même tick. Les
+    /// valeurs sont bornées par `Climate::sanitized`.
+    SetClimate {
+        base_temperature: i32,
+        amplitude: i32,
+    },
 }
 
 #[derive(Debug)]
@@ -228,23 +244,43 @@ pub struct Sim {
     /// par `ItemKind`. Ajouté **en fin de structure** : un vieux snapshot est
     /// alors refusé net (fin de tampon) au lieu d'être relu de travers.
     craft_targets: [u32; ItemKind::COUNT],
+    /// Climat de la carte (`Command::SetClimate`), tempéré par défaut.
+    climate: Climate,
+    /// Bruit de température de la période météo courante, en dixièmes : tiré
+    /// à chaque changement de temps pour que deux années ne se superposent pas.
+    pub(crate) weather_noise: i32,
+    /// Rien à annoncer côté gelée : soit la première de l'automne en cours est
+    /// déjà passée, soit ce n'est pas l'automne. Reposé à chaque changement de
+    /// saison (voir `Sim::tick_climate`).
+    frost_announced: bool,
 }
 
 impl Sim {
     pub fn new(seed: u64, width: u32, height: u32) -> Sim {
+        Sim::new_with_climate(seed, width, height, Climate::default())
+    }
+
+    /// Même chose, sur un climat imposé : c'est ce que fera le serveur monde
+    /// pour une case de globe qui n'est pas tempérée.
+    pub fn new_with_climate(seed: u64, width: u32, height: u32, climate: Climate) -> Sim {
         let mut rng = Rng::new(seed);
         // Le seed de la carte est dérivé : changer la gen de terrain ne doit pas
         // décaler le flux RNG du gameplay, et inversement.
         let map_seed = rng.next_u64();
-        Sim::with_map(rng, Map::generate(map_seed, width, height))
+        Sim::with_map(rng, Map::generate(map_seed, width, height), climate)
     }
 
     /// Sim sur une carte fournie (tests, scénarios).
     pub fn from_map(seed: u64, map: Map) -> Sim {
-        Sim::with_map(Rng::new(seed), map)
+        Sim::from_map_with_climate(seed, map, Climate::default())
     }
 
-    fn with_map(rng: Rng, map: Map) -> Sim {
+    /// Sim sur une carte et un climat fournis (tests, scénarios).
+    pub fn from_map_with_climate(seed: u64, map: Map, climate: Climate) -> Sim {
+        Sim::with_map(Rng::new(seed), map, climate)
+    }
+
+    fn with_map(rng: Rng, map: Map, climate: Climate) -> Sim {
         let mut sim = Sim {
             tick: 0,
             rng,
@@ -264,7 +300,14 @@ impl Sim {
             next_id: 1,
             departures: Vec::new(),
             craft_targets: [0; ItemKind::COUNT],
+            climate: climate.sanitized(),
+            weather_noise: 0,
+            // La partie commence au printemps : rien à guetter avant l'automne.
+            frost_announced: true,
         };
+        // La couche « intérieur » est prête avant le premier tick : lire une
+        // température juste après la construction doit donner le bon chiffre.
+        sim.map.refresh_indoor();
         sim.spawn_starting_pawns(3);
         sim.schedule_first_raid();
         // La première journée reste claire un moment, le temps de s'installer.
@@ -475,17 +518,36 @@ impl Sim {
                     self.craft_targets[kind as usize] = target;
                 }
             }
+            Command::SetClimate {
+                base_temperature,
+                amplitude,
+            } => {
+                self.climate = Climate {
+                    base_temperature,
+                    amplitude,
+                }
+                .sanitized();
+            }
         }
     }
 
     fn update(&mut self) {
-        self.tick_regrowth();
+        // La couche « intérieur » d'abord : tout ce qui suit lit des
+        // températures. Elle ne coûte que si un mur, une porte ou un feu a
+        // bougé depuis le dernier tick.
+        self.map.refresh_indoor();
         self.tick_weather();
-        self.tick_crops();
+        // La température extérieure est la même pour toute la carte : une
+        // seule lecture par tick, partagée par le calendrier, les plants, les
+        // buissons et les pawns.
+        let outdoor = self.outdoor_temperature();
+        self.tick_climate(outdoor);
+        self.tick_regrowth(outdoor);
+        self.tick_crops(outdoor);
         self.tick_spoilage();
         self.tick_storyteller();
         for i in 0..self.pawns.len() {
-            self.tick_pawn(i);
+            self.tick_pawn(i, outdoor);
         }
         self.remove_dead();
     }

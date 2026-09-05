@@ -10,7 +10,7 @@ use sim::{
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 14;
+pub const VARIANT_COUNT: usize = 15;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -29,6 +29,7 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "ArriveCaravan",
     "FastForward",
     "SetCraftTarget",
+    "SetClimate",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -199,6 +200,19 @@ fn random_manifest(rng: &mut Rng) -> Vec<u8> {
     bytes
 }
 
+/// Température en dixièmes de degré pour `SetClimate` : le plus souvent une
+/// valeur de climat crédible (−40 °C à +40 °C), sinon franchement absurde,
+/// jusqu'aux bornes de `i32` — c'est là que se casserait une multiplication.
+fn random_temperature(rng: &mut Rng) -> i32 {
+    match rng.below(6) {
+        0 => i32::MIN.saturating_add(rng.below(1_000) as i32),
+        1 => i32::MAX.saturating_sub(rng.below(1_000) as i32),
+        2 => -(rng.below(100_000) as i32),
+        3 => rng.below(100_000) as i32,
+        _ => rng.range_i32(-400, 401),
+    }
+}
+
 /// Tire une commande aléatoire à appliquer telle quelle. Renvoie aussi
 /// l'indice de la variante choisie (dans `VARIANT_NAMES`) pour les
 /// statistiques de fin de run.
@@ -315,7 +329,7 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
                 _ => rng.below(4 * sim::TICKS_PER_DAY),
             },
         },
-        _ => Command::SetCraftTarget {
+        13 => Command::SetCraftTarget {
             // Genres tirés dans toute la plage (la plupart n'ont pas de
             // recette : ils doivent être ignorés), objectifs le plus souvent
             // plausibles, parfois énormes — le sim ne fabrique jamais plus vite
@@ -326,6 +340,13 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
                 1 => u32::MAX - rng.below(1_000),
                 _ => rng.below(6),
             },
+        },
+        _ => Command::SetClimate {
+            // Climats plausibles (du désert à la banquise), mais surtout des
+            // valeurs qui n'ont aucun sens en degrés : `Climate::sanitized`
+            // doit les borner, et aucune température ne doit déborder ensuite.
+            base_temperature: random_temperature(rng),
+            amplitude: random_temperature(rng),
         },
     };
     (cmd, variant)

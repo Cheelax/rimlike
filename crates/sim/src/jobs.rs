@@ -8,6 +8,7 @@
 use core::cmp::Reverse;
 
 use crate::build;
+use crate::climate;
 use crate::craft::{self, CraftStage};
 use crate::farm::{self, Crop};
 use crate::health::{TEND_STEP, TEND_TICKS};
@@ -40,11 +41,12 @@ fn yield_of(kind: Designation) -> Option<(ItemKind, u32)> {
 }
 
 impl Sim {
-    pub(crate) fn tick_pawn(&mut self, i: usize) {
+    pub(crate) fn tick_pawn(&mut self, i: usize, outdoor: i32) {
         if !self.pawns[i].is_alive() {
             return;
         }
         self.pawns[i].outdoor_storm = self.weather == Weather::Storm;
+        self.tick_comfort(i, outdoor);
         self.tick_health(i);
         // Une hémorragie peut avoir tué le pawn à l'instant : il sera retiré
         // en fin de tick, il n'agit plus.
@@ -1726,20 +1728,37 @@ impl Sim {
         self.pawns[i].job = Job::Idle;
     }
 
-    pub(crate) fn tick_crops(&mut self) {
-        // Sous la pluie, les plants poussent deux fois plus vite.
-        let step = if self.weather.is_wet() { 2 } else { 1 };
-        for k in 0..self.crops.len() {
-            if self.crops[k].growth >= farm::GROW_TICKS {
+    /// Les plants poussent — ou pas. Sous la pluie deux fois plus vite, sous
+    /// 8 °C deux fois moins, sous 0 °C plus du tout, et sous −5 °C ils peuvent
+    /// geler pour de bon. La température est celle de leur case : un plant
+    /// dans une pièce chauffée passe l'hiver.
+    pub(crate) fn tick_crops(&mut self, outdoor: i32) {
+        if self.crops.is_empty() {
+            return;
+        }
+        let wet = self.weather.is_wet();
+        let tick = self.tick;
+        let mut k = 0;
+        while k < self.crops.len() {
+            let (x, y) = (self.crops[k].x, self.crops[k].y);
+            let temperature = outdoor + self.indoor_bonus(x, y);
+            if temperature < climate::CROP_KILL_TEMP
+                && self.rng.chance(1, climate::CROP_KILL_CHANCE)
+            {
+                self.kill_crop(x, y);
+                self.crops.remove(k);
                 continue;
             }
-            self.crops[k].growth = (self.crops[k].growth + step).min(farm::GROW_TICKS);
-            if self.crops[k].growth == farm::GROW_TICKS {
-                let (x, y) = (self.crops[k].x, self.crops[k].y);
-                if self.map.feature(x, y) == Feature::Crop {
+            if self.crops[k].growth < farm::GROW_TICKS {
+                let step = climate::growth_step(temperature, wet, tick);
+                self.crops[k].growth = (self.crops[k].growth + step).min(farm::GROW_TICKS);
+                if self.crops[k].growth == farm::GROW_TICKS
+                    && self.map.feature(x, y) == Feature::Crop
+                {
                     self.map.set_feature(x, y, Feature::CropRipe);
                 }
             }
+            k += 1;
         }
     }
 
@@ -1786,11 +1805,23 @@ impl Sim {
         });
     }
 
-    pub(crate) fn tick_regrowth(&mut self) {
+    /// Les buissons récoltés refont leurs baies. Sous le gel, rien ne repousse :
+    /// l'échéance est **repoussée**, pas perdue — le buisson repartira au
+    /// premier redoux.
+    pub(crate) fn tick_regrowth(&mut self, outdoor: i32) {
+        if self.regrow.is_empty() {
+            return;
+        }
         let now = self.tick;
         let mut k = 0;
         while k < self.regrow.len() {
             if self.regrow[k].ready_at <= now {
+                let (x, y) = (self.regrow[k].x, self.regrow[k].y);
+                if outdoor + self.indoor_bonus(x, y) < climate::FREEZING {
+                    self.regrow[k].ready_at = now + u64::from(climate::FROST_REGROW_DELAY);
+                    k += 1;
+                    continue;
+                }
                 let r = self.regrow.remove(k);
                 if self.map.feature(r.x, r.y) == Feature::BushUnripe {
                     self.map.set_feature(r.x, r.y, Feature::Bush);

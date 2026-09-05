@@ -221,6 +221,17 @@ impl WasmSim {
         self.pending.push(sim::Command::FastForward { ticks });
     }
 
+    /// Impose le climat de la carte : moyenne annuelle et écart saisonnier, en
+    /// **dixièmes de degré** (120 et 150 = 12 °C ± 15 °C, le tempéré par
+    /// défaut). C'est ainsi qu'une salle du globe reçoit le climat de sa case,
+    /// sans changer la construction de la carte.
+    pub fn set_climate(&mut self, base_temperature: i32, amplitude: i32) {
+        self.pending.push(sim::Command::SetClimate {
+            base_temperature,
+            amplitude,
+        });
+    }
+
     // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
     //
     // Fonctions **associées** : le client doit pouvoir encoder avant même
@@ -324,6 +335,14 @@ impl WasmSim {
         })
     }
 
+    /// Climat de la carte, en dixièmes de degré. Voir `set_climate`.
+    pub fn encode_set_climate(base_temperature: i32, amplitude: i32) -> Vec<u8> {
+        encode(&sim::Command::SetClimate {
+            base_temperature,
+            amplitude,
+        })
+    }
+
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
     pub fn encode_set_priority(pawn: u32, work: u8, priority: u8) -> Vec<u8> {
         encode(&sim::Command::SetPriority {
@@ -372,9 +391,54 @@ impl WasmSim {
         self.inner.time_of_day()
     }
 
-    /// Météo courante, suivant `sim::Weather`.
+    /// Météo courante, suivant `sim::Weather` (0 clair, 1 pluie, 2 orage,
+    /// 3 neige).
     pub fn weather(&self) -> u8 {
         self.inner.weather() as u8
+    }
+
+    /// Jours d'une année de jeu (quatre saisons).
+    pub fn year_days(&self) -> u32 {
+        sim::YEAR_DAYS
+    }
+
+    /// Jour de l'année courant, dans `0..year_days()`.
+    pub fn day_of_year(&self) -> u32 {
+        self.inner.day_of_year()
+    }
+
+    /// Saison courante, suivant `sim::Season` (0 printemps, 1 été, 2 automne,
+    /// 3 hiver).
+    pub fn season(&self) -> u8 {
+        self.inner.season() as u8
+    }
+
+    /// Température extérieure, en **dixièmes de degré** : 120 = 12 °C.
+    pub fn outdoor_temperature(&self) -> i32 {
+        self.inner.outdoor_temperature()
+    }
+
+    /// Température d'une case, en dixièmes de degré : la température
+    /// extérieure dehors, plus l'isolation et les feux de la pièce dedans.
+    /// Hors carte : la température extérieure.
+    pub fn tile_temperature(&self, x: u32, y: u32) -> i32 {
+        self.inner.tile_temperature(x, y)
+    }
+
+    /// Température ressentie par un pawn, en dixièmes de degré. 0 si l'id est
+    /// inconnu.
+    pub fn pawn_comfort(&self, id: u32) -> i32 {
+        self.inner
+            .pawns()
+            .iter()
+            .find(|p| p.id == id)
+            .map_or(0, |p| p.comfort)
+    }
+
+    /// Change à chaque recalcul effectif de la couche « intérieur » : le
+    /// client rebâtit son rendu des pièces seulement quand ce nombre bouge.
+    pub fn indoor_version(&self) -> u32 {
+        self.inner.indoor_version()
     }
 
     /// Hash d'état en hexadécimal, pour l'affichage et la détection de désync.
@@ -466,6 +530,16 @@ impl WasmSim {
 
     pub fn zones_ptr(&self) -> *const u8 {
         self.inner.map().zones().as_ptr()
+    }
+
+    /// Couche « intérieur », un octet par case comme `zones` : 0 dehors,
+    /// sinon le numéro de la pièce. Le rendu n'a qu'à tester le zéro.
+    pub fn indoor_ptr(&self) -> *const u8 {
+        self.inner.map().indoor().as_ptr()
+    }
+
+    pub fn indoor_len(&self) -> usize {
+        self.inner.map().indoor().len()
     }
 
     pub fn designations_ptr(&self) -> *const u8 {
@@ -853,6 +927,13 @@ mod tests {
                     target: 2,
                 },
             ),
+            (
+                WasmSim::encode_set_climate(-80, 220),
+                Command::SetClimate {
+                    base_temperature: -80,
+                    amplitude: 220,
+                },
+            ),
         ];
         for (bytes, expected) in cases {
             assert!(!bytes.is_empty(), "une commande encodée n'est jamais vide");
@@ -1002,6 +1083,55 @@ mod tests {
             "niveaux de départ : {skills:?}"
         );
         assert!(s.pawn_combat_skills(9999).is_empty());
+    }
+
+    #[test]
+    fn les_accesseurs_de_climat_repondent() {
+        let mut s = fresh();
+        assert_eq!(s.year_days(), sim::YEAR_DAYS);
+        assert_eq!(s.day_of_year(), 0, "la partie commence au printemps");
+        assert_eq!(s.season(), 0);
+        assert_eq!(s.indoor_len(), 8 * 8, "un octet par case, comme les zones");
+        let version = s.indoor_version();
+
+        // Une clairière plate n'a aucune pièce : tout touche le bord.
+        assert!(s.tile_temperature(4, 4) == s.outdoor_temperature());
+        assert_eq!(
+            s.tile_temperature(9_999, 9_999),
+            s.outdoor_temperature(),
+            "hors carte : la température extérieure"
+        );
+
+        s.set_climate(-300, 0);
+        s.step(1);
+        assert!(
+            s.outdoor_temperature() < -250,
+            "climat glacial : {}",
+            s.outdoor_temperature()
+        );
+        let id = s.inner.pawns()[0].id;
+        assert_eq!(s.pawn_comfort(id), s.tile_temperature(4, 4));
+        assert_eq!(s.pawn_comfort(9_999), 0, "id inconnu");
+
+        // Poser un mur ferme une pièce : la couche change de version.
+        for (x, y) in [
+            (2, 2),
+            (3, 2),
+            (4, 2),
+            (2, 3),
+            (4, 3),
+            (2, 4),
+            (3, 4),
+            (4, 4),
+        ] {
+            s.inner.map_mut().set_feature(x, y, sim::Feature::WallWood);
+        }
+        s.step(1);
+        assert!(
+            s.indoor_version() > version,
+            "la couche n'a pas été refaite"
+        );
+        assert!(s.tile_temperature(3, 3) > s.outdoor_temperature());
     }
 
     #[test]

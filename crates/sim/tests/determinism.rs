@@ -108,6 +108,15 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             });
         }
     }
+    if t == 100 {
+        // Le climat fait partie de l'état : une case du globe impose le sien en
+        // lockstep. Plus rude que le tempéré par défaut (6 °C ± 30), de quoi
+        // ralentir la pousse et peser sur l'humeur sans geler la colonie.
+        cmds.push(Command::SetClimate {
+            base_temperature: 60,
+            amplitude: 300,
+        });
+    }
     if t == 6000 {
         // Le combat consomme du RNG : les deux sims doivent rester identiques.
         cmds.push(Command::TriggerRaid);

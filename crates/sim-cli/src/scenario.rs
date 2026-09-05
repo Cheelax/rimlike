@@ -41,8 +41,9 @@ impl Scenario {
 
 /// Recopie de `scripted_commands` (`crates/sim/tests/determinism.rs`) :
 /// zone de stockage, désignations tournantes, plans de mur, culture, feu de
-/// camp, ordres de déplacement, raid déclenché à 6000, annulation à 4000.
-/// Toute modification du scénario de test doit être reportée ici.
+/// camp, climat imposé à 100, ordres de déplacement, raid déclenché à 6000,
+/// annulation à 4000. Toute modification du scénario de test doit être
+/// reportée ici.
 fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
     let mut cmds = Vec::new();
     let w = sim.map().width() as i32;
@@ -126,6 +127,13 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
                 priority: 1,
             });
         }
+    }
+    if t == 100 {
+        // Climat imposé, comme une case du globe le ferait.
+        cmds.push(Command::SetClimate {
+            base_temperature: 60,
+            amplitude: 300,
+        });
     }
     if t == 6000 {
         // Le combat consomme du RNG : les deux sims doivent rester identiques.
