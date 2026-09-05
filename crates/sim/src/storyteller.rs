@@ -16,6 +16,13 @@
 //! 3. la **composition** du raid : les points achètent des pillards
 //!    (`RAIDER_COST`) puis leur équipement.
 //!
+//! Avec une exception, mesurée puis posée en règle : la **toute première**
+//! bande d'une colonie est plafonnée à `FIRST_RAID_POINTS`, deux têtes. Elle
+//! vient tâter le terrain, pas régler la partie — sans quoi une colonie riche
+//! de son bois coupé, ou une difficulté à 120 %, décidait de l'issue avant que
+//! quiconque ait eu le temps de tailler un arc (voir
+//! `sim-cli/CAMPAIGN-FINDINGS.md` §4).
+//!
 //! La **bande**, elle, appartient à quelqu'un : chaque raid est mené par l'une
 //! des deux tribus de `factions`, tirée d'autant plus souvent qu'elle vous en
 //! veut, et une tribu alliée n'attaque plus (voir `Sim::draw_raid_faction`).
@@ -77,12 +84,21 @@ impl Difficulty {
     }
 
     /// Multiplicateur des points de menace, en pourcentage.
+    ///
+    /// **Difficile ramené de 150 à 120 le 2026-09-05.** À 150 %, la colonie de
+    /// départ (trois colons, 300 de richesse, 120 points) en valait 180, soit
+    /// trois pillards armés là où la normale en donne deux, et la campagne de
+    /// 30 graines éteignait **30 colonies sur 30**, 25 avant le jour 10
+    /// (`sim-cli/CAMPAIGN-FINDINGS.md` §4). À 120 % elle en vaut 144 : deux
+    /// têtes, comme en normal. La difficulté se joue alors sur la **montée** —
+    /// une colonie de quatre colons riche de 4 700 reçoit une tête de plus
+    /// qu'en normal — et sur la cadence (`raid_delay`).
     pub fn threat_percent(self) -> u32 {
         match self {
             Difficulty::Peaceful => 0,
             Difficulty::Easy => 60,
             Difficulty::Normal => 100,
-            Difficulty::Hard => 150,
+            Difficulty::Hard => 120,
         }
     }
 
@@ -90,9 +106,18 @@ impl Difficulty {
     /// Normal garde les 2 à 4 jours d'avant ; `Peaceful` n'attaque pas mais
     /// garde une échéance qui avance, pour qu'un passage en Normal ne
     /// déclenche pas un raid dans la seconde.
+    ///
+    /// **Difficile allongé de (1,5 j ; 1,5 j) à (1,75 j ; 2 j) le 2026-09-05.**
+    /// L'ancienne cadence donnait 2,25 jours de moyenne contre 3 en normal,
+    /// soit un tiers de raids en plus : une fois l'ouverture rendue survivable
+    /// (`FIRST_RAID_POINTS`), c'est ce qui usait les colonies entre le jour 10
+    /// et le jour 30 — 3 colonies sur 30 y arrivaient encore. À 2,75 jours de
+    /// moyenne, la colonie a le temps de rebâtir entre deux bandes, et le
+    /// difficile garde une cadence à lui : le minimum reste sous celui de la
+    /// normale.
     pub fn raid_delay(self) -> (u32, u32) {
         match self {
-            Difficulty::Hard => (TICKS_PER_DAY * 3 / 2, TICKS_PER_DAY * 3 / 2),
+            Difficulty::Hard => (TICKS_PER_DAY * 7 / 4, TICKS_PER_DAY * 2),
             Difficulty::Easy => (TICKS_PER_DAY * 3, TICKS_PER_DAY * 2),
             _ => (TICKS_PER_DAY * 2, TICKS_PER_DAY * 2),
         }
@@ -105,12 +130,60 @@ impl Difficulty {
 
 /// Points de menace apportés par chaque colon vivant : c'est le terme qui
 /// domine en début de partie.
+///
+/// **Laissé à 40 le 2026-09-05, après l'avoir essayé à 35.** Le socle est
+/// pincé entre deux mesures : trois colons et les 300 de richesse de départ
+/// doivent faire **deux** têtes au tick 0, donc entre 120 et 179 points
+/// (`POINTS_PER_RAIDER`) — c'est ce que calibre
+/// `first_raid_is_dangerous_but_survivable`. À 35, il aurait fallu que la
+/// richesse rende les 15 points manquants, donc un `WEALTH_PER_THREAT` sous
+/// 20 ; et à ce prix-là, la colonie du joueur scripté — **1 711 de richesse
+/// dès le jour 3**, l'essentiel en bois coupé qui traîne au sol (campagne de
+/// 30 graines, `--days 3`) — recevait trois à quatre têtes par bande au lieu
+/// de deux. Essayé, mesuré, rejeté : 30 colonies éteintes sur 30 en normal.
 pub const THREAT_PER_COLONIST: u32 = 40;
-/// Richesse qu'il faut accumuler pour un point de menace de plus.
+/// Richesse qu'il faut accumuler pour un point de menace de plus, au tarif
+/// ordinaire. **Inchangée : c'est le tarif de la colonie qui survit.**
+///
+/// Une colonie de campagne est riche tout de suite et le reste : 1 711 de
+/// richesse au jour 3, 1 565 au jour 5, 1 448 au jour 10 — l'essentiel en bois
+/// coupé qui traîne au sol. Sa richesse ne monte pas, elle *décroît*. Tout
+/// tarif linéaire assez raide pour que « tripler sa richesse » se voie
+/// (`WEALTH_PER_THREAT` à 80, mesuré) fait donc payer à cette colonie-là, qui
+/// n'a rien prospéré du tout, une tête de plus par bande : la campagne normale
+/// tombait de 20 colonies vivantes sur 30 à **14**. C'est ce qui a fait
+/// scinder le terme en deux (voir `WEALTH_RICH_FROM`).
 pub const WEALTH_PER_THREAT: u32 = 400;
+/// Au-delà de cette richesse, la colonie a **vraiment** prospéré : ce qui
+/// dépasse compte une seconde fois, au tarif fort de `WEALTH_PER_THREAT_RICH`.
+///
+/// **Mesuré, pas choisi.** 2 000, c'est le dessus de la fourchette d'une
+/// colonie de campagne ordinaire (1 400 à 1 700 du jour 3 au jour 30, moyenne
+/// finale 2 102 après les correctifs du 2026-09-05, mais la moitié des colonies
+/// en dessous) ; la plus riche des trente en finit à 4 768. En dessous du
+/// seuil, la menace est **exactement** celle d'avant — c'est ce qui protège la
+/// colonie qui n'a fait qu'abattre des arbres. Au-dessus, chaque tranche de 40
+/// vaut une tranche de 400 : une colonie à 4 700 gagne 67 points au lieu de 11,
+/// soit une bande de trois têtes au jour 30 là où elle en recevait deux au
+/// jour 5. C'est le constat n°3 du rapport, rendu vrai sans casser le reste.
+pub const WEALTH_RICH_FROM: u32 = 2_000;
+/// Tarif fort, au-delà de `WEALTH_RICH_FROM` : dix fois le tarif ordinaire.
+/// Autrement dit, il faut 2 400 de richesse de plus pour un pillard de plus —
+/// une enceinte de pierre, un cheptel et des réserves pleines.
+pub const WEALTH_PER_THREAT_RICH: u32 = 40;
 /// Jours de survie pour un point de menace de plus.
-pub const DAYS_PER_THREAT: u32 = 4;
+///
+/// **Ramené de 4 à 2 le 2026-09-05** (proposition §5) : trente jours rendent
+/// 15 points au lieu de 7, de quoi empêcher une colonie pauvre mais tenace de
+/// garder le même comité d'accueil du premier jour au dernier.
+pub const DAYS_PER_THREAT: u32 = 2;
 /// Plafond des points de menace **avant** multiplicateur de difficulté.
+///
+/// Au tarif fort, il faut 20 000 de richesse pour l'atteindre par la seule
+/// richesse — quatre fois ce que la plus riche des colonies mesurées possédait
+/// au jour 30 (4 768). Il borne donc le très long terme sans écrêter la montée
+/// qu'on vient de rendre possible : dix têtes en normal, douze en difficile
+/// (`MAX_RAIDERS`).
 pub const THREAT_MAX: u32 = 600;
 
 /// Ce que coûte un pillard à mains nues.
@@ -134,6 +207,21 @@ pub const TUNIC_COST: u32 = 10;
 /// (trois colons, tick 0, difficulté normale) la bande fait exactement deux
 /// pillards, et il reste 40 points pour les armer.
 pub const POINTS_PER_RAIDER: u32 = 60;
+
+/// Ce que vaut, au plus, la **toute première** bande d'une colonie : deux
+/// têtes et 40 points pour les armer, soit exactement la bande de référence du
+/// tick 0 décrite ci-dessus.
+///
+/// **Mesuré.** Sans ce plafond, la première bande dépend de ce que la colonie
+/// a déjà amassé, et la colonie du joueur scripté vaut 1 711 de richesse dès
+/// le jour 3 : en difficile, elle recevait **trois pillards armés** face à
+/// trois colons qui n'ont pas encore de poste de fabrication, et la campagne
+/// de 30 graines éteignait 30 colonies sur 30, 25 avant le jour 10
+/// (`sim-cli/CAMPAIGN-FINDINGS.md` §4). La première bande vient tâter le
+/// terrain, pas régler la partie : elle est la même partout, et la difficulté
+/// se rattrape dès la deuxième (`Difficulty::threat_percent`,
+/// `Difficulty::raid_delay`).
+pub const FIRST_RAID_POINTS: u32 = 2 * POINTS_PER_RAIDER;
 
 /// Un assiégeant patiente ce temps-là à son point d'entrée avant de charger.
 pub const SIEGE_TICKS: u64 = 1_200;
@@ -364,17 +452,38 @@ impl Sim {
         let days = (self.tick / u64::from(TICKS_PER_DAY)) as u32;
         let base = THREAT_PER_COLONIST
             .saturating_mul(colonists)
-            .saturating_add(self.wealth() / WEALTH_PER_THREAT)
+            .saturating_add(self.wealth_threat())
             .saturating_add(days / DAYS_PER_THREAT)
             .min(THREAT_MAX);
         base * self.difficulty.threat_percent() / 100
+    }
+
+    /// Ce que la richesse apporte aux points de menace, en **deux tranches** :
+    /// tout au tarif ordinaire, puis une seconde fois, au tarif fort, ce qui
+    /// dépasse `WEALTH_RICH_FROM`.
+    ///
+    /// Deux tranches et non une pente unique, parce que « riche » ne veut pas
+    /// dire la même chose des deux côtés du seuil : sous 2 000, la richesse
+    /// d'une colonie, c'est le bois qu'elle vient d'abattre et qui traîne au
+    /// sol — la faire payer pour ça éteint la campagne normale (mesuré : 14
+    /// colonies vivantes sur 30 au lieu de 20). Au-dessus, c'est une enceinte,
+    /// des réserves et un cheptel : de la prospérité, et elle appelle les
+    /// ennuis.
+    fn wealth_threat(&self) -> u32 {
+        let wealth = self.wealth();
+        (wealth / WEALTH_PER_THREAT)
+            .saturating_add(wealth.saturating_sub(WEALTH_RICH_FROM) / WEALTH_PER_THREAT_RICH)
     }
 
     // ------------------------------------------------------------------
     // Raids
     // ------------------------------------------------------------------
 
-    /// Programme le premier raid, après quelques jours de répit.
+    /// Programme le premier raid, après quelques jours de répit. Le délai de
+    /// grâce est le même à toutes les difficultés (`combat::GRACE_DAYS`) : ce
+    /// qui protège l'ouverture, c'est le plafond de la première bande
+    /// (`FIRST_RAID_POINTS`), pas un sursis — un sursis laisse la colonie
+    /// grossir, donc la bande aussi (mesuré : voir `CAMPAIGN-FINDINGS.md` §4).
     pub(crate) fn schedule_first_raid(&mut self) {
         let grace = u64::from(TICKS_PER_DAY) * u64::from(crate::combat::GRACE_DAYS);
         self.next_raid_at = grace + u64::from(self.rng.below(TICKS_PER_DAY / 2));
@@ -606,7 +715,16 @@ impl Sim {
         let Some(led_by) = self.draw_raid_faction(forced) else {
             return 0;
         };
-        let points = self.threat_points();
+        // La première bande d'une colonie est plafonnée : deux têtes, quelle
+        // que soit la difficulté et quoi que la colonie ait déjà amassé
+        // (`FIRST_RAID_POINTS`). `last_raid_faction` vaut `u8::MAX` tant
+        // qu'aucune n'est venue. Un raid **forcé** l'ignore, comme il ignore
+        // les alliances : `Command::TriggerRaid` est un outil de débogage, il
+        // doit montrer ce que la colonie vaut vraiment.
+        let mut points = self.threat_points();
+        if !forced && self.last_raid_faction == u8::MAX {
+            points = points.min(FIRST_RAID_POINTS);
+        }
         // En hiver, ou par n'importe quel temps où un colon aurait froid, les
         // pillards arrivent couverts : leur tunique ne change ni leurs coups ni
         // leur résistance, seulement le butin qu'ils laissent en mourant — et

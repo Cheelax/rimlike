@@ -474,8 +474,9 @@ Guilde et +3 tribu rivale, troc +2, marchand frappé −30 ou tué −40, rancun
 par jour, passage sous −50 qui avance le prochain raid, Guilde alliée qui vend à 110 %, réputation
 hostile qui éloigne les marchands ; tribut `Gift` prélevé en stockage (valeur / 20) ; événements
 41-43. Campagne d'équilibrage livrée le 2026-09-05 (Opus, sim-cli) : `rimlike-sim campaign`, joueur
-scripté, cinq constats chiffrés dans `crates/sim-cli/CAMPAIGN-FINDINGS.md` (voir journal) ; les
-réglages suivent, mesurés un par un. Interface livrée le 2026-09-05 (Sonnet) : panneau Factions (jauges de réputation par palier,
+scripté, cinq constats chiffrés dans `crates/sim-cli/CAMPAIGN-FINDINGS.md` (voir journal), tous
+traités le 2026-09-05/06 par des tranches mesurées : rangement saturé sans balayage, feu qui suit
+le vent, soins d'urgence et inhumation indexée, difficulté plafonnée et richesse qui pèse. Interface livrée le 2026-09-05 (Sonnet) : panneau Factions (jauges de réputation par palier,
 tribut par faction avec aperçu du gain), tribu qui mène le raid dans l'annonce, événements 41-43 ;
 vérifié : 60 bois offerts au Clan des Cendres, réputation −20 → −17, journal à jour. Mini-carte
 livrée le 2026-09-05 (Sonnet) : canvas 2D en bas à droite (fond repeint au changement de version,
@@ -526,6 +527,17 @@ hors du frame), job « bavarde », événements 32-34 ; vérifié : avis mutuels
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-06 : la difficulté se règle par un plafond, pas par un sursis. Allonger le délai de
+  grâce en difficile faisait l'inverse de l'effet voulu (un voyageur arrivait avant le premier
+  raid, la bande montait à quatre têtes) : le premier raid naturel est plafonné à deux têtes
+  (`FIRST_RAID_POINTS`, `TriggerRaid` l'ignore), difficile passe de 150 à 120 % de menace avec
+  une cadence de 1,75 à 2 jours, et la richesse compte une seconde fois au-delà de 2 000 pour
+  que tripler sa richesse grossisse enfin les bandes (2 → 3 têtes) sans tuer les colonies
+  modestes (un tarif linéaire plus fort faisait tomber la campagne normale de 20 à 14
+  survivantes). Mesuré sur 30 graines × 30 jours : difficile 0/30 → 8/30 vivantes au jour 30,
+  11/30 → 24/30 au jour 10, normale inchangée (20 → 22). Les cinq constats du rapport de
+  campagne sont traités ; reste le point chaud `fire_to_fight`.
 
 - 2026-09-05 : le feu suit le vent. Un feu isotrope sur un bosquet homogène est de la
   percolation : sous le seuil il meurt, au-dessus il prend tout, et aucun dénominateur

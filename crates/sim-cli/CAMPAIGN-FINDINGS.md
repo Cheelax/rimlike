@@ -9,20 +9,36 @@ touchée pour l'écrire. Chaque constat porte une proposition chiffrée, à
 éprouver par un test statistique sur plusieurs graines avant d'être appliquée
 (règle « on mesure avant de régler », `AGENTS.md`).
 
+Les constats, eux, ont été traités **le même jour** ; chacun porte alors une
+section « après réglage » qui donne les chiffres d'arrivée, mesurés de la même
+façon, et dit ce qui a été essayé puis rejeté en route. La proposition d'origine
+reste écrite telle quelle : plusieurs se sont révélées fausses à la mesure, et
+c'est le genre de chose qu'on regrette d'avoir effacée.
+
 ## Les cinq constats, en une ligne chacun
 
 1. **Rangement** (**corrigé le 2026-09-05**, voir le journal du plan) — dès qu'un entrepôt est plein, chaque colon relance un
    balayage complet de la carte **par pile au sol et par tick** : 1 870 fois
    plus lent à 60 piles. Défaut du sim, pas réglage. (§3)
-2. **Difficulté** — « difficile » éteint **30 colonies sur 30**, 25 avant le
-   jour 10 : le premier raid y fait trois pillards armés contre trois colons
-   qui n'ont pas encore d'arme. (§4)
-3. **Menace** — une bande vaut 1,9 pillard au premier raid comme au neuvième :
-   tripler sa richesse ne change la taille des raids que de 3 %. (§5)
-4. **Feu** — médiane 3 cases brûlées, maximum 2 339 sur une carte qui en compte
-   4 096, et exactement une case par départ dès qu'il fait froid. (§6)
-5. **Soins** — pour deux colons tués au combat, un troisième meurt de ses
-   plaies après, faute de débit de pansement. Rapport stable à 0,5. (§7)
+2. **Difficulté** (**réglée le 2026-09-05**, voir « Après réglage » en §4) —
+   « difficile » éteignait **30 colonies sur 30**, 25 avant le jour 10 : le
+   premier raid y faisait trois pillards armés contre trois colons qui n'ont pas
+   encore d'arme. La première bande est maintenant plafonnée à deux têtes à
+   toutes les difficultés : 24 colonies sur 30 passent le jour 10 et 8 voient le
+   jour 30. (§4)
+3. **Menace** (**réglée le 2026-09-05**, voir « Après réglage » en §5) — une
+   bande valait 1,9 pillard au premier raid comme au neuvième : tripler sa
+   richesse ne changeait la taille des raids que de 3 %. La richesse compte
+   maintenant **deux fois** au-delà de 2 000, et une colonie trois fois plus
+   riche reçoit une tête de plus. (§5)
+4. **Feu** (**réglé le 2026-09-05**, voir « Ce qui a été fait » en §6) — médiane
+   3 cases brûlées, maximum 2 339 sur une carte qui en compte 4 096, et rien
+   entre les deux. Le feu suit maintenant le vent : le pire incendie de la
+   campagne normale tombe à 534 cases (13 %), et la tranche « quelques dizaines
+   de cases », jusque-là vide, se remplit. (§6)
+5. **Soins** (**corrigé le 2026-09-05**, voir le journal du plan) — pour deux
+   colons tués au combat, un troisième mourait de ses plaies après, faute de
+   débit de pansement. Rapport stable à 0,5. (§7)
 
 ---
 
@@ -238,9 +254,37 @@ Trois gestes indépendants, du moins cher au plus structurant :
 À vérifier après coup avec le tableau ci-dessus : entrepôt saturé, 60 piles,
 96×96, la scène doit rester au-dessus de 500 000 ticks/s.
 
+### Le même défaut ailleurs : l'inhumation (corrigé le 2026-09-05)
+
+`Sim::try_start_bury` cherchait la tombe vide la plus proche **en balayant la
+carte entière**, à chaque appel, exactement comme le rangement — `grave_count`
+ne servait, là aussi, que de garde à l'entrée. Le troisième geste ci-dessus lui
+a été appliqué tel quel : `Map::grave_tiles`, liste triée des tombes vides
+tenue par `set_feature` et sérialisée comme `stockpile_tiles`, plus un
+court-circuit « aucune tombe libre » avant de trier les cadavres.
+
+Mesuré par un compteur frère de `haul_scans` (`Sim::bury_scans`, hors snapshot
+et hors hash), sur 600 ticks, trois colons, seize tombes, des cadavres hors
+d'atteinte (`crates/sim/tests/burial_perf.rs`) :
+
+| scène | avant | après |
+|---|---|---|
+| 96×96, 60 cadavres | 8 753 280 cases | **105 280** |
+| 192×192, 60 cadavres | 34 742 400 cases | **105 280** |
+| 96×96, 10 cadavres | 8 753 280 cases | **105 280** |
+
+Quatre-vingt-trois fois moins de travail en 96×96, trois cent trente fois moins
+en 192×192, et le coût ne dépend plus de la surface. Une différence avec le
+rangement, à la décharge du code d'origine : la borne `PATH_ATTEMPTS` s'armait
+**déjà** sur les cadavres examinés (d'où la troisième ligne, identique à la
+première avant comme après) ; seul le balayage était en cause. Le joueur
+scripté des campagnes ne creusant jamais de tombe (§8, biais n°2), ce défaut ne
+pesait sur aucun chiffre de ce rapport — il attendait le premier joueur qui
+enterre ses morts.
+
 ---
 
-## 4. Constat n°2 — « difficile » n'est pas une difficulté, c'est une extinction
+## 4. Constat n°2 — « difficile » n'était pas une difficulté, c'était une extinction
 
 ### Mesure
 
@@ -284,9 +328,9 @@ graine.
 être mesuré de bout en bout, et il fait passer le premier raid de « dangereux
 mais survivable » à « toujours fatal ».
 
-### Proposition (non appliquée)
+### Proposition d'alors (éprouvée le 2026-09-05, voir plus bas)
 
-Séparer les deux leviers, qui aujourd'hui frappent le même instant :
+Séparer les deux leviers, qui frappent le même instant :
 
 1. Donner à la difficulté son propre délai de grâce — `GRACE_DAYS` à 5 en
    difficile, 3 ailleurs — pour que le premier raid arrive après le poste de
@@ -300,9 +344,74 @@ Séparer les deux leviers, qui aujourd'hui frappent le même instant :
 l'existant, plus une campagne de 30 graines qui doit viser **la moitié environ**
 des colonies éteintes, pas la totalité.
 
+### Après réglage du 2026-09-05
+
+Les deux propositions ont été essayées ; **la première est fausse** (voir plus
+bas) et la seconde ne suffisait pas. Trois gestes ont été retenus, chacun
+mesuré séparément sur 30 graines :
+
+| geste | avant | après |
+|---|---|---|
+| plafond de la **première** bande (`storyteller::FIRST_RAID_POINTS`) | (n'existait pas) | **120 points**, soit deux têtes |
+| `Difficulty::threat_percent` (difficile) | 150 % | **120 %** |
+| `Difficulty::raid_delay` (difficile) | 1,5 à 3 jours (2,25 de moyenne) | **1,75 à 3,75 jours** (2,75) |
+
+plus le réglage de la menace elle-même (§5), commun à toutes les difficultés.
+Les tests statistiques qui encodent la cible sont dans
+`crates/sim/tests/balance_threat.rs` ; ils échouaient tous les trois avant.
+
+| campagne 30 graines × 30 jours | **difficile** témoin | **difficile** après | normale témoin | normale après |
+|---|---|---|---|---|
+| colonies vivantes au jour 30 | **0/30** | **8/30** | 20/30 | 22/30 |
+| colonies vivantes au jour 10 | 11/30 | **24/30** | 28/30 | 28/30 |
+| colonies éteintes avant le jour 10 | 19/30 | **6/30** | 2/30 | 2/30 |
+| colons au jour 10 / 20 | 0,7 / 0,0 | 2,2 / 1,5 | 2,9 / 2,8 | 3,0 / 2,6 |
+| raids reçus par colonie | 2,5 | 5,9 | 6,6 | 6,6 |
+| pillards par bande | 2,8 | 2,3 | 2,1 | 2,2 |
+| richesse finale moyenne | 550 | 1 401 | 2 102 | 2 127 |
+| technologies acquises | 0,0 | 0,6 | 0,9 | 0,9 |
+
+Les objectifs sont tenus : en difficile **la moitié des colonies passent le
+jour 10** (24 sur 30) et **plus du quart atteignent le jour 30** (8 sur 30), et
+celles qui s'éteignent le font maintenant *après* le jour 10 (16 sur 22, contre
+19 sur 30 avant le jour 10). La normale, elle, ne bouge pas : 22 colonies
+vivantes contre 20 pour le témoin, à l'intérieur du bruit de trente graines.
+
+Les 2,5 raids par colonie du témoin difficile ne sont toujours pas « moins de
+raids » : la colonie meurt avant d'en voir d'autres. Après réglage elle en voit
+5,9, presque autant qu'en normale — et c'est bien le signe qu'elle survit.
+
+**Le témoin compte autant que la mesure.** Les constats n°1, n°4 et n°5 ont été
+corrigés le même jour, et le tableau de référence en tête de ce constat date
+d'avant eux : la colonne « témoin » ci-dessus est donc la révision d'arrivée
+avec le seul `storyteller.rs` remis dans son état antérieur. Sans elle, on
+porterait au crédit du réglage de la menace ce que le rangement, le feu et les
+soins ont apporté — à eux seuls, ils font passer la campagne difficile de 4 à
+11 colonies vivantes au jour 10, et la normale de 16 à 20 au jour 30.
+
+### Ce qui a été essayé, et rejeté
+
+1. **`GRACE_DAYS` à 5 en difficile** (proposition n°1). Elle suppose que la
+   colonie profitera de ces deux jours pour s'armer. Mesuré, l'effet est
+   **inverse** : un voyageur arrive au jour 4 ou 5 (`next_wanderer_at`), la
+   colonie passe à quatre colons, et à 40 points par colon la première bande
+   grossit d'une tête au lieu de rétrécir — **4,0 pillards par bande** contre
+   2,7, 30 colonies éteintes sur 30, 25 avant le jour 10. C'est ce résultat qui
+   a fait remplacer le sursis par un **plafond** : le plafond, lui, ne dépend ni
+   de l'heure ni de ce que la colonie est devenue entre-temps.
+2. **`threat_percent` à 120 sans plafond** (proposition n°2 seule). La colonie
+   du joueur scripté vaut 1 711 de richesse dès le jour 3 (§5) : avec un tarif
+   de richesse assez raide pour que la prospérité pèse, sa première bande valait
+   encore trois têtes. 30 colonies éteintes sur 30, 3 passaient le jour 10.
+3. **Garder la cadence de 1,5 jour.** Avec le plafond et les 120 %, l'ouverture
+   devient survivable — 23 colonies sur 30 passent le jour 10 — mais une bande
+   toutes les 2,25 journées use ce qui reste : **3 colonies sur 30** voient le
+   jour 30. C'est cette mesure-là qui a désigné `raid_delay` comme troisième
+   geste, plutôt qu'un tour de vis de plus sur les points.
+
 ---
 
-## 5. Constat n°3 — la menace n'escalade pas : une bande vaut deux têtes, toujours
+## 5. Constat n°3 — la menace n'escaladait pas : une bande valait deux têtes, toujours
 
 ### Mesure
 
@@ -346,7 +455,7 @@ Le nombre de colons écrase tout. Deux conséquences :
    moins fort. C'est ce qui explique qu'en normal 16 colonies sur 30 tiennent
    trente jours en n'ayant jamais rien fait pour se défendre.
 
-### Proposition (non appliquée)
+### Proposition d'alors (éprouvée le 2026-09-05, voir plus bas)
 
 Rééquilibrer les trois termes pour qu'au jour 30 la richesse pèse autant que
 les colons :
@@ -360,11 +469,88 @@ presque zéro, donc le test de référence tient), mais au jour 30 la bande pass
 de 1,9 à ≈ 2,7 têtes. À mesurer sur 30 graines : la taille moyenne doit croître
 avec le numéro du raid, ce qu'aucune campagne ne montre aujourd'hui.
 
+### Après réglage du 2026-09-05
+
+La proposition a une hypothèse cachée — que la richesse d'une colonie *monte*
+avec le temps. Mesurée, elle **descend** :
+
+| jour | 3 | 5 | 10 | 30 |
+|---|---|---|---|---|
+| richesse moyenne (30 graines, normale) | **1 711** | 1 565 | 1 448 | 1 436 |
+
+(chaque colonne est la richesse finale d'une campagne `--days N`.)
+
+Une colonie vaut donc 1 700 dès le troisième jour, sans avoir rien prospéré :
+c'est le bois qu'elle vient d'abattre et qui traîne au sol. Toute pente
+linéaire assez raide pour que « tripler sa richesse » se voie fait donc payer
+cette colonie-là, et le premier raid la tue :
+
+| `WEALTH_PER_THREAT` linéaire | jour 5 → jour 30 (×3 de richesse) | campagne normale |
+|---|---|---|
+| 400 (avant) | 2 → 2 têtes | 20 colonies vivantes sur 30 |
+| 80 | 2 → **3** têtes | **14 sur 30** |
+| 15 | 3 à 4 têtes dès le début | **0 sur 30** |
+
+(La dernière ligne allait de pair avec `THREAT_PER_COLONIST` à 35 : c'est ce
+couple-là qui a été mesuré, l'un ne va pas sans l'autre — voir la fin de cette
+section.)
+
+D'où le réglage retenu : **deux tranches**, pas une pente.
+
+| constante | avant | après |
+|---|---|---|
+| `WEALTH_PER_THREAT` | 400 | 400 (inchangé) |
+| `WEALTH_RICH_FROM` | — | **2 000** |
+| `WEALTH_PER_THREAT_RICH` | — | **40** |
+| `DAYS_PER_THREAT` | 4 | **2** |
+| `THREAT_PER_COLONIST` | 40 | 40 (inchangé, essayé à 35) |
+
+Sous 2 000 de richesse, la menace est **exactement** celle d'avant — c'est ce
+qui protège la colonie qui n'a fait qu'abattre des arbres. Au-dessus, ce qui
+dépasse compte une seconde fois, dix fois plus cher. Décomposition des points
+d'une colonie de trois colons au jour 30, à 4 700 de richesse (le triple de ce
+qu'elle vaut au jour 5) :
+
+| terme | avant | après |
+|---|---|---|
+| colons (40 × 3) | 120 (**91 %**) | 120 (56 %) |
+| richesse | 11 (8 %) | 78 (**37 %**) |
+| jours | 7 (5 %) | 15 (7 %) |
+| **total** | 138 → **2 têtes** | 213 → **3 têtes** |
+
+Taille de bande mesurée (`crates/sim/tests/balance_threat.rs`, richesse forcée
+par `spawn_item`, raid **forcé** pour lire la menace elle-même et non le
+plafond de la première bande du §4) :
+
+| scène | avant | après |
+|---|---|---|
+| tick 0, 3 colons, 300 de richesse | 2 | 2 |
+| jour 5, 3 colons, 1 565 (mesurée en campagne) | 2 | 2 |
+| jour 30, 3 colons, **4 695** (le triple) | 2 | **3** |
+| 6 colons, 2 600 de richesse | 4 | 4 |
+
+En campagne, la bande moyenne passe de 2,1 à 2,2 têtes en normale : c'est peu,
+et c'est voulu — la moitié des colonies ne franchissent jamais le seuil. Ce qui
+change, c'est que **celles qui prospèrent le paient** : la plus riche des trente
+finit à 4 374 de richesse, soit 59 points de menace de plus qu'avant, une tête
+de bande entière.
+
+Reste **le deuxième point du constat**, non traité : perdre un colon allège
+toujours le raid suivant de 40 points. Le corriger demanderait de descendre
+`THREAT_PER_COLONIST`, donc de remonter le tarif de la richesse pour tenir la
+fourchette du tick 0 — c'est exactement la ligne « 15 » du tableau ci-dessus.
+Essayé, mesuré, rejeté.
+
 ---
 
-## 6. Constat n°4 — le feu ne connaît que deux régimes : trois cases ou la moitié de la carte
+## 6. Constat n°4 — le feu ne connaissait que deux régimes : trois cases ou la moitié de la carte
 
-### Mesure
+**Réglé le 2026-09-05.** Le constat et le mécanisme sont laissés tels qu'ils ont
+été mesurés ; ce qui a été changé, ce qui a été essayé puis écarté et les
+chiffres d'après sont en fin de section. Le banc de mesure vit désormais dans
+`crates/sim/tests/balance_fire.rs`.
+
+### Mesure (avant)
 
 Cases brûlées **par graine**, campagne de 30 graines :
 
@@ -413,29 +599,165 @@ pour éteindre une case à 3 — pendant quoi le front en a gagné plusieurs.
 Le coût est en **carte**, pas en vies : le feu ne fait que 3 % des morts. Mais
 il efface les arbres, donc le bois, donc l'enceinte et les arcs.
 
-### Proposition (non appliquée)
+### Le banc de mesure
 
-Ramener le processus près de la criticité au lieu de le laisser franchement
-au-dessus :
+`crates/sim/tests/balance_fire.rs` : un **bosquet de 20×20 arbres** posé sur de
+la terre nue, allumé en son centre, laissé brûler jusqu'au bout, sur vingt
+graines et sous quatre climats forcés. La terre nue autour isole la mesure —
+l'herbe ne prend qu'au-dessus de `GRASS_FIRE_TEMP` et fausserait la comparaison
+chaud / froid. Les trois colons naissent enfermés dans un enclos de roche : leur
+barycentre ne bouge plus, le bosquet reste hors de `FIREFIGHT_RADIUS`, personne
+ne vient éteindre.
 
-- monter `FIRE_SPREAD_DEN` de 40 vers **150**, ce qui ramène l'espérance par
-  voisine libre de 1,9 à 0,5 et fait repasser le branchement sous le seuil
-  critique pour un front qui n'a qu'une ou deux voisines libres ;
-- ou, à propagation égale, raccourcir la fenêtre : `FIRE_BURN_TICKS` de 900 à
-  **400** divise par deux le nombre de tirages qu'une case obtient ;
-- ou, plus structurant, plafonner le nombre de cases enflammées simultanément et
-  laisser le front avancer sans s'élargir.
+Cet enclos n'est pas qu'une commodité de scénario, c'est aussi ce qui rend le
+banc utilisable : **sans lui, le même incendie passe de 0,3 s à 66 s en
+`debug`**. Profil `sample` sur la version sans enclos : 99 % des échantillons
+dans `find_job` → `try_start_firefight` → `fire_to_fight` → `path_beside_fire`
+→ `path::find_path_for`. C'est le constat n°1 sous un autre nom — un colon
+inactif relance sa recherche à chaque tick, et ici cette recherche vaut jusqu'à
+**48 A\*** (6 foyers candidats × 8 voisines). Défaut à part entière, non corrigé
+ici.
 
-Le premier est le plus simple à mesurer et le seul qui ne touche pas à ce qu'un
-incendie *fait* — seulement à ce qu'il *devient*.
+### Ce qui a été fait
 
-Cible mesurable, sur 30 graines de la campagne normale : **médiane inchangée
-(2 à 3 cases) et maximum sous 300** — le feu doit rester un accident coûteux,
-pas une remise à zéro de la carte.
+Deux changements, tous les deux dans `crates/sim/src/fire.rs`.
+
+**1. Le feu suit le vent.** `FIRE_SPREAD_DEN` ne bouge pas (1/40), mais elle ne
+vaut plus que pour le voisin **sous le vent** : `CROSS_SPREAD_DIVISOR` = 3 sur
+les deux côtés, `BACK_SPREAD_DIVISOR` = 16 à contre-vent. L'espérance
+d'allumages par voisine libre passe de 0,85 dans les quatre directions à 0,85
+sous le vent, 0,46 de chaque côté et 0,10 en amont : la somme repasse sous
+2 et, surtout, le feu **court en panache** au lieu de s'étaler en tache. Il
+traverse ce qu'il a devant lui et s'arrête.
+
+Le vent n'ajoute **aucun champ à `Sim`** : `fire::wind_direction` le lit dans
+`Sim::weather_noise`, le bruit de température tiré par `tick_weather` à chaque
+changement de temps. Il tourne donc tout seul, toutes les quelques heures de
+jeu, et un incendie qui dure voit son panache s'infléchir.
+
+**2. Le gel n'éteint plus, il ralentit.** `quench_chance` perd son terme
+`freezing` : seul ce qui tombe du ciel éteint (pluie et orage 1/4, neige 2/4).
+En échange, `COLD_SPREAD_DIVISOR` = 2 double le dénominateur de propagation sous
+`FREEZING`. C'était bien là la cause du « une case par départ » : une case gelée
+avait une chance sur quatre de s'éteindre par évaluation, soit 40 ticks
+d'espérance de vie quand il en faut `FIRE_GROWTH` = 150 pour atteindre
+`SPREAD_MIN`. Aucun feu ne franchissait jamais le premier palier sous zéro.
+
+### Mesure (après) — le banc
+
+Arbres consumés sur 400, vingt graines, temps clair et sec sauf mention :
+
+| climat | avant : médiane | après : médiane | min | max | graines dans 15-60 % |
+|---|---|---|---|---|---|
+| 30 °C | 399 (99 %) | **112 (28 %)** | 1 | **168 (42 %)** | **17/20** (avant 0/20) |
+| 0 °C (gel la nuit) | 399 (99 %) | 73 (18 %) | 1 | 139 | 11/20 |
+| −5 °C (gel permanent) | **0** | **5** (moyenne 13,9) | 1 | 45 | 0/20 |
+| pluie, 30 °C | 0 | 0 | 0 | 0 | — |
+| neige, −5 °C | 0 | 0 | 0 | 0 | — |
+
+Les deux premières lignes du « avant » valent 99 % parce que le bosquet est
+dense : à 12 °C comme à 30 °C, il partait entier. La troisième valait zéro — pas
+même la case d'origine, consumée avant terme.
+
+### Ce qui a été essayé et écarté
+
+Toutes ces variantes ont été mesurées sur le même banc, mêmes vingt graines,
+30 °C :
+
+| variante | médiane | maximum | dans 15-60 % |
+|---|---|---|---|
+| `FIRE_SPREAD_DEN` 40 → 100, sans vent | 269 (67 %) | 354 (88 %) | 6/20 |
+| `FIRE_SPREAD_DEN` 40 → 110, sans vent | 163 (40 %) | 279 (69 %) | 11/20 |
+| `FIRE_SPREAD_DEN` 40 → 120, sans vent | 90 (22 %) | 230 (57 %) | 11/20 |
+| `FIRE_SPREAD_DEN` 40 → 150, sans vent | 7 (1 %) | 166 (41 %) | 3/20 |
+| `SPREAD_MIN` = 3 et 1/80, sans vent | 235 (58 %) | 344 (86 %) | 7/20 |
+| `FIRE_BURN_TICKS` 900 → 400, sans vent | 14 (3 %) | 255 (63 %) | 6/20 |
+| **vent, côtés ÷3, amont ÷16** | **112 (28 %)** | **168 (42 %)** | **17/20** |
+
+La proposition d'origine — ne toucher qu'au dénominateur — ne marche pas, et la
+raison est structurelle : **un feu isotrope sur un bosquet homogène est un
+processus de percolation.** Sous le seuil il meurt, au-dessus il prend tout, et
+la fenêtre où il fait autre chose est exactement le point critique — là où la
+variance est maximale. C'est ce que dit la colonne de droite : le meilleur
+dénominateur isotrope (110 ou 120) ne tient la bande visée que pour onze graines
+sur vingt, avec une médiane à 22 % et un pire cas à 69 %. Il n'y a pas de
+réglage isotrope qui donne « un feu qui coûte cher sans tout raser » de manière
+fiable.
+
+Le vent casse la symétrie et c'est ce qui change tout : le processus devient
+dirigé, sa distribution se resserre, et dix-sept graines sur vingt tombent dans
+la bande. Le facteur d'amont pèse autant que celui des côtés — à côtés égaux,
+passer de 6 à 16 en amont fait tomber le pire cas de 62 % à 42 % : c'est le
+retour de flamme qui remplissait la tache.
+
+Écartée aussi, la troisième piste (plafonner le nombre de cases enflammées) :
+elle borne le *débit* du feu, pas son étendue. Un front sous-plafond avance
+moins vite mais finit quand même par manquer de combustible, c'est-à-dire par
+tout brûler.
+
+### Mesure (après) — la campagne
+
+Trois campagnes de 30 graines × 30 jours, carte 64×64, difficulté normale,
+jouées **deux fois** : une fois sur la révision d'avant, une fois avec le seul
+changement du feu. Les deux binaires sortent d'une copie de travail isolée
+(`git worktree`), pour que les réglages menés en parallèle sur `storyteller`,
+`jobs` et `health` ne s'invitent pas dans la comparaison. Le « avant » retrouve
+bien les chiffres du tableau du haut (69 feux, médiane 3, maximum 2 339).
+
+| campagne | | feux | médiane | maximum | total | colonies touchées |
+|---|---|---|---|---|---|---|
+| normale | avant | 69 | 3 | **2 339 (57 %)** | 8 176 | 20/30 |
+| normale | **après** | 81 | 2 | **534 (13 %)** | 907 | 20/30 |
+| chaude (+30 °C) | avant | 86 | 4 | **2 676 (65 %)** | 14 483 | 24/30 |
+| chaude (+30 °C) | **après** | 94 | 3 | **609 (14 %)** | 1 112 | 24/30 |
+| froide (−5 °C) | avant | 44 | 1 | 10 | 52 | 24/30 |
+| froide (−5 °C) | **après** | 44 | 1 | 5 | 46 | 24/30 |
+
+Le maximum passe donc de 57 % à **13 %** de la carte en normal et de 65 % à
+**14 %** en chaud : la remise à zéro de la carte n'existe plus. Mais le chiffre
+qui compte n'est pas le maximum, c'est la **forme** de la distribution. Cases
+brûlées par graine, campagne normale, triées :
+
+```
+avant : 0 ×10, 1, 1, 2, 2, 3, 3, 3, 3, 4, 10, 15, | 323, 369, 424, 513, 678, 742, 819, 1922, 2339
+après : 0 ×10, 1, 1, 2, 2, 2, 3, 3, 3, 3, 4, 6, 9, 10, 11, 15, 33, 75, 95, 95, 534
+```
+
+Le trou est là, en toutes lettres : **avant, aucune colonie ne perdait entre 15
+et 323 cases.** Après, il y en a cinq (33, 75, 95, 95, 534). C'est exactement le
+constat qui ouvre cette section — « il n'y a pratiquement rien entre les deux » —
+et c'est lui qui est réglé.
+
+Deux réserves, honnêtement :
+
+**La médiane de la campagne normale passe de 3 à 2**, sous la cible qu'on
+s'était donnée (≥ 3). Ce n'est pas un régime qui change : c'est une case sur la
+colonie médiane, dans une distribution où la moitié des colonies voit zéro ou
+une case. La médiane **des colonies touchées**, plus parlante, passe de 12 à 5,
+et le nombre de colonies touchées ne bouge pas (20/30 en normal, 24/30 en
+chaud). Le feu n'est pas devenu un non-événement — il est devenu un accident de
+quelques dizaines de cases au lieu d'un accident de mille.
+
+**La campagne froide, elle, ne bouge pas** (52 → 46 cases pour 44 feux). Le banc
+montre pourtant qu'un bosquet dense brûle maintenant par −5 °C (médiane 5 au
+lieu de 0). Les deux mesures ne se contredisent pas : le « une case par départ »
+de la campagne froide avait **deux** causes, et celle qui reste est
+`GRASS_FIRE_TEMP` = 20 °C. `--climate -50` impose une moyenne de −5 °C avec
+l'amplitude tempérée (±15 °C) : la carte plafonne à **10 °C au cœur de l'été**,
+l'herbe n'y compte donc jamais comme combustible, et un feu ne peut sauter d'un
+arbre à l'autre que si les arbres se touchent. La campagne normale, elle, monte
+à 27 °C en été — c'est l'herbe sèche qui portait ses incendies de mille cases.
+Faire brûler l'herbe plus froide est un autre réglage, avec son propre risque
+(il rendrait les cartes froides plus dangereuses que les tempérées) : il n'est
+pas fait ici.
 
 ---
 
 ## 7. Constat n°5 — le raid tue une deuxième fois : un mort de plus pour deux tués
+
+**Corrigé le 2026-09-05** (voir « Ce qui a été fait », en fin de section). Le
+constat et sa mesure sont laissés tels qu'ils ont été écrits ; la proposition
+est remplacée par ce qui a effectivement été appliqué, et par ce que ça a donné.
 
 ### Mesure
 
@@ -465,40 +787,118 @@ colon tué ; celles qui n'ont aucune technologie, **0,67**.
 
 ### Le mécanisme
 
-Ce n'est **pas** un problème de priorités : `try_start_tend`
-(`crates/sim/src/jobs.rs:373`) passe avant tout travail, juste après les besoins
-vitaux et le secours. C'est un problème de **débit**.
+Ce n'est **pas** un problème de priorités : `try_start_tend` passe avant tout
+travail, juste après les besoins vitaux et le secours, et le délai mesuré entre
+la chute d'un colon et le départ du soignant est de **17 ticks**. C'est un
+problème de **débit**.
 
 - Une plaie non pansée saigne pendant `health::BLEED_TICKS`
   = `TICKS_PER_DAY / 6` = **2 400 ticks**, à `severity / BLEED_FRACTION`
-  (= 4) points de sang par `BLEED_INTERVAL` (100 ticks).
-- Panser **une** plaie coûte `health::TEND_TICKS` = **240 ticks**, à vitesse
-  neutre (`TEND_STEP` = 100 : ni l'humeur ni la compétence ne l'accélèrent).
-- Un colon s'écroule à `DOWNED_BLOOD` = 300 sur `BLOOD_MAX` = 1 000.
+  (= 4) points de sang par `BLEED_INTERVAL` (100 ticks). Une seule entaille au
+  torse de sévérité 250 vide donc les `BLOOD_MAX` = 1 000 points d'un corps
+  avant de se refermer d'elle-même : **tout ce qui n'est pas pansé assez vite
+  tue**, et un colon s'écroule dès `DOWNED_BLOOD` = 300.
+- Un soin coûte `health::TEND_TICKS` = **240 ticks**, à vitesse neutre
+  (`TEND_STEP` = 100 : ni l'humeur ni la compétence ne l'accélèrent). Une
+  rectification à la première rédaction de ce constat : la séance couvrait
+  **déjà** toutes les plaies d'un blessé à la fois, pas une par une. Le débit
+  manquant n'était donc pas « quatre à six pansements », il était ailleurs.
 
-Après un raid, une colonie de trois colons compte typiquement deux blessés
-portant deux ou trois plaies chacun, et **un seul soignant debout**. Quatre à
-six pansements à 240 ticks, plus les allers-retours, occupent 1 200 à
-1 800 ticks : on est dans l'ordre de grandeur exact de la fenêtre de saignement.
-La colonie perd la course d'un cheveu, régulièrement, et c'est ce que le rapport
-constant de 0,5 raconte.
+Où, exactement : scène ciblée de trente graines (trois colons, des lits, des
+vivres, un raid déclenché, cinq jours d'observation), **24 morts de leurs plaies**
+décortiquées une par une au tick de la mort.
 
-### Proposition (non appliquée)
+| ce qui se passait au moment de la mort | morts |
+|---|---|
+| un soin en cours, commencé trop tard ou trop lent | 10 |
+| **un sauvetage en cours** — on le portait au lit pendant qu'il se vidait | 6 |
+| un camarade valide, mais **endormi** | 4 |
+| plus un seul camarade debout (irréductible) | 4 |
 
-Découpler **arrêter l'hémorragie** de **soigner la plaie**, qui sont
-aujourd'hui le même geste de 240 ticks :
+Le sauvetage et le sommeil pèsent donc autant que la durée du soin : le sim
+allait chercher un brancard avant de comprimer la plaie, et laissait dormir la
+colonie pendant qu'un blessé se vidait.
 
-1. Un premier passage court — 60 ticks — met `Injury::bleeding` à 0 sans
-   toucher à `severity` ; la cicatrisation garde ses 240 ticks et son bonus de
-   `research::MEDICINE_TEND_PERCENT`. Un soignant seul stoppe alors quatre
-   hémorragies dans le temps qu'il en pansait une.
-2. Variante minimale si l'on ne veut pas d'un deuxième état : `TEND_TICKS` de
-   240 à **120**, ce qui double le débit sans rien changer d'autre.
+### Ce qui a été fait (2026-09-05)
 
-Cible mesurable, sur les 30 graines de la campagne normale : le rapport
-« morts de leurs plaies / tués au combat » doit tomber **sous 0,25** sans que le
-nombre de tués au combat bouge — sinon c'est le combat qu'on a changé, pas le
-soin.
+Quatre changements, essayés un par un, tous conservés — `crates/sim/src/health.rs`
+et la partie « soins » de `crates/sim/src/jobs.rs` :
+
+1. **Hémostase** (`health::HEMOSTASIS_TICKS` = `TEND_TICKS / 4` = **60 ticks**,
+   la valeur proposée plus haut). Au quart du geste, toutes les plaies du
+   blessé cessent de saigner (`Injury::close`) ; elles ne sont pas *pansées*
+   pour autant — la séance continue jusqu'aux 240 ticks, qui seuls posent
+   `tended` et donnent la cicatrisation accélérée et le bonus de
+   `research::MEDICINE_TEND_PERCENT`. `TEND_TICKS` ne bouge pas.
+2. **Le pansement passe avant le brancard.** `find_job` essaie
+   `try_start_tend(bleeding_only)` **avant** `try_start_rescue` : on comprime le
+   blessé là où il est tombé, on le porte au lit ensuite. Une écorchure, elle,
+   attend toujours son tour derrière le brancard.
+3. **Triage.** `try_start_tend` classait les blessés par
+   `(saigne, à terre, distance)` ; il les classe désormais par
+   `Pawn::ticks_to_bleed_out` — `blood × BLEED_INTERVAL / bleed_rate`, entier —
+   puis à terre avant debout, puis distance. Le soignant va à celui qui se vide
+   le plus vite, pas au plus proche.
+4. **Une hémorragie réveille la colonie.** `do_sleep` tente
+   `try_start_tend(bleeding_only)` à chaque tick : si le geste est possible, le
+   dormeur se lève ; sinon il ne se réveille même pas. Le court-circuit est le
+   même que partout ailleurs — sans plaie ouverte, le test coûte un parcours
+   des colons et rien de plus.
+
+Une cinquième piste n'a pas eu d'objet : « panser d'abord la blessure qui
+saigne le plus ». Une séance couvrait **déjà** toutes les plaies d'un blessé,
+il n'y avait aucun ordre entre elles à corriger ; c'est le tri des **blessés**
+(n°3) qui en tient lieu. Aucune constante n'a bougé non plus : `TEND_TICKS`
+reste à 240, la variante « 240 → 120 » proposée plus haut n'a pas été
+nécessaire.
+
+**Mesure, scène ciblée** (`crates/sim/tests/balance_tending.rs`, 60 graines, un
+raid déclenché puis une journée entière sans ennemi debout ; la même révision
+du sim, avec et sans la tranche) :
+
+| | morts de leurs plaies | tués au combat | rapport |
+|---|---|---|---|
+| avant | 19 | 13 | **1,46** |
+| après | **4** | 12 | **0,33** |
+
+Les tués au combat perdent un seul mort sur treize (−8 %, sous le plafond de
+10 % qu'on s'était donné) : c'est bien le soin qui a changé, pas le combat. Sur
+le détail, les six morts sur le brancard et les quatre morts pendant que la
+colonie dormait ont disparu ; ce qui reste tient aux blessés que plus personne
+ne peut atteindre.
+
+**Mesure, campagne** (`campaign --seeds 30 --difficulty 2 --size 64`, le même
+joueur scripté, la même révision du sim, avec et sans la tranche — un vrai
+témoin, à un `git checkout` de `jobs.rs` près, ce que ne serait pas une
+comparaison avec la campagne de référence du §2, mesurée sur une révision
+antérieure) :
+
+| | morts, total | dont raid | dont blessures | rapport | colonies éteintes |
+|---|---|---|---|---|---|
+| **12 jours**, contrôle | 85 | 57 | 24 | **0,42** | 4/30 |
+| **12 jours**, après | 79 | **61** | **13** | **0,21** | **2/30** |
+| **30 jours**, contrôle | 210 | 149 | 52 | **0,35** | 13/30 |
+| **30 jours**, après | 208 | **171** | **29** | **0,17** | 16/30 |
+
+**La cible du rapport — sous 0,25 — est tenue aux deux horizons**, et les tués
+au combat ne baissent pas : ils *montent* (+7 % à douze jours, +15 % à trente),
+à nombre de raids et de bandes inchangé (2,6 puis 6,2 raids par colonie de part
+et d'autre). Le plafond qu'on s'était donné — « pas plus de 10 % de tués au
+combat en moins » — est donc franchi du bon côté, et l'explication n'a rien de
+mystérieux : **un colon pansé se relève, reprend les armes, et peut mourir au
+raid suivant.** Une mort d'hémorragie évitée n'est pas une vie sauvée, c'est une
+mort déplacée vers un endroit où le joueur, lui, peut faire quelque chose.
+
+Le bilan net est franchement bon à douze jours (deux colonies éteintes contre
+quatre, 2,4 colons vivants contre 2,2) et neutre à trente (210 morts contre 208,
+mais seize colonies éteintes contre treize — un écart de trois colonies sur
+trente, dans le bruit d'un tirage à cette taille). C'est cohérent avec la suite
+du rapport : à trente jours, ce qui éteint une colonie n'est plus le soin, c'est
+la menace qui n'escalade pas (§5) et l'armement qui ne suit pas (§8, biais n°9).
+
+**Ce qui n'a pas été touché** : aucun objet de soin (bandage, médicaments),
+aucun `WorkType` de plus — en ajouter un changerait `WORK_TYPES` et les tampons
+de priorités du client. `TEND_STEP` reste neutre.
 
 ---
 
