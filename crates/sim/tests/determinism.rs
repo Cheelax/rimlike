@@ -14,6 +14,11 @@ const TICKS: u64 = 10_000;
 const FAST_FORWARD_AT: u64 = 8_000;
 const FAST_FORWARD_TICKS: u32 = 3_000;
 
+/// Tick où un marchand entre sur la carte (hors commande : c'est une méthode
+/// du sim, appelée des deux côtés). Assez tôt pour qu'il soit encore là au
+/// raid du tick 6000 et à l'avance rapide qui le renvoie chez lui.
+const TRADER_AT: u64 = 4_000;
+
 /// Scénario de commandes reproductible : déplacements, désignations et zones
 /// dérivés du numéro de tick.
 fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
@@ -201,6 +206,29 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             target: 1,
         });
     }
+    if t == 5200 {
+        // Un troc plausible pendant la visite du tick 5000 : qu'il aboutisse
+        // (marchand vivrier, bois en stock) ou non, les deux sims doivent en
+        // tirer exactement le même état.
+        cmds.push(Command::Trade {
+            give: ItemKind::Wood,
+            give_count: 30,
+            take: ItemKind::Berries,
+            take_count: 5,
+        });
+    }
+    if t == 9700 {
+        // Un troc qui ne tombe juste sur aucun point : genres invraisemblables,
+        // quantités hors de tout stock, et pas forcément de marchand en vue.
+        // Il doit être **consommé** (donc lu de la même façon partout) et
+        // ignoré, comme un `Hunt` sur un id inventé.
+        cmds.push(Command::Trade {
+            give: ItemKind::Corpse,
+            give_count: u32::MAX,
+            take: ItemKind::Bow,
+            take_count: u32::MAX,
+        });
+    }
     if t % 900 == 0 {
         for (k, p) in sim.pawns().iter().enumerate() {
             cmds.push(Command::MoveTo {
@@ -218,10 +246,20 @@ fn same_seed_same_commands_same_hash() {
     let mut a = Sim::new(0xDEAD_BEEF, 64, 64);
     let mut b = Sim::new(0xDEAD_BEEF, 64, 64);
     let mut caravan_left = false;
+    let mut trader_arrived = false;
     for t in 0..TICKS {
         let cmds = scripted_commands(&a, t);
         a.step(&cmds);
         b.step(&cmds);
+        if t == TRADER_AT {
+            // Le premier marchand n'arriverait qu'au quatrième jour (57 600
+            // ticks) : on le fait entrer à la main des deux côtés, hors
+            // commande, pour que son apparition (tirages de profil, de
+            // quantités et d'étal), sa marche, sa neutralité pendant le raid du
+            // tick 6000 et son départ à l'avance rapide entrent dans le hash.
+            trader_arrived = a.trigger_trader_visit().is_some();
+            b.trigger_trader_visit();
+        }
         if t == 7005 {
             caravan_left = a.departures().len() == 1;
         }
@@ -236,6 +274,7 @@ fn same_seed_same_commands_same_hash() {
         }
     }
     assert!(caravan_left, "le scénario n'a pas fait partir de caravane");
+    assert!(trader_arrived, "le scénario n'a pas reçu de marchand");
     // Les ticks joués, plus ceux que l'avance rapide a sautés.
     assert_eq!(a.tick(), TICKS + u64::from(FAST_FORWARD_TICKS));
     assert_eq!(a.state_hash(), b.state_hash());

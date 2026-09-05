@@ -76,6 +76,13 @@ impl Sim {
         self.next_supply_at = self.next_supply_at.saturating_add(elapsed);
         self.next_illness_at = self.next_illness_at.saturating_add(elapsed);
         self.next_extreme_at = self.next_extreme_at.saturating_add(elapsed);
+        // Le marchand suivant et la rancune de la colonie glissent avec le
+        // reste : deux mois d'absence n'effacent pas une réputation, ils ne la
+        // font pas non plus expirer pendant que personne ne regarde.
+        self.next_trader_at = self.next_trader_at.saturating_add(elapsed);
+        if self.trader_grudge_until > 0 {
+            self.trader_grudge_until = self.trader_grudge_until.saturating_add(elapsed);
+        }
         // La météo d'il y a deux mois ne veut plus rien dire : on retire.
         self.weather_until = self.tick;
         self.tick_weather();
@@ -119,10 +126,17 @@ impl Sim {
     /// même clairière pendant deux mois. Elles partent en silence — pas de
     /// dépouille, pas d'événement — et de nouveaux troupeaux entreront quand
     /// l'échéance décalée arrivera.
+    ///
+    /// Le marchand aussi : il n'a pas attendu deux mois derrière son étal. Il
+    /// repart avec sa réserve, donc sans rien laisser au sol et sans
+    /// `TraderDied` — il n'est pas mort, il est parti.
     fn raiders_leave(&mut self) {
         let mut leaving = false;
         for p in &mut self.pawns {
-            if matches!(p.faction, Faction::Raider | Faction::Animal) {
+            if matches!(
+                p.faction,
+                Faction::Raider | Faction::Animal | Faction::Trader
+            ) {
                 p.gone = true;
                 leaving = true;
             }

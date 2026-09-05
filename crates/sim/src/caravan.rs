@@ -130,6 +130,11 @@ fn sanitize(p: &mut Pawn) {
     p.hunted = false;
     p.graze_at = 0;
     p.leaving = false;
+    // Ni le commerce : une caravane débarque des colons, pas un marchand
+    // itinérant avec sa réserve et sa rancune (voir `trade`).
+    p.wares.clear();
+    p.leaves_at = 0;
+    p.hostile = false;
     // `hp` est dérivé : on le recalcule plutôt que de croire le manifeste.
     p.recompute_hp();
 }
@@ -213,7 +218,9 @@ impl Sim {
 
     /// Prélève au plus `wanted` unités de `kind` dans les piles rangées en
     /// stockage, les plus proches de `from` d'abord. Rend la quantité obtenue.
-    fn take_from_stock(&mut self, kind: ItemKind, wanted: u32, from: (u32, u32)) -> u32 {
+    /// Partagé avec le troc (`trade`) : vendre au marchand, c'est charger une
+    /// caravane qui n'irait pas plus loin que l'étal.
+    pub(crate) fn take_from_stock(&mut self, kind: ItemKind, wanted: u32, from: (u32, u32)) -> u32 {
         if wanted == 0 {
             return 0;
         }

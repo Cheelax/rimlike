@@ -59,6 +59,11 @@ pub enum Faction {
     /// Faune sauvage (voir `animals`). Ni alliée ni ennemie : les pillards
     /// l'ignorent et la défense automatique aussi, sauf sanglier qui charge.
     Animal = 2,
+    /// Marchand itinérant (voir `trade`). Neutre tant qu'on ne l'attaque pas :
+    /// ni la défense automatique, ni les pillards, ni les bêtes ne le visent.
+    /// **Ajouté en fin d'énumération** : postcard encode l'indice, et le
+    /// client lit ce nombre dans le tampon des pawns.
+    Trader = 3,
 }
 
 /// Ce que fait un colon. Le chemin courant vit dans `Pawn::path`.
@@ -328,6 +333,18 @@ pub struct Pawn {
     /// Nombre d'autres colons vivants sur la carte, recopié à chaque tick
     /// comme `outdoor_storm` : sert à `Trait::Sociable` (`mood`).
     pub other_colonists_alive: u32,
+    /// Marchandises d'un marchand itinérant (`Faction::Trader`, voir `trade`) :
+    /// quantité par genre, un genre au plus une fois. **Vide pour tout autre
+    /// pawn** — c'est le stock qu'il propose, et celui qu'il emporte en
+    /// repartant. **Champs ajoutés en fin de structure** : un vieux snapshot
+    /// est refusé net (fin de tampon) plutôt que relu de travers.
+    pub wares: Vec<(ItemKind, u32)>,
+    /// Tick auquel un marchand plie boutique et reprend la route ; 0 pour tout
+    /// autre pawn.
+    pub leaves_at: u64,
+    /// Un marchand qu'on a attaqué (`Command::Attack`) : la visite est
+    /// annulée, il se défend comme un pillard. Toujours faux ailleurs.
+    pub hostile: bool,
 }
 
 impl Pawn {
@@ -380,7 +397,17 @@ impl Pawn {
             is_night: false,
             enemy_present: false,
             other_colonists_alive: 0,
+            wares: Vec::new(),
+            leaves_at: 0,
+            hostile: false,
         }
+    }
+
+    /// Se bat-il comme un pillard ? Un pillard, ou un marchand qu'on a attaqué
+    /// (voir `trade`). Sert au combat, qui n'a pas à connaître le commerce :
+    /// même IA, même seuil de décrochage, mêmes égards pour les corps à terre.
+    pub fn is_raider_like(&self) -> bool {
+        self.faction == Faction::Raider || (self.faction == Faction::Trader && self.hostile)
     }
 
     /// Vrai si le colon porte ce trait, sur l'un des deux emplacements.

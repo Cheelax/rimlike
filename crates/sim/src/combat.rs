@@ -362,7 +362,7 @@ impl Sim {
     pub(crate) fn raider_alive(&self) -> bool {
         self.pawns
             .iter()
-            .any(|p| p.is_alive() && p.faction == Faction::Raider)
+            .any(|p| p.is_alive() && p.is_raider_like())
     }
 
     /// Cases des pawns vivants d'un camp, dans l'ordre des indices.
@@ -453,6 +453,8 @@ impl Sim {
     }
 
     /// Un pillard fonce sur le colon accessible le plus proche, ou décroche.
+    /// Partagée avec le marchand devenu hostile (voir `trade`) : mêmes coups,
+    /// même seuil de décrochage, même sortie de carte.
     pub(crate) fn raider_ai(&mut self, i: usize) {
         if self.pawns[i].hp < FLEE_HP {
             self.pawns[i].path.clear();
@@ -488,6 +490,16 @@ impl Sim {
     /// seule exception est le sanglier lancé à la charge : celui-là est une
     /// menace, et les colons se défendent.
     fn is_auto_target(&self, p: &Pawn, seeker: Faction) -> bool {
+        // Un marchand furieux ne s'en prend qu'à la colonie : il est venu
+        // commercer, pas prendre parti dans un raid (voir `trade`).
+        if seeker == Faction::Trader {
+            return p.faction == Faction::Colony;
+        }
+        // Un marchand pacifique n'est la cible de personne : ni des colons
+        // (c'est un invité), ni des pillards (ils ont mieux à faire).
+        if p.faction == Faction::Trader {
+            return p.hostile;
+        }
         if p.faction != Faction::Animal {
             return true;
         }
@@ -582,14 +594,14 @@ impl Sim {
     }
 
     pub(crate) fn do_attack(&mut self, i: usize, target: u32) {
-        if self.pawns[i].faction == Faction::Raider && self.pawns[i].hp < FLEE_HP {
+        if self.pawns[i].is_raider_like() && self.pawns[i].hp < FLEE_HP {
             self.pawns[i].path.clear();
             self.pawns[i].job = Job::Flee;
             return;
         }
         // Un pillard ne s'acharne pas sur un corps à terre : il cherche une
         // autre cible debout, ou repart.
-        if self.pawns[i].faction == Faction::Raider
+        if self.pawns[i].is_raider_like()
             && self
                 .pawns
                 .iter()
@@ -611,7 +623,8 @@ impl Sim {
         let faction = self.pawns[i].faction;
         let (lo, hi) = match faction {
             Faction::Colony => COLONIST_DAMAGE,
-            Faction::Raider => RAIDER_DAMAGE,
+            // Un marchand qu'on a poussé à bout se bat comme un pillard.
+            Faction::Raider | Faction::Trader => RAIDER_DAMAGE,
             Faction::Animal => BOAR_DAMAGE,
         };
         let roll = self.rng.range_i32(lo, hi) as u32;
@@ -790,6 +803,10 @@ impl Sim {
                             // le storyteller laisse passer un jour de plus.
                             self.grant_raid_respite();
                             self.push_event(EventKind::ColonistDied, p.id);
+                        } else if faction == Faction::Trader {
+                            // Sa réserve tombe là : butin, et réputation (voir
+                            // `trade::trader_died`).
+                            self.trader_died(&p, (x, y));
                         } else {
                             self.push_event(EventKind::RaiderDied, p.id);
                         }

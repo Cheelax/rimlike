@@ -390,8 +390,12 @@ et infobulles dans le panneau et sur les pastilles). Calendrier partagé (Sonnet
 décale le jour de l'année sans toucher au tick, le serveur impose le jour du monde à la
 fondation (`start.dayOfYear`), l'hôte l'émet après le climat et avant la difficulté,
 l'avance rapide garde l'alignement au gel ; vérifié : une colonie fondée sur un monde de douze
-jours démarre au jour 12. Ligne de stock unifiée (cinq genres de base, le reste si > 0). À venir : recherche, relations, factions PNJ et commerce, mods de
-contenu, événements monde.
+jours démarre au jour 12. Ligne de stock unifiée (cinq genres de base, le reste si > 0). Marchands et troc livrés le 2026-09-05 (Opus, sim) : un marchand neutre visite la colonie
+tous les 4 à 7 jours (trois profils : vivrier, artisan, armurier), s'installe à 4-6 cases des
+colons pendant un jour, vend à 120 % et achète à 70 % de la valeur de richesse ; troc en
+valeur par `Trade` (prélevé en stockage, déposé à l'étal) ; attaqué, il devient hostile et la
+rancune espace ses visites ; interface à faire. À venir : recherche, relations, factions PNJ
+avec réputation, mods de contenu, événements monde.
 
 ## 7. Risques identifiés
 
@@ -430,6 +434,10 @@ contenu, événements monde.
 - 2026-09-05 : identité par jeton plutôt que par compte : pas de mot de passe, un secret
   par serveur dans le navigateur, une clé publique pour l'appartenance. Le nom redevient un
   libellé. Les protocoles montent en version 2 : un client version 1 est refusé proprement.
+- 2026-09-05 : marchands (sim) : le troc se fait en valeur, au barème de la richesse, sans
+  monnaie : une monnaie ferait diverger deux échelles de valeur et le commerce deviendrait une
+  machine à raids. L'hostilité est un champ du pawn, pas un changement de faction, pour
+  pouvoir dire « le marchand est mort » et faire tomber sa réserve.
 - 2026-09-05 : traits (sim) : effets appliqués dans `mood()` et `work_step()` plutôt qu'à la
   source des jobs, pour ne pas disperser les règles. Un test forçant un colon à craquer a dû
   neutraliser ses traits : le hasard lui donnait « Ascète ». Calendrier : un décalage en jours

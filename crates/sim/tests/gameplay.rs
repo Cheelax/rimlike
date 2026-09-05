@@ -13,6 +13,7 @@ use sim::storyteller::{
     WEALTH_CACHE_TICKS,
 };
 use sim::testmap::map_from;
+use sim::trade::{STALL_MAX_DISTANCE, TRADER_STAY, value_buy, value_sell};
 use sim::{
     BodyPart, BuildKind, CaravanManifest, Command, Designation, Difficulty, EventKind, Faction,
     Feature, ItemKind, Job, MAX_ANIMALS, MAX_FAST_FORWARD, Material, Pawn, RaidKind, Sim, Species,
@@ -1608,12 +1609,15 @@ fn bow_needs_line_of_sight_and_range() {
 fn armed_raiders_drop_weapons() {
     // Carte pleine taille : sur la clairière de douze cases de large, un
     // pillard qui décroche atteint le bord avant de succomber à ses plaies.
-    // La graine est choisie pour qu'un pillard y laisse sa peau : sur la
-    // graine 1 les deux décrochent à temps et repartent avec leurs armes,
-    // ce qui est un déroulement légitime mais ne prouve rien sur le butin.
+    // La graine est choisie pour qu'un pillard y laisse sa peau : sur d'autres
+    // graines les deux décrochent à temps et repartent avec leurs armes, ce qui
+    // est un déroulement légitime mais ne prouve rien sur le butin.
     // Le genre du raid est imposé pour la même raison : un siège passerait
     // vingt secondes à camper au bord de la carte, ce qui ne dit rien du butin.
-    let mut s = Sim::new(2, 32, 32);
+    // (Graine 2 → 4 le 2026-09-05 : programmer la première visite de marchand
+    // consomme un tirage de plus à la construction, et le déroulement de la
+    // graine 2 a glissé jusqu'à ne plus faire aucun mort.)
+    let mut s = Sim::new(4, 32, 32);
     let (bx, by) = s
         .map()
         .nearest_passable(16, 16)
@@ -3440,4 +3444,339 @@ fn cold_snap_lowers_temperature() {
     assert_eq!(hot.outdoor_temperature(), mild + EXTREME_OFFSET);
     assert_eq!(hot.weather(), weather, "la canicule a changé le temps");
     assert!(has_event(&hot, EventKind::Heatwave));
+}
+
+// ----------------------------------------------------------------------
+// Marchands itinérants et troc
+// ----------------------------------------------------------------------
+
+/// Barycentre des colons vivants, comme le calcule le storyteller pour poser
+/// l'étal d'un marchand.
+fn colony_center(s: &Sim) -> (u32, u32) {
+    let tiles: Vec<(u32, u32)> = s
+        .pawns()
+        .iter()
+        .filter(|p| p.faction == Faction::Colony && p.is_alive())
+        .map(|p| p.tile())
+        .collect();
+    let n = tiles.len() as u64;
+    assert!(n > 0, "colonie éteinte");
+    let sx: u64 = tiles.iter().map(|t| u64::from(t.0)).sum();
+    let sy: u64 = tiles.iter().map(|t| u64::from(t.1)).sum();
+    ((sx / n) as u32, (sy / n) as u32)
+}
+
+fn trader_of(s: &Sim, id: u32) -> Option<&Pawn> {
+    s.pawns().iter().find(|p| p.id == id)
+}
+
+/// La visite complète : il entre par un bord, plante son étal près des colons,
+/// y attend une journée, puis reprend la route.
+#[test]
+fn trader_visits_waits_then_leaves() {
+    let mut s = Sim::new(3, 48, 48);
+    // De quoi tenir un jour et demi sans que la colonie meure de faim : le
+    // marchand ne nourrit personne, et une colonie éteinte n'a plus de
+    // barycentre.
+    let center = colony_center(&s);
+    s.spawn_item(ItemKind::Berries, 200, center.0, center.1);
+
+    let id = s
+        .trigger_trader_visit()
+        .expect("un marchand doit pouvoir entrer");
+    assert!(
+        s.trigger_trader_visit().is_none(),
+        "deux marchands en même temps"
+    );
+    let center = colony_center(&s);
+    let trader = trader_of(&s, id)
+        .expect("le marchand est sur la carte")
+        .clone();
+    assert_eq!(trader.faction, Faction::Trader);
+    assert!(!trader.wares.is_empty(), "un marchand sans rien à vendre");
+    assert!(
+        trader.wares.iter().all(|&(_, n)| n > 0),
+        "lot vide : {:?}",
+        trader.wares
+    );
+    assert_eq!(trader.weapon, Some(ItemKind::Spear), "il voyage armé");
+    assert_eq!(trader.apparel, Some(ItemKind::Tunic));
+    assert_eq!(trader.leaves_at, s.tick() + u64::from(TRADER_STAY));
+    assert!(!trader.hostile, "il arrive en paix");
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::TraderVisit && e.arg == id),
+        "visite non annoncée : {:?}",
+        s.events()
+    );
+    assert_eq!(s.trader().map(|p| p.id), Some(id));
+
+    // Il ne monte pas en caravane : `FormCaravan` refuse en bloc une liste qui
+    // contient autre chose qu'un colon.
+    s.step(&[Command::FormCaravan {
+        pawns: vec![id],
+        items: Vec::new(),
+    }]);
+    assert!(
+        trader_of(&s, id).is_some() && s.departures().is_empty(),
+        "le marchand est parti en caravane"
+    );
+
+    // Son étal : genre, quantité, prix de vente.
+    let offers = s.trader_offers();
+    assert_eq!(offers.len(), trader.wares.len());
+    for (kind, count, price) in &offers {
+        assert_eq!(*price, value_sell(*kind), "prix de vente de {kind:?}");
+        assert!(*count > 0);
+    }
+    let prices = s.buy_prices();
+    assert_eq!(prices[ItemKind::Bow as usize], value_buy(ItemKind::Bow));
+    assert!(
+        prices[ItemKind::Bow as usize] < value_sell(ItemKind::Bow),
+        "le marchand achèterait au prix de vente"
+    );
+
+    // Il marche jusqu'à son étal et s'y arrête, à portée des colons.
+    assert!(
+        run_until(&mut s, DAY / 2, |s| matches!(
+            trader_of(s, id).map(|p| &p.job),
+            Some(Job::Wait { .. })
+        )),
+        "le marchand n'a jamais planté son étal : {:?}",
+        trader_of(&s, id).map(|p| (p.tile(), p.job.clone()))
+    );
+    let stall = trader_of(&s, id).expect("il est encore là").tile();
+    assert!(
+        sim::map::chebyshev(center, stall) <= STALL_MAX_DISTANCE,
+        "étal planté à l'autre bout : {stall:?} pour un barycentre en {center:?}"
+    );
+
+    // Il ne mange pas, ne dort pas : ses besoins ne bougent pas d'un cran.
+    let waiting = trader_of(&s, id).expect("il est encore là");
+    assert_eq!(waiting.hunger, NEED_MAX);
+    assert_eq!(waiting.rest, NEED_MAX);
+
+    // Puis il plie boutique et quitte la carte. Le temps de rejoindre un bord
+    // s'ajoute à la durée de la visite.
+    assert!(
+        run_until(&mut s, u64::from(TRADER_STAY) + DAY / 2, |s| trader_of(
+            s, id
+        )
+        .is_none()),
+        "le marchand campe : {:?}",
+        trader_of(&s, id).map(|p| (p.tile(), p.job.clone()))
+    );
+    assert!(s.trader().is_none(), "un marchand fantôme reste à l'étal");
+    assert!(
+        !has_event(&s, EventKind::TraderDied),
+        "il est parti, pas mort : {:?}",
+        s.events()
+    );
+    assert!(
+        !s.items().iter().any(|i| i.kind == ItemKind::Spear),
+        "il est reparti sans son épieu"
+    );
+}
+
+/// Le troc : la colonie donne du bois rangé, reçoit des baies au sol, et le
+/// compte doit tomber juste — jamais moins que le prix demandé.
+#[test]
+fn barter_exchanges_goods_at_fair_value() {
+    let mut s = clearing();
+    s.step(&[Command::SetZone {
+        zone: Zone::Stockpile,
+        x0: 8,
+        y0: 5,
+        x1: 9,
+        y1: 6,
+    }]);
+    s.spawn_item(ItemKind::Wood, 60, 8, 5);
+    assert_eq!(s.stored_totals()[ItemKind::Wood as usize], 60);
+
+    let id = s
+        .trigger_trader_visit()
+        .expect("un marchand doit pouvoir entrer");
+    // Profil vivrier imposé : le test porte sur le compte, pas sur le tirage.
+    s.pawn_mut(id).expect("le marchand existe").wares = vec![(ItemKind::Berries, 40)];
+
+    // 30 bois achetés 1 chacun paient 15 baies vendues 2 chacune : le compte
+    // tombe exactement juste.
+    let paid = value_buy(ItemKind::Wood) * 30;
+    let take_count = paid / value_sell(ItemKind::Berries);
+    assert_eq!(take_count, 15, "barème changé : le scénario est à refaire");
+
+    // Sous-payé : une unité de bois ne paie pas quinze baies.
+    s.step(&[Command::Trade {
+        give: ItemKind::Wood,
+        give_count: 1,
+        take: ItemKind::Berries,
+        take_count,
+    }]);
+    assert_eq!(
+        s.stored_totals()[ItemKind::Wood as usize],
+        60,
+        "un troc sous-payé a été accepté"
+    );
+    assert!(!has_event(&s, EventKind::TradeDone));
+
+    // Payé : le bois part du stock, les baies tombent près du marchand.
+    let stall = trader_of(&s, id).expect("le marchand est là").tile();
+    s.step(&[Command::Trade {
+        give: ItemKind::Wood,
+        give_count: 30,
+        take: ItemKind::Berries,
+        take_count,
+    }]);
+    assert_eq!(
+        s.stored_totals()[ItemKind::Wood as usize],
+        30,
+        "le bois n'a pas quitté le stock"
+    );
+    let dropped: u32 = s
+        .items()
+        .iter()
+        .filter(|i| i.kind == ItemKind::Berries && sim::map::chebyshev(stall, (i.x, i.y)) <= 2)
+        .map(|i| i.count)
+        .sum();
+    assert_eq!(dropped, take_count, "baies livrées : {:?}", s.items());
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::TradeDone && e.arg == ItemKind::Berries as u32),
+        "troc non annoncé : {:?}",
+        s.events()
+    );
+    // Sa réserve suit : moins de baies, et le bois qu'il vient d'acheter.
+    let wares = trader_of(&s, id).expect("le marchand est là").wares.clone();
+    assert_eq!(
+        wares
+            .iter()
+            .find(|&&(k, _)| k == ItemKind::Berries)
+            .map(|&(_, n)| n),
+        Some(40 - take_count)
+    );
+    assert_eq!(
+        wares
+            .iter()
+            .find(|&&(k, _)| k == ItemKind::Wood)
+            .map(|&(_, n)| n),
+        Some(30),
+        "le bois cédé n'est pas entré dans sa réserve : {wares:?}"
+    );
+    // Et il ne vend plus que ce qui lui reste.
+    assert!(
+        s.trader_offers()
+            .iter()
+            .any(|&(k, n, _)| k == ItemKind::Berries && n == 40 - take_count)
+    );
+
+    // Plus rien à prendre : la demande dépasse sa réserve.
+    s.step(&[Command::Trade {
+        give: ItemKind::Wood,
+        give_count: 30,
+        take: ItemKind::Berries,
+        take_count: 999,
+    }]);
+    assert_eq!(s.stored_totals()[ItemKind::Wood as usize], 30);
+
+    // Sans marchand, la commande passe sans rien faire.
+    let mut alone = clearing();
+    alone.step(&[Command::SetZone {
+        zone: Zone::Stockpile,
+        x0: 8,
+        y0: 5,
+        x1: 9,
+        y1: 6,
+    }]);
+    alone.spawn_item(ItemKind::Wood, 60, 8, 5);
+    assert!(alone.trader().is_none());
+    alone.step(&[Command::Trade {
+        give: ItemKind::Wood,
+        give_count: 60,
+        take: ItemKind::Berries,
+        take_count: 1,
+    }]);
+    assert_eq!(alone.stored_totals()[ItemKind::Wood as usize], 60);
+    assert!(!has_event(&alone, EventKind::TradeDone));
+}
+
+/// Lever la main sur le marchand annule la visite : il se défend.
+#[test]
+fn attacking_trader_makes_him_hostile() {
+    let mut s = clearing();
+    s.spawn_item(ItemKind::Berries, 200, 6, 6);
+    let id = s
+        .trigger_trader_visit()
+        .expect("un marchand doit pouvoir entrer");
+    let brute = s
+        .pawns()
+        .iter()
+        .find(|p| p.faction == Faction::Colony)
+        .expect("un colon")
+        .id;
+
+    s.step(&[Command::Attack {
+        pawn: brute,
+        target: id,
+    }]);
+    assert!(
+        trader_of(&s, id).is_some_and(|p| p.hostile),
+        "le marchand encaisse sans broncher"
+    );
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::TraderAngered && e.arg == id),
+        "colère non annoncée : {:?}",
+        s.events()
+    );
+    assert!(s.trader().is_none(), "la visite aurait dû être annulée");
+    // Et on ne troque plus avec lui.
+    assert!(s.trader_offers().is_empty());
+
+    assert!(
+        run_until(&mut s, DAY / 2, |s| trader_of(s, id)
+            .is_some_and(|p| matches!(p.job, Job::Attack { .. } | Job::Flee))),
+        "il n'a pas riposté : {:?}",
+        trader_of(&s, id).map(|p| p.job.clone())
+    );
+}
+
+/// Un raid ne se détourne pas sur le marchand : il n'est ni de la colonie ni
+/// du butin.
+#[test]
+fn raiders_ignore_traders() {
+    let mut s = Sim::new(5, 48, 48);
+    let center = colony_center(&s);
+    s.spawn_item(ItemKind::Berries, 200, center.0, center.1);
+    let id = s
+        .trigger_trader_visit()
+        .expect("un marchand doit pouvoir entrer");
+    let hp = trader_of(&s, id).expect("le marchand est là").hp;
+
+    s.step(&[Command::TriggerRaid]);
+    assert!(raiders(&s) > 0, "aucun pillard n'est entré");
+
+    let mut fought = false;
+    for _ in 0..DAY / 2 {
+        s.step(&[]);
+        let Some(t) = trader_of(&s, id) else {
+            break;
+        };
+        assert!(
+            t.injuries.is_empty() && t.hp == hp,
+            "un pillard s'en est pris au marchand : {:?}",
+            t.injuries
+        );
+        assert!(!t.hostile, "le marchand est devenu hostile tout seul");
+        fought |= s
+            .pawns()
+            .iter()
+            .any(|p| p.faction == Faction::Raider && matches!(p.job, Job::Attack { .. }));
+    }
+    assert!(
+        fought,
+        "les pillards n'ont attaqué personne : le test ne prouve rien"
+    );
 }

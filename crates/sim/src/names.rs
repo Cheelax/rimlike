@@ -25,10 +25,19 @@ const RAIDER_NAMES: [&str; 40] = [
     "Thane", "Ulric", "Varek", "Wolfe", "Zane", "Freja", "Hawke", "Jarek", "Kestrel",
 ];
 
+/// Troisième liste, pour les marchands itinérants (voir `trade`) : on les
+/// reconnaît au journal comme on reconnaît un pillard, sans lire leur camp.
+const TRADER_NAMES: [&str; 24] = [
+    "Barnabe", "Solveig", "Otto", "Perrine", "Gaspard", "Ilva", "Matteo", "Ondine", "Casimir",
+    "Ruth", "Anselme", "Livia", "Bertrand", "Yseult", "Firmin", "Naomi", "Ludovic", "Selma",
+    "Aurelien", "Colette", "Isidore", "Melina", "Quentin", "Sabine",
+];
+
 /// Tire un prénom pour un pawn du camp donné.
 pub fn pick(rng: &mut Rng, faction: Faction) -> String {
-    let list = match faction {
+    let list: &[&str] = match faction {
         Faction::Raider => &RAIDER_NAMES,
+        Faction::Trader => &TRADER_NAMES,
         // Une bête ne passe jamais par ici : son nom est son espèce
         // (`animals::Species::label`), et `spawn_animal` ne tire rien.
         Faction::Colony | Faction::Animal => &COLONIST_NAMES,
@@ -50,6 +59,14 @@ mod tests {
         for _ in 0..200 {
             let name = pick(&mut rng, Faction::Raider);
             assert!(RAIDER_NAMES.contains(&name.as_str()), "{name}");
+        }
+        for _ in 0..200 {
+            let name = pick(&mut rng, Faction::Trader);
+            assert!(TRADER_NAMES.contains(&name.as_str()), "{name}");
+            assert!(
+                !COLONIST_NAMES.contains(&name.as_str()),
+                "un marchand se confond avec un colon : {name}"
+            );
         }
     }
 }

@@ -10,7 +10,7 @@ use sim::{
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 18;
+pub const VARIANT_COUNT: usize = 19;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -33,6 +33,7 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "Hunt",
     "SetDifficulty",
     "SetCalendar",
+    "Trade",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -371,6 +372,12 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
             animal: random_pawn_id(rng, sim),
             on: rng.chance(1, 2),
         },
+        17 => Command::SetCalendar {
+            // Un jour aberrant (bien au-delà de `YEAR_DAYS`, ou aux bornes de
+            // `u32`) doit retomber par modulo sur un jour valide, sans jamais
+            // faire déborder l'arithmétique du calendrier.
+            day_of_year: random_day_of_year(rng),
+        },
         16 => Command::SetDifficulty {
             // Le tirage sur 256 cogne largement au-delà des quatre valeurs
             // valides : `Difficulty::from_u8` doit retomber sur « normal »
@@ -379,12 +386,21 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
             // alterne les trois régimes de raid sur la même carte.
             level: Difficulty::from_u8(rng.below(256) as u8),
         },
-        _ => Command::SetCalendar {
-            // Un jour aberrant (bien au-delà de `YEAR_DAYS`, ou aux bornes de
-            // `u32`) doit retomber par modulo sur un jour valide, sans jamais
-            // faire déborder l'arithmétique du calendrier.
-            day_of_year: random_day_of_year(rng),
-        },
+        _ => {
+            // Genres tirés dans toute la plage (cadavres compris) et quantités
+            // le plus souvent aberrantes : le sim doit refuser tout ce qui ne
+            // tombe pas juste — pas de marchand, stock absent d'un côté ou de
+            // l'autre, compte qui ne couvre pas le prix — sans jamais déborder
+            // sur le produit `valeur × quantité`.
+            let give = ItemKind::from_u8(rng.below(ItemKind::COUNT as u32 + 4) as u8);
+            let take = ItemKind::from_u8(rng.below(ItemKind::COUNT as u32 + 4) as u8);
+            Command::Trade {
+                give,
+                give_count: random_count(rng),
+                take,
+                take_count: random_count(rng),
+            }
+        }
     };
     (cmd, variant)
 }

@@ -85,7 +85,7 @@ fn traits_jamais_contradictoires_et_reserves_aux_colons() {
                         }
                     }
                 }
-                Faction::Raider | Faction::Animal => {
+                Faction::Raider | Faction::Animal | Faction::Trader => {
                     assert_eq!(
                         p.traits,
                         [None, None],

@@ -30,7 +30,8 @@ fn check_size(size: u32) -> Result<(), CliError> {
 
 /// Colons vivants, pillards vivants, objets au sol, chantiers en cours.
 /// La faune ne compte dans aucune des deux colonnes : elle n'est ni de la
-/// colonie ni du raid (voir `sim::animals`).
+/// colonie ni du raid (voir `sim::animals`). Le marchand de passage non plus
+/// (voir `sim::trade`), sauf s'il est devenu hostile : là, il est du raid.
 fn counts(sim: &Sim) -> (usize, usize, usize, usize) {
     let mut colons = 0;
     let mut pillards = 0;
@@ -41,7 +42,8 @@ fn counts(sim: &Sim) -> (usize, usize, usize, usize) {
         match p.faction {
             Faction::Colony => colons += 1,
             Faction::Raider => pillards += 1,
-            Faction::Animal => {}
+            Faction::Trader if p.hostile => pillards += 1,
+            Faction::Animal | Faction::Trader => {}
         }
     }
     (colons, pillards, sim.items().len(), sim.blueprints().len())

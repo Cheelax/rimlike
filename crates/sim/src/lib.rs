@@ -34,6 +34,7 @@ pub mod pawn;
 pub mod rng;
 pub mod storyteller;
 pub mod testmap;
+pub mod trade;
 pub mod traits;
 pub mod weather;
 pub mod work;
@@ -54,6 +55,7 @@ pub use map::{Designation, Feature, Map, ROOM_MAX_TILES, Rect, Terrain, Zone};
 pub use pawn::{Faction, Job, Pawn};
 pub use rng::Rng;
 pub use storyteller::{Difficulty, RaidKind};
+pub use trade::{TRADER_STAY, item_value, value_buy, value_sell};
 pub use traits::Trait;
 pub use weather::Weather;
 pub use work::{WORK_TYPES, WorkType};
@@ -130,6 +132,18 @@ pub enum EventKind {
     ColdSnap = 24,
     /// Canicule : une journée plus chaude de `arg` dixièmes de degré.
     Heatwave = 25,
+    /// Un marchand itinérant vient d'arriver (voir `trade`). `arg` : son id,
+    /// que le client suit pour afficher son étal et son nom.
+    TraderVisit = 26,
+    /// Un colon a attaqué le marchand : la visite est annulée et il se défend.
+    /// `arg` : l'id du marchand.
+    TraderAngered = 27,
+    /// Un troc vient d'aboutir. `arg` : le genre acheté (`ItemKind`) — c'est
+    /// ce qui vient d'arriver au sol, donc ce que le client a à annoncer.
+    TradeDone = 28,
+    /// Le marchand est mort sur la carte. `arg` : son id. Ses marchandises
+    /// tombent au sol, et les visites suivantes se font attendre.
+    TraderDied = 29,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -248,6 +262,20 @@ pub enum Command {
     /// Émet `EventKind::SeasonChanged` si la saison change de ce fait.
     /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
     SetCalendar { day_of_year: u32 },
+    /// Troque `give_count` unités de `give`, prélevées en **stockage**, contre
+    /// `take_count` unités de `take` prises à un marchand présent (voir
+    /// `trade`). Acceptée si un marchand est là (ni hostile, ni en partance),
+    /// si la colonie a la marchandise en stock, si le marchand a la sienne, et
+    /// si ce qu'on donne vaut au moins ce qu'on prend (`value_buy` contre
+    /// `value_sell`) : la colonie peut payer plus, jamais moins. Sinon
+    /// ignorée, sans plus de manières que `Command::Hunt` sur un id inconnu.
+    /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
+    Trade {
+        give: ItemKind,
+        give_count: u32,
+        take: ItemKind,
+        take_count: u32,
+    },
 }
 
 #[derive(Debug)]
@@ -335,6 +363,13 @@ pub struct Sim {
     /// en fin de structure** : un vieux snapshot est refusé net plutôt que relu
     /// de travers.
     calendar_offset_days: u32,
+    /// Tick d'arrivée du prochain marchand itinérant (voir `trade`).
+    /// **Champs ajoutés en fin de structure**, même raison que ci-dessus.
+    next_trader_at: u64,
+    /// Tick jusqu'auquel la colonie traîne la réputation d'avoir laissé mourir
+    /// un marchand : les visites programmées d'ici là attendent
+    /// `trade::TRADER_GRUDGE_EXTRA` de plus. 0 quand rien n'est reproché.
+    trader_grudge_until: u64,
 }
 
 impl Sim {
@@ -396,6 +431,8 @@ impl Sim {
             temperature_offset: 0,
             offset_until: 0,
             calendar_offset_days: 0,
+            next_trader_at: 0,
+            trader_grudge_until: 0,
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -410,6 +447,7 @@ impl Sim {
         // En dernier : les échéances des événements ajoutés après coup tirent
         // à la suite, sans décaler ce que les tirages précédents donnaient.
         sim.schedule_first_events();
+        sim.schedule_first_trader();
         // Ne consomme aucun hasard : c'est un simple comptage de ce qui existe.
         sim.init_wealth();
         sim
@@ -593,6 +631,11 @@ impl Sim {
                 {
                     return;
                 }
+                // Lever la main sur un marchand annule la visite : il se
+                // défend, et la colonie s'en souviendra (voir `trade`).
+                if self.pawns[i].faction == Faction::Colony {
+                    self.anger_trader(k);
+                }
                 self.abandon_job(i);
                 self.pawns[i].job = Job::Attack { target };
             }
@@ -638,6 +681,12 @@ impl Sim {
             Command::Hunt { animal, on } => self.set_hunted(animal, on),
             Command::SetDifficulty { level } => self.difficulty = level,
             Command::SetCalendar { day_of_year } => self.set_calendar(day_of_year),
+            Command::Trade {
+                give,
+                give_count,
+                take,
+                take_count,
+            } => self.trade(give, give_count, take, take_count),
         }
     }
 

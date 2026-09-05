@@ -362,7 +362,7 @@ impl Sim {
 
     /// Tick d'échéance tiré au sort : `self.tick + min_days` à
     /// `+ min_days + span_days` jours.
-    fn roll_delay(&mut self, min_days: u32, span_days: u32) -> u64 {
+    pub(crate) fn roll_delay(&mut self, min_days: u32, span_days: u32) -> u64 {
         let min = u64::from(TICKS_PER_DAY) * u64::from(min_days);
         let span = TICKS_PER_DAY.saturating_mul(span_days).max(1);
         self.tick + min + u64::from(self.rng.below(span))
@@ -397,6 +397,13 @@ impl Sim {
         if self.tick >= self.next_extreme_at {
             self.strike_extreme_weather();
             self.next_extreme_at = self.roll_delay(EXTREME_MIN_DAYS, EXTREME_SPAN_DAYS);
+        }
+        // Avant la sortie rapide du raid, comme les troupeaux : un marchand
+        // n'est pas une menace, et il passe à toutes les difficultés — même en
+        // paisible, où plus aucune bande n'entre.
+        if self.tick >= self.next_trader_at {
+            self.spawn_trader();
+            self.schedule_next_trader();
         }
         if self.tick < self.next_raid_at {
             return;
@@ -582,7 +589,7 @@ impl Sim {
     }
 
     /// Barycentre des colons vivants, `None` si la colonie est éteinte.
-    fn colony_center(&self) -> Option<(u32, u32)> {
+    pub(crate) fn colony_center(&self) -> Option<(u32, u32)> {
         let mut sum = (0u64, 0u64);
         let mut n = 0u64;
         for p in &self.pawns {

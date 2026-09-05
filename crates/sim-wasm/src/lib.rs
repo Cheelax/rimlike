@@ -262,6 +262,21 @@ impl WasmSim {
         self.pending.push(sim::Command::SetCalendar { day_of_year });
     }
 
+    /// Troque avec le marchand présent : `give_count` unités de `give`,
+    /// prélevées en stockage, contre `take_count` unités de `take`, posées au
+    /// sol près de lui. Les genres suivent `sim::ItemKind`. Le sim ignore la
+    /// commande si le marchand est parti, si le compte n'y est pas d'un côté
+    /// ou de l'autre, ou si ce qu'on donne vaut moins que ce qu'on prend
+    /// (`trader_offers`, `buy_prices`).
+    pub fn trade(&mut self, give: u8, give_count: u32, take: u8, take_count: u32) {
+        self.pending.push(sim::Command::Trade {
+            give: ItemKind::from_u8(give),
+            give_count,
+            take: ItemKind::from_u8(take),
+            take_count,
+        });
+    }
+
     // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
     //
     // Fonctions **associées** : le client doit pouvoir encoder avant même
@@ -388,6 +403,16 @@ impl WasmSim {
     /// Jour de l'année imposé. Voir `set_calendar`.
     pub fn encode_set_calendar(day_of_year: u32) -> Vec<u8> {
         encode(&sim::Command::SetCalendar { day_of_year })
+    }
+
+    /// Troc avec le marchand de passage. Voir `trade`.
+    pub fn encode_trade(give: u8, give_count: u32, take: u8, take_count: u32) -> Vec<u8> {
+        encode(&sim::Command::Trade {
+            give: ItemKind::from_u8(give),
+            give_count,
+            take: ItemKind::from_u8(take),
+            take_count,
+        })
     }
 
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
@@ -808,7 +833,40 @@ impl WasmSim {
         out
     }
 
-    /// Nom du colon ou du pillard, chaîne vide si l'id est inconnu.
+    // --- Commerce ---
+
+    /// Id du marchand avec qui on peut traiter, −1 s'il n'y en a pas (parti,
+    /// devenu hostile, ou jamais venu). Sa position, son nom et sa santé se
+    /// lisent dans les tampons habituels : c'est un pawn de faction 3.
+    pub fn trader_present(&self) -> i32 {
+        self.inner.trader().map_or(-1, |p| p.id as i32)
+    }
+
+    /// Ticks avant que le marchand ne reprenne la route ; 0 s'il n'y en a pas.
+    pub fn trader_leaves_in(&self) -> i32 {
+        let tick = self.inner.tick();
+        self.inner.trader().map_or(0, |p| {
+            i32::try_from(p.leaves_at.saturating_sub(tick)).unwrap_or(i32::MAX)
+        })
+    }
+
+    /// Étal du marchand, à plat : `[genre, quantité, prix unitaire de vente]`
+    /// par lot. Vide s'il n'y a personne à qui parler.
+    pub fn trader_offers(&self) -> Vec<i32> {
+        let mut out = Vec::new();
+        for (kind, count, price) in self.inner.trader_offers() {
+            out.extend_from_slice(&[kind as i32, count as i32, price as i32]);
+        }
+        out
+    }
+
+    /// Prix unitaire d'achat par genre, indexé par `ItemKind` : ce que la
+    /// colonie touche en cédant une unité.
+    pub fn buy_prices(&self) -> Vec<u32> {
+        self.inner.buy_prices().to_vec()
+    }
+
+    /// Nom du colon, du pillard ou du marchand, chaîne vide si l'id est inconnu.
     pub fn pawn_name(&self, id: u32) -> String {
         self.inner
             .pawns()
@@ -1099,6 +1157,15 @@ mod tests {
             (
                 WasmSim::encode_set_calendar(45),
                 Command::SetCalendar { day_of_year: 45 },
+            ),
+            (
+                WasmSim::encode_trade(ItemKind::Wood as u8, 30, ItemKind::Berries as u8, 10),
+                Command::Trade {
+                    give: ItemKind::Wood,
+                    give_count: 30,
+                    take: ItemKind::Berries,
+                    take_count: 10,
+                },
             ),
         ];
         for (bytes, expected) in cases {
@@ -1391,6 +1458,51 @@ mod tests {
             .find(|r| r[0] == deer as i32)
             .map(|r| r[2]);
         assert_eq!(hunted, Some(1), "le marqueur de chasse n'est pas posé");
+    }
+
+    /// Contrat de commerce avec le client : marchand repérable, étal et prix
+    /// lisibles, troc qui passe par la même file que les autres commandes.
+    #[test]
+    fn les_accesseurs_de_commerce_repondent() {
+        let mut s = fresh();
+        assert_eq!(s.trader_present(), -1, "aucun marchand au départ");
+        assert_eq!(s.trader_leaves_in(), 0);
+        assert!(s.trader_offers().is_empty());
+        assert_eq!(
+            s.buy_prices().len(),
+            ItemKind::COUNT,
+            "un prix d'achat par genre"
+        );
+        assert!(s.buy_prices().iter().all(|&p| p >= 1), "prix nul");
+
+        let id = s
+            .inner
+            .trigger_trader_visit()
+            .expect("un marchand doit pouvoir entrer");
+        assert_eq!(s.trader_present(), id as i32);
+        assert!(s.trader_leaves_in() > 0);
+        let offers = s.trader_offers();
+        assert!(!offers.is_empty() && offers.len() % 3 == 0, "{offers:?}");
+        // `[genre, quantité, prix]` : le prix de vente suit le barème du sim.
+        for lot in offers.chunks(3) {
+            let kind = ItemKind::from_u8(lot[0] as u8);
+            assert!(lot[1] > 0, "lot vide : {lot:?}");
+            assert_eq!(lot[2], sim::value_sell(kind) as i32);
+        }
+        assert!(!s.pawn_name(id).is_empty(), "le marchand a un nom");
+
+        // Le troc passe par la file d'attente comme le reste : rien avant le tick.
+        s.inner.map_mut().set_zone(2, 2, Zone::Stockpile);
+        s.inner.spawn_item(ItemKind::Wood, 60, 2, 2);
+        let take = ItemKind::from_u8(s.trader_offers()[0] as u8);
+        s.trade(ItemKind::Wood as u8, 60, take as u8, 1);
+        assert_eq!(s.pending_len(), 1);
+        s.step(1);
+        assert_eq!(s.pending_len(), 0);
+        assert!(
+            s.inner.stored_totals()[ItemKind::Wood as usize] < 60,
+            "le bois n'est pas parti"
+        );
     }
 
     #[test]

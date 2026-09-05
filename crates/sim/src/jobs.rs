@@ -74,6 +74,12 @@ impl Sim {
             }
             return;
         }
+        // Le marchand de passage : il ne mange pas, ne dort pas, ne travaille
+        // pas. Il marche jusqu'à son étal, attend, puis repart (voir `trade`).
+        if self.pawns[i].faction == Faction::Trader {
+            self.trader_ai(i);
+            return;
+        }
         // La faune : boucle courte elle aussi, sans besoin ni recherche de job.
         if self.pawns[i].faction == Faction::Animal {
             self.animal_ai(i);
