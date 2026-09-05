@@ -14,6 +14,7 @@ import {
 } from "./terrain";
 
 import { PropBatch, PropLibrary, blueprintKey, doorRotation, surfaceTexture, placementTexture, visualSeed, type PropInstance } from "./props";
+import { disposeTree, type SharedGl } from "./gl";
 
 /** Contrat avec `items::ItemKind` (armes seulement) : gourdin, épieu, arc. */
 const WEAPON_KIND = { Club: 6, Spear: 7, Bow: 8 } as const;
@@ -146,9 +147,12 @@ export interface TileRect {
 /**
  * Vue du dessus pseudo-3D : caméra orthographique inclinée, soleil qui tourne
  * avec l'heure, ombres. Ne connaît que des tampons plats venant du sim.
+ *
+ * Le contexte WebGL ne lui appartient pas : il vient de `gl.ts`, partagé avec
+ * l'écran Monde (voir l'en-tête de ce module). Cette classe possède sa scène,
+ * sa caméra et tout ce qu'elle y met — et c'est tout ce que `dispose` rend.
  */
 export class Renderer {
-  private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
   private readonly camera: THREE.OrthographicCamera;
   private readonly controls: MapControls;
@@ -216,17 +220,26 @@ export class Renderer {
   /** Frames d'éclair restantes, et délai avant le suivant en secondes. */
   private flashFrames = 0;
   private nextFlash = 0;
-  private readonly onResize = () => this.resize();
+  /** Désabonnements du contexte partagé, rendus par `dispose`. */
+  private readonly offGl: Array<() => void> = [];
 
-  constructor(private readonly canvas: HTMLCanvasElement) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  /**
+   * `gl` est le contexte unique de l'onglet (`gl.ts`), `host` le conteneur de
+   * cet écran : c'est lui qui reçoit les entrées et porte le canevas tant que
+   * la colonie est à l'écran. Brancher les contrôles sur le conteneur plutôt
+   * que sur le canevas partagé est ce qui empêche l'écran Monde et celui-ci de
+   * se disputer la souris.
+   */
+  constructor(
+    private readonly gl: SharedGl,
+    private readonly host: HTMLElement,
+  ) {
+    // Le fond est porté par la scène : chaque écran garde le sien sans avoir à
+    // reposer un réglage global du renderer partagé.
     this.scene.background = new THREE.Color(0x0b0f14);
 
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 2000);
-    this.controls = new MapControls(this.camera, canvas);
+    this.controls = new MapControls(this.camera, host);
     this.controls.enableRotate = false;
     this.controls.screenSpacePanning = false;
     this.controls.minZoom = 0.4;
@@ -276,7 +289,10 @@ export class Renderer {
     this.scene.add(this.rain);
     this.seedRain();
 
-    window.addEventListener("resize", this.onResize);
+    // Une seule source de redimensionnement pour tout l'onglet (`gl.ts`) : la
+    // caméra suit, le tampon de rendu est déjà géré là-bas.
+    this.offGl.push(this.gl.onResize((w, h) => this.resize(w, h)));
+    this.offGl.push(this.gl.onRestored(() => this.onContextRestored()));
     this.resize();
   }
 
@@ -807,6 +823,11 @@ export class Renderer {
     for (const [id, view] of this.pawns) {
       if (!seen.has(id)) {
         this.pawnRoot.remove(view.group);
+        // Chaque colon a ses propres géométries et matériaux (seules les
+        // textures d'étiquette sont mutualisées, et `disposeTree` n'y touche
+        // pas) : sans ce rendu, les compteurs de `renderer.info.memory`
+        // montent à chaque mort.
+        disposeTree(view.group);
         this.pawns.delete(id);
       }
     }
@@ -1160,7 +1181,7 @@ export class Renderer {
   }
 
   private setRayFrom(clientX: number, clientY: number): void {
-    const r = this.canvas.getBoundingClientRect();
+    const r = this.host.getBoundingClientRect();
     const ndc = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
   }
@@ -1198,12 +1219,16 @@ export class Renderer {
     }
   }
 
-  resize(): void {
-    const w = this.canvas.clientWidth || window.innerWidth;
-    const h = this.canvas.clientHeight || window.innerHeight;
-    this.renderer.setSize(w, h, false);
+  /**
+   * Recadre la caméra. Le tampon de rendu, lui, est retaillé par `gl.ts`, qui
+   * appelle ensuite cette méthode avec la taille retenue — d'où les arguments
+   * optionnels : sans eux, on remesure le conteneur.
+   */
+  resize(width?: number, height?: number): void {
+    const w = width ?? this.host.clientWidth;
+    const h = height ?? this.host.clientHeight;
     const viewHeight = 48; // cases visibles verticalement au zoom 1
-    const aspect = w / h;
+    const aspect = (w || 1) / (h || 1);
     this.camera.left = (-viewHeight * aspect) / 2;
     this.camera.right = (viewHeight * aspect) / 2;
     this.camera.top = viewHeight / 2;
@@ -1212,6 +1237,9 @@ export class Renderer {
   }
 
   render(dtSeconds: number): void {
+    // Le canevas partagé est chez l'écran Monde (visée d'une caravane), ou le
+    // contexte est perdu : ni l'un ni l'autre ne se dessinent par-dessus.
+    if (this.gl.contextLost || this.gl.container !== this.host) return;
     this.clock += dtSeconds;
     this.updateWeather(dtSeconds);
     if (Math.abs(this.targetAzimuth - this.azimuth) > 1e-4) {
@@ -1221,16 +1249,37 @@ export class Renderer {
     } else {
       this.controls.update();
     }
-    this.renderer.render(this.scene, this.camera);
+    this.gl.renderer.render(this.scene, this.camera);
   }
 
+  /**
+   * Contexte restauré (`gl.ts`) : Three.js réenvoie de lui-même géométries et
+   * matériaux, mais les textures qu'on peint à la main (sol, grille de pose,
+   * étiquettes de nom) doivent être remarquées comme à recharger.
+   */
+  private onContextRestored(): void {
+    this.groundTexture.needsUpdate = true;
+    this.placementTexture.needsUpdate = true;
+    for (const texture of this.nameTextures.values()) texture.needsUpdate = true;
+  }
+
+  /**
+   * Rend tout ce que cet écran a mis sur le GPU — et **rien d'autre** : le
+   * `WebGLRenderer` et son canevas sont partagés avec l'écran Monde (`gl.ts`),
+   * les détruire coûterait le contexte de l'onglet.
+   */
   dispose(): void {
-    window.removeEventListener("resize", this.onResize);
+    for (const off of this.offGl) off();
+    this.offGl.length = 0;
     this.controls.dispose();
-    this.clearMeshes(this.mapMeshes);
-    this.clearMeshes(this.overlayMeshes);
-    this.clearMeshes(this.indoorMeshes);
-    this.clearMeshes(this.heatMeshes);
+    this.mapMeshes.length = 0;
+    this.overlayMeshes.length = 0;
+    this.indoorMeshes.length = 0;
+    this.heatMeshes.length = 0;
+    // Toute la scène d'un coup : colons, pluie, calques, chantiers, lumières.
+    disposeTree(this.scene);
+    this.scene.clear();
+    this.pawns.clear();
     this.featureProps.dispose();
     this.floorProps.dispose();
     this.itemProps.dispose();
@@ -1238,9 +1287,6 @@ export class Renderer {
     this.props.dispose();
     this.groundTexture.dispose();
     this.placementTexture.dispose();
-    this.placementGrid.geometry.dispose();
-    (this.placementGrid.material as THREE.Material).dispose();
-    this.renderer.dispose();
     for (const texture of this.nameTextures.values()) texture.dispose();
     this.nameTextures.clear();
   }

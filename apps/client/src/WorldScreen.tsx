@@ -9,8 +9,10 @@
  * globe ni se reconnecter.
  *
  * Le composant reste monté pendant la partie, simplement masqué : le globe
- * représente ~40 000 triangles et un contexte WebGL, autant ne pas les rebâtir
- * à chaque aller-retour.
+ * représente ~40 000 triangles, autant ne pas les rebâtir à chaque
+ * aller-retour. Le contexte WebGL, lui, est celui de l'onglet (`render/gl.ts`),
+ * partagé avec la colonie : le canevas passe dans le conteneur de cet écran
+ * quand il s'affiche et repart chez la colonie quand il se masque.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -20,6 +22,7 @@ import { formatClimate } from "./render/terrain";
 import { formatHours } from "./CaravanPanel";
 import type { IdentitySummary, WorldClientState } from "./net/WorldClient";
 import { GlobeRenderer } from "./render/GlobeRenderer";
+import { acquireGl } from "./render/gl";
 import { ITEM_NAMES } from "./render/terrain";
 
 /** Déplacement au-delà duquel un relâchement n'est plus un clic. */
@@ -156,7 +159,13 @@ export function WorldScreen({
   describeIdentity,
   onForgetIdentity,
 }: WorldScreenProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  /**
+   * Conteneur du globe. Il n'a pas de canevas à lui : le seul canevas WebGL de
+   * l'onglet (`render/gl.ts`) s'y installe tant que le globe est visible. C'est
+   * aussi lui qui reçoit les entrées souris — pendant qu'on joue une colonie, le
+   * canevas est ailleurs et cet écran ne voit plus rien passer.
+   */
+  const hostRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<GlobeRenderer | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<number | null>(initialTile);
@@ -199,21 +208,15 @@ export function WorldScreen({
 
   // --- Le globe : créé une fois, gardé monté tant qu'on est dans le monde ---
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const renderer = new GlobeRenderer(canvas, world, {
+    const host = hostRef.current;
+    if (host === null) return;
+    // Le contexte WebGL est celui de l'onglet : on l'emprunte, on ne le crée pas.
+    const gl = acquireGl();
+    const renderer = new GlobeRenderer(gl, host, world, {
       onHover: (tile) => setHovered(tile),
       onHoverCaravan: (id) => setHoveredCaravan(id),
     });
     rendererRef.current = renderer;
-    let raf = 0;
-    let disposed = false;
-    const loop = () => {
-      if (disposed) return;
-      renderer.render();
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
 
     let down: { x: number; y: number; tile: number | null } | null = null;
     const onPointerDown = (e: PointerEvent) => {
@@ -251,25 +254,47 @@ export function WorldScreen({
     };
     const onPointerLeave = () => renderer.clearPointer();
 
-    canvas.addEventListener("pointerdown", onPointerDown);
-    canvas.addEventListener("pointermove", onPointerMove);
-    canvas.addEventListener("pointerup", onPointerUp);
-    canvas.addEventListener("pointerleave", onPointerLeave);
+    host.addEventListener("pointerdown", onPointerDown);
+    host.addEventListener("pointermove", onPointerMove);
+    host.addEventListener("pointerup", onPointerUp);
+    host.addEventListener("pointerleave", onPointerLeave);
     return () => {
-      disposed = true;
-      cancelAnimationFrame(raf);
-      canvas.removeEventListener("pointerdown", onPointerDown);
-      canvas.removeEventListener("pointermove", onPointerMove);
-      canvas.removeEventListener("pointerup", onPointerUp);
-      canvas.removeEventListener("pointerleave", onPointerLeave);
+      host.removeEventListener("pointerdown", onPointerDown);
+      host.removeEventListener("pointermove", onPointerMove);
+      host.removeEventListener("pointerup", onPointerUp);
+      host.removeEventListener("pointerleave", onPointerLeave);
+      // Rend les ressources de cet écran, jamais le contexte partagé.
       renderer.dispose();
+      gl.release();
       rendererRef.current = null;
     };
   }, [world]);
 
-  // Le canevas masqué mesure 0 × 0 : il faut le remesurer au retour.
+  /**
+   * Le canevas partagé et la boucle de rendu vont ensemble : le globe ne prend
+   * l'un et l'autre que pendant qu'il est affiché, et rend le canevas à la
+   * colonie dès qu'il se masque. `attach` remesure au passage — masqué, le
+   * conteneur fait 0 × 0.
+   */
   useEffect(() => {
-    if (visible) rendererRef.current?.resize();
+    const host = hostRef.current;
+    if (host === null || !visible) return;
+    const gl = acquireGl();
+    gl.attach(host);
+    let raf = 0;
+    let stopped = false;
+    const loop = () => {
+      if (stopped) return;
+      rendererRef.current?.render();
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+      gl.detach(host);
+      gl.release();
+    };
   }, [visible]);
 
   // Présélection venue de l'accueil (« Salles ouvertes ») : un seul centrage
@@ -467,7 +492,7 @@ export function WorldScreen({
 
   return (
     <>
-      <canvas ref={canvasRef} className="globe" style={{ display: visible ? "block" : "none" }} />
+      <div ref={hostRef} className="globe" style={{ display: visible ? "block" : "none" }} />
 
       {visible && picking && (
         <div className="pick-banner">

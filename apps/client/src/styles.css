@@ -1,5 +1,10 @@
 html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #0b0f14; color: #e6e6e6; font-family: system-ui, sans-serif; }
-canvas.scene { display: block; width: 100%; height: 100%; }
+/* Conteneur de la scène de colonie : il accueille le canevas WebGL unique de
+   l'onglet (`render/gl.ts`) quand la colonie est à l'écran, et reçoit la souris
+   à sa place. Vide le reste du temps — le fond de page suffit alors. */
+div.scene { position: fixed; inset: 0; touch-action: none; }
+/* Le canevas partagé, où qu'il soit posé : il remplit son conteneur. */
+canvas.scene-gl { display: block; width: 100%; height: 100%; }
 .hud { position: fixed; top: 12px; left: 12px; padding: 8px 12px; background: rgba(0,0,0,.55); border-radius: 6px; font: 12px/1.5 ui-monospace, Menlo, monospace; pointer-events: none; }
 .hud b { color: #9ad; }
 .help { opacity: .6; margin-top: 2px; font-size: 11px; }
@@ -105,7 +110,9 @@ canvas.scene { display: block; width: 100%; height: 100%; }
 .heat-legend-bar { width: 140px; height: 10px; border-radius: 5px; background: linear-gradient(to right, hsl(223, 85%, 50%), hsl(112, 85%, 50%), hsl(0, 85%, 50%)); }
 
 /* --- Écran Monde : le globe, son infobulle et son panneau latéral --- */
-canvas.globe { position: fixed; inset: 0; display: block; width: 100%; height: 100%; touch-action: none; }
+/* Même rôle que `div.scene` pour l'écran Monde : conteneur du canevas partagé,
+   masqué (`display: none`, posé en ligne) pendant qu'on joue une colonie. */
+div.globe { position: fixed; inset: 0; touch-action: none; }
 .globe-tip { position: fixed; z-index: 5; display: flex; flex-direction: column; padding: 6px 10px; background: rgba(0,0,0,.82); border: 1px solid rgba(255,255,255,.18); border-radius: 6px; font: 12px/1.45 system-ui, sans-serif; pointer-events: none; white-space: nowrap; }
 .globe-tip .owner { color: #ffe066; }
 .world-panel { position: fixed; top: 12px; right: 12px; bottom: 12px; width: 280px; display: flex; flex-direction: column; gap: 5px; padding: 12px 14px; overflow-y: auto; background: rgba(0,0,0,.66); border: 1px solid rgba(255,255,255,.12); border-radius: 8px; font: 12px/1.45 system-ui, sans-serif; }

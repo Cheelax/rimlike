@@ -2,11 +2,12 @@
  * Le globe en Three.js : une sphère de cases hexagonales colorées par biome,
  * qu'on tourne et qu'on zoome pour choisir où s'installer.
  *
- * Indépendant de `Renderer.ts` (la carte de colonie) : rien n'est partagé, ni
- * la scène, ni la caméra, ni le canevas. Ce module ne décide rien non plus —
- * il reçoit un `World` et une liste de colonies, il rend et il répond « quelle
- * case sous ce pixel ». Toute la géométrie vient de `globeGeometry.ts`, pur et
- * testé.
+ * Indépendant de `Renderer.ts` (la carte de colonie) : ni la scène ni la
+ * caméra ne sont partagées. Le **contexte WebGL**, lui, l'est : il vient de
+ * `gl.ts`, un seul par onglet (voir l'en-tête de ce module). Ce module ne
+ * décide rien non plus — il reçoit un `World` et une liste de colonies, il rend
+ * et il répond « quelle case sous ce pixel ». Toute la géométrie vient de
+ * `globeGeometry.ts`, pur et testé.
  *
  * Structure de la scène :
  * - une `BufferGeometry` unique pour les 4 N − 12 triangles du globe, couleur
@@ -27,6 +28,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import type { Caravan, Settlement } from "@rimlike/protocol";
 import type { World } from "@rimlike/world";
 import { GLOBE_RADIUS, RELIEF_SCALE, buildGlobeGeometry, buildTileFan, tileRadius } from "./globeGeometry";
+import { disposeTree, type SharedGl } from "./gl";
 
 /** Distance caméra ↔ centre au premier affichage. */
 const START_DISTANCE = 2.9;
@@ -75,7 +77,6 @@ export interface GlobeRendererOptions {
 }
 
 export class GlobeRenderer {
-  private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
   private readonly camera: THREE.PerspectiveCamera;
   private readonly controls: OrbitControls;
@@ -99,7 +100,8 @@ export class GlobeRenderer {
   private readonly previewLine: THREE.LineSegments;
   private readonly onHover: ((tile: number | null) => void) | null;
   private readonly onHoverCaravan: ((id: string | null) => void) | null;
-  private readonly onResize = () => this.resize();
+  /** Désabonnements du contexte partagé, rendus par `dispose`. */
+  private readonly offGl: Array<() => void> = [];
 
   private hoverTile: number | null = null;
   private hoverCaravan: string | null = null;
@@ -109,22 +111,29 @@ export class GlobeRenderer {
   private pointerDirty = false;
   private disposed = false;
 
+  /**
+   * `gl` est le contexte unique de l'onglet (`gl.ts`), `host` le conteneur de
+   * cet écran : il porte le canevas partagé tant que le globe est affiché, et
+   * reçoit les entrées. Les contrôles se branchent dessus et non sur le canevas,
+   * sans quoi la colonie et le globe se disputeraient la souris.
+   */
   constructor(
-    private readonly canvas: HTMLCanvasElement,
+    private readonly gl: SharedGl,
+    private readonly host: HTMLElement,
     private readonly world: World,
     options: GlobeRendererOptions = {},
   ) {
     this.onHover = options.onHover ?? null;
     this.onHoverCaravan = options.onHoverCaravan ?? null;
 
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Le noir profond du ciel est porté par la scène : le renderer partagé
+    // n'a aucun réglage à reprendre d'un écran à l'autre.
     this.scene.background = new THREE.Color(0x05070c);
 
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.05, 200);
     this.camera.position.set(0, 0.6, START_DISTANCE);
 
-    this.controls = new OrbitControls(this.camera, canvas);
+    this.controls = new OrbitControls(this.camera, host);
     // Rotation et zoom seulement : sur un globe, déplacer la cible n'a pas de sens.
     this.controls.enablePan = false;
     this.controls.enableDamping = true;
@@ -179,7 +188,9 @@ export class GlobeRenderer {
 
     this.scene.add(starfield());
 
-    window.addEventListener("resize", this.onResize);
+    // Une seule source de redimensionnement pour tout l'onglet (`gl.ts`).
+    this.offGl.push(this.gl.onResize((w, h) => this.resize(w, h)));
+    this.offGl.push(this.gl.onRestored(() => this.onContextRestored()));
     this.resize();
   }
 
@@ -202,7 +213,7 @@ export class GlobeRenderer {
 
   /** Case sous un pixel, tout de suite (un clic ne peut pas attendre la frame). */
   pickAt(clientX: number, clientY: number): number | null {
-    const rect = this.canvas.getBoundingClientRect();
+    const rect = this.host.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return null;
     const ndc = new THREE.Vector2(
       ((clientX - rect.left) / rect.width) * 2 - 1,
@@ -320,7 +331,7 @@ export class GlobeRenderer {
    * souris, et il n'y a jamais qu'une poignée de convois à tester.
    */
   pickCaravan(clientX: number, clientY: number): string | null {
-    const rect = this.canvas.getBoundingClientRect();
+    const rect = this.host.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return null;
     const camera = this.camera.position;
     const point = new THREE.Vector3();
@@ -361,7 +372,9 @@ export class GlobeRenderer {
   }
 
   render(): void {
-    if (this.disposed) return;
+    // Écran fermé, canevas partagé passé à la colonie, ou contexte perdu :
+    // dans les trois cas, ce n'est pas au globe de dessiner.
+    if (this.disposed || this.gl.contextLost || this.gl.container !== this.host) return;
     this.controls.update();
     if (this.pointerDirty) {
       this.pointerDirty = false;
@@ -377,32 +390,51 @@ export class GlobeRenderer {
         this.onHoverCaravan?.(caravan);
       }
     }
-    this.renderer.render(this.scene, this.camera);
+    this.gl.renderer.render(this.scene, this.camera);
   }
 
-  resize(): void {
-    const width = this.canvas.clientWidth || 1;
-    const height = this.canvas.clientHeight || 1;
-    this.camera.aspect = width / height;
+  /**
+   * Recadre la caméra. Le tampon de rendu est retaillé par `gl.ts`, qui appelle
+   * ensuite cette méthode avec la taille retenue — d'où les arguments
+   * optionnels : sans eux, on remesure le conteneur.
+   */
+  resize(width?: number, height?: number): void {
+    const w = width ?? this.host.clientWidth;
+    const h = height ?? this.host.clientHeight;
+    this.camera.aspect = (w || 1) / (h || 1);
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(width, height, false);
   }
 
+  /**
+   * Contexte restauré (`gl.ts`) : Three.js réenvoie de lui-même les tampons
+   * qu'il connaît. Le globe n'a pas d'autre ressource GPU à sa charge — les
+   * calques se réécrivent à la prochaine mise à jour de survol ou de colonie.
+   */
+  private onContextRestored(): void {
+    this.globe.geometry.getAttribute("position").needsUpdate = true;
+    this.globe.geometry.getAttribute("color").needsUpdate = true;
+  }
+
+  /**
+   * Rend tout ce que cet écran a mis sur le GPU — et **rien d'autre** : le
+   * `WebGLRenderer` et son canevas sont partagés avec la colonie (`gl.ts`), les
+   * détruire coûterait le contexte de l'onglet, celui-là même qu'on économise.
+   */
   dispose(): void {
     this.disposed = true;
-    window.removeEventListener("resize", this.onResize);
+    for (const off of this.offGl) off();
+    this.offGl.length = 0;
     this.controls.dispose();
+    // Toute la scène d'un coup : globe, sphère de garde, calques, itinéraires,
+    // marqueurs, étoiles.
+    disposeTree(this.scene);
+    this.scene.clear();
     this.markerGeometry.dispose();
     this.ownMarkerMaterial.dispose();
     this.otherMarkerMaterial.dispose();
     this.caravanGeometry.dispose();
     for (const material of this.caravanMaterials.values()) material.dispose();
     this.caravanMaterials.clear();
-    this.renderer.dispose();
-    // Pas de `forceContextLoss` : un contexte perdu ne se recrée pas sur le
-    // même canevas, et React StrictMode monte deux fois en développement — le
-    // second `GlobeRenderer` n'afficherait plus rien. C'est aussi pourquoi le
-    // globe reste monté pendant la partie : un seul contexte par session.
   }
 
   /** Vrai si l'identifiant désigne une case de ce globe. */

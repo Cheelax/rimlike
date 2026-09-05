@@ -316,7 +316,13 @@ cases, un colon d'alice parti en caravane est arrivé chez bob en huit heures de
 température et de la latitude de la case (désert plus contrasté), l'hôte l'émet en `SetClimate`
 en première commande ; côté client livré le 2026-09-05 (Sonnet, coupé par la limite puis
 terminé par l'orchestrateur : tests) avec l'affichage du climat de la case sur l'écran Monde.
-Reste : un seul contexte WebGL par onglet.
+Contexte WebGL unique livré le 2026-09-05 (Opus) : `apps/client/src/render/gl.ts` possède
+le seul `WebGLRenderer` et le seul canevas de l'onglet (mémoïsés, compteur d'utilisateurs,
+réglages globaux posés une fois, `ResizeObserver` unique, perte et restauration de contexte
+gérées), le canevas passe d'un conteneur d'écran à l'autre — ce qui route aussi la souris —
+et `Renderer` comme `GlobeRenderer` rendent toutes leurs géométries et matériaux à la
+fermeture sans jamais toucher au renderer partagé ; alterner globe et colonie ne crée plus
+de contexte.
 - Globe hexagonal, rendu du globe, biomes, choix de case de départ.
 - Serveur autoritaire persistant : cases, propriétaires, horloge globale.
 - Cartes gelées + avance rapide abstraite.
@@ -444,6 +450,15 @@ colon, événements au journal). À venir : factions PNJ avec réputation, mods 
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-05 : un seul contexte WebGL par onglet. `render/gl.ts` possède l'unique
+  `WebGLRenderer` et son canevas ; les écrans Monde et Colonie gardent chacun leur scène et
+  leur caméra et se passent le canevas en le déplaçant d'un conteneur à l'autre (ce qui route
+  aussi les entrées souris). Réglages globaux posés une fois, ombres toujours actives (les
+  basculer recompile tous les matériaux), perte de contexte interceptée pour permettre la
+  restauration. Chaque écran libère ses géométries et matériaux à la fermeture, jamais le
+  renderer ni les textures partagées. Vérifié : quatre allers-retours, compteurs mémoire
+  stables (6 géométries, 0 texture sur le globe).
 
 - 2026-09-05 : le bavardage n'est pas un travail. Pas de `WorkType` ni de priorité : un colon ne
   discute que quand il n'a rien d'autre à faire, juste avant de flâner, ce qui garde le tableau

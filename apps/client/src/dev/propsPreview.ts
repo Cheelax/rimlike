@@ -1,7 +1,16 @@
 /** Scène de revue visuelle : tampons synthétiques, aucune sauvegarde ni simulation. */
 import { Renderer } from '../render/Renderer';
+import { acquireGl } from '../render/gl';
 import { FEATURE as F, TERRAIN as T } from '../render/terrain';
-const r = new Renderer(document.querySelector('canvas')!);
+// Le canevas de la page cède la place au conteneur du canevas partagé
+// (`render/gl.ts`) : ici comme dans le jeu, un seul contexte WebGL par onglet.
+const host = document.createElement('div');
+host.className = 'scene';
+host.style.cssText = 'position:fixed;inset:0;touch-action:none';
+document.querySelector('canvas')?.replaceWith(host);
+const gl = acquireGl();
+gl.attach(host);
+const r = new Renderer(gl, host);
 const width=32, height=26;
 const tiles=new Uint8Array(width*height).fill(T.Grass), features=new Uint8Array(width*height), zones=new Uint8Array(width*height);
 const at=(x:number,z:number)=>z*width+x;
@@ -49,4 +58,4 @@ function frame(now:number){
   frameId=requestAnimationFrame(frame);
 }
 frameId=requestAnimationFrame(frame);
-window.addEventListener("pagehide",()=>{cancelAnimationFrame(frameId);r.dispose()},{once:true});
+window.addEventListener("pagehide",()=>{cancelAnimationFrame(frameId);r.dispose();gl.detach(host);gl.release()},{once:true});

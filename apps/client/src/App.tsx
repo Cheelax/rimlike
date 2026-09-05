@@ -30,6 +30,7 @@ import {
   type TilePos,
   type TileRect,
 } from "./render/Renderer";
+import { acquireGl } from "./render/gl";
 import {
   ANIMAL_STRIDE,
   APPAREL_NAMES,
@@ -471,7 +472,14 @@ function base64ToBytes(b64: string): Uint8Array {
 }
 
 export function App() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  /**
+   * Conteneur de la scène de colonie. Il ne contient pas de canevas à lui : le
+   * seul canevas WebGL de l'onglet vient de `render/gl.ts` et s'y installe tant
+   * que la colonie est à l'écran (voir l'effet « canevas partagé » plus bas).
+   * C'est aussi lui qui reçoit les entrées souris, et non le canevas, pour que
+   * l'écran Monde ne les voie jamais pendant qu'on joue.
+   */
+  const sceneHostRef = useRef<HTMLDivElement>(null);
   const toolRef = useRef<Tool>("select");
   const materialRef = useRef<number>(0);
   const rendererRef = useRef<Renderer | null>(null);
@@ -576,6 +584,16 @@ export function App() {
   /** Case du globe jouée en ce moment, `null` en solo ou en salle nommée. */
   const roomTile = session?.mode === "multi" ? tileOfRoom(session.room) : null;
   roomTileRef.current = roomTile;
+
+  /**
+   * Qui a le globe à l'écran, et qui a la colonie. Les deux écrans restent
+   * montés en même temps (revenir au monde ne doit pas retélécharger le globe),
+   * mais un seul des deux tient le canevas WebGL partagé : c'est ce booléen qui
+   * arbitre, ici et dans la prop `visible` passée à `WorldScreen`.
+   */
+  const globeVisible =
+    worldSession !== null && globe !== null && (session === null || caravanPicking);
+  const sceneVisible = session !== null && !globeVisible;
 
   /** Une notification de monde, hors de la plage des `seq` du sim. */
   const worldToast = (text: string) => {
@@ -762,9 +780,46 @@ export function App() {
     };
   }, [homeVisible, rooms]);
 
+  /**
+   * Le canevas WebGL unique (`render/gl.ts`) passe d'un écran à l'autre : la
+   * colonie le prend quand elle est affichée, le globe le lui reprend le temps
+   * de viser une case d'arrivée. `detach(host)` ne fait rien si le canevas est
+   * déjà parti ailleurs, et `attach` deux fois de suite sur le même conteneur
+   * ne fait que remesurer : StrictMode monte deux fois sans conséquence.
+   */
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !session) return;
+    const host = sceneHostRef.current;
+    if (host === null || !sceneVisible) return;
+    const gl = acquireGl();
+    gl.attach(host);
+    return () => {
+      gl.detach(host);
+      gl.release();
+    };
+  }, [sceneVisible]);
+
+  /**
+   * Crochet de dev sur le contexte partagé : `window.__rimlike.gl.renderer.info.memory`
+   * dit combien de géométries et de textures vivent sur le GPU. Un aller-retour
+   * globe → colonie → globe doit ramener ces compteurs à leur valeur de départ.
+   */
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const gl = acquireGl();
+    // Rendu tout de suite : le crochet garde une référence (l'objet est
+    // mémoïsé, il ne disparaît pas) sans compter pour un écran, sans quoi le
+    // compteur d'utilisateurs ne retomberait jamais à zéro en développement.
+    gl.release();
+    const hook = window as unknown as { __rimlike?: Record<string, unknown> };
+    hook.__rimlike ??= {};
+    hook.__rimlike.gl = gl;
+    // Volontairement sans nettoyage : le contexte vit aussi longtemps que
+    // l'onglet, et le crochet doit rester lisible depuis les deux écrans.
+  }, []);
+
+  useEffect(() => {
+    const host = sceneHostRef.current;
+    if (!host || !session) return;
     const isMulti = session.mode === "multi";
     let disposed = false;
     let raf = 0;
@@ -774,7 +829,10 @@ export function App() {
     /** Identifiants de toast réseau, hors de la plage des `seq` du sim. */
     let netToastId = -1;
 
-    const renderer = new Renderer(canvas);
+    // Le contexte WebGL est unique et partagé avec l'écran Monde (`render/gl.ts`) :
+    // on l'emprunte, on ne le crée pas — et on le rend en fin d'effet.
+    const gl = acquireGl();
+    const renderer = new Renderer(gl, host);
     rendererRef.current = renderer;
     renderer.setLeftDragPans(toolRef.current === "select");
 
@@ -1253,20 +1311,20 @@ export function App() {
           break;
       }
     };
-    on(canvas, "pointerdown", (e: PointerEvent) => {
+    on(host, "pointerdown", (e: PointerEvent) => {
       down = { x: e.clientX, y: e.clientY, button: e.button, tile: renderer.pickTile(e.clientX, e.clientY) };
       if (toolRef.current !== "select" && e.button === 0 && down.tile) {
         renderer.setDragRect({ x0: down.tile.x, y0: down.tile.y, x1: down.tile.x, y1: down.tile.y }, toolColor());
       }
     });
-    on(canvas, "pointermove", (e: PointerEvent) => {
+    on(host, "pointermove", (e: PointerEvent) => {
       const tile = renderer.pickTile(e.clientX, e.clientY);
       renderer.setHover(tile);
       if (down && down.button === 0 && toolRef.current !== "select" && down.tile && tile) {
         renderer.setDragRect({ x0: down.tile.x, y0: down.tile.y, x1: tile.x, y1: tile.y }, toolColor());
       }
     });
-    on(canvas, "pointerup", (e: PointerEvent) => {
+    on(host, "pointerup", (e: PointerEvent) => {
       if (!down) return;
       const start = down;
       down = null;
@@ -1308,8 +1366,8 @@ export function App() {
         }
       }
     });
-    on(canvas, "pointerleave", () => renderer.setHover(null));
-    on(canvas, "contextmenu", (e: MouseEvent) => e.preventDefault());
+    on(host, "pointerleave", () => renderer.setHover(null));
+    on(host, "contextmenu", (e: MouseEvent) => e.preventDefault());
     on(window, "keydown", (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement) return;
       if (e.code === "Space") {
@@ -1437,12 +1495,15 @@ export function App() {
         /** Copie du Journal des événements accumulé depuis le début de la session. */
         eventLog: () => eventLogRef.current.slice(),
       };
-      // `WorldScreen` publie `__rimlike.world` de son côté : le crochet de la
-      // partie ne doit pas l'emporter en le remplaçant.
+      // `WorldScreen` publie `__rimlike.world` de son côté, et l'effet du
+      // canevas partagé `__rimlike.gl` : le crochet de la partie ne doit pas
+      // les emporter en remplaçant l'objet.
       const hook = window as unknown as { __rimlike?: Record<string, unknown> };
       const world = hook.__rimlike?.world;
+      const sharedGl = hook.__rimlike?.gl;
       const entries = debug as unknown as Record<string, unknown>;
       if (world !== undefined) entries.world = world;
+      if (sharedGl !== undefined) entries.gl = sharedGl;
       hook.__rimlike = entries;
     }
 
@@ -1739,7 +1800,10 @@ export function App() {
       for (const t of toastTimers) clearTimeout(t);
       for (const c of cleanups) c();
       bridge.dispose();
+      // Rend les ressources de cet écran, **pas** le contexte partagé : c'est
+      // `release` qui décompte, et il ne détruit jamais le renderer.
       renderer.dispose();
+      gl.release();
       actionsRef.current = null;
       rendererRef.current = null;
       bridgeRef.current = null;
@@ -2003,7 +2067,7 @@ export function App() {
   const startSeed = Math.max(0, Math.floor(imposedSeed ?? seed));
   return (
     <>
-      <canvas ref={canvasRef} className="scene" />
+      <div ref={sceneHostRef} className="scene" />
       {inWorld && globe !== null && worldSession !== null && (
         <WorldScreen
           world={globe}
@@ -2011,7 +2075,7 @@ export function App() {
           name={worldSession.name}
           // Le globe repasse devant la colonie le temps de choisir la case
           // d'arrivée d'une caravane, puis se remasque.
-          visible={session === null || caravanPicking}
+          visible={globeVisible}
           initialTile={initialWorldTile}
           onSettle={(tile) => worldRef.current?.settle(tile)}
           onVisit={(tile) => worldRef.current?.visit(tile)}
