@@ -305,6 +305,8 @@ impl Sim {
                 total = total.saturating_add(FLOOR_WEALTH);
             }
         }
+        // Le troupeau compte, modestement (voir `livestock`).
+        let total = total.saturating_add(self.livestock_wealth());
         total.saturating_add(self.living_colonists().saturating_mul(COLONIST_WEALTH))
     }
 
@@ -327,11 +329,14 @@ impl Sim {
         self.wealth_cache_tick = self.tick;
     }
 
-    /// Colons vivants (les bêtes et les pillards ne comptent pas).
+    /// Colons vivants (les bêtes et les pillards ne comptent pas). Les bêtes
+    /// **apprivoisées** non plus, malgré leur faction : un troupeau n'ajoute
+    /// pas 40 points de menace par tête (voir `livestock`), il pèse seulement
+    /// dans la richesse.
     pub(crate) fn living_colonists(&self) -> u32 {
         self.pawns
             .iter()
-            .filter(|p| p.faction == Faction::Colony && p.is_alive())
+            .filter(|p| p.is_colonist() && p.is_alive())
             .count() as u32
     }
 
@@ -604,7 +609,9 @@ impl Sim {
         let mut sum = (0u64, 0u64);
         let mut n = 0u64;
         for p in &self.pawns {
-            if p.faction != Faction::Colony || !p.is_alive() {
+            // Les bêtes apprivoisées ne tirent pas le barycentre : c'est lui
+            // qui les tient au rayon (voir `livestock::LIVESTOCK_RANGE`).
+            if !p.is_colonist() || !p.is_alive() {
                 continue;
             }
             let (x, y) = p.tile();
@@ -644,7 +651,7 @@ impl Sim {
         let healthy: Vec<u32> = self
             .pawns
             .iter()
-            .filter(|p| p.faction == Faction::Colony && p.is_alive() && !p.sick)
+            .filter(|p| p.is_colonist() && p.is_alive() && !p.sick)
             .map(|p| p.id)
             .collect();
         if healthy.is_empty() {
@@ -662,7 +669,7 @@ impl Sim {
         let Some(p) = self
             .pawns
             .iter_mut()
-            .find(|p| p.id == pawn && p.faction == Faction::Colony && p.hp > 0 && !p.gone)
+            .find(|p| p.id == pawn && p.is_colonist() && p.hp > 0 && !p.gone)
         else {
             return false;
         };

@@ -250,6 +250,33 @@ pub enum Job {
         at: (u32, u32),
         progress: u32,
     },
+    /// Apprivoise une bête sauvage marquée (voir `livestock`). Le colon va
+    /// d'abord chercher `livestock::TAME_FOOD` baies ou légumes en stockage
+    /// (`item` est la pile réservée, `picked` dit s'il les a en main), rejoint
+    /// la bête à `livestock::TAME_REACH` cases, puis travaille : c'est du
+    /// travail d'éleveur (`WorkType::Farm`).
+    ///
+    /// `progress` vit dans le job, comme celui de `Job::Farm` : l'avancement
+    /// appartient au colon qui s'y colle et se perd s'il lâche tout — la
+    /// nourriture, elle, est consommée à la première tentative aboutie.
+    ///
+    /// **Ajouté en fin d'énumération** : postcard encode l'indice.
+    Tame {
+        animal: u32,
+        item: u32,
+        picked: bool,
+        progress: u32,
+    },
+    /// Abat une bête **de la colonie** marquée par `Command::Slaughter` : le
+    /// colon la rejoint et travaille `livestock::SLAUGHTER_TICKS` ticks, après
+    /// quoi elle laisse sa dépouille comme une bête chassée (le dépeçage
+    /// existant fait le reste). Travail d'éleveur lui aussi (`WorkType::Farm`).
+    ///
+    /// **Ajouté en fin d'énumération** : postcard encode l'indice.
+    Slaughter {
+        animal: u32,
+        progress: u32,
+    },
 }
 
 impl Job {
@@ -291,6 +318,8 @@ impl Job {
             Job::Chat { .. } => 25,
             Job::RearmTrap { .. } => 26,
             Job::Firefight { .. } => 27,
+            Job::Tame { .. } => 28,
+            Job::Slaughter { .. } => 29,
         }
     }
 }
@@ -438,6 +467,18 @@ pub struct Pawn {
     pub social_ticks: u32,
     /// Ticks restants du malus d'humeur qui suit une dispute.
     pub quarrel_ticks: u32,
+    /// La bête est marquée pour l'apprivoisement (`Command::Tame`). Exclusif
+    /// de `hunted` : on ne court pas après une bête qu'on veut amadouer.
+    /// Toujours faux sur un humain. **Champs ajoutés en fin de structure** :
+    /// un vieux snapshot est refusé net (fin de tampon) plutôt que relu de
+    /// travers.
+    pub tame_marked: bool,
+    /// Tick avant lequel plus personne ne retente d'apprivoiser cette bête,
+    /// après un échec (voir `livestock::TAME_RETRY`). 0 quand rien n'a raté.
+    pub tame_retry_at: u64,
+    /// La bête **de la colonie** est marquée pour l'abattoir
+    /// (`Command::Slaughter`). Une bête sauvage ne s'abat pas, elle se chasse.
+    pub slaughter_marked: bool,
 }
 
 impl Pawn {
@@ -497,7 +538,24 @@ impl Pawn {
             opinions: Vec::new(),
             social_ticks: 0,
             quarrel_ticks: 0,
+            tame_marked: false,
+            tame_retry_at: 0,
+            slaughter_marked: false,
         }
+    }
+
+    /// Un humain de la colonie. À distinguer de `faction == Faction::Colony`,
+    /// qui couvre aussi les **bêtes apprivoisées** (voir `livestock`) : elles
+    /// ne travaillent pas, ne mangent pas au réfectoire, ne comptent pas dans
+    /// les points de menace et n'ont ni humeur ni tableau de travail.
+    pub fn is_colonist(&self) -> bool {
+        self.faction == Faction::Colony && self.species.is_none()
+    }
+
+    /// Une bête **de la colonie** : apprivoisée, elle ne fuit plus, ne quitte
+    /// plus la carte et n'est plus du gibier.
+    pub fn is_livestock(&self) -> bool {
+        self.faction == Faction::Colony && self.species.is_some()
     }
 
     /// Se bat-il comme un pillard ? Un pillard, ou un marchand qu'on a attaqué

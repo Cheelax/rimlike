@@ -330,7 +330,9 @@ impl Sim {
         // Il lâche tout : réservations, chargement, et le blessé qu'il portait.
         self.abandon_job(i);
         self.pawns[i].job = Job::Downed;
-        if self.pawns[i].faction == Faction::Colony {
+        // Une bête de la colonie qui s'écroule n'appelle pas les secours : le
+        // sauvetage et les soins sont affaire de colons (voir `livestock`).
+        if self.pawns[i].is_colonist() {
             let id = self.pawns[i].id;
             self.push_event(EventKind::ColonistDowned, id);
         }
@@ -346,7 +348,7 @@ impl Sim {
     /// Case de bord d'où la colonie est vraiment atteignable : sinon un
     /// arrivant resterait planté derrière un mur ou de l'eau.
     pub(crate) fn find_entry_tile(&mut self) -> Option<(u32, u32)> {
-        let colonists = self.living_tiles(Faction::Colony);
+        let colonists = self.living_colonist_tiles();
         if colonists.is_empty() {
             return None;
         }
@@ -365,11 +367,7 @@ impl Sim {
 
     /// Un colon de passage s'installe. Renvoie vrai s'il a trouvé sa place.
     pub fn spawn_wanderer(&mut self) -> bool {
-        if self
-            .pawns
-            .iter()
-            .all(|p| !p.is_alive() || p.faction != Faction::Colony)
-        {
+        if self.pawns.iter().all(|p| !p.is_alive() || !p.is_colonist()) {
             return false;
         }
         let Some(entry) = self.find_entry_tile() else {
@@ -417,11 +415,13 @@ impl Sim {
             .any(|p| p.is_alive() && p.is_raider_like())
     }
 
-    /// Cases des pawns vivants d'un camp, dans l'ordre des indices.
-    fn living_tiles(&self, faction: Faction) -> Vec<(u32, u32, u32)> {
+    /// Cases des **colons** vivants, dans l'ordre des indices. Les bêtes
+    /// apprivoisées n'en sont pas : une colonie réduite à son troupeau est
+    /// éteinte, et rien n'a plus de raison d'entrer sur la carte.
+    fn living_colonist_tiles(&self) -> Vec<(u32, u32, u32)> {
         self.pawns
             .iter()
-            .filter(|p| p.is_alive() && p.faction == faction)
+            .filter(|p| p.is_alive() && p.is_colonist())
             .map(|p| {
                 let (x, y) = p.tile();
                 (x, y, p.id)
@@ -541,6 +541,12 @@ impl Sim {
     /// chantier pour un cerf qui passe (c'est la chasse, pas la défense). La
     /// seule exception est le sanglier lancé à la charge : celui-là est une
     /// menace, et les colons se défendent.
+    ///
+    /// Une bête **apprivoisée** est de `Faction::Colony` : elle ne passe donc
+    /// pas par ce test côté colons (même camp), mais les pillards la visent
+    /// comme n'importe qui de la colonie — et comme `nearest_reachable_enemy`
+    /// trie par distance, ils s'en prennent à elle quand elle est plus près
+    /// qu'un colon. C'est voulu : un troupeau se garde (voir `livestock`).
     fn is_auto_target(&self, p: &Pawn, seeker: Faction) -> bool {
         // Un marchand furieux ne s'en prend qu'à la colonie : il est venu
         // commercer, pas prendre parti dans un raid (voir `trade`).
@@ -682,16 +688,23 @@ impl Sim {
     /// puis la partie du corps touchée. Le coup laisse une plaie qui saigne.
     fn melee_strike(&mut self, i: usize, k: usize) {
         let faction = self.pawns[i].faction;
-        let (lo, hi) = match faction {
-            Faction::Colony => COLONIST_DAMAGE,
-            // Un marchand qu'on a poussé à bout se bat comme un pillard.
-            Faction::Raider | Faction::Trader => RAIDER_DAMAGE,
-            Faction::Animal => BOAR_DAMAGE,
+        // L'**espèce** décide avant la faction : un sanglier apprivoisé est de
+        // `Faction::Colony` et frappe pourtant du boutoir (voir `livestock`).
+        let beast = self.pawns[i].species.is_some();
+        let (lo, hi) = if beast {
+            BOAR_DAMAGE
+        } else {
+            match faction {
+                Faction::Colony => COLONIST_DAMAGE,
+                // Un marchand qu'on a poussé à bout se bat comme un pillard.
+                Faction::Raider | Faction::Trader => RAIDER_DAMAGE,
+                Faction::Animal => BOAR_DAMAGE,
+            }
         };
         let roll = self.rng.range_i32(lo, hi) as u32;
         // Une bête ne tient pas d'arme et n'apprend rien du combat : ses
         // dégâts sont ceux de son espèce, sans facteur.
-        let percent = if faction == Faction::Animal {
+        let percent = if beast {
             100
         } else {
             let base = self.pawns[i].weapon.map_or(100, |w| w.melee_percent())
@@ -749,10 +762,11 @@ impl Sim {
     /// tableau `skills` — et seuls les colons montent en grade au journal.
     fn gain_combat_xp(&mut self, i: usize, ranged: bool) {
         // Une bête ne progresse pas : ses coups ne dépendent pas d'un niveau.
-        if self.pawns[i].faction == Faction::Animal {
+        // Apprivoisée non plus, malgré sa faction (voir `livestock`).
+        if self.pawns[i].species.is_some() {
             return;
         }
-        let colonist = self.pawns[i].faction == Faction::Colony;
+        let colonist = self.pawns[i].is_colonist();
         let id = self.pawns[i].id;
         let skill = if ranged {
             &mut self.pawns[i].ranged
@@ -813,9 +827,10 @@ impl Sim {
     /// ferait charcuter à chaque tick.
     ///
     /// Qui tombe dedans : les hostiles (pillards, marchand poussé à bout) et
-    /// les bêtes. Jamais un colon — il sait où sont les pointes, et son chemin
-    /// les contourne déjà (`path::Walker`) — jamais un marchand neutre, qui
-    /// connaît la maison.
+    /// les bêtes **sauvages**. Jamais un colon — il sait où sont les pointes,
+    /// et son chemin les contourne déjà (`path::Walker`) — jamais un marchand
+    /// neutre, qui connaît la maison, et jamais une bête apprivoisée, qui la
+    /// connaît aussi (voir `livestock`).
     pub(crate) fn spring_trap(&mut self, i: usize, before: (u32, u32)) {
         // Court-circuit du cas courant : aucune colonie n'est piégée.
         if self.map.trap_count() == 0 {
@@ -881,15 +896,27 @@ impl Sim {
                 self.spawn_item(kind, count, x, y);
             }
             if p.hp == 0 {
-                match (p.faction, p.species) {
+                // L'**espèce** décide, pas la faction : une bête apprivoisée
+                // est de `Faction::Colony` et laisse pourtant une dépouille,
+                // pas un cadavre humain (voir `livestock`).
+                match (p.species, p.faction) {
                     // Une bête laisse sa dépouille, pas un cadavre humain :
                     // celle-là se transporte et se dépèce.
-                    (Faction::Animal, Some(species)) => {
+                    (Some(species), _) => {
                         self.spawn_item(species.corpse_kind(), 1, x, y);
-                        self.push_event(EventKind::AnimalHunted, species as u32);
+                        // Abattue par un éleveur, elle n'a pas été chassée :
+                        // le marquage tranche. Une bête de l'abattoir tuée
+                        // entre-temps par un pillard sera donc annoncée comme
+                        // abattue — l'écart ne vaut pas un champ de plus.
+                        let kind = if p.slaughter_marked {
+                            EventKind::Slaughtered
+                        } else {
+                            EventKind::AnimalHunted
+                        };
+                        self.push_event(kind, species as u32);
                     }
-                    (Faction::Animal, None) => {}
-                    (faction, _) => {
+                    (None, Faction::Animal) => {}
+                    (None, faction) => {
                         // L'arme du mort tombe là : butin pour la colonie quand
                         // c'est un pillard, arme à ramasser quand c'est un des
                         // siens. Un fuyard, lui, repart avec la sienne.
@@ -907,7 +934,7 @@ impl Sim {
                             // deux fois plus longtemps.
                             let mut friends: Vec<u32> = Vec::new();
                             for q in &mut self.pawns {
-                                if q.faction != Faction::Colony {
+                                if !q.is_colonist() {
                                     continue;
                                 }
                                 q.grief_ticks = GRIEF_TICKS;

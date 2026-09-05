@@ -27,6 +27,7 @@ pub mod hash;
 pub mod health;
 pub mod items;
 pub mod jobs;
+pub mod livestock;
 pub mod map;
 pub mod names;
 pub mod noise;
@@ -55,6 +56,7 @@ pub use fire::Fire;
 pub use health::{BodyPart, Injury};
 pub use items::{ItemKind, ItemStack};
 pub use jobs::{Regrow, Reservation};
+pub use livestock::{MAX_LIVESTOCK, TAME_TICKS};
 pub use map::{Designation, Feature, Map, ROOM_MAX_TILES, Rect, Terrain, Zone};
 pub use pawn::{Faction, Job, Pawn};
 pub use research::{ResearchState, Tech};
@@ -188,6 +190,17 @@ pub enum EventKind {
     /// puisqu'un foyer battu par les colons ou noyé par la pluie laisse son
     /// combustible intact.
     FireOut = 37,
+    /// Une bête vient d'entrer dans la colonie (voir `livestock`). `arg` : son
+    /// espèce (`animals::Species`), comme `AnimalHunted` — le client sait déjà
+    /// nommer une espèce. Les tentatives ratées, elles, n'annoncent rien : un
+    /// apprivoisement, c'est du travail, pas un fait notable à chaque essai.
+    Tamed = 38,
+    /// Une bête est née dans la colonie. `arg` : son espèce.
+    Born = 39,
+    /// Une bête de la colonie vient d'être abattue (`Command::Slaughter`).
+    /// `arg` : son espèce. Elle laisse la même dépouille qu'une bête chassée,
+    /// mais n'annonce **pas** `AnimalHunted` : ce n'était pas une chasse.
+    Slaughtered = 40,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -342,6 +355,21 @@ pub enum Command {
     /// sans plus de manières que `Hunt` sur un id inconnu.
     /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
     Ignite { x: u32, y: u32 },
+    /// Marque (`on`) ou démarque une bête **sauvage** pour l'apprivoisement
+    /// (voir `livestock`). Symétrique de `Hunt`, et **exclusive** d'elle :
+    /// marquer pour apprivoiser retire le marquage de chasse et inversement.
+    /// Un colon libre dont la priorité Agriculture est active apporte
+    /// `livestock::TAME_FOOD` baies ou légumes et tente sa chance
+    /// (`Job::Tame`) ; démarquer arrête les apprivoiseurs en route. Un id qui
+    /// n'est pas celui d'un animal sauvage vivant est ignoré.
+    /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
+    Tame { animal: u32, on: bool },
+    /// Marque une bête **de la colonie** pour l'abattoir : un colon la rejoint
+    /// et l'abat (`Job::Slaughter`), elle laisse sa dépouille et le dépeçage
+    /// existant fait le reste. Une bête sauvage est refusée — celle-là se
+    /// chasse. Le marquage ne se retire pas : c'est un ordre, pas une zone.
+    /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
+    Slaughter { animal: u32 },
 }
 
 #[derive(Debug)]
@@ -449,6 +477,12 @@ pub struct Sim {
     /// Cases enflammées depuis le début de l'incendie en cours, remis à zéro
     /// par `EventKind::FireOut` qui l'annonce.
     fires_lit: u32,
+    /// Tick de la prochaine naissance possible, **par espèce** dans l'ordre de
+    /// `Species::ALL` (voir `livestock::tick_breeding`). 0 : la colonie n'a pas
+    /// deux bêtes de cette espèce, l'échéance sera posée quand un couple
+    /// existera. **Champ ajouté en fin de structure** : un vieux snapshot est
+    /// refusé net (fin de tampon) plutôt que relu de travers.
+    breed_at: livestock::BreedClock,
 }
 
 impl Sim {
@@ -515,6 +549,7 @@ impl Sim {
             research: ResearchState::default(),
             burning: Vec::new(),
             fires_lit: 0,
+            breed_at: [0; animals::SPECIES_COUNT],
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -711,8 +746,7 @@ impl Sim {
                 };
                 // On ne commande pas la faune : un sanglier décide seul de
                 // charger (voir `animals`), et un lapin ne charge jamais.
-                if self.pawns[i].faction == self.pawns[k].faction
-                    || self.pawns[i].faction == Faction::Animal
+                if self.pawns[i].faction == self.pawns[k].faction || self.pawns[i].species.is_some()
                 {
                     return;
                 }
@@ -732,8 +766,9 @@ impl Sim {
                 let Some(p) = self.pawns.iter_mut().find(|p| p.id == pawn) else {
                     return;
                 };
-                // Ni les pillards ni les bêtes n'ont de tableau de travail.
-                if p.faction != Faction::Colony {
+                // Ni les pillards ni les bêtes n'ont de tableau de travail —
+                // apprivoisées comprises (voir `livestock`).
+                if !p.is_colonist() {
                     return;
                 }
                 p.priorities[work as usize] = priority.min(4);
@@ -777,6 +812,8 @@ impl Sim {
             }
             Command::SetResearch { tech } => self.set_research(tech),
             Command::Ignite { x, y } => self.ignite_command(x, y),
+            Command::Tame { animal, on } => self.set_tame_marked(animal, on),
+            Command::Slaughter { animal } => self.set_slaughter_marked(animal),
         }
     }
 
@@ -795,6 +832,9 @@ impl Sim {
         self.tick_crops(outdoor);
         self.tick_spoilage();
         self.tick_storyteller();
+        // L'élevage : un tick sur `livestock::BREED_INTERVAL`, et rien du tout
+        // sans deux bêtes d'une même espèce dans la colonie.
+        self.tick_breeding();
         // Le feu, avant que les colons ne jouent : ils voient donc la carte
         // telle que l'incendie vient de la laisser, et les brûlures de ce tour
         // comptent dans leur santé. Un tick sur `fire::FIRE_INTERVAL`, et rien

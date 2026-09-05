@@ -453,7 +453,14 @@ jours d'été mesuré), `Ignite` pour le débogage ; événements 36-37, job 27.
 instanciées (cônes deux tons et lueur au sol, animation à coût constant), ligne HUD rouge, job
 « combat le feu », événements 36-37 classés menace, bouton de débogage « Mettre le feu » ;
 vérifié : un arbre allumé à six cases est éteint par les colons en moins de 600 ticks, un arbre
-à trente-deux cases brûle à intensité 3 avec ses flammes à l'écran. Marchands itinérants côté serveur
+à trente-deux cases brûle à intensité 3 avec ses flammes à l'écran. Apprivoisement et élevage
+livrés le 2026-09-05 (Opus, sim) : marquage `Tame` exclusif de la chasse, job d'apprivoisement
+(5 baies ou légumes, 300 ticks, réussite de base 25 % modulée par l'espèce et la compétence Culture,
+mesurée sur 20 graines : lapin sûr, cerf patient, sanglier un pari sur deux), bêtes de la colonie
+(faction 0 avec une espèce) qui restent près du foyer, paissent ou puisent au stockage sous le
+gel, maigrissent sans pâture, se reproduisent par paire jusqu'à douze par espèce, sangliers qui
+défendent ; abattage `Slaughter` ; drapeaux dans le tampon `animals`, jobs 28-29, événements
+38-40. Interface à faire (marquage apprivoiser / abattre, bétail dans la barre et le HUD). Marchands itinérants côté serveur
 livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
 caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;
@@ -488,6 +495,16 @@ hors du frame), job « bavarde », événements 32-34 ; vérifié : avis mutuels
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-05 : une bête apprivoisée est un pawn de la colonie. `Faction::Colony` ne veut plus dire
+  « un colon » : `is_colonist()` (faction colonie **et** aucune espèce) et `is_livestock()`
+  départagent, et les vingt-cinq sites qui lisaient la faction ont été relus un à un (menace,
+  barycentre, maladies, caravanes, tableaux de travail, deuil, bavardage, hypothermie…). Aucun
+  stride ne change : la troisième valeur du tampon `animals` devient un champ de drapeaux
+  (chassée, à apprivoiser, à abattre), la chasse seule vaut toujours 1. La faim du bétail
+  réutilise la famine des colons plutôt qu'un compteur neuf. Le fuzz n'atteint jamais l'état
+  apprivoisé (les colons y meurent trop vite) : un test de déterminisme dédié avec troupeau
+  imposé couvre naissance et abattage.
 
 - 2026-09-05 : le feu est une couche de carte, pas un élément. Une case qui brûle garde son arbre
   ou son mur jusqu'à consommation : `fire` (u8 par case) s'ajoute aux quatre couches existantes

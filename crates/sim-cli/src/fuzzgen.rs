@@ -10,7 +10,7 @@ use sim::{
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 22;
+pub const VARIANT_COUNT: usize = 24;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -37,6 +37,8 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "TriggerTraderVisit",
     "SetResearch",
     "Ignite",
+    "Tame",
+    "Slaughter",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -101,6 +103,24 @@ fn random_pawn_id(rng: &mut Rng, sim: &Sim) -> u32 {
     } else {
         rng.next_u32()
     }
+}
+
+/// Id d'une bête : le plus souvent celui d'un animal réellement présent
+/// (sauvage **ou** apprivoisé, pour que `Tame` et `Slaughter` touchent tous
+/// deux leur cible de temps en temps), sinon n'importe quel id de pawn — donc
+/// aussi un colon, un pillard, un mort ou un id inventé, que le sim doit
+/// refuser sans rien poser.
+fn random_animal_id(rng: &mut Rng, sim: &Sim) -> u32 {
+    let beasts: Vec<u32> = sim
+        .pawns()
+        .iter()
+        .filter(|p| p.species.is_some())
+        .map(|p| p.id)
+        .collect();
+    if !beasts.is_empty() && rng.chance(3, 4) {
+        return beasts[rng.below(beasts.len() as u32) as usize];
+    }
+    random_pawn_id(rng, sim)
 }
 
 /// Quantité d'objets pour une caravane : le plus souvent plausible, parfois
@@ -371,10 +391,11 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
             amplitude: random_temperature(rng),
         },
         15 => Command::Hunt {
-            // Le plus souvent un id de pawn réel : le sim doit refuser tout ce
-            // qui n'est pas un animal vivant (colon, pillard, mort, id
-            // inventé) sans jamais poser de `Job::Hunt` dans le vide.
-            animal: random_pawn_id(rng, sim),
+            // Le plus souvent un id de bête réelle : le sim doit refuser tout
+            // ce qui n'est pas un animal **sauvage** vivant (colon, pillard,
+            // bête apprivoisée, mort, id inventé) sans jamais poser de
+            // `Job::Hunt` dans le vide.
+            animal: random_animal_id(rng, sim),
             on: rng.chance(1, 2),
         },
         17 => Command::SetCalendar {
@@ -425,9 +446,22 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
         // doit être refusée sans rien allumer. Une campagne finit ainsi par
         // faire brûler ses propres murs, ses piles et ses colons — c'est le
         // seul moyen d'éprouver la propagation et la lutte.
-        _ => Command::Ignite {
+        21 => Command::Ignite {
             x: random_coord_u32(rng, size),
             y: random_coord_u32(rng, size),
+        },
+        // L'élevage : marquer et démarquer une bête pour l'apprivoisement.
+        // Exclusif de la chasse, refusé sur une bête déjà apprivoisée, sur un
+        // colon et sur un id inventé — et, quand ça marche, il finit par
+        // rentrer un troupeau que la reproduction fera grandir.
+        22 => Command::Tame {
+            animal: random_animal_id(rng, sim),
+            on: rng.chance(1, 2),
+        },
+        // L'abattoir : refusé sur une bête sauvage et sur tout ce qui n'est
+        // pas une bête, accepté sur le troupeau que `Tame` a fini par bâtir.
+        _ => Command::Slaughter {
+            animal: random_animal_id(rng, sim),
         },
     };
     (cmd, variant)

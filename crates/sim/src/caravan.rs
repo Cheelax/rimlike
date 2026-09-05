@@ -137,6 +137,10 @@ fn sanitize(p: &mut Pawn) {
     p.hunted = false;
     p.graze_at = 0;
     p.leaving = false;
+    // Ni l'élevage : rien de ce qui marque une bête ne survit au voyage.
+    p.tame_marked = false;
+    p.tame_retry_at = 0;
+    p.slaughter_marked = false;
     // Ni le commerce : une caravane débarque des colons, pas un marchand
     // itinérant avec sa réserve et sa rancune (voir `trade`).
     p.wares.clear();
@@ -181,7 +185,10 @@ impl Sim {
         let mut chosen: Vec<usize> = Vec::with_capacity(pawn_ids.len());
         for &id in pawn_ids {
             let found = self.pawns.iter().position(|p| {
-                p.id == id && p.faction == Faction::Colony && p.is_alive() && !p.is_downed()
+                // Une bête apprivoisée ne part pas en caravane : le
+                // manifeste ne transporte que des colons (voir `sanitize`,
+                // qui efface toute espèce à l'arrivée).
+                p.id == id && p.is_colonist() && p.is_alive() && !p.is_downed()
             });
             match found {
                 Some(i) if !chosen.contains(&i) => chosen.push(i),

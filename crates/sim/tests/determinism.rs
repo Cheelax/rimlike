@@ -227,6 +227,43 @@ fn scripted_commands(sim: &Sim, t: u64) -> Vec<Command> {
             target: 1,
         });
     }
+    if t == 4000 {
+        // L'apprivoisement touche à l'aléa (le dé de la tentative), aux piles
+        // de fourrage et à la faction d'un pawn : il a sa place dans le
+        // scénario de référence, comme la chasse. Sans animal, rien n'est émis.
+        // Qu'il aboutisse ou non, les deux sims doivent en tirer le même état :
+        // c'est `livestock::livestock_is_deterministic` (tests/livestock.rs) qui
+        // compare deux cartes avec un troupeau **garanti**.
+        if let Some(a) = sim.pawns().iter().find(|p| p.faction == Faction::Animal) {
+            cmds.push(Command::Tame {
+                animal: a.id,
+                on: true,
+            });
+        }
+    }
+    if t == 4010 {
+        // Sans cela, l'apprivoisement n'aurait aucune chance de se jouer : la
+        // carte est couverte de désignations, et `WorkType::Designated` passe
+        // avant `WorkType::Farm` à priorité égale.
+        if let Some(p) = sim.pawns().iter().find(|p| p.is_colonist() && p.is_alive()) {
+            cmds.push(Command::SetPriority {
+                pawn: p.id,
+                work: WorkType::Farm,
+                priority: 1,
+            });
+        }
+    }
+    if t == 9900 {
+        // L'abattoir : sur la première bête de la colonie si le tick 4000 a
+        // fini par en donner une, sinon sur un id inventé — qui doit être
+        // ignoré de la même façon des deux côtés.
+        let animal = sim
+            .pawns()
+            .iter()
+            .find(|p| p.is_livestock())
+            .map_or(u32::MAX, |p| p.id);
+        cmds.push(Command::Slaughter { animal });
+    }
     if t == 9500 {
         // La chasse touche au combat, aux morts et aux dépouilles : elle a sa
         // place dans le scénario de référence. Sans animal (carte pauvre),
@@ -316,6 +353,7 @@ fn same_seed_same_commands_same_hash() {
     }
     assert!(caravan_left, "le scénario n'a pas fait partir de caravane");
     assert!(trader_arrived, "le scénario n'a pas reçu de marchand");
+
     // Les ticks joués, plus ceux que l'avance rapide a sautés.
     assert_eq!(a.tick(), TICKS + u64::from(FAST_FORWARD_TICKS));
     assert_eq!(a.state_hash(), b.state_hash());

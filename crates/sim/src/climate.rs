@@ -31,7 +31,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::map::Feature;
-use crate::pawn::Faction;
 use crate::weather::Weather;
 use crate::{DAY_START_OFFSET, EventKind, Sim, TICKS_PER_DAY};
 
@@ -384,7 +383,9 @@ impl Sim {
         let comfort = outdoor + self.indoor_bonus(x, y) + self.pawns[i].insulation_tenths();
         self.pawns[i].comfort = comfort;
         self.pawns[i].in_snow = self.weather() == Weather::Snow;
-        if self.pawns[i].faction == Faction::Colony
+        // Les bêtes ne souffrent pas du froid, apprivoisées comprises : un
+        // troupeau se nourrit (voir `livestock`), il ne grelotte pas.
+        if self.pawns[i].is_colonist()
             && comfort < HYPOTHERMIA_TEMP
             && self.tick() % HYPOTHERMIA_INTERVAL == 0
         {

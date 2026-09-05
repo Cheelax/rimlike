@@ -95,9 +95,44 @@ impl Species {
         }
     }
 
-    /// Une bête agressive ne fuit pas le premier coup : elle charge.
+    /// Une bête agressive ne fuit pas le premier coup : elle charge. C'est
+    /// aussi la seule qui, apprivoisée, rejoint la défense de la colonie
+    /// (voir `livestock`).
     pub fn aggressive(self) -> bool {
         self == Species::Boar
+    }
+
+    /// Facilité d'apprivoisement, en pourcentage de la chance de base
+    /// (`livestock::TAME_BASE_NUM`) : le lapin se laisse faire, le cerf est
+    /// farouche, le sanglier ne veut rien savoir.
+    pub fn tame_percent(self) -> u32 {
+        match self {
+            Species::Deer => 100,
+            Species::Rabbit => 150,
+            Species::Boar => 60,
+        }
+    }
+
+    /// Jours entre deux naissances quand la colonie tient au moins deux bêtes
+    /// de l'espèce (voir `Sim::tick_breeding`). Le lapin fait ce que fait un
+    /// lapin ; le cerf prend son temps.
+    pub fn breed_days(self) -> u32 {
+        match self {
+            Species::Deer => 8,
+            Species::Rabbit => 3,
+            Species::Boar => 6,
+        }
+    }
+
+    /// Ce qu'une bête apprivoisée vaut dans la richesse de la colonie
+    /// (`Sim::wealth`). Modeste devant un colon (100) : un troupeau attire les
+    /// convoitises, il ne les déchaîne pas.
+    pub fn wealth_value(self) -> u32 {
+        match self {
+            Species::Deer => 30,
+            Species::Rabbit => 15,
+            Species::Boar => 40,
+        }
     }
 
     /// Genre de cadavre laissé à la mort. Un genre par espèce : `ItemStack`
@@ -158,7 +193,7 @@ pub const BOAR_DAMAGE: (i32, i32) = (60, 101);
 /// ne contourne rien : elle avance tout droit, ou elle reste où elle est. Le
 /// `bench` du 2026-09-05 a mesuré ce détail : l'A* de pâture coûtait à lui
 /// seul la moitié du budget d'un tick à vide sur carte 128×128.
-fn straight_walk(map: &Map, from: (u32, u32), to: (u32, u32)) -> Option<Vec<Tile>> {
+pub(crate) fn straight_walk(map: &Map, from: (u32, u32), to: (u32, u32)) -> Option<Vec<Tile>> {
     let (mut x, mut y) = (from.0 as i32, from.1 as i32);
     let (tx, ty) = (to.0 as i32, to.1 as i32);
     let mut out: Vec<Tile> = Vec::new();
@@ -205,7 +240,10 @@ impl Sim {
         id
     }
 
-    /// Animaux vivants sur la carte.
+    /// Animaux **sauvages** vivants sur la carte : c'est le compte que
+    /// `MAX_ANIMALS` plafonne. Les bêtes apprivoisées ont leur propre plafond
+    /// (`livestock::MAX_LIVESTOCK`, par espèce) et ne barrent pas la route aux
+    /// hardes : un éleveur ne tarit pas le gibier.
     pub fn animal_count(&self) -> u32 {
         self.pawns
             .iter()
@@ -299,13 +337,26 @@ impl Sim {
 
     /// Boucle courte d'un animal, sur le modèle de `raider_ai` : charger,
     /// fuir, ou paître. Aucune recherche de job, aucun besoin.
+    ///
+    /// Une bête **apprivoisée** (`Pawn::is_livestock`) bifurque vers
+    /// `livestock_ai` : elle ne fuit plus, ne quitte plus la carte, a faim et
+    /// tient le rayon de la colonie.
     pub(crate) fn animal_ai(&mut self, i: usize) {
         // À terre, une bête attend de se relever — ou que le chasseur l'achève.
         if self.pawns[i].is_downed() {
             return;
         }
+        let tame = self.pawns[i].is_livestock();
         if let Job::Attack { target } = self.pawns[i].job {
-            self.boar_charge(i, target);
+            if tame {
+                self.livestock_fight(i, target);
+            } else {
+                self.boar_charge(i, target);
+            }
+            return;
+        }
+        if tame {
+            self.livestock_ai(i);
             return;
         }
         if self.pawns[i].flee_until > self.tick {
@@ -335,7 +386,13 @@ impl Sim {
     /// personne (`Sim::inflict_injury`, tests et débogage) : le sanglier fuit
     /// alors comme les autres, faute de cible.
     pub(crate) fn animal_hit(&mut self, k: usize, attacker: Option<u32>) {
-        if self.pawns[k].faction != Faction::Animal || !self.pawns[k].is_alive() {
+        if self.pawns[k].species.is_none() || !self.pawns[k].is_alive() {
+            return;
+        }
+        // Une bête de la colonie ne détale pas et ne s'enfuit pas de chez
+        // elle : elle encaisse (le sanglier, lui, se retourne — c'est la
+        // défense automatique de `livestock_ai` qui s'en charge).
+        if self.pawns[k].is_livestock() {
             return;
         }
         let charges = self.pawns[k].species.is_some_and(|s| s.aggressive())
@@ -414,10 +471,12 @@ impl Sim {
     }
 
     /// Case du colon vivant le plus proche, départagée par `(distance, x, y)`.
+    /// Les bêtes de la colonie ne comptent pas : un cerf sauvage ne fuit pas
+    /// un lapin apprivoisé.
     fn nearest_colonist_tile(&self, from: (u32, u32)) -> Option<(u32, u32)> {
         let mut best: Option<(u32, u32, u32)> = None;
         for p in &self.pawns {
-            if p.faction != Faction::Colony || !p.is_alive() {
+            if !p.is_colonist() || !p.is_alive() {
                 continue;
             }
             let (x, y) = p.tile();
@@ -457,7 +516,12 @@ impl Sim {
     // ------------------------------------------------------------------
 
     /// Marque (ou démarque) un animal comme gibier. Un id qui n'est pas celui
-    /// d'un animal vivant est ignoré ; démarquer arrête les chasseurs en route.
+    /// d'un animal **sauvage** vivant est ignoré (une bête de la colonie ne se
+    /// chasse pas, elle s'abat) ; démarquer arrête les chasseurs en route.
+    ///
+    /// Les deux marquages sont **exclusifs** : marquer pour la chasse retire
+    /// le marquage d'apprivoisement et renvoie les apprivoiseurs à leurs
+    /// affaires (voir `Sim::set_tame_marked` pour la réciproque).
     pub(crate) fn set_hunted(&mut self, animal: u32, on: bool) {
         let found = self
             .pawns
@@ -468,16 +532,32 @@ impl Sim {
         };
         p.hunted = on;
         if on {
+            p.tame_marked = false;
+            self.abandon_jobs_on_animal(animal, false);
             return;
         }
-        let hunters: Vec<usize> = self
+        self.abandon_jobs_on_animal(animal, true);
+    }
+
+    /// Renvoie à `Job::Idle` les colons dont le job vise cette bête :
+    /// les chasseurs si `hunters`, les apprivoiseurs sinon. Deux appels
+    /// séparés plutôt qu'un prédicat, parce qu'`abandon_job` prend `&mut
+    /// self` et qu'il faut d'abord collecter les indices.
+    pub(crate) fn abandon_jobs_on_animal(&mut self, animal: u32, hunters: bool) {
+        let busy: Vec<usize> = self
             .pawns
             .iter()
             .enumerate()
-            .filter(|(_, p)| matches!(p.job, Job::Hunt { target } if target == animal))
+            .filter(|(_, p)| {
+                if hunters {
+                    matches!(p.job, Job::Hunt { target } if target == animal)
+                } else {
+                    matches!(p.job, Job::Tame { animal: a, .. } if a == animal)
+                }
+            })
             .map(|(i, _)| i)
             .collect();
-        for i in hunters {
+        for i in busy {
             self.abandon_job(i);
         }
     }

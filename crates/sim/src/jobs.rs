@@ -84,8 +84,11 @@ impl Sim {
             self.trader_ai(i);
             return;
         }
-        // La faune : boucle courte elle aussi, sans besoin ni recherche de job.
-        if self.pawns[i].faction == Faction::Animal {
+        // La faune : boucle courte elle aussi, sans besoin ni recherche de
+        // job. Le test porte sur l'**espèce**, pas sur la faction : une bête
+        // apprivoisée est de `Faction::Colony` (voir `livestock`) et n'a pour
+        // autant ni tableau de travail, ni humeur, ni repas au réfectoire.
+        if self.pawns[i].species.is_some() {
             self.animal_ai(i);
             return;
         }
@@ -96,7 +99,7 @@ impl Sim {
         self.pawns[i].other_colonists_alive = self
             .pawns
             .iter()
-            .filter(|p| p.is_alive() && p.faction == Faction::Colony && p.id != my_id)
+            .filter(|p| p.is_alive() && p.is_colonist() && p.id != my_id)
             .count() as u32;
         self.pawns[i].corpses_on_map = corpses;
         self.decay_needs(i);
@@ -185,6 +188,13 @@ impl Sim {
             Job::Chat { with, ticks } => self.do_chat(i, with, ticks),
             Job::RearmTrap { at, progress } => self.do_rearm(i, at, progress),
             Job::Firefight { at, progress } => self.do_firefight(i, at, progress),
+            Job::Tame {
+                animal,
+                item,
+                picked,
+                progress,
+            } => self.do_tame(i, animal, item, picked, progress),
+            Job::Slaughter { animal, progress } => self.do_slaughter(i, animal, progress),
             // Traité plus haut : un pawn à terre ne passe jamais par ici.
             Job::Downed => {}
             // Réservé aux assiégeants (traités plus haut) : un colon n'attend
@@ -325,7 +335,7 @@ impl Sim {
     /// `do_research` ;
     /// jamais par `do_haul`/`do_deliver`, qui n'ont pas de barre de
     /// progression et ne font donc jamais gagner d'XP au transport.
-    fn gain_xp(&mut self, i: usize, work: WorkType) {
+    pub(crate) fn gain_xp(&mut self, i: usize, work: WorkType) {
         let id = self.pawns[i].id;
         let skill = &mut self.pawns[i].skills[work as usize];
         skill.xp += 1;
@@ -404,7 +414,14 @@ impl Sim {
             // bête (`Command::Hunt`) plutôt que case par case, mais c'est la
             // même priorité et la même place dans le tableau de travail.
             WorkType::Designated => self.try_start_work(i) || self.try_start_hunt(i),
-            WorkType::Farm => self.try_start_farm(i),
+            // L'élevage est du travail d'agriculteur (voir `livestock`) :
+            // aucun type de travail de plus, donc ni `WORK_TYPES` ni les
+            // tampons de priorités ne bougent. Le champ passe d'abord — un
+            // plant mûr ne se garde pas — puis l'abattoir, puis
+            // l'apprivoisement, qui est le plus long et le moins pressé.
+            WorkType::Farm => {
+                self.try_start_farm(i) || self.try_start_slaughter(i) || self.try_start_tame(i)
+            }
             WorkType::Research => self.try_start_research(i),
             // Enterrer un cadavre suit le rangement : même priorité, même
             // urgence relative — la colonie range d'abord ce qui se range,
@@ -524,7 +541,7 @@ impl Sim {
         let from = self.pawns[i].tile();
         let mut candidates: Vec<(u32, u32, u32, u32)> = Vec::new();
         for p in &self.pawns {
-            if p.id == me || p.faction != Faction::Colony || !p.is_alive() || !p.is_downed() {
+            if p.id == me || !p.is_colonist() || !p.is_alive() || !p.is_downed() {
                 continue;
             }
             let (x, y) = p.tile();
@@ -638,7 +655,7 @@ impl Sim {
         let mut candidates: Vec<(u32, u32, u32, u32, u32, u32)> = Vec::new();
         for p in &self.pawns {
             if p.id == me
-                || p.faction != Faction::Colony
+                || !p.is_colonist()
                 || !p.is_alive()
                 || !p.needs_tending()
                 || self.already_handled(p.id)
@@ -849,7 +866,9 @@ impl Sim {
 
     /// Ce que le pawn `i` sait de la carte : la colonie connaît ses pièges à
     /// pointes et les contourne, personne d'autre ne les voit (voir
-    /// `path::Walker`).
+    /// `path::Walker`). Les **bêtes apprivoisées** en font partie : elles
+    /// connaissent la maison et ne se plantent jamais sur les pointes (voir
+    /// `livestock`, et `Sim::spring_trap` qui les épargne aussi).
     pub(crate) fn walker(&self, i: usize) -> Walker {
         if self.pawns[i].faction == Faction::Colony {
             Walker::COLONIST
@@ -861,12 +880,20 @@ impl Sim {
     /// Chemin d'un colon. Tout ce module travaille pour la colonie —
     /// `tick_pawn` renvoie les pillards, les marchands et les bêtes vers leur
     /// propre boucle avant d'arriver ici — d'où le raccourci.
-    fn colonist_path(&self, from: (u32, u32), to: (u32, u32)) -> Option<Vec<path::Tile>> {
+    pub(crate) fn colonist_path(
+        &self,
+        from: (u32, u32),
+        to: (u32, u32),
+    ) -> Option<Vec<path::Tile>> {
         path::find_path_for(&self.map, from, to, Walker::COLONIST)
     }
 
     /// Chemin d'un colon vers une voisine de la cible.
-    fn colonist_adjacent(&self, from: (u32, u32), target: (u32, u32)) -> Option<Vec<path::Tile>> {
+    pub(crate) fn colonist_adjacent(
+        &self,
+        from: (u32, u32),
+        target: (u32, u32),
+    ) -> Option<Vec<path::Tile>> {
         self.path_adjacent_for(from, target, Walker::COLONIST)
     }
 
@@ -1077,7 +1104,7 @@ impl Sim {
         // Un mort de moins à voir traîner : le deuil en cours se referme un
         // peu, comme un vrai enterrement.
         for p in &mut self.pawns {
-            if p.faction == Faction::Colony {
+            if p.is_colonist() {
                 p.grief_ticks /= 2;
             }
         }

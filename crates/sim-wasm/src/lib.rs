@@ -1,7 +1,7 @@
 //! API minimale exposée au navigateur. Tout ce qui est ici doit rester
 //! trivial : la logique vit dans `sim`, testée en natif.
 
-use sim::{BuildKind, Designation, Difficulty, Faction, ItemKind, Job, Material, WorkType, Zone};
+use sim::{BuildKind, Designation, Difficulty, ItemKind, Job, Material, WorkType, Zone};
 use wasm_bindgen::prelude::*;
 
 /// Entiers par pawn dans le tampon de rendu :
@@ -24,9 +24,20 @@ pub const SKILL_STRIDE: usize = 1 + 2 * sim::WORK_TYPES;
 /// nombre de blessures. Toutes factions confondues, comme `pawns()`.
 pub const HEALTH_STRIDE: usize = 4;
 /// Entiers par bête dans le tampon de la faune : id, espèce (`sim::Species`),
-/// chassée (0/1). Le tampon des pawns ne bouge pas (`PAWN_STRIDE` = 12) : la
-/// faction 2 y suffit à distinguer un animal, celui-ci dit lequel.
+/// **drapeaux**. Le tampon des pawns ne bouge pas (`PAWN_STRIDE` = 12) : la
+/// faction y distingue une bête sauvage (2) d'une bête apprivoisée (0, comme
+/// un colon), celui-ci dit laquelle et ce qu'on lui veut.
+///
+/// Les drapeaux sont un champ de bits, compatible avec le 0/1 d'avant
+/// l'élevage : la chasse seule vaut toujours 1.
 pub const ANIMAL_STRIDE: usize = 3;
+/// Bête marquée comme gibier (`Command::Hunt`). Bête sauvage uniquement.
+pub const ANIMAL_FLAG_HUNTED: i32 = 1;
+/// Bête marquée pour l'apprivoisement (`Command::Tame`). Sauvage uniquement,
+/// et exclusif de `ANIMAL_FLAG_HUNTED`.
+pub const ANIMAL_FLAG_TAME: i32 = 2;
+/// Bête **de la colonie** marquée pour l'abattoir (`Command::Slaughter`).
+pub const ANIMAL_FLAG_SLAUGHTER: i32 = 4;
 
 const FLAG_MOVING: i32 = 1;
 const FLAG_SLEEPING: i32 = 2;
@@ -248,6 +259,23 @@ impl WasmSim {
         self.pending.push(sim::Command::Hunt { animal, on });
     }
 
+    /// Marque (`on`) ou démarque une bête **sauvage** pour l'apprivoisement
+    /// (voir `sim::livestock`). Symétrique de `hunt` et exclusif d'elle : le
+    /// sim retire l'un quand on pose l'autre. Un id qui n'est pas celui d'un
+    /// animal sauvage vivant est ignoré. Le client lit le drapeau
+    /// `ANIMAL_FLAG_TAME` dans le tampon `animals`.
+    pub fn tame(&mut self, animal: u32, on: bool) {
+        self.pending.push(sim::Command::Tame { animal, on });
+    }
+
+    /// Marque une bête **de la colonie** pour l'abattoir : un colon la
+    /// rejoint, l'abat, et la dépouille se dépèce comme celle d'une bête
+    /// chassée. Une bête sauvage est refusée (elle se chasse), et le marquage
+    /// ne se retire pas. Drapeau `ANIMAL_FLAG_SLAUGHTER`.
+    pub fn slaughter(&mut self, animal: u32) {
+        self.pending.push(sim::Command::Slaughter { animal });
+    }
+
     /// Règle la dose de menace du storyteller, suivant `sim::Difficulty`
     /// (0 paisible, 1 facile, 2 normal, 3 difficile). Une valeur inconnue
     /// vaut « normal ». En paisible, le storyteller n'envoie plus de raid.
@@ -419,6 +447,16 @@ impl WasmSim {
     /// Ordre de chasse sur une bête. Voir `hunt`.
     pub fn encode_hunt(animal: u32, on: bool) -> Vec<u8> {
         encode(&sim::Command::Hunt { animal, on })
+    }
+
+    /// Ordre d'apprivoisement sur une bête sauvage. Voir `tame`.
+    pub fn encode_tame(animal: u32, on: bool) -> Vec<u8> {
+        encode(&sim::Command::Tame { animal, on })
+    }
+
+    /// Ordre d'abattage sur une bête de la colonie. Voir `slaughter`.
+    pub fn encode_slaughter(animal: u32) -> Vec<u8> {
+        encode(&sim::Command::Slaughter { animal })
     }
 
     /// Dose de menace du storyteller. Voir `set_difficulty`.
@@ -884,9 +922,12 @@ impl WasmSim {
         ANIMAL_STRIDE
     }
 
-    /// Tampon de la faune : `[id, espèce, chassée]` par bête vivante, dans
-    /// l'ordre des pawns. Le rendu y lit quoi dessiner et quoi marquer ; la
-    /// position, elle, reste dans le tampon des pawns.
+    /// Tampon de la faune : `[id, espèce, drapeaux]` par bête vivante, dans
+    /// l'ordre des pawns — sauvages **et** apprivoisées, la faction du tampon
+    /// des pawns les départage (2 sauvage, 0 colonie). Le rendu y lit quoi
+    /// dessiner et quoi marquer ; la position, elle, reste dans le tampon des
+    /// pawns. Drapeaux : `ANIMAL_FLAG_HUNTED`, `ANIMAL_FLAG_TAME`,
+    /// `ANIMAL_FLAG_SLAUGHTER`.
     pub fn animals_ptr(&self) -> *const i32 {
         self.animal_buffer.as_ptr()
     }
@@ -895,8 +936,18 @@ impl WasmSim {
         self.animal_buffer.len()
     }
 
+    /// Nombre de bêtes **apprivoisées** vivantes, toutes espèces confondues
+    /// (voir `sim::livestock`). Le client s'en sert pour le HUD ; le détail
+    /// par espèce se lit dans le tampon `animals` croisé avec la faction du
+    /// tampon des pawns.
+    pub fn livestock_count(&self) -> u32 {
+        self.inner.livestock_count()
+    }
+
     /// Espèce d'un pawn, suivant `sim::Species` (0 cerf, 1 lapin, 2 sanglier).
-    /// −1 : ce n'est pas un animal, ou l'id est inconnu.
+    /// −1 : ce n'est pas un animal, ou l'id est inconnu. Une bête
+    /// **apprivoisée** garde son espèce : c'est `pawn_species(id) >= 0` avec
+    /// une faction 0 dans le tampon des pawns qui la distingue d'un colon.
     pub fn pawn_species(&self, id: u32) -> i32 {
         self.inner
             .pawns()
@@ -1084,7 +1135,9 @@ impl WasmSim {
         }
         self.priority_buffer.clear();
         for p in self.inner.pawns() {
-            if p.faction != Faction::Colony {
+            // `is_colonist` et non la faction : une bête apprivoisée est de
+            // la colonie sans avoir de tableau de travail (`sim::livestock`).
+            if !p.is_colonist() {
                 continue;
             }
             self.priority_buffer.push(p.id as i32);
@@ -1103,7 +1156,7 @@ impl WasmSim {
         }
         self.skill_buffer.clear();
         for p in self.inner.pawns() {
-            if p.faction != Faction::Colony {
+            if !p.is_colonist() {
                 continue;
             }
             self.skill_buffer.push(p.id as i32);
@@ -1126,11 +1179,18 @@ impl WasmSim {
             let Some(species) = p.species else {
                 continue;
             };
-            self.animal_buffer.extend_from_slice(&[
-                p.id as i32,
-                species as i32,
-                i32::from(p.hunted),
-            ]);
+            let mut flags = 0;
+            if p.hunted {
+                flags |= ANIMAL_FLAG_HUNTED;
+            }
+            if p.tame_marked {
+                flags |= ANIMAL_FLAG_TAME;
+            }
+            if p.slaughter_marked {
+                flags |= ANIMAL_FLAG_SLAUGHTER;
+            }
+            self.animal_buffer
+                .extend_from_slice(&[p.id as i32, species as i32, flags]);
         }
         let _ = ItemKind::COUNT;
     }
@@ -1142,6 +1202,7 @@ impl WasmSim {
 mod tests {
     use super::*;
     use sim::Command;
+    use sim::Faction;
     use sim::testmap::map_from;
 
     /// Petite clairière plate : tout est praticable, donc les zones passent.
@@ -1261,6 +1322,17 @@ mod tests {
                     animal: 12,
                     on: true,
                 },
+            ),
+            (
+                WasmSim::encode_tame(12, true),
+                Command::Tame {
+                    animal: 12,
+                    on: true,
+                },
+            ),
+            (
+                WasmSim::encode_slaughter(12),
+                Command::Slaughter { animal: 12 },
             ),
             (
                 WasmSim::encode_set_difficulty(sim::Difficulty::Hard as u8),
@@ -1609,7 +1681,8 @@ mod tests {
     }
 
     /// Contrat de la faune avec le client : tampon `animals` (stride 3),
-    /// espèce par accesseur, et ordre de chasse qui pose le marqueur.
+    /// espèce par accesseur, et ordres de chasse, d'apprivoisement et
+    /// d'abattage qui posent leurs drapeaux.
     #[test]
     fn le_tampon_de_la_faune_suit_les_betes() {
         let mut s = fresh();
@@ -1646,12 +1719,58 @@ mod tests {
 
         s.hunt(deer, true);
         s.step(1);
-        let hunted = s
-            .animal_buffer
-            .chunks(ANIMAL_STRIDE)
-            .find(|r| r[0] == deer as i32)
-            .map(|r| r[2]);
-        assert_eq!(hunted, Some(1), "le marqueur de chasse n'est pas posé");
+        let flags = |s: &WasmSim, id: u32| {
+            s.animal_buffer
+                .chunks(ANIMAL_STRIDE)
+                .find(|r| r[0] == id as i32)
+                .map(|r| r[2])
+        };
+        assert_eq!(
+            flags(&s, deer),
+            Some(ANIMAL_FLAG_HUNTED),
+            "le marqueur de chasse n'est pas posé"
+        );
+        // L'apprivoisement chasse la chasse : les deux marquages sont exclusifs.
+        s.tame(deer, true);
+        s.step(1);
+        assert_eq!(flags(&s, deer), Some(ANIMAL_FLAG_TAME));
+        assert_eq!(s.livestock_count(), 0, "rien n'est encore apprivoisé");
+
+        // Une bête de la colonie : même tampon, faction 0, et l'abattoir en
+        // plus. (Le jeu y arrive par `Job::Tame` ; ici on pose l'état.)
+        let rabbit = s.inner.spawn_animal(7, 7, sim::Species::Rabbit);
+        if let Some(p) = s.inner.pawn_mut(rabbit) {
+            p.faction = Faction::Colony;
+        }
+        s.slaughter(rabbit);
+        s.step(1);
+        assert_eq!(s.livestock_count(), 1);
+        assert_eq!(flags(&s, rabbit), Some(ANIMAL_FLAG_SLAUGHTER));
+        assert_eq!(s.pawn_species(rabbit), sim::Species::Rabbit as i32);
+        let k = s
+            .inner
+            .pawns()
+            .iter()
+            .position(|p| p.id == rabbit)
+            .expect("la bête est dans la liste");
+        assert_eq!(
+            s.pawn_buffer[k * PAWN_STRIDE + 10],
+            Faction::Colony as i32,
+            "une bête apprivoisée est du camp de la colonie"
+        );
+        // Elle n'entre pas pour autant dans les tampons réservés aux colons.
+        assert!(
+            !s.priority_buffer
+                .chunks(PRIORITY_STRIDE)
+                .any(|r| r[0] == rabbit as i32),
+            "une bête a un tableau de travail"
+        );
+        assert!(
+            !s.skill_buffer
+                .chunks(SKILL_STRIDE)
+                .any(|r| r[0] == rabbit as i32),
+            "une bête a des compétences"
+        );
     }
 
     /// Contrat de commerce avec le client : marchand repérable, étal et prix

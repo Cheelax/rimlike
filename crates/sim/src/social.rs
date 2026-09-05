@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use crate::combat::GRIEF_TICKS;
 use crate::health;
 use crate::map::chebyshev;
-use crate::pawn::{Faction, Job, Pawn};
+use crate::pawn::{Job, Pawn};
 use crate::traits::Trait;
 use crate::{EventKind, Sim, TICKS_PER_DAY};
 
@@ -217,7 +217,7 @@ impl Sim {
         let mut best: Option<(u32, u32, usize)> = None;
         for k in 0..self.pawns.len() {
             let p = &self.pawns[k];
-            if k == i || p.faction != Faction::Colony || !p.is_alive() {
+            if k == i || !p.is_colonist() || !p.is_alive() {
                 continue;
             }
             let free = match p.job {

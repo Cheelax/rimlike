@@ -83,6 +83,13 @@ impl Sim {
         self.next_supply_at = self.next_supply_at.saturating_add(elapsed);
         self.next_illness_at = self.next_illness_at.saturating_add(elapsed);
         self.next_extreme_at = self.next_extreme_at.saturating_add(elapsed);
+        // L'élevage aussi : une colonie oubliée deux mois ne rentre pas sous
+        // les naissances (voir `livestock::tick_breeding`).
+        for at in &mut self.breed_at {
+            if *at > 0 {
+                *at = at.saturating_add(elapsed);
+            }
+        }
         // Le marchand suivant et la rancune de la colonie glissent avec le
         // reste : deux mois d'absence n'effacent pas une réputation, ils ne la
         // font pas non plus expirer pendant que personne ne regarde.
@@ -131,10 +138,16 @@ impl Sim {
     /// mois devant la porte. Ils partent **sans cadavre** (`gone`), donc
     /// `remove_dead` émet un `RaiderLeft` par pillard, comme une fuite.
     ///
-    /// Les bêtes s'en vont pour la même raison : un troupeau ne broute pas la
-    /// même clairière pendant deux mois. Elles partent en silence — pas de
-    /// dépouille, pas d'événement — et de nouveaux troupeaux entreront quand
-    /// l'échéance décalée arrivera.
+    /// Les bêtes **sauvages** s'en vont pour la même raison : un troupeau ne
+    /// broute pas la même clairière pendant deux mois. Elles partent en
+    /// silence — pas de dépouille, pas d'événement — et de nouveaux troupeaux
+    /// entreront quand l'échéance décalée arrivera.
+    ///
+    /// Les bêtes **apprivoisées**, elles, restent : elles sont de la colonie
+    /// (`Faction::Colony`, voir `livestock`) et une colonie gelée ne perd pas
+    /// son troupeau. `recover_pawns` leur rend le ventre plein comme aux
+    /// colons (`FROZEN_HUNGER`), et l'échéance de reproduction glisse avec les
+    /// autres : rien ne naît « en rafale » au retour.
     ///
     /// Le marchand aussi : il n'a pas attendu deux mois derrière son étal. Il
     /// repart avec sa réserve, donc sans rien laisser au sol et sans

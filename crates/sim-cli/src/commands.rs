@@ -40,10 +40,12 @@ fn counts(sim: &Sim) -> (usize, usize, usize, usize) {
             continue;
         }
         match p.faction {
-            Faction::Colony => colons += 1,
+            // Une bête apprivoisée est de la colonie sans être un colon
+            // (voir `sim::livestock`) : elle ne compte dans aucune colonne.
+            Faction::Colony if p.species.is_none() => colons += 1,
             Faction::Raider => pillards += 1,
             Faction::Trader if p.hostile => pillards += 1,
-            Faction::Animal | Faction::Trader => {}
+            Faction::Colony | Faction::Animal | Faction::Trader => {}
         }
     }
     (colons, pillards, sim.items().len(), sim.blueprints().len())
