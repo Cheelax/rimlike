@@ -11,7 +11,7 @@ touchée pour l'écrire. Chaque constat porte une proposition chiffrée, à
 
 ## Les cinq constats, en une ligne chacun
 
-1. **Rangement** — dès qu'un entrepôt est plein, chaque colon relance un
+1. **Rangement** (**corrigé le 2026-09-05**, voir le journal du plan) — dès qu'un entrepôt est plein, chaque colon relance un
    balayage complet de la carte **par pile au sol et par tick** : 1 870 fois
    plus lent à 60 piles. Défaut du sim, pas réglage. (§3)
 2. **Difficulté** — « difficile » éteint **30 colonies sur 30**, 25 avant le

@@ -36,6 +36,37 @@ const BREAK_CHANCE: u32 = 600;
 /// Cadence d'évaluation de la péremption (voir `Sim::tick_spoilage`).
 const SPOILAGE_INTERVAL: u64 = 60;
 
+/// Ce qu'une case d'entrepôt accepte encore, dans l'ordre de
+/// `Map::stockpile_tiles`. C'est `Sim::dest_accepts` mis à plat : le relevé se
+/// fait en un passage sur les piles, au lieu d'un parcours des piles par case
+/// examinée.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slot {
+    /// Aucune pile posée dessus : la case prend n'importe quel genre.
+    Free,
+    /// Une seule pile, non pleine : la case ne prend plus que ce genre.
+    Partial(ItemKind),
+    /// Plus rien ne s'y pose : pile pleine, mélange de genres, ou case
+    /// devenue infranchissable.
+    Taken,
+}
+
+impl Slot {
+    fn accepts(self, kind: ItemKind) -> bool {
+        match self {
+            Slot::Free => true,
+            Slot::Partial(k) => k == kind,
+            Slot::Taken => false,
+        }
+    }
+
+    /// Y a-t-il encore quelque chose à y poser, quel que soit le genre ?
+    /// C'est le test de saturation de l'entrepôt.
+    fn accepts_anything(self) -> bool {
+        self != Slot::Taken
+    }
+}
+
 /// Production d'un travail terminé.
 fn yield_of(kind: Designation) -> Option<(ItemKind, u32)> {
     match kind {
@@ -945,8 +976,23 @@ impl Sim {
             .find_map(|&(_, x, y)| path::find_path_for(&self.map, from, (x, y), walker))
     }
 
+    /// Cherche une pile au sol à porter à l'entrepôt.
+    ///
+    /// Trois court-circuits avant tout travail, du moins cher au plus cher :
+    /// pas d'entrepôt du tout, entrepôt **saturé** (`Slot::accepts_anything`),
+    /// et enfin la borne `PATH_ATTEMPTS` sur les candidats. Le relevé des
+    /// cases d'entrepôt (`stockpile_slots`) est fait **une fois** pour tout
+    /// l'appel : rien ne bouge entre deux candidats, et il remplace autant de
+    /// balayages de carte qu'il y avait de piles au sol.
     fn try_start_haul(&mut self, i: usize) -> bool {
         if self.map.stockpile_count() == 0 {
+            return false;
+        }
+        let slots = self.stockpile_slots();
+        self.count_haul_scan(slots.len() as u64);
+        // Entrepôt saturé : plus une case libre, plus une pile incomplète.
+        // Aucun genre n'a de destination, inutile de trier les piles au sol.
+        if !slots.iter().any(|s| s.accepts_anything()) {
             return false;
         }
         let from = self.pawns[i].tile();
@@ -958,16 +1004,17 @@ impl Sim {
             .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
             .collect();
         candidates.sort_unstable();
-        let mut attempts = 0;
-        for &(_, x, y, k) in &candidates {
-            if attempts >= PATH_ATTEMPTS {
-                break;
-            }
+        // `take` borne les candidats **examinés**, pas les seuls candidats
+        // aboutis : une pile sans destination consomme un essai comme les
+        // autres. Sans cela la borne ne s'arme jamais quand l'entrepôt ne
+        // prend plus le genre à ranger, et la boucle traite **toutes** les
+        // piles au sol, à chaque tick, pour chaque colon inactif.
+        for &(_, x, y, k) in candidates.iter().take(PATH_ATTEMPTS) {
             let kind = self.items[k].kind;
-            let Some(dest) = self.find_stockpile_dest(kind, (x, y)) else {
+            self.count_haul_scan(slots.len() as u64);
+            let Some(dest) = self.slot_dest(&slots, kind, (x, y)) else {
                 continue;
             };
-            attempts += 1;
             if let Some(p) = self.colonist_path(from, (x, y)) {
                 let id = self.pawns[i].id;
                 self.items[k].reserved_by = Some(id);
@@ -1120,21 +1167,71 @@ impl Sim {
                 .all(|o| o.id == s.id || (o.x, o.y) != (s.x, s.y) || o.kind == s.kind)
     }
 
-    /// Case de stockage la plus proche de `near` pouvant accueillir `kind`.
-    fn find_stockpile_dest(&self, kind: ItemKind, near: (u32, u32)) -> Option<(u32, u32)> {
+    /// Relevé de ce que chaque case d'entrepôt accepte encore, dans l'ordre de
+    /// `Map::stockpile_tiles`. Un seul passage sur les piles (le test de zone
+    /// est en temps constant, les cases hors entrepôt sortent tout de suite)
+    /// et un sur les cases d'entrepôt : c'est ce qui remplace le balayage de
+    /// carte, et c'est aussi le court-circuit de la saturation.
+    ///
+    /// Ce n'est **pas** de l'état : il est rebâti à chaque appel, à partir de
+    /// la carte et des piles, et jeté aussitôt.
+    fn stockpile_slots(&self) -> Vec<Slot> {
+        let tiles = self.map.stockpile_tiles();
+        let mut slots: Vec<Slot> = tiles
+            .iter()
+            .map(|&(x, y)| {
+                if self.map.passable(x, y) {
+                    Slot::Free
+                } else {
+                    Slot::Taken
+                }
+            })
+            .collect();
+        for s in &self.items {
+            if self.map.zone(s.x, s.y) != Zone::Stockpile {
+                continue;
+            }
+            let Ok(k) = tiles.binary_search(&(s.x, s.y)) else {
+                continue;
+            };
+            // La première pile non pleine réserve la case à son genre ; une
+            // pile pleine, ou une deuxième pile, la ferme (`dest_accepts`).
+            slots[k] = match slots[k] {
+                Slot::Free if s.count < STACK_MAX => Slot::Partial(s.kind),
+                _ => Slot::Taken,
+            };
+        }
+        slots
+    }
+
+    /// Case de stockage la plus proche de `near` pouvant accueillir `kind`,
+    /// à partir d'un relevé déjà fait. Départage par `(distance, x, y)`, comme
+    /// partout ailleurs.
+    fn slot_dest(&self, slots: &[Slot], kind: ItemKind, near: (u32, u32)) -> Option<(u32, u32)> {
+        let tiles = self.map.stockpile_tiles();
         let mut best: Option<(u32, u32, u32)> = None;
-        for y in 0..self.map.height() {
-            for x in 0..self.map.width() {
-                if self.map.zone(x, y) != Zone::Stockpile || !self.dest_accepts((x, y), kind) {
-                    continue;
-                }
-                let key = (chebyshev(near, (x, y)), x, y);
-                if best.is_none_or(|b| key < b) {
-                    best = Some(key);
-                }
+        for (k, &(x, y)) in tiles.iter().enumerate() {
+            if !slots[k].accepts(kind) {
+                continue;
+            }
+            let key = (chebyshev(near, (x, y)), x, y);
+            if best.is_none_or(|b| key < b) {
+                best = Some(key);
             }
         }
         best.map(|(_, x, y)| (x, y))
+    }
+
+    /// Case de stockage la plus proche de `near` pouvant accueillir `kind`.
+    /// Pour les appels isolés (`do_haul`) : `try_start_haul`, qui en enchaîne
+    /// plusieurs, garde son relevé d'un candidat à l'autre.
+    fn find_stockpile_dest(&mut self, kind: ItemKind, near: (u32, u32)) -> Option<(u32, u32)> {
+        if self.map.stockpile_count() == 0 {
+            return None;
+        }
+        let slots = self.stockpile_slots();
+        self.count_haul_scan(2 * slots.len() as u64);
+        self.slot_dest(&slots, kind, near)
     }
 
     fn dest_accepts(&self, d: (u32, u32), kind: ItemKind) -> bool {
@@ -1240,9 +1337,10 @@ impl Sim {
             let stack = self.items.remove(k);
             self.pawns[i].carrying = Some((stack.kind, stack.count.min(STACK_MAX)));
             let kind = stack.kind;
-            let dest = dest
-                .filter(|&d| self.dest_accepts(d, kind))
-                .or_else(|| self.find_stockpile_dest(kind, here));
+            let mut dest = dest.filter(|&d| self.dest_accepts(d, kind));
+            if dest.is_none() {
+                dest = self.find_stockpile_dest(kind, here);
+            }
             match dest.and_then(|d| self.colonist_path(here, d).map(|p| (d, p))) {
                 Some((d, p)) => {
                     self.pawns[i].set_path(p);

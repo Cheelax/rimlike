@@ -527,6 +527,15 @@ hors du frame), job « bavarde », événements 32-34 ; vérifié : avis mutuels
 
 ## 8. Journal des décisions
 
+- 2026-09-05 : le rangement saturé ne balaie plus la carte. `Map` porte la liste triée des cases
+  d'entrepôt (sérialisée comme le reste : elle décide où un colon porte sa charge, donc pas un
+  cache), le rangement relève en un passage ce que chaque case accepte, « saturé » est exact
+  (aucune case libre, aucune pile non pleine) et la borne d'essais compte les candidats
+  examinés, plus seulement les aboutis. Mesuré : de 2 000 à 1 000 000 ticks/s à 60 piles au
+  sol, coût plat en surface ; la campagne de trois graines passe de 11 s à 0,25 s. Un compteur
+  d'observation hors snapshot et hors hash (`haul_scans`) borne le travail dans les tests, jamais
+  le temps. Le même défaut existe pour l'inhumation (`try_start_bury`), à corriger.
+
 - 2026-09-05 : la partie longue se mesure avec un joueur scripté. `rimlike-sim campaign` joue N
   graines × D jours avec un joueur pur et déterministe (zones, coupe, culture, feu, lits, poste,
   enceinte et pièges, recherche, arcs, chasse, élevage, troc, tribut) et déduit la cause des

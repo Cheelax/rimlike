@@ -312,6 +312,24 @@ pub struct Map {
     /// Incrémenté à chaque changement d'intensité, comme `overlay_version` :
     /// le client rebâtit son rendu du feu quand il bouge.
     fire_version: u32,
+    /// **Liste** des cases d'entrepôt, triée par `(x, y)`, tenue à jour par
+    /// `set_zone`. `stockpile_count` dit s'il y a un entrepôt ; cette liste dit
+    /// **où**, pour que la recherche d'une case de rangement ne balaie plus la
+    /// carte (voir `Sim::find_stockpile_dest`). Une zone ne change qu'à la
+    /// commande du joueur : l'insertion triée coûte un `memmove` sur une liste
+    /// courte, une fois par case peinte, jamais par tick.
+    ///
+    /// **Sérialisée comme le reste.** Elle décide de l'avenir (c'est elle qui
+    /// dit où un colon porte sa charge) : la laisser hors du snapshot en la
+    /// reconstruisant à la relecture en ferait un cache non sérialisé qui
+    /// influence le futur, ce que l'invariant interdit. Le prix est de deux
+    /// octets par case d'entrepôt dans le snapshot, et un vieux snapshot qui
+    /// n'est plus relisible. Elle reste une fonction **canonique** de la
+    /// couche `zones` — même carte, même liste, toujours triée — donc elle ne
+    /// peut pas désynchroniser deux clients arrivés au même état.
+    /// **Champ ajouté en fin de structure** : un vieux snapshot est refusé net
+    /// plutôt que relu de travers.
+    stockpile_tiles: Vec<(u32, u32)>,
 }
 
 /// Au-delà, la zone est trop vaste pour être une pièce : c'est le dehors.
@@ -444,6 +462,7 @@ impl Map {
             fire: vec![0; n],
             fire_count: 0,
             fire_version: 0,
+            stockpile_tiles: Vec::new(),
         }
     }
 
@@ -525,12 +544,22 @@ impl Map {
         let old = Zone::from_u8(self.zones[i]);
         if old != z {
             match old {
-                Zone::Stockpile => self.stockpile_count -= 1,
+                Zone::Stockpile => {
+                    self.stockpile_count -= 1;
+                    if let Ok(k) = self.stockpile_tiles.binary_search(&(x, y)) {
+                        self.stockpile_tiles.remove(k);
+                    }
+                }
                 Zone::Growing => self.growing_count -= 1,
                 Zone::None => {}
             }
             match z {
-                Zone::Stockpile => self.stockpile_count += 1,
+                Zone::Stockpile => {
+                    self.stockpile_count += 1;
+                    if let Err(k) = self.stockpile_tiles.binary_search(&(x, y)) {
+                        self.stockpile_tiles.insert(k, (x, y));
+                    }
+                }
                 Zone::Growing => self.growing_count += 1,
                 Zone::None => {}
             }
@@ -620,6 +649,12 @@ impl Map {
 
     pub fn stockpile_count(&self) -> u32 {
         self.stockpile_count
+    }
+
+    /// Les cases d'entrepôt, triées par `(x, y)`. C'est le domaine de toute
+    /// recherche de rangement : jamais la carte entière.
+    pub fn stockpile_tiles(&self) -> &[(u32, u32)] {
+        &self.stockpile_tiles
     }
 
     pub fn growing_count(&self) -> u32 {

@@ -526,6 +526,37 @@ pub struct Sim {
     /// `EventKind::RaidRepelled` et remet ce drapeau à faux. Un raid qui en
     /// recouvre un autre ne donne qu'une annonce, pour le dernier arrivé.
     raid_unresolved: bool,
+    /// Cases d'entrepôt examinées par la recherche de rangement depuis le
+    /// début de la partie. **Hors état** (voir `WorkCounter`) : ni snapshot,
+    /// ni hash, ni égalité. C'est une mesure, pas une donnée de jeu.
+    #[serde(skip)]
+    haul_scans: WorkCounter,
+}
+
+/// Compteur d'observation. Il compte du **travail**, jamais de l'état : il
+/// n'entre ni dans le snapshot (`#[serde(skip)]`), ni dans l'égalité de deux
+/// sims, donc ni dans le hash, et rien dans le sim ne le relit. Il existe
+/// parce qu'un test de performance doit mesurer un nombre d'opérations, pas
+/// un temps — le temps, en intégration continue, ne veut rien dire.
+#[derive(Clone, Copy, Debug, Default, Eq)]
+pub struct WorkCounter(u64);
+
+impl WorkCounter {
+    pub fn get(self) -> u64 {
+        self.0
+    }
+
+    fn add(&mut self, n: u64) {
+        self.0 = self.0.saturating_add(n);
+    }
+}
+
+/// Deux sims dans le même état sont égales, quel que soit le chemin parcouru
+/// pour y arriver : le compteur n'est pas de l'état.
+impl PartialEq for WorkCounter {
+    fn eq(&self, _: &WorkCounter) -> bool {
+        true
+    }
 }
 
 impl Sim {
@@ -598,6 +629,7 @@ impl Sim {
             // faction, et `last_raid_faction()` renvoie `None`.
             last_raid_faction: u8::MAX,
             raid_unresolved: false,
+            haul_scans: WorkCounter::default(),
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -1061,5 +1093,18 @@ impl Sim {
     /// Phase 0 : hash du snapshot complet. À rendre incrémental quand l'état grossit.
     pub fn state_hash(&self) -> u64 {
         hash::fnv1a64(&self.snapshot())
+    }
+
+    /// Cases d'entrepôt examinées depuis le début de la partie par la
+    /// recherche d'une destination de rangement. Sert à mesurer le coût du
+    /// rangement sans passer par le chronomètre (`tests/hauling_perf.rs`) :
+    /// il doit rester borné par tick, quelle que soit la taille de la carte
+    /// et le nombre de piles au sol.
+    pub fn haul_scans(&self) -> u64 {
+        self.haul_scans.get()
+    }
+
+    pub(crate) fn count_haul_scan(&mut self, n: u64) {
+        self.haul_scans.add(n);
     }
 }
