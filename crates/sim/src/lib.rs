@@ -400,6 +400,21 @@ pub enum Command {
         kind: ItemKind,
         count: u32,
     },
+    /// Impose la réputation de départ envers les trois factions PNJ, dans
+    /// l'ordre de `factions::FACTIONS` : chaque valeur est bornée à
+    /// `factions::GOODWILL_MIN..=factions::GOODWILL_MAX`, comme
+    /// `Sim::set_goodwill`. N'émet aucun `EventKind::RelationChanged` et ne
+    /// déclenche aucune représaille — c'est un état de départ, pas une
+    /// évolution du jeu — et s'applique quel que soit l'état de la colonie
+    /// (elle peut arriver avant le premier tick utile).
+    ///
+    /// Destinée à la première commande de l'hôte, après `Command::SetClimate`,
+    /// `Command::SetCalendar` et `Command::SetDifficulty` : le serveur monde la
+    /// remplit à la fondation d'une colonie, comme il impose déjà le climat et
+    /// le jour de l'année. En solo, elle n'est jamais émise : la réputation de
+    /// départ y reste `factions::START_GOODWILL`.
+    /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
+    SetGoodwill { values: [i32; FACTION_COUNT] },
 }
 
 #[derive(Debug)]
@@ -914,6 +929,7 @@ impl Sim {
                 kind,
                 count,
             } => self.gift(faction, kind, count),
+            Command::SetGoodwill { values } => self.set_goodwill_all(values),
         }
     }
 

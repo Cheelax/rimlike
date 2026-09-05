@@ -10,7 +10,7 @@ use sim::{
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 25;
+pub const VARIANT_COUNT: usize = 26;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -40,6 +40,7 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "Tame",
     "Slaughter",
     "Gift",
+    "SetGoodwill",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -251,6 +252,19 @@ fn random_day_of_year(rng: &mut Rng) -> u32 {
         1 => YEAR_DAYS.saturating_mul(1 + rng.below(1_000)),
         2 => YEAR_DAYS.saturating_mul(1 + rng.below(1_000)) + rng.below(YEAR_DAYS),
         _ => rng.below(YEAR_DAYS),
+    }
+}
+
+/// Réputation pour `SetGoodwill` : le plus souvent déjà dans les bornes
+/// (`factions::GOODWILL_MIN..=GOODWILL_MAX`), parfois franchement aberrante,
+/// jusqu'aux bornes de `i32` — c'est là que `Sim::set_goodwill` doit borner
+/// sans jamais déborder.
+fn random_goodwill(rng: &mut Rng) -> i32 {
+    match rng.below(4) {
+        0 => i32::MIN.saturating_add(rng.below(1_000) as i32),
+        1 => i32::MAX.saturating_sub(rng.below(1_000) as i32),
+        2 => rng.range_i32(-500, 501),
+        _ => rng.range_i32(sim::factions::GOODWILL_MIN, sim::factions::GOODWILL_MAX + 1),
     }
 }
 
@@ -470,13 +484,24 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
         // rien prélever qu'il n'ait en stock, ni déborder sur le produit
         // `valeur × quantité`. Quand il tombe juste, il finit par rendre une
         // tribu alliée : c'est le seul moyen d'éprouver une carte sans raid.
-        _ => Command::Gift {
+        24 => Command::Gift {
             faction: match rng.below(3) {
                 0 => rng.below(256) as u8,
                 _ => rng.below(sim::FACTION_COUNT as u32 + 1) as u8,
             },
             kind: ItemKind::from_u8(rng.below(ItemKind::COUNT as u32 + 4) as u8),
             count: random_count(rng),
+        },
+        // La réputation de départ que le serveur monde impose à la fondation
+        // d'une colonie : valeurs le plus souvent plausibles, parfois aux
+        // bornes de `i32`, sur les trois factions à la fois — sans jamais
+        // annoncer de franchissement de seuil ni planifier de représailles.
+        _ => Command::SetGoodwill {
+            values: [
+                random_goodwill(rng),
+                random_goodwill(rng),
+                random_goodwill(rng),
+            ],
         },
     };
     (cmd, variant)

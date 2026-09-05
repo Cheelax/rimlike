@@ -346,6 +346,18 @@ impl WasmSim {
         });
     }
 
+    /// Impose la réputation de départ envers les trois factions PNJ (0 Clan
+    /// des Cendres, 1 Fraternité du Fer, 2 Guilde des Colporteurs), bornée à
+    /// −100..=100 comme `goodwill()`. N'annonce rien et ne déclenche aucune
+    /// représaille : c'est ainsi que le serveur monde impose la réputation de
+    /// départ d'une colonie neuve, comme il impose déjà son climat
+    /// (`set_climate`) et son calendrier (`set_calendar`) ; l'hôte l'émet en
+    /// première commande, après elles. En solo, jamais émise.
+    pub fn set_goodwill(&mut self, a: i32, b: i32, c: i32) {
+        self.pending
+            .push(sim::Command::SetGoodwill { values: [a, b, c] });
+    }
+
     // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
     //
     // Fonctions **associées** : le client doit pouvoir encoder avant même
@@ -519,6 +531,11 @@ impl WasmSim {
             kind: ItemKind::from_u8(kind),
             count,
         })
+    }
+
+    /// Réputation de départ envers les trois factions PNJ. Voir `set_goodwill`.
+    pub fn encode_set_goodwill(a: i32, b: i32, c: i32) -> Vec<u8> {
+        encode(&sim::Command::SetGoodwill { values: [a, b, c] })
     }
 
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
@@ -1451,6 +1468,12 @@ mod tests {
                     faction: 200,
                     kind: ItemKind::Wood,
                     count: u32::MAX,
+                },
+            ),
+            (
+                WasmSim::encode_set_goodwill(-100, 40, i32::MAX),
+                Command::SetGoodwill {
+                    values: [-100, 40, i32::MAX],
                 },
             ),
         ];

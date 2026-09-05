@@ -224,6 +224,19 @@ impl Sim {
         }
     }
 
+    /// Applique un `Command::SetGoodwill` : remplace les trois réputations
+    /// d'un coup, chacune bornée comme `Sim::set_goodwill`. C'est ainsi que le
+    /// serveur monde impose la réputation de départ d'une colonie neuve,
+    /// comme il impose déjà son climat (`Command::SetClimate`) et son
+    /// calendrier (`Command::SetCalendar`) : n'annonce rien et ne déclenche
+    /// aucune représaille, quelle que soit la valeur imposée — un état de
+    /// départ ne se joue pas comme un franchissement de seuil.
+    pub(crate) fn set_goodwill_all(&mut self, values: [i32; FACTION_COUNT]) {
+        for (faction, &value) in values.iter().enumerate() {
+            self.set_goodwill(faction as u8, value);
+        }
+    }
+
     /// Tribu qui a mené le dernier raid, `None` si aucune bande n'est encore
     /// entrée.
     pub fn last_raid_faction(&self) -> Option<u8> {
