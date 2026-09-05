@@ -2157,7 +2157,7 @@ impl Sim {
         let k = tech as usize;
         self.research.progress[k] = self.research.progress[k].saturating_add(points);
         self.gain_xp(i, WorkType::Research);
-        if self.research.progress[k] >= tech.cost() {
+        if self.research.reached(tech) {
             self.research.done[k] = true;
             self.research.current = research::NO_TECH;
             self.push_event(EventKind::ResearchDone, tech as u32);

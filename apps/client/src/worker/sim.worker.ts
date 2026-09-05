@@ -133,6 +133,9 @@ const SIM_API: ReadonlySet<string> = new Set([
   "traderOffers",
   "buyPrices",
   "trade",
+  // Recherche (`crates/sim/src/research.rs`) : technologie cherchée et son avancement.
+  "setResearch",
+  "researchState",
 ]);
 
 /** Idem pour le `LockstepClient`, préfixé `lockstep.` côté appelant. */

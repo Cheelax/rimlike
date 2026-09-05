@@ -106,6 +106,11 @@ export interface RunnerSim extends SimLike {
   traderOffers(): Int32Array;
   /** Prix unitaire d'achat par genre, indexé par `ItemKind` (16 entrées). */
   buyPrices(): Uint32Array;
+  /**
+   * Où en est la recherche : `[courante, (avancement, coût, acquise) × 5]`,
+   * 16 entiers. `courante` vaut 255 quand personne ne cherche rien.
+   */
+  researchState(): Uint32Array;
   /** Change à chaque recalcul effectif de la couche « intérieur ». */
   indoorVersion(): number;
   /** Couche « intérieur » : un octet par case, 0 dehors, sinon le numéro de pièce. */
@@ -380,6 +385,7 @@ export class SimRunner {
       traderLeavesIn: sim.traderLeavesIn(),
       traderOffers: sim.traderOffers(),
       buyPrices: sim.buyPrices(),
+      researchState: sim.researchState(),
     };
     return { ticks, map, overlays, indoor, frame };
   }

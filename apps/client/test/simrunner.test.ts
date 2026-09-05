@@ -228,6 +228,12 @@ class FakeSim implements RunnerSim {
     return new Uint32Array(16);
   }
 
+  researchStateBuf = new Uint32Array([255, 0, 2000, 0, 0, 2500, 0, 0, 2500, 0, 0, 3000, 0, 0, 3000, 0]);
+
+  researchState(): Uint32Array {
+    return this.researchStateBuf;
+  }
+
   dispose(): void {
     this.disposed = true;
   }

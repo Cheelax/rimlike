@@ -6,7 +6,7 @@ use sim::build::BuildKind;
 use sim::combat::{BOW_RANGE, RANGED_DAMAGE};
 use sim::farm::GROW_TICKS;
 use sim::items::FRESHNESS_MAX;
-use sim::research::{self, NO_TECH, RESEARCH_STEP};
+use sim::research::{self, NO_TECH, PROGRESS_SCALE, RESEARCH_STEP};
 use sim::testmap::map_from;
 use sim::{
     Climate, Command, EventKind, Faction, Feature, ItemKind, Job, Material, Sim, TICKS_PER_DAY,
@@ -141,10 +141,11 @@ fn finishing_a_tech_fires_an_event_and_clears_current() {
     let colonist = keep_one_colonist(&mut s);
     s.step(&[set_research(Tech::Agriculture)]);
 
-    // Borne large : au pire (moral bas, compétence nulle), un colon apporte
-    // trois points par tick, plus le trajet jusqu'à l'établi.
+    // Borne large : au pire (moral bas, compétence nulle, nuits et repas),
+    // un colon seul met un peu plus de deux jours ; voir
+    // `a_tech_takes_a_day_or_two` pour la cadence visée.
     assert!(
-        run_until(&mut s, 2 * DAY, |s| s.research().is_done(Tech::Agriculture)),
+        run_until(&mut s, 6 * DAY, |s| s.research().is_done(Tech::Agriculture)),
         "technologie jamais acquise : {:?}",
         s.research()
     );
@@ -175,6 +176,29 @@ fn finishing_a_tech_fires_an_event_and_clears_current() {
     assert_eq!(
         s.pawn_mut(colonist).expect("le colon est là").faction,
         Faction::Colony
+    );
+}
+
+#[test]
+fn a_tech_takes_a_day_or_two() {
+    // La cadence est la règle de conception : à un colon seul qui ne fait que
+    // chercher, une technologie coûte entre une demi-journée et trois jours,
+    // pas trois secondes ni une saison. Mesuré ici plutôt que réglé à
+    // l'intuition : 7 115 ticks à quatre dixièmes de point par tick, donc
+    // environ 14 000 à deux dixièmes.
+    let mut s = clearing_with_bench();
+    keep_one_colonist(&mut s);
+    s.step(&[set_research(Tech::Agriculture)]);
+    let start = s.tick();
+    assert!(
+        run_until(&mut s, 4 * DAY, |s| s.research().is_done(Tech::Agriculture)),
+        "technologie jamais acquise : {:?}",
+        s.research()
+    );
+    let elapsed = s.tick() - start;
+    assert!(
+        (DAY / 2..=3 * DAY).contains(&elapsed),
+        "Agriculture acquise en {elapsed} ticks, attendu entre une demi-journée et trois jours"
     );
 }
 
@@ -394,9 +418,13 @@ fn set_research_ignores_nonsense() {
 fn a_tech_costs_what_it_says() {
     for tech in Tech::ALL {
         assert!(tech.cost() >= 2_000, "{tech:?} : {}", tech.cost());
-        // À vitesse nominale, une technologie demande quelques centaines de
-        // ticks de chercheur : de quoi peser sans bloquer une partie.
-        let ticks = tech.cost() / RESEARCH_STEP;
-        assert!((200..=300).contains(&ticks), "{tech:?} : {ticks} ticks");
+        // À vitesse nominale, une technologie demande dix à quinze mille ticks
+        // de chercheur (une journée de jeu en fait 12 480) : de quoi peser
+        // sans bloquer une partie.
+        let ticks = tech.cost() * PROGRESS_SCALE / RESEARCH_STEP;
+        assert!(
+            (10_000..=15_000).contains(&ticks),
+            "{tech:?} : {ticks} ticks"
+        );
     }
 }

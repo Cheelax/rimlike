@@ -1,4 +1,5 @@
 import type { TileClimate } from "@rimlike/world";
+import { TECHS } from "../research";
 
 /** Contrat avec `pawn::Faction` (0 colonie, 1 pillard, 2 bête sauvage, 3 marchand). */
 export const FACTION = { Colony: 0, Raider: 1, Animal: 2, Trader: 3 } as const;
@@ -56,9 +57,20 @@ export const FEATURE = {
   Grave: 14,
   /** Tombe occupée : posée par le job `Bury` (code 23), jamais par une commande directe. */
   GraveFilled: 15,
+  /** Établi de recherche (`crates/sim/src/research.rs`) : infranchissable, comme le poste de fabrication. */
+  ResearchBench: 16,
 } as const;
 
-export const BUILD_KIND = { Wall: 0, Door: 1, Floor: 2, Bed: 3, Campfire: 4, CraftingSpot: 5, Grave: 6 } as const;
+export const BUILD_KIND = {
+  Wall: 0,
+  Door: 1,
+  Floor: 2,
+  Bed: 3,
+  Campfire: 4,
+  CraftingSpot: 5,
+  Grave: 6,
+  ResearchBench: 7,
+} as const;
 export const MATERIAL = { Wood: 0, Stone: 1 } as const;
 export const MATERIAL_NAMES = ["bois", "pierre"] as const;
 /** Couleurs des matériaux construits : [bois, pierre]. */
@@ -439,6 +451,11 @@ export function eventLabel(kind: number, arg: number, names?: Record<number, str
       // `arg` vaut toujours 0 (`sim::EventKind::Buried`) : ce n'est pas un id
       // de pawn, l'inhumation ne nomme personne.
       return "Un mort a été enterré";
+    case 31: {
+      // `arg` = la technologie acquise (`sim::research::Tech`), pas un id de pawn.
+      const name = TECHS[arg]?.name ?? "Une technologie";
+      return `${name} : recherche terminée`;
+    }
     default:
       return "";
   }

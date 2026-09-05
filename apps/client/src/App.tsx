@@ -5,6 +5,8 @@ import { CaravanPanel, type CaravanColonist, type CaravanDestination } from "./C
 import { ColonistBar, type ColonistBadge } from "./ColonistBar";
 import { CraftingPanel } from "./CraftingPanel";
 import { JournalPanel, type JournalEntry, type JournalFilter } from "./JournalPanel";
+import { decodeResearch, researchPercent, TECHS } from "./research";
+import { ResearchPanel } from "./ResearchPanel";
 import { TradePanel } from "./TradePanel";
 import {
   CaravanDispatcher,
@@ -80,6 +82,7 @@ import {
   encodeSetCraftTarget,
   encodeSetDifficulty,
   encodeSetPriority,
+  encodeSetResearch,
   encodeSetZone,
   encodeTrade,
   encodeTriggerRaid,
@@ -141,6 +144,7 @@ type Tool =
   | "bed"
   | "campfire"
   | "craftingSpot"
+  | "researchBench"
   | "grave"
   | "cancel";
 
@@ -167,6 +171,10 @@ const TOOLS: {
   { id: "bed", label: "Lit", key: "L", color: 0x4ad9ff, group: "build" },
   { id: "campfire", label: "Feu", key: "F", color: 0x4ad9ff, group: "build" },
   { id: "craftingSpot", label: "Poste", key: "A", color: 0x4ad9ff, group: "build" },
+  // Aucune lettre libre ne rappelle « établi » ou « recherche » (E est prise
+  // par la rotation de caméra, R par le panneau Recherche) : pas de raccourci
+  // clavier, un bouton suffit, comme pour la tombe ci-dessous.
+  { id: "researchBench", label: "Établi de recherche", key: "", color: 0x4ad9ff, group: "build", hint: "15 bois" },
   // Aucune lettre libre ne rappelle « tombe » (T, O, G... sont déjà pris) :
   // pas de raccourci clavier, un bouton suffit (mission tombes §1).
   { id: "grave", label: "Tombe", key: "", color: 0x4ad9ff, group: "build", hint: "5 pierre" },
@@ -180,9 +188,10 @@ const BUILD_TOOL_KIND: Partial<Record<Tool, number>> = {
   bed: BUILD_KIND.Bed,
   campfire: BUILD_KIND.Campfire,
   craftingSpot: BUILD_KIND.CraftingSpot,
+  researchBench: BUILD_KIND.ResearchBench,
   grave: BUILD_KIND.Grave,
 };
-const WOOD_ONLY: ReadonlySet<Tool> = new Set<Tool>(["bed", "campfire", "craftingSpot"]);
+const WOOD_ONLY: ReadonlySet<Tool> = new Set<Tool>(["bed", "campfire", "craftingSpot", "researchBench"]);
 /** Les tombes n'existent qu'en pierre (contrat sim) : jamais le matériau courant du joueur. */
 const STONE_ONLY: ReadonlySet<Tool> = new Set<Tool>(["grave"]);
 
@@ -293,6 +302,12 @@ interface Stats {
   craftTargets: number[];
   /** Un `Feature::CraftingSpot` existe sur la carte (compté dans `features`). */
   hasCraftingSpot: boolean;
+  /**
+   * Un `Feature::ResearchBench` existe sur la carte, compté dans `features`
+   * au changement de `map_version` seulement (voir `craftingSpotCount`, même
+   * schéma). Sans lui, aucun colon ne peut faire avancer une recherche.
+   */
+  hasResearchBench: boolean;
   /** Une pastille par colon de la colonie, pour `ColonistBar` (voir §2 de la mission). */
   colonistBadges: ColonistBadge[];
   /** Ticks d'un jour de jeu (`frame.ticksPerDay`), pour l'horodatage du Journal. */
@@ -315,6 +330,12 @@ interface Stats {
    * périssable. Pilote la pastille de fraîcheur du HUD stock.
    */
   foodFreshness: number[];
+  /**
+   * Copie de `frame.researchState` (`sim-wasm::research_state`), 16 entiers :
+   * `[courante, (avancement, coût, acquise) × 5]`, décodée par
+   * `research.ts::decodeResearch` là où elle sert (HUD, `ResearchPanel`).
+   */
+  researchState: number[];
 }
 
 const INITIAL: Stats = {
@@ -344,6 +365,7 @@ const INITIAL: Stats = {
   lag: 0,
   craftTargets: [0, 0, 0, 0, 0, 0, 0, 0, 0],
   hasCraftingSpot: false,
+  hasResearchBench: false,
   colonistBadges: [],
   ticksPerDay: TICKS_PER_DAY,
   difficulty: DIFFICULTY.Normal,
@@ -353,6 +375,8 @@ const INITIAL: Stats = {
   traderOffers: [],
   buyPrices: new Array(ITEM_NAMES.length).fill(0),
   foodFreshness: new Array(ITEM_NAMES.length).fill(-1),
+  // 255 = aucune recherche en cours, cinq technologies à 0/0/non acquise.
+  researchState: [255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 };
 
 interface Actions {
@@ -466,6 +490,7 @@ export function App() {
   const [stats, setStats] = useState<Stats>(INITIAL);
   const [showWork, setShowWork] = useState(false);
   const [showCraft, setShowCraft] = useState(false);
+  const [showResearch, setShowResearch] = useState(false);
   /** Panneau Troc (bouton dans la barre, pas de raccourci : `T` est déjà pris par le matériau). */
   const [showTrade, setShowTrade] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
@@ -882,14 +907,24 @@ export function App() {
     let dispatcher: CaravanDispatcher | null = null;
     /** Nombre de `Feature::CraftingSpot` sur la carte, recompté à chaque `map`. */
     let craftingSpotCount = 0;
+    /**
+     * Nombre de `Feature::ResearchBench` sur la carte, recompté à chaque `map`
+     * seulement (comme `craftingSpotCount`), jamais à chaque frame.
+     */
+    let researchBenchCount = 0;
 
     // --- Le Worker de simulation ---
     const bridge = new SimBridge({
       onMap: (m) => {
         renderer.setMap(m.width, m.height, m.tiles, m.features);
         let spots = 0;
-        for (const f of m.features) if (f === FEATURE.CraftingSpot) spots++;
+        let benches = 0;
+        for (const f of m.features) {
+          if (f === FEATURE.CraftingSpot) spots++;
+          else if (f === FEATURE.ResearchBench) benches++;
+        }
         craftingSpotCount = spots;
+        researchBenchCount = benches;
       },
       onOverlays: (m) => renderer.setOverlays(m.zones, m.designations),
       onIndoor: (m) => renderer.setIndoor(m.indoor),
@@ -1197,6 +1232,12 @@ export function App() {
             ),
           );
           break;
+        case "researchBench":
+          // L'établi n'existe qu'en bois (contrat sim, qui l'imposerait de
+          // toute façon) : jamais `materialRef.current`, comme la tombe force
+          // la pierre juste en dessous.
+          issue(encodeBuild(BUILD_KIND.ResearchBench, MATERIAL.Wood, rect.x0, rect.y0, rect.x1, rect.y1));
+          break;
         case "grave":
           // Les tombes n'existent qu'en pierre (contrat sim, qui l'imposerait
           // de toute façon) : jamais `materialRef.current`, pour ne pas
@@ -1309,6 +1350,10 @@ export function App() {
       }
       if (k === "K") {
         setShowCraft((v) => !v);
+        return;
+      }
+      if (k === "R") {
+        setShowResearch((v) => !v);
         return;
       }
       if (k === "N") {
@@ -1674,6 +1719,7 @@ export function App() {
         lag: f.lag,
         craftTargets: Array.from(f.craftTargets),
         hasCraftingSpot: craftingSpotCount > 0,
+        hasResearchBench: researchBenchCount > 0,
         ticksPerDay: f.ticksPerDay,
         difficulty: f.difficulty,
         wealth: f.wealth,
@@ -1682,6 +1728,7 @@ export function App() {
         traderOffers: Array.from(f.traderOffers),
         buyPrices: Array.from(f.buyPrices),
         foodFreshness: Array.from(f.foodFreshness),
+        researchState: Array.from(f.researchState),
       });
     }, 500);
 
@@ -1766,6 +1813,15 @@ export function App() {
    */
   const setCraftTarget = (kind: number, target: number) => {
     bridgeRef.current?.issue(encodeSetCraftTarget(kind, clampCraftTarget(target)));
+  };
+
+  /**
+   * Choisit la technologie cherchée (`ResearchPanel`, clic sur une ligne non
+   * acquise), ou l'arrête (255, bouton « Arrêter »). Le sim ignore en silence
+   * une technologie déjà acquise ou un numéro invalide.
+   */
+  const setResearch = (tech: number) => {
+    bridgeRef.current?.issue(encodeSetResearch(tech));
   };
 
   /**
@@ -1882,6 +1938,9 @@ export function App() {
   for (let o = 0; o + PRIORITY_STRIDE <= stats.priorities.length; o += PRIORITY_STRIDE) {
     workRows.push({ id: stats.priorities[o], prio: stats.priorities.slice(o + 1, o + PRIORITY_STRIDE) });
   }
+  // Recherche : décodée une fois ici, réutilisée par le HUD et `ResearchPanel`.
+  const researchInfo = decodeResearch(stats.researchState);
+  const currentTechInfo = researchInfo.techs.find((t) => t.tech === researchInfo.current) ?? null;
   const cyclePriority = (pawn: number, work: number, shown: number, dir: 1 | -1) => {
     const current = actionsRef.current?.currentPriority(pawn, work) ?? shown;
     actionsRef.current?.setPriority(pawn, work, nextPriority(current, dir));
@@ -2087,6 +2146,12 @@ export function App() {
                 {formatTraderLeaves(stats.traderLeavesIn)}
               </div>
             )}
+            {currentTechInfo && (
+              <div>
+                Recherche : <b>{TECHS[currentTechInfo.tech]?.name ?? "?"}</b> ·{" "}
+                {researchPercent(currentTechInfo.progress, currentTechInfo.cost)} %
+              </div>
+            )}
             <div className="help">
               {stats.tps} tps · {stats.fps} fps · hash {stats.hash}
             </div>
@@ -2264,6 +2329,13 @@ export function App() {
               Fabrication <span className="key">K</span>
             </button>
             <button
+              className={showResearch ? "active" : ""}
+              onClick={() => setShowResearch((v) => !v)}
+              title="Touche R : recherche technologique"
+            >
+              Recherche <span className="key">R</span>
+            </button>
+            <button
               className={heatMode ? "active" : ""}
               onClick={() => setHeatMode((v) => !v)}
               title="Touche I : colore les cases par température"
@@ -2391,6 +2463,15 @@ export function App() {
               hasCraftingSpot={stats.hasCraftingSpot}
               onSetTarget={setCraftTarget}
               onClose={() => setShowCraft(false)}
+            />
+          )}
+          {showResearch && (
+            <ResearchPanel
+              state={researchInfo}
+              hasResearchBench={stats.hasResearchBench}
+              onSelect={setResearch}
+              onStop={() => setResearch(255)}
+              onClose={() => setShowResearch(false)}
             />
           )}
           {showTrade && stats.traderPresent >= 0 && (

@@ -206,6 +206,13 @@ export interface FrameMessage {
    * du HUD stock (`App.tsx`).
    */
   readonly foodFreshness: Int32Array;
+  /**
+   * Où en est la recherche (`sim-wasm::research_state`) : 16 entiers,
+   * `[courante, (avancement, coût, acquise) × 5]` dans l'ordre de
+   * `sim::research::Tech`. `courante` vaut 255 quand personne ne cherche rien.
+   * Voir `apps/client/src/research.ts::decodeResearch`.
+   */
+  readonly researchState: Uint32Array;
 }
 
 export type WorkerToMain =
@@ -255,6 +262,7 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
         message.traderOffers.buffer as ArrayBuffer,
         message.buyPrices.buffer as ArrayBuffer,
         message.foodFreshness.buffer as ArrayBuffer,
+        message.researchState.buffer as ArrayBuffer,
       ];
     case "saved":
       return [message.bytes.buffer as ArrayBuffer];

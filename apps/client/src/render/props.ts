@@ -259,6 +259,27 @@ function grave(m: Model, filled: boolean): void {
   }
 }
 
+/**
+ * Établi de recherche (`Feature::ResearchBench` = 16) : une table de travail,
+ * un tabouret et un livre ouvert (encrier et plume à côté), une case entière
+ * comme le sim l'impose (matériau bois forcé, comme la tombe force la pierre).
+ */
+function researchBench(m: Model): void {
+  // Table : quatre pieds, un plateau.
+  for (const x of [-0.32, 0.32]) for (const z of [-0.19, 0.19]) m.box(0.06, 0.4, 0.06, C.dark, x, 0.2, z);
+  m.box(0.72, 0.045, 0.44, C.wood, 0, 0.4225);
+  // Un tabouret, dans un coin de la case.
+  for (const x of [-0.06, 0.06]) for (const z of [-0.06, 0.06]) m.box(0.04, 0.24, 0.04, C.dark, x - 0.3, 0.12, z + 0.32);
+  m.box(0.22, 0.035, 0.22, C.wood, -0.3, 0.2575, 0.32);
+  // Un livre ouvert sur la table, reliure au milieu.
+  m.box(0.2, 0.02, 0.16, C.linen, -0.09, 0.4555, 0);
+  m.box(0.2, 0.02, 0.16, C.linen, 0.09, 0.4555, 0);
+  m.box(0.015, 0.028, 0.17, C.iron, 0, 0.459, 0);
+  // Un encrier et sa plume, à l'autre bout du plateau.
+  m.add(new THREE.CylinderGeometry(0.05, 0.06, 0.05, 8), C.dark, 0.24, 0.47, -0.12);
+  m.rod(0.22, 0.53, -0.1, 0.012, 0.16, 0x8a6a4a, 0.6);
+}
+
 function floorDetail(m: Model, wood: boolean): void {
   // Dessins à plat : overlays de zone/intérieur restent au-dessus du sol.
   for (let i = 0; i < (wood ? 5 : 4); i++) {
@@ -281,6 +302,8 @@ export function blueprintKey(kind: number, material: number): string {
     // Matériau pierre imposé (le sim ignore le matériau demandé) : une seule
     // géométrie, quel que soit `material` reçu.
     case BUILD_KIND.Grave: return `feature:${FEATURE.Grave}`;
+    // Matériau bois imposé, même contrat que la tombe : une seule géométrie.
+    case BUILD_KIND.ResearchBench: return `feature:${FEATURE.ResearchBench}`;
     default: return "item:unknown";
   }
 }
@@ -328,6 +351,7 @@ export class PropLibrary {
       case FEATURE.CraftingSpot: bench(m); break;
       case FEATURE.Grave: grave(m, false); break;
       case FEATURE.GraveFilled: grave(m, true); break;
+      case FEATURE.ResearchBench: researchBench(m); break;
       default: m.box(0.3, 0.3, 0.3, C.wood);
     }
     const g = m.finish();

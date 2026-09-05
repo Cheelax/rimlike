@@ -78,6 +78,7 @@ Constructions (posées en plans, matériau réglé par `T`) :
 | L | Lit | 12, bois seulement |
 | F | Feu de camp | 8, bois seulement |
 | A | Poste de fabrication | 10, bois seulement |
+| — | Établi de recherche (bouton, pas de raccourci) | 15, bois seulement |
 | — | Tombe (bouton, pas de raccourci) | 5, pierre seulement |
 
 `T` bascule le matériau (bois/pierre) des murs, portes et sols. Les plans
@@ -97,6 +98,7 @@ côté client.
 |---|---|---|
 | J | Travail | priorités de chaque colon par type de travail (Construire, Livrer, Cuisiner, Désignations, Cultiver, Ranger) : clic pour la priorité suivante, clic droit pour la précédente. 1 = urgent, 4 = en dernier recours, — = jamais. |
 | K | Fabrication | objectif de stock (0 à 20) par arme et par vêtement ; nécessite un poste de fabrication posé sur la carte |
+| R | Recherche | choisir une des cinq technologies ; nécessite un établi de recherche posé sur la carte et un colon dont la priorité Rechercher est active (voir « Recherche » plus bas) |
 | I | Chaleur | colore les cases par température |
 | N | Journal | événements de la partie, filtrables (Tout / Menaces / Colonie) |
 | V | Caravane | former une caravane (seulement dans une colonie du monde partagé, voir §5) |
@@ -162,6 +164,28 @@ tunique (6 cuir, +6 °C ressentis) et manteau (12 cuir, +15 °C). Un colon
 s'équipe automatiquement de la meilleure arme et du meilleur habit
 disponibles en stock ; sous 6 °C de température ambiante, il va chercher un
 vêtement de lui-même.
+
+### Recherche
+
+L'établi de recherche (bouton dédié de la barre d'outils, 15 bois, une case)
+laisse un colon dont la priorité Rechercher est active faire avancer, par
+séances, la technologie choisie au panneau Recherche (touche `R`). Rien n'est
+verrouillé : les cinq technologies sont indépendantes, chacune n'apporte
+qu'un bonus une fois acquise, jamais une condition pour construire ou
+fabriquer quoi que ce soit.
+
+| Technologie | Coût | Effet |
+|---|---|---|
+| Agriculture | 2 000 | cultures : rendement +25 % |
+| Médecine | 2 500 | soins et cicatrisation des pansements 50 % plus vite |
+| Conservation | 2 500 | péremption des vivres divisée par deux |
+| Archerie | 3 000 | portée de tir 10 cases, dégâts +25 % |
+| Maçonnerie | 3 000 | bâtir en pierre 25 % plus vite |
+
+Une seule technologie avance à la fois ; le bouton « Arrêter » du panneau
+libère le colon pour autre chose sans perdre l'avancement déjà fait. Le HUD
+affiche la technologie en cours et son pourcentage tant qu'une recherche est
+lancée, et une notification annonce chaque technologie acquise.
 
 ### Marchands et troc
 
@@ -315,7 +339,6 @@ effacé) est une identité perdue, sans recours simple.
 
 ## 7. Limites connues
 
-Pas encore de recherche ni de relations entre colons ; pas de toits (tout le
-monde est dehors sous l'orage, la chaleur ne se gère pas encore) ; pas de
-compte joueur (identité par jeton local uniquement, sans recouvrement en cas
-de perte).
+Pas encore de relations entre colons ; pas de toits (tout le monde est dehors
+sous l'orage, la chaleur ne se gère pas encore) ; pas de compte joueur
+(identité par jeton local uniquement, sans recouvrement en cas de perte).

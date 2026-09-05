@@ -8,11 +8,13 @@ import { describe, expect, it } from "vitest";
 import {
   APPAREL_NAMES,
   BASE_STOCK_COUNT,
+  BUILD_KIND,
   clampCraftTarget,
   DIFFICULTY_LABELS,
   eventCategory,
   eventLabel,
   FACTION,
+  FEATURE,
   formatEventTime,
   formatInjury,
   formatTemperature,
@@ -32,6 +34,7 @@ import {
   visibleStock,
   WEAPON_NAMES,
   WEATHER_LABELS,
+  WORK_LABELS,
 } from "../src/render/terrain";
 
 describe("eventLabel", () => {
@@ -179,6 +182,30 @@ describe("eventLabel", () => {
     // Contrat avec `sim::EventKind::Buried` (30) : `arg` vaut toujours 0, pas un id.
     expect(eventLabel(30, 0)).toBe("Un mort a été enterré");
     expect(eventLabel(30, 0, { 0: "Alice" })).toBe("Un mort a été enterré");
+  });
+
+  it("nomme la technologie acquise, `arg` étant son numéro et non un id", () => {
+    // Contrat avec `sim::EventKind::ResearchDone` (31) : `arg` suit `sim::research::Tech`.
+    expect(eventLabel(31, 0)).toBe("Agriculture : recherche terminée");
+    expect(eventLabel(31, 4)).toBe("Maçonnerie : recherche terminée");
+    // Un nom connu ne doit pas s'y glisser : ce n'est pas un id de pawn.
+    expect(eventLabel(31, 0, { 0: "Alice" })).toBe("Agriculture : recherche terminée");
+  });
+});
+
+describe("BUILD_KIND et FEATURE : établi de recherche", () => {
+  it("ajoute l'établi de recherche à la suite de la tombe, sans renuméroter le reste", () => {
+    expect(BUILD_KIND.ResearchBench).toBe(7);
+    expect(FEATURE.ResearchBench).toBe(16);
+    expect(BUILD_KIND.Grave).toBe(6);
+    expect(FEATURE.GraveFilled).toBe(15);
+  });
+});
+
+describe("WORK_LABELS", () => {
+  it("porte Rechercher en dernier (`sim::WorkType::Research` = 6)", () => {
+    expect(WORK_LABELS[6]).toBe("Rechercher");
+    expect(WORK_LABELS.length).toBe(7);
   });
 });
 
@@ -338,9 +365,9 @@ describe("eventCategory", () => {
     // WandererJoined, ColonistBreak, LevelUp, RaiderLeft, ColonistRescued,
     // ColonistTended, les deux caravanes, FastForwarded, les deux artisanats,
     // saison, gelée, harde et chasse, largage, coup de froid et canicule,
-    // les quatre événements du marchand, une inhumation : rien de tout ça
-    // n'est une menace.
-    for (const kind of [4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 25, 26, 27, 28, 29, 30]) {
+    // les quatre événements du marchand, une inhumation, une recherche
+    // acquise : rien de tout ça n'est une menace.
+    for (const kind of [4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 25, 26, 27, 28, 29, 30, 31]) {
       expect(eventCategory(kind)).toBe("colony");
     }
   });

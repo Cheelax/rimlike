@@ -178,3 +178,13 @@ export function encodeSetCalendar(dayOfYear: number): Uint8Array {
 export function encodeTrade(give: number, giveCount: number, take: number, takeCount: number): Uint8Array {
   return WasmSim.encode_trade(give, giveCount, take, takeCount);
 }
+
+/**
+ * Technologie cherchée (`sim::research::Tech` : 0 agriculture, 1 médecine,
+ * 2 conservation, 3 archerie, 4 maçonnerie), ou 255 pour ne plus rien
+ * chercher. Une technologie déjà acquise ou un numéro invalide sont ignorés
+ * en silence par le sim.
+ */
+export function encodeSetResearch(tech: number): Uint8Array {
+  return WasmSim.encode_set_research(tech);
+}

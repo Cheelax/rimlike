@@ -417,9 +417,11 @@ Recherche livrée le 2026-09-05 (Opus, sim) : septième type de travail `Researc
 bonus passifs — agriculture (+25 % de pousse), médecine (soins et cicatrisation pansée +50 %),
 conservation (péremption ÷ 2), archerie (portée 10, dégâts +25 %), maçonnerie (pierre −25 % de
 temps) — rien n'est verrouillé derrière la recherche ; `SetResearch` choisit la cible, 10 points
-par tick modulés par humeur et compétence, séances de 600 ticks. Interface à faire (outil Établi
-de recherche, panneau Recherche, colonne Recherche dans les priorités et compétences, événement
-31). À venir : relations, factions PNJ avec réputation, mods de contenu, événements monde.
+par tick modulés par humeur et compétence, séances de 600 ticks. Interface livrée le 2026-09-05
+(Sonnet) : outil Établi de recherche, panneau Recherche (touche R : cinq technologies, barre
+d'avancement, « Arrêter », avertissement sans établi), ligne HUD, événement 31 ; cadence
+corrigée après mesure (voir journal) ; vérifié : Médecine à 31 % après 6 000 ticks d'un
+chercheur. À venir : relations, factions PNJ avec réputation, mods de contenu, événements monde.
 
 ## 7. Risques identifiés
 
@@ -434,6 +436,13 @@ de recherche, panneau Recherche, colonne Recherche dans les priorités et compé
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-05 : cadence de la recherche mesurée, pas devinée. La consigne initiale (10 points par
+  tick, coûts de 2 000 à 3 000) donnait une technologie en trois secondes. L'avancement se
+  compte désormais en centièmes de point (état interne), les coûts et l'affichage en points ;
+  réglage à deux dixièmes de point par tick après deux mesures (un colon seul qui ne fait que
+  chercher : 7 115 ticks à quatre dixièmes, donc ~14 000 à deux dixièmes, soit un peu plus
+  d'une journée), avec un test qui borne la durée entre une demi-journée et trois jours.
 
 - 2026-09-05 : recherche à bonus, pas à verrous. Une technologie améliore ce que la colonie
   sait déjà faire ; rien d'existant n'est bloqué derrière l'établi, ce qui laisse les tests

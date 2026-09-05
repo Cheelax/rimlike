@@ -62,8 +62,13 @@ impl Tech {
         }
     }
 
-    /// Points de recherche à accumuler. À `RESEARCH_STEP` points par tick de
-    /// travail nominal, comptez 200 à 300 ticks de chercheur par technologie.
+    /// Points de recherche à accumuler. À `RESEARCH_STEP` centièmes de point
+    /// par tick de travail nominal, comptez 10 000 à 15 000 ticks de recherche
+    /// effective par technologie, soit un peu plus d'une journée pour un
+    /// colon seul qui part de la compétence zéro, et une à deux journées
+    /// dans une colonie où le chercheur dort, mange et range aussi (mesuré :
+    /// 7 115 ticks à quatre dixièmes de point par tick, d'où deux dixièmes ;
+    /// test `a_tech_takes_a_day_or_two`).
     pub fn cost(self) -> u32 {
         match self {
             Tech::Agriculture => 2_000,
@@ -77,8 +82,14 @@ impl Tech {
 /// aussi ce que `Command::SetResearch` accepte pour tout arrêter.
 pub const NO_TECH: u8 = 255;
 
-/// Points apportés par un tick de recherche à vitesse nominale.
-pub const RESEARCH_STEP: u32 = 10;
+/// Centièmes de point apportés par un tick de recherche à vitesse nominale :
+/// deux dixièmes de point par tick. L'avancement (`ResearchState::progress`)
+/// se compte en centièmes pour rester entier sans perdre la modulation de la
+/// vitesse ; les coûts (`Tech::cost`) et `progress_of` parlent en points.
+pub const RESEARCH_STEP: u32 = 20;
+
+/// Centièmes de point dans un point (`progress` = points × `PROGRESS_SCALE`).
+pub const PROGRESS_SCALE: u32 = 100;
 
 /// Durée d'une séance, en ticks : au bout du compte le chercheur lâche
 /// l'établi, quitte à le reprendre au tick suivant. Ses besoins et le reste de
@@ -113,7 +124,7 @@ pub const ARCHERY_DAMAGE_PERCENT: u32 = 125;
 /// la nominale.
 pub const MASONRY_WORK_PERCENT: u32 = 75;
 
-/// Points de recherche gagnés en un tick. `work_step` est la vitesse de
+/// Centièmes de point gagnés en un tick. `work_step` est la vitesse de
 /// travail du colon en centièmes (`Pawn::work_step`) : humeur, compétence,
 /// bras abîmés et maladie s'y trouvent déjà. Le résultat est entier, et jamais
 /// nul : un éclopé cherche lentement, il ne cherche pas pour rien.
@@ -224,15 +235,21 @@ impl ResearchState {
         self.done[tech as usize]
     }
 
+    /// Avancement en points (l'état interne compte en centièmes).
     pub fn progress_of(&self, tech: Tech) -> u32 {
-        self.progress[tech as usize]
+        self.progress[tech as usize] / PROGRESS_SCALE
+    }
+
+    /// La technologie en cours a-t-elle atteint son coût ?
+    pub fn reached(&self, tech: Tech) -> bool {
+        self.progress[tech as usize] >= tech.cost().saturating_mul(PROGRESS_SCALE)
     }
 
     /// Acquiert une technologie d'un trait. **Pour les tests et les
     /// scénarios** (via `Sim::research_mut`) : en jeu, une technologie
     /// s'obtient en cherchant.
     pub fn complete(&mut self, tech: Tech) {
-        self.progress[tech as usize] = tech.cost();
+        self.progress[tech as usize] = tech.cost().saturating_mul(PROGRESS_SCALE);
         self.done[tech as usize] = true;
         if self.current == tech as u8 {
             self.current = NO_TECH;
@@ -284,7 +301,7 @@ mod tests {
     #[test]
     fn les_bonus_vont_dans_le_bon_sens() {
         assert_eq!(points_for(100), RESEARCH_STEP);
-        assert_eq!(points_for(60), 6);
+        assert_eq!(points_for(60), 12);
         assert_eq!(points_for(0), 1, "un éclopé avance quand même");
         assert_eq!(tend_step(100, false), 100);
         assert_eq!(tend_step(100, true), 150);

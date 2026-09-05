@@ -314,6 +314,28 @@ export class SimHandle implements SimLike {
     this.inner.trade(give, giveCount, take, takeCount);
   }
 
+  // --- Recherche (`crates/sim/src/research.rs`) ---
+
+  /**
+   * Choisit la technologie cherchée (`sim::research::Tech` : 0 agriculture,
+   * 1 médecine, 2 conservation, 3 archerie, 4 maçonnerie), ou 255 pour ne
+   * plus rien chercher. Outil de dev/console, comme `setDifficulty` : en
+   * multi, cette commande doit passer par `encodeSetResearch` puis `issue`,
+   * jamais être appliquée directement.
+   */
+  setResearch(tech: number): void {
+    this.inner.set_research(tech);
+  }
+
+  /**
+   * Où en est la recherche : `[courante, (avancement, coût, acquise) × 5]`,
+   * 16 entiers (`sim::research::Tech::COUNT` = 5). `courante` vaut 255 quand
+   * la colonie ne cherche rien ; voir `apps/client/src/research.ts::decodeResearch`.
+   */
+  researchState(): Uint32Array {
+    return this.inner.research_state();
+  }
+
   // --- Caravanes (docs/protocol.md §12) ---
 
   /**

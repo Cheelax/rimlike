@@ -57,6 +57,13 @@ describe("catalogue de props modulaires", () => {
     library.dispose();
   });
 
+  it("établi de recherche : bois forcé (contrat sim), une seule géométrie quel que soit le matériau demandé", () => {
+    const library = new PropLibrary();
+    expect(blueprintKey(BUILD_KIND.ResearchBench, 0)).toBe(`feature:${FEATURE.ResearchBench}`);
+    expect(blueprintKey(BUILD_KIND.ResearchBench, 0)).toBe(blueprintKey(BUILD_KIND.ResearchBench, 1));
+    library.dispose();
+  });
+
   it("réutilise les instances, ne tronque pas 3000 plans et actualise leurs bornes", () => {
     const library = new PropLibrary(), batch = new PropBatch(library, true);
     const entries = Array.from({ length: 3000 }, (_, i) => ({ key: `feature:${FEATURE.WallWood}`, x: i, z: 0 }));
