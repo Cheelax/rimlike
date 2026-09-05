@@ -463,7 +463,15 @@ défendent ; abattage `Slaughter` ; drapeaux dans le tampon `animals`, jobs 28-2
 38-40. Interface livrée le 2026-09-05 (Sonnet) : boutons Apprivoiser (bête sauvage) et Abattre
 (bête de la colonie), panneau « <Espèce> de la colonie », collier de la couleur de la colonie,
 bétail exclu des comptes de colons, ligne HUD « Bétail : N », jobs 28-29 et événements 38-40 ;
-vérifié : un lapin marqué avec 88 baies en stock est apprivoisé en moins de 20 000 ticks. Marchands itinérants côté serveur
+vérifié : un lapin marqué avec 88 baies en stock est apprivoisé en moins de 20 000 ticks.
+Factions PNJ et réputation livrées le 2026-09-05 (Opus, sim) : trois factions fixes (Clan des
+Cendres et Fraternité du Fer, pillards ; Guilde des Colporteurs, marchands), réputation −100..100
+par faction (départ −20 / −20 / +10), raids attribués à une tribu tirée selon son hostilité (une
+alliée à ≥ 50 n'attaque plus ; deux alliées : plus aucune bande), raid mené −10, raid repoussé +5
+Guilde et +3 tribu rivale, troc +2, marchand frappé −30 ou tué −40, rancunes qui s'estompent de +1
+par jour, passage sous −50 qui avance le prochain raid, Guilde alliée qui vend à 110 %, réputation
+hostile qui éloigne les marchands ; tribut `Gift` prélevé en stockage (valeur / 20) ; événements
+41-43. Interface à faire (panneau Factions, tribut, libellés 41-43). Marchands itinérants côté serveur
 livrés le 2026-09-05 (Opus) : `WORLD_MERCHANTS`
 caravanes PNJ (deux par défaut) qui visent toujours la colonie fondée la plus proche, avancent au
 tick monde comme les caravanes des joueurs, séjournent `MERCHANT_STAY_HOURS` puis repartent ;
@@ -498,6 +506,14 @@ hors du frame), job « bavarde », événements 32-34 ; vérifié : avis mutuels
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-05 : factions PNJ dans le sim, pas encore dans le monde. Trois factions fixes et une
+  réputation par colonie : suffisant pour la boucle « payer sa paix » en solo ; la réputation
+  partagée à l'échelle du globe attendra le serveur monde. `TriggerRaid` ignore l'alliance (outil
+  de débogage, il doit marcher en pleine paix) alors que le refus de visite marchande s'applique
+  aussi à la visite forcée (c'est le refus qu'on veut pouvoir observer). Le prix de vente affiché
+  par `trader_offers` est désormais celui de la colonie (réputation comprise) : le client ne
+  recalcule rien.
 
 - 2026-09-05 : une bête apprivoisée est un pawn de la colonie. `Faction::Colony` ne veut plus dire
   « un colon » : `is_colonist()` (faction colonie **et** aucune espèce) et `is_livestock()`

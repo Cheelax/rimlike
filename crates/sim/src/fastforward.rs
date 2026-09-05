@@ -97,6 +97,15 @@ impl Sim {
         if self.trader_grudge_until > 0 {
             self.trader_grudge_until = self.trader_grudge_until.saturating_add(elapsed);
         }
+        // Les rancunes se sont estompées pendant l'absence, un point par jour
+        // comme si la carte avait tourné (voir `factions::FADE_PER_DAY`) : deux
+        // mois d'oubli valent une réputation remontée à zéro. Le franchissement
+        // d'un seuil est annoncé, comme en temps normal.
+        self.fade_grudges(ticks / TICKS_PER_DAY);
+        // La bande qui campait là est partie avec le reste (`raiders_leave`),
+        // mais personne n'a rien repoussé : le drapeau retombe sans annonce ni
+        // récompense.
+        self.raid_unresolved = false;
         // La météo d'il y a deux mois ne veut plus rien dire : on retire.
         self.weather_until = self.tick;
         self.tick_weather();

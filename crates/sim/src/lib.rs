@@ -19,6 +19,7 @@ pub mod caravan;
 pub mod climate;
 pub mod combat;
 pub mod craft;
+pub mod factions;
 pub mod farm;
 pub mod fastforward;
 pub mod fire;
@@ -50,6 +51,7 @@ pub use build::{Blueprint, BuildKind, Material};
 pub use caravan::{CaravanManifest, MANIFEST_VERSION};
 pub use climate::{Climate, Season, YEAR_DAYS};
 pub use craft::{CraftStage, RECIPES, Recipe};
+pub use factions::{FACTION_COUNT, FactionKind, NpcFaction, Relation};
 pub use farm::Crop;
 pub use fastforward::MAX_FAST_FORWARD;
 pub use fire::Fire;
@@ -201,6 +203,19 @@ pub enum EventKind {
     /// `arg` : son espèce. Elle laisse la même dépouille qu'une bête chassée,
     /// mais n'annonce **pas** `AnimalHunted` : ce n'était pas une chasse.
     Slaughtered = 40,
+    /// La dernière bande entrée a été repoussée : tous ses pillards sont morts
+    /// ou repartis (voir `factions`). `arg` : la tribu qui l'avait menée. La
+    /// Guilde et la tribu rivale y gagnent en réputation ; la colonie, une
+    /// réputation de place forte.
+    RaidRepelled = 41,
+    /// Un tribut vient d'être offert (`Command::Gift`). `arg` : la faction qui
+    /// l'a reçu. Ce qu'il a rapporté se lit dans `Sim::goodwill`.
+    Gift = 42,
+    /// La relation avec une faction a changé de nature : elle a franchi
+    /// `factions::HOSTILE_GOODWILL` ou `factions::ALLY_GOODWILL`, dans un sens
+    /// ou dans l'autre. `arg` : la faction. Le nouveau palier se lit dans
+    /// `Sim::goodwill` (voir `factions::Relation`).
+    RelationChanged = 43,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -370,6 +385,21 @@ pub enum Command {
     /// chasse. Le marquage ne se retire pas : c'est un ordre, pas une zone.
     /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
     Slaughter { animal: u32 },
+    /// Offre un tribut à une faction PNJ (voir `factions`) : `count` unités de
+    /// `kind` sont prélevées en **stockage** et quittent la carte, et la
+    /// réputation monte de leur valeur divisée par
+    /// `factions::GIFT_VALUE_PER_POINT` (au moins un point si la marchandise
+    /// vaut quelque chose). C'est la boucle « payer sa paix » : une tribu à
+    /// laquelle on offre régulièrement finit alliée, et n'attaque plus.
+    /// Refusée — sans un mot, comme `Trade` — si la faction est inconnue, si
+    /// la quantité est nulle, si la colonie est éteinte ou si le stock ne
+    /// couvre pas la demande.
+    /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
+    Gift {
+        faction: u8,
+        kind: ItemKind,
+        count: u32,
+    },
 }
 
 #[derive(Debug)]
@@ -483,6 +513,19 @@ pub struct Sim {
     /// existera. **Champ ajouté en fin de structure** : un vieux snapshot est
     /// refusé net (fin de tampon) plutôt que relu de travers.
     breed_at: livestock::BreedClock,
+    /// Réputation de la colonie auprès des trois factions PNJ, dans l'ordre de
+    /// `factions::FACTIONS` (voir `factions`). **Champs ajoutés en fin de
+    /// structure** : un vieux snapshot est refusé net (fin de tampon) plutôt
+    /// que relu de travers.
+    goodwill: [i32; factions::FACTION_COUNT],
+    /// Tribu qui a mené la dernière bande entrée, ou un id hors bornes tant
+    /// qu'aucune n'est venue (voir `Sim::last_raid_faction`).
+    last_raid_faction: u8,
+    /// Une bande est entrée et son sort n'est pas encore tranché : dès qu'il
+    /// ne reste plus un pillard vivant sur la carte, le storyteller annonce
+    /// `EventKind::RaidRepelled` et remet ce drapeau à faux. Un raid qui en
+    /// recouvre un autre ne donne qu'une annonce, pour le dernier arrivé.
+    raid_unresolved: bool,
 }
 
 impl Sim {
@@ -550,6 +593,11 @@ impl Sim {
             burning: Vec::new(),
             fires_lit: 0,
             breed_at: [0; animals::SPECIES_COUNT],
+            goodwill: factions::START_GOODWILL,
+            // Aucune bande n'est encore venue : l'id ne désigne aucune
+            // faction, et `last_raid_faction()` renvoie `None`.
+            last_raid_faction: u8::MAX,
+            raid_unresolved: false,
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -774,7 +822,10 @@ impl Sim {
                 p.priorities[work as usize] = priority.min(4);
             }
             Command::TriggerRaid => {
-                self.spawn_raid();
+                // Outil de débogage : il ignore les alliances (voir
+                // `Sim::trigger_raid`), sinon il cesserait d'être un outil dès
+                // qu'une tribu devient amie.
+                self.trigger_raid();
             }
             Command::FormCaravan {
                 ref pawns,
@@ -814,6 +865,11 @@ impl Sim {
             Command::Ignite { x, y } => self.ignite_command(x, y),
             Command::Tame { animal, on } => self.set_tame_marked(animal, on),
             Command::Slaughter { animal } => self.set_slaughter_marked(animal),
+            Command::Gift {
+                faction,
+                kind,
+                count,
+            } => self.gift(faction, kind, count),
         }
     }
 

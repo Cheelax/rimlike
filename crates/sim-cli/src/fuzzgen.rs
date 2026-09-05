@@ -10,7 +10,7 @@ use sim::{
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
-pub const VARIANT_COUNT: usize = 24;
+pub const VARIANT_COUNT: usize = 25;
 
 /// Noms des variantes, dans l'ordre choisi par `random_command` (utilisé
 /// pour l'indice renvoyé). Sert uniquement à l'affichage des statistiques.
@@ -39,6 +39,7 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
     "Ignite",
     "Tame",
     "Slaughter",
+    "Gift",
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
@@ -460,8 +461,22 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
         },
         // L'abattoir : refusé sur une bête sauvage et sur tout ce qui n'est
         // pas une bête, accepté sur le troupeau que `Tame` a fini par bâtir.
-        _ => Command::Slaughter {
+        23 => Command::Slaughter {
             animal: random_animal_id(rng, sim),
+        },
+        // Le tribut : factions tirées bien au-delà des trois qui existent (un
+        // id inconnu doit être refusé), genres dans toute la plage (cadavres
+        // compris) et quantités le plus souvent aberrantes — le sim ne doit
+        // rien prélever qu'il n'ait en stock, ni déborder sur le produit
+        // `valeur × quantité`. Quand il tombe juste, il finit par rendre une
+        // tribu alliée : c'est le seul moyen d'éprouver une carte sans raid.
+        _ => Command::Gift {
+            faction: match rng.below(3) {
+                0 => rng.below(256) as u8,
+                _ => rng.below(sim::FACTION_COUNT as u32 + 1) as u8,
+            },
+            kind: ItemKind::from_u8(rng.below(ItemKind::COUNT as u32 + 4) as u8),
+            count: random_count(rng),
         },
     };
     (cmd, variant)
@@ -528,6 +543,24 @@ mod tests {
             seen.iter().all(|&s| s),
             "technologies manquantes : {seen:?}"
         );
+    }
+
+    /// Les trois factions doivent être offrables — sinon une campagne ne
+    /// verrait jamais une tribu s'apaiser.
+    #[test]
+    fn gift_covers_every_faction() {
+        let mut rng = Rng::new(5);
+        let sim = Sim::new(1, 16, 16);
+        let mut seen = [false; sim::FACTION_COUNT];
+        for _ in 0..20_000 {
+            let (cmd, _) = random_command(&mut rng, &sim, 16);
+            if let Command::Gift { faction, .. } = cmd
+                && (faction as usize) < sim::FACTION_COUNT
+            {
+                seen[faction as usize] = true;
+            }
+        }
+        assert!(seen.iter().all(|&s| s), "factions manquantes : {seen:?}");
     }
 
     #[test]

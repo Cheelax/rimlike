@@ -16,6 +16,12 @@
 //! 3. la **composition** du raid : les points achètent des pillards
 //!    (`RAIDER_COST`) puis leur équipement.
 //!
+//! La **bande**, elle, appartient à quelqu'un : chaque raid est mené par l'une
+//! des deux tribus de `factions`, tirée d'autant plus souvent qu'elle vous en
+//! veut, et une tribu alliée n'attaque plus (voir `Sim::draw_raid_faction`).
+//! Si les deux sont alliées, plus aucune bande n'entre — le reste du récit
+//! (maladies, coups de temps, largages, marchands) continue sans elles.
+//!
 //! Le reste du module tient les autres fils du récit : voyageurs, troupeaux,
 //! largages de vivres, maladies et coups de temps. Tout passe par `self.rng`
 //! dans un ordre fixe, et toutes les échéances sont des champs de `Sim` : une
@@ -25,6 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::climate::{COLD_MOOD_TEMP, FREEZING, Season};
 use crate::combat::MAX_RAIDERS;
+use crate::factions;
 use crate::items::ItemKind;
 use crate::map::{Feature, Terrain};
 use crate::pawn::{Faction, Job, NEED_MAX};
@@ -130,6 +137,14 @@ pub const POINTS_PER_RAIDER: u32 = 60;
 
 /// Un assiégeant patiente ce temps-là à son point d'entrée avant de charger.
 pub const SIEGE_TICKS: u64 = 1_200;
+
+/// Représailles d'une tribu qui vient de basculer du côté hostile
+/// (`factions::HOSTILE_GOODWILL`) : le prochain raid est avancé à un tick tiré
+/// dans cette fourchette, soit une demi-journée à deux jours. Il passe par
+/// l'échéance ordinaire, donc par la difficulté : en paisible, personne ne
+/// vient quand même.
+pub const REPRISAL_MIN: u32 = TICKS_PER_DAY / 2;
+pub const REPRISAL_SPAN: u32 = TICKS_PER_DAY * 3 / 2;
 
 /// Un raid qui a coûté un colon accorde ce répit en plus.
 pub const RAID_DEATH_RESPITE: u32 = TICKS_PER_DAY;
@@ -386,6 +401,17 @@ impl Sim {
     /// la colonie sans que le joueur l'ait demandé.
     pub(crate) fn tick_storyteller(&mut self) {
         self.refresh_wealth();
+        // Une fois par jour, les rancunes s'estompent d'un point (voir
+        // `factions::FADE_PER_DAY`). Pas de tirage, pas d'échéance : le
+        // calendrier suffit, et une carte gelée rattrape son retard d'un coup
+        // (`Sim::fast_forward`).
+        if self.tick > 0 && self.tick % u64::from(TICKS_PER_DAY) == 0 {
+            self.fade_grudges(1);
+        }
+        // Le sort de la dernière bande, tranché au tick d'après sa dernière
+        // mort : `remove_dead` tourne à la fin du tick, la carte est donc bien
+        // vide de pillards quand on regarde.
+        self.resolve_raid();
         if self.tick >= self.next_wanderer_at {
             self.spawn_wanderer();
             let three_days = u64::from(TICKS_PER_DAY) * 3;
@@ -427,7 +453,57 @@ impl Sim {
             self.spawn_raid();
         }
         let (min, span) = self.difficulty.raid_delay();
-        self.next_raid_at = self.tick + u64::from(min) + u64::from(self.rng.below(span.max(1)));
+        let next = self.tick + u64::from(min) + u64::from(self.rng.below(span.max(1)));
+        // Le raid qui vient d'entrer a pu faire basculer sa tribu du côté
+        // hostile (`factions::RAID_LED`) et poser des représailles plus
+        // proches : la cadence ordinaire ne les efface pas.
+        self.next_raid_at = if self.next_raid_at > self.tick {
+            self.next_raid_at.min(next)
+        } else {
+            next
+        };
+    }
+
+    /// Avance le prochain raid : une tribu vient de passer sous
+    /// `factions::HOSTILE_GOODWILL` et veut le faire savoir. Elle ne choisit
+    /// pas la date exacte (`REPRISAL_MIN`, `REPRISAL_SPAN`) et ne court-circuite
+    /// pas le storyteller : c'est lui qui décidera de la bande, de sa taille et
+    /// même de son existence (en paisible, personne ne vient).
+    pub(crate) fn plan_reprisal(&mut self) {
+        let delay = u64::from(REPRISAL_MIN) + u64::from(self.rng.below(REPRISAL_SPAN.max(1)));
+        self.next_raid_at = self.next_raid_at.min(self.tick + delay);
+    }
+
+    /// Annonce le sort de la dernière bande entrée, une fois qu'il ne reste
+    /// plus un pillard vivant sur la carte : la Guilde et la tribu rivale y
+    /// gagnent (`factions::RAID_REPELLED_GUILD`, `RAID_REPELLED_OTHER`). Une
+    /// colonie éteinte, elle, n'a rien repoussé : le drapeau retombe sans
+    /// annonce ni récompense.
+    fn resolve_raid(&mut self) {
+        if !self.raid_unresolved {
+            return;
+        }
+        if self
+            .pawns
+            .iter()
+            .any(|p| p.faction == Faction::Raider && p.is_alive())
+        {
+            return;
+        }
+        self.raid_unresolved = false;
+        if self.living_colonists() == 0 {
+            return;
+        }
+        let led_by = self.last_raid_faction;
+        self.push_event(EventKind::RaidRepelled, u32::from(led_by));
+        self.add_goodwill(factions::GUILD, factions::RAID_REPELLED_GUILD);
+        // L'ennemi de mon ennemi : l'autre tribu apprécie qu'on ait saigné
+        // celle d'en face. Rien pour elle si elle menait le raid.
+        for f in factions::FACTIONS {
+            if f.id != led_by && factions::is_tribe(f.id) {
+                self.add_goodwill(f.id, factions::RAID_REPELLED_OTHER);
+            }
+        }
     }
 
     /// Un raid a coûté un colon : la bande suivante se fait attendre un jour
@@ -449,27 +525,87 @@ impl Sim {
 
     /// Fait entrer une bande de pillards d'un genre tiré au sort : la charge
     /// six fois sur dix, les archers un quart du temps, le siège le reste.
-    /// Renvoie le nombre de pillards apparus.
+    /// Renvoie le nombre de pillards apparus. C'est le chemin **naturel**,
+    /// celui du storyteller : aucune bande n'entre si les deux tribus sont
+    /// alliées.
     pub fn spawn_raid(&mut self) -> u32 {
-        let kind = match self.rng.below(100) {
+        let kind = self.draw_raid_kind();
+        self.spawn_raid_of(kind, false)
+    }
+
+    /// Fait entrer une bande tout de suite, genre tiré au sort
+    /// (`Command::TriggerRaid`). **Outil de débogage** : il ignore les
+    /// alliances, sinon il ne serait plus un outil de test dès qu'une tribu
+    /// devient amie. La tribu qui mène est quand même tirée par hostilité,
+    /// alliée comprise, et le raid coûte la même réputation qu'un autre.
+    pub fn trigger_raid(&mut self) -> u32 {
+        let kind = self.draw_raid_kind();
+        self.spawn_raid_of(kind, true)
+    }
+
+    /// Fait entrer une bande d'un genre imposé (tests, débogage). Ignore les
+    /// alliances comme `trigger_raid` ; le storyteller, lui, passe par
+    /// `spawn_raid` et tire son genre.
+    pub fn trigger_raid_of(&mut self, kind: RaidKind) -> u32 {
+        self.spawn_raid_of(kind, true)
+    }
+
+    /// Manière d'aborder la colonie, tirée au sort.
+    fn draw_raid_kind(&mut self) -> RaidKind {
+        match self.rng.below(100) {
             r if r < 60 => RaidKind::Rush,
             r if r < 85 => RaidKind::Archers,
             _ => RaidKind::Siege,
-        };
-        self.spawn_raid_of(kind)
+        }
     }
 
-    /// Fait entrer une bande d'un genre imposé (tests, débogage). Le
-    /// `Command::TriggerRaid` du joueur passe par `spawn_raid` et tire son
-    /// genre ; ici, on choisit.
-    pub fn trigger_raid_of(&mut self, kind: RaidKind) -> u32 {
-        self.spawn_raid_of(kind)
+    /// Tribu qui mène le prochain raid : tirage pondéré par l'hostilité, poids
+    /// `100 − réputation` (une tribu qui vous déteste attaque jusqu'à quatre
+    /// fois plus souvent que celle qui vous tolère). Une tribu **alliée**
+    /// (`factions::ALLY_GOODWILL`) est écartée, sauf pour un raid forcé, où
+    /// elle garde un poids minimal : un outil de débogage doit marcher même sur
+    /// une carte où tout le monde est ami.
+    ///
+    /// `None` : les deux tribus sont alliées et le raid n'est pas forcé —
+    /// personne n'entre. Aucun tirage n'est consommé dans ce cas.
+    fn draw_raid_faction(&mut self, forced: bool) -> Option<u8> {
+        let mut weights = [0u32; factions::FACTION_COUNT];
+        let mut total = 0u32;
+        for f in factions::FACTIONS {
+            if !factions::is_tribe(f.id) {
+                continue;
+            }
+            let goodwill = self.faction_goodwill(f.id);
+            if !forced && goodwill >= factions::ALLY_GOODWILL {
+                continue;
+            }
+            // `goodwill` est borné à ±100 : le poids tient dans 0..=200, et
+            // reste au moins à 1 pour un raid forcé.
+            let weight = (100 - goodwill).clamp(1, 200) as u32;
+            weights[f.id as usize] = weight;
+            total += weight;
+        }
+        if total == 0 {
+            return None;
+        }
+        let mut draw = self.rng.below(total);
+        for (id, &weight) in weights.iter().enumerate() {
+            if draw < weight {
+                return Some(id as u8);
+            }
+            draw -= weight;
+        }
+        // Inatteignable : la somme des poids est exactement `total`.
+        None
     }
 
-    fn spawn_raid_of(&mut self, kind: RaidKind) -> u32 {
+    fn spawn_raid_of(&mut self, kind: RaidKind, forced: bool) -> u32 {
         if self.living_colonists() == 0 {
             return 0;
         }
+        let Some(led_by) = self.draw_raid_faction(forced) else {
+            return 0;
+        };
         let points = self.threat_points();
         // En hiver, ou par n'importe quel temps où un colon aurait froid, les
         // pillards arrivent couverts : leur tunique ne change ni leurs coups ni
@@ -500,6 +636,13 @@ impl Sim {
         if spawned > 0 {
             self.push_event(EventKind::RaidIncoming, kind as u32);
             self.push_event(EventKind::Raid, spawned);
+            self.last_raid_faction = led_by;
+            self.raid_unresolved = true;
+            // Attaquer se paie : la tribu qui mène la bande perd ce qu'elle
+            // vient de prendre par la force. C'est ce qui, raid après raid,
+            // finit par la faire basculer du côté hostile — et par appeler des
+            // représailles.
+            self.add_goodwill(led_by, factions::RAID_LED);
         }
         spawned
     }

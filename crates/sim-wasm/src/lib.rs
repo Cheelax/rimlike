@@ -330,6 +330,22 @@ impl WasmSim {
         self.pending.push(sim::Command::Ignite { x, y });
     }
 
+    /// Offre un tribut à une faction PNJ (0 Clan des Cendres, 1 Fraternité du
+    /// Fer, 2 Guilde des Colporteurs) : `count` unités de `kind`
+    /// (`sim::ItemKind`) sont prélevées en **stockage** et quittent la carte,
+    /// et la réputation monte à proportion de leur valeur. Le sim ignore la
+    /// commande si la faction est inconnue, si la quantité est nulle, si la
+    /// colonie est éteinte ou si le stock ne couvre pas la demande — comme
+    /// `trade` : relire `goodwill()` après coup pour savoir ce qu'elle a
+    /// rapporté.
+    pub fn gift(&mut self, faction: u8, kind: u8, count: u32) {
+        self.pending.push(sim::Command::Gift {
+            faction,
+            kind: ItemKind::from_u8(kind),
+            count,
+        });
+    }
+
     // --- Encodeurs de commandes (lockstep : encoder sans appliquer) ---
     //
     // Fonctions **associées** : le client doit pouvoir encoder avant même
@@ -494,6 +510,15 @@ impl WasmSim {
     /// Met le feu à une case. Voir `ignite`.
     pub fn encode_ignite(x: u32, y: u32) -> Vec<u8> {
         encode(&sim::Command::Ignite { x, y })
+    }
+
+    /// Tribut offert à une faction PNJ. Voir `gift`.
+    pub fn encode_gift(faction: u8, kind: u8, count: u32) -> Vec<u8> {
+        encode(&sim::Command::Gift {
+            faction,
+            kind: ItemKind::from_u8(kind),
+            count,
+        })
     }
 
     /// `work` suit `sim::WorkType`, `priority` : 1 haute … 4 basse, 0 désactivé.
@@ -1039,6 +1064,39 @@ impl WasmSim {
         self.inner.buy_prices().to_vec()
     }
 
+    // --- Factions PNJ et réputation ---
+
+    /// Réputation de la colonie auprès des trois factions PNJ, dans l'ordre
+    /// des ids : 0 Clan des Cendres (pillards), 1 Fraternité du Fer
+    /// (pillards), 2 Guilde des Colporteurs (marchands). Bornée à −100..=100 ;
+    /// sous −50 la faction est hostile, à partir de +50 elle est alliée (voir
+    /// `sim::factions`).
+    pub fn goodwill(&self) -> Vec<i32> {
+        self.inner.goodwill().to_vec()
+    }
+
+    /// Nom d'une faction PNJ, chaîne vide si l'id n'en désigne aucune. Les
+    /// noms vivent dans le sim : le client ne les duplique pas.
+    pub fn faction_name(id: u8) -> String {
+        sim::factions::name(id).to_string()
+    }
+
+    /// Genre d'une faction PNJ : 0 pillards, 1 guilde, −1 si l'id n'en désigne
+    /// aucune.
+    pub fn faction_kind(id: u8) -> i32 {
+        match sim::factions::kind(id) {
+            Some(sim::FactionKind::Raiders) => 0,
+            Some(sim::FactionKind::Guild) => 1,
+            None => -1,
+        }
+    }
+
+    /// Tribu qui a mené la dernière bande entrée, −1 si aucune n'est encore
+    /// venue.
+    pub fn last_raid_faction(&self) -> i32 {
+        self.inner.last_raid_faction().map_or(-1, i32::from)
+    }
+
     /// Nom du colon, du pillard ou du marchand, chaîne vide si l'id est inconnu.
     pub fn pawn_name(&self, id: u32) -> String {
         self.inner
@@ -1376,6 +1434,24 @@ mod tests {
                 // le sim qui décide ce qu'il en fait.
                 WasmSim::encode_set_research(255),
                 Command::SetResearch { tech: 255 },
+            ),
+            (
+                WasmSim::encode_gift(1, ItemKind::Coat as u8, 3),
+                Command::Gift {
+                    faction: 1,
+                    kind: ItemKind::Coat,
+                    count: 3,
+                },
+            ),
+            (
+                // Faction inventée et quantité aberrante : la trame se relit
+                // telle quelle, c'est le sim qui refuse.
+                WasmSim::encode_gift(200, ItemKind::Wood as u8, u32::MAX),
+                Command::Gift {
+                    faction: 200,
+                    kind: ItemKind::Wood,
+                    count: u32::MAX,
+                },
             ),
         ];
         for (bytes, expected) in cases {
@@ -1816,6 +1892,44 @@ mod tests {
             s.inner.stored_totals()[ItemKind::Wood as usize] < 60,
             "le bois n'est pas parti"
         );
+    }
+
+    #[test]
+    fn les_accesseurs_de_reputation_repondent() {
+        let mut s = fresh();
+        assert_eq!(
+            s.goodwill(),
+            sim::factions::START_GOODWILL.to_vec(),
+            "réputation de départ"
+        );
+        assert_eq!(WasmSim::faction_name(0), "Clan des Cendres");
+        assert_eq!(WasmSim::faction_name(1), "Fraternité du Fer");
+        assert_eq!(WasmSim::faction_name(2), "Guilde des Colporteurs");
+        assert_eq!(WasmSim::faction_name(3), "", "id inconnu");
+        assert_eq!(WasmSim::faction_kind(0), 0);
+        assert_eq!(WasmSim::faction_kind(1), 0);
+        assert_eq!(WasmSim::faction_kind(2), 1);
+        assert_eq!(WasmSim::faction_kind(200), -1);
+        assert_eq!(s.last_raid_faction(), -1, "aucune bande encore venue");
+
+        // Une bande entre : la tribu qui la mène est nommée et paie son raid.
+        assert!(s.inner.trigger_raid() > 0, "aucun pillard");
+        let led = s.last_raid_faction();
+        assert!((0..=1).contains(&led), "tribu inconnue : {led}");
+        assert_eq!(
+            s.goodwill()[led as usize],
+            sim::factions::START_GOODWILL[led as usize] + sim::factions::RAID_LED
+        );
+
+        // Le tribut passe par la file comme le reste : rien avant le tick.
+        s.inner.map_mut().set_zone(2, 2, Zone::Stockpile);
+        s.inner.spawn_item(ItemKind::Coat, 4, 2, 2);
+        let before = s.goodwill()[2];
+        s.gift(2, ItemKind::Coat as u8, 4);
+        assert_eq!(s.pending_len(), 1);
+        s.step(1);
+        assert!(s.goodwill()[2] > before, "le tribut n'a rien rapporté");
+        assert_eq!(s.inner.stored_totals()[ItemKind::Coat as usize], 0);
     }
 
     #[test]

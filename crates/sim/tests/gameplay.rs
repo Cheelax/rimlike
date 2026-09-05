@@ -1623,8 +1623,11 @@ fn armed_raiders_drop_weapons() {
     // consomme un tirage de plus à la construction, et le déroulement de la
     // graine 2 a glissé jusqu'à ne plus faire aucun mort. Puis 4 → 6, même
     // jour, même raison : le type de travail Recherche ajoute un tirage de
-    // niveau par colon à la création.)
-    let mut s = Sim::new(6, 32, 32);
+    // niveau par colon à la création. Puis 6 → 8, même jour, même raison :
+    // l'attribution d'un raid à une tribu (`factions`) consomme un tirage de
+    // plus par bande, et sur la graine 6 les deux pillards décrochaient à
+    // temps.)
+    let mut s = Sim::new(8, 32, 32);
     let (bx, by) = s
         .map()
         .nearest_passable(16, 16)

@@ -18,6 +18,15 @@
 //! `Command::Attack` d'un colon, en revanche, annule la visite : il devient
 //! hostile et se bat comme un pillard (`Pawn::is_raider_like`).
 //!
+//! Il appartient à la **Guilde des Colporteurs** (`factions::GUILD`) : ce
+//! qu'on lui fait se retient. Un troc conclu la rapproche
+//! (`factions::TRADE_DONE`), une main levée sur un de ses marchands
+//! (`factions::TRADER_ANGERED`) ou un marchand mort
+//! (`factions::TRADER_KILLED`) l'éloigne. Deux conséquences visibles : elle
+//! vend moins cher à une colonie **alliée** (`ALLY_SELL_NUM`), et elle
+//! n'envoie plus personne tant qu'elle est **hostile** — la rancune de
+//! `TRADER_GRUDGE_EXTRA` espaçait les visites, la réputation les suspend.
+//!
 //! Le troc se fait **en valeur**, pas en monnaie : il n'y a pas d'argent dans
 //! ce jeu. La valeur d'un genre est celle qui sert déjà à la richesse de la
 //! colonie (`ItemKind::wealth_value`, ré-exportée ici en `item_value`) : le
@@ -25,6 +34,7 @@
 //! et la différence est sa marge. La colonie peut toujours payer plus que le
 //! prix demandé, jamais moins.
 
+use crate::factions::{self, Relation};
 use crate::items::{ItemKind, STACK_MAX};
 use crate::path;
 use crate::pawn::{Faction, Job, NEED_MAX, Pawn};
@@ -54,6 +64,10 @@ pub const TRADER_GRUDGE_TICKS: u32 = TICKS_PER_DAY * 15;
 /// Prix de vente = valeur × `SELL_NUM` / `SELL_DEN`, arrondi vers le bas.
 pub const SELL_NUM: u32 = 12;
 pub const SELL_DEN: u32 = 10;
+/// Numérateur de vente pour une colonie **alliée** de la Guilde
+/// (`factions::ALLY_GOODWILL`) : 110 % au lieu de 120 %. La marge d'achat, elle,
+/// ne bouge pas — un allié est mieux servi, pas subventionné.
+pub const ALLY_SELL_NUM: u32 = 11;
 /// Prix d'achat = valeur × `BUY_NUM` / `BUY_DEN`, arrondi vers le bas.
 pub const BUY_NUM: u32 = 7;
 pub const BUY_DEN: u32 = 10;
@@ -111,9 +125,16 @@ pub fn item_value(kind: ItemKind) -> u32 {
 
 /// Prix auquel le marchand **vend** une unité : plus cher que sa valeur.
 /// Jamais zéro, sinon un genre sans valeur (le cadavre) se donnerait à la
-/// pelle.
+/// pelle. C'est le tarif de base, celui d'une colonie ordinaire : le prix
+/// réellement demandé passe par `Sim::sell_price`, qui tient compte de la
+/// réputation.
 pub fn value_sell(kind: ItemKind) -> u32 {
-    (item_value(kind) * SELL_NUM / SELL_DEN).max(1)
+    sell_price_with(kind, SELL_NUM)
+}
+
+/// Prix de vente à un numérateur donné (`SELL_NUM` ou `ALLY_SELL_NUM`).
+pub fn sell_price_with(kind: ItemKind, num: u32) -> u32 {
+    (item_value(kind) * num / SELL_DEN).max(1)
 }
 
 /// Prix auquel le marchand **achète** une unité : moins cher que sa valeur.
@@ -134,6 +155,18 @@ impl Sim {
         self.trader_index().map(|k| &self.pawns[k])
     }
 
+    /// Prix auquel le marchand présent vend une unité : `value_sell`, ou
+    /// `ALLY_SELL_NUM` si la colonie est alliée de la Guilde. C'est ce prix-là
+    /// que `Command::Trade` exige et que `trader_offers` affiche.
+    pub fn sell_price(&self, kind: ItemKind) -> u32 {
+        let num = if self.relation(factions::GUILD) == Relation::Ally {
+            ALLY_SELL_NUM
+        } else {
+            SELL_NUM
+        };
+        sell_price_with(kind, num)
+    }
+
     /// Ce que le marchand propose : genre, quantité, **prix unitaire de
     /// vente**. Vide s'il n'y a personne à qui parler.
     pub fn trader_offers(&self) -> Vec<(ItemKind, u32, u32)> {
@@ -143,7 +176,7 @@ impl Sim {
         p.wares
             .iter()
             .filter(|&&(_, count)| count > 0)
-            .map(|&(kind, count)| (kind, count, value_sell(kind)))
+            .map(|&(kind, count)| (kind, count, self.sell_price(kind)))
             .collect()
     }
 
@@ -211,6 +244,14 @@ impl Sim {
     /// idées, pas de quoi prendre une colonie.
     pub(crate) fn spawn_trader(&mut self) -> Option<u32> {
         if self.trader_on_map() {
+            return None;
+        }
+        // La Guilde hostile n'envoie personne se faire égorger : le refus vaut
+        // aussi pour `trigger_trader_visit`, comme les autres refus de cette
+        // fonction (marchand déjà là, colonie éteinte, aucun bord). C'est
+        // l'inverse du choix fait pour `TriggerRaid`, et pour la même raison :
+        // ici, ne pas venir *est* le comportement à pouvoir observer.
+        if self.relation(factions::GUILD) == Relation::Hostile {
             return None;
         }
         let center = self.colony_center()?;
@@ -337,6 +378,7 @@ impl Sim {
         self.pawns[k].job = Job::Idle;
         let id = self.pawns[k].id;
         self.push_event(EventKind::TraderAngered, id);
+        self.add_goodwill(factions::GUILD, factions::TRADER_ANGERED);
     }
 
     /// Le marchand est mort sur la carte : ses marchandises tombent au sol —
@@ -346,6 +388,7 @@ impl Sim {
         let wares = p.wares.clone();
         self.scatter_goods(at, &wares);
         self.push_event(EventKind::TraderDied, p.id);
+        self.add_goodwill(factions::GUILD, factions::TRADER_KILLED);
         self.trader_grudge_until = self.tick + u64::from(TRADER_GRUDGE_TICKS);
         self.next_trader_at = self
             .next_trader_at
@@ -385,7 +428,7 @@ impl Sim {
         // En `u64` : les deux quantités sont déjà bornées par les stocks, mais
         // un produit de `u32` n'a pas à dépendre de cette garantie.
         let paid = u64::from(value_buy(give)) * u64::from(give_count);
-        let cost = u64::from(value_sell(take)) * u64::from(take_count);
+        let cost = u64::from(self.sell_price(take)) * u64::from(take_count);
         if paid < cost {
             return;
         }
@@ -398,6 +441,8 @@ impl Sim {
         self.remove_ware(k, take, take_count);
         self.scatter_goods(tile, &[(take, take_count)]);
         self.push_event(EventKind::TradeDone, take as u32);
+        // Un client est un client : la Guilde s'en souvient.
+        self.add_goodwill(factions::GUILD, factions::TRADE_DONE);
     }
 
     /// Ce que le marchand a de ce genre.
