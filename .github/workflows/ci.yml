@@ -80,18 +80,22 @@ jobs:
         run: docker build -f apps/server/Dockerfile -t rimlike-server:ci .
       - name: Démarrer le conteneur
         run: |
-          docker run -d --rm -p 8787:8787 -e WORLD_SUBDIVISIONS=2 -e WORLD_PERSIST=0 --name rimlike-ci rimlike-server:ci
+          docker run -d -p 8787:8787 -e WORLD_SUBDIVISIONS=2 -e WORLD_PERSIST=0 --name rimlike-ci rimlike-server:ci
+          sleep 2
+          docker ps -a --filter name=rimlike-ci
+          docker logs rimlike-ci || true
       - name: Attendre /health
         run: |
           for i in $(seq 1 20); do
             if curl -fsS http://127.0.0.1:8787/health; then echo; exit 0; fi
             sleep 1
           done
-          docker logs rimlike-ci
+          docker logs rimlike-ci || true
+          docker inspect rimlike-ci --format 'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} err={{.State.Error}}' || true
           exit 1
       - name: Vérifier /world
         run: |
           curl -fsS -o /dev/null -w 'world %{http_code} %{size_download} octets\n' http://127.0.0.1:8787/world
       - name: Arrêter le conteneur
         if: always()
-        run: docker stop rimlike-ci || true
+        run: docker rm -f rimlike-ci || true
