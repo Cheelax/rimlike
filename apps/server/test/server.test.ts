@@ -8,7 +8,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 
+import { movementCost } from "@rimlike/world";
+
 import { startServer, type RunningServer } from "../src/server.js";
+import { DEFAULT_WORLD_SEED, DEFAULT_WORLD_SUBDIVISIONS, sharedWorld } from "../src/world.js";
 import { TestClient, assertContiguous, bytes, commandOrder } from "./helpers.js";
 
 let server: RunningServer;
@@ -52,18 +55,147 @@ describe("santé", () => {
     };
     const response = await fetch(`http://127.0.0.1:${server.port}/health`);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, rooms: 0, connections: 0, world, limits, persistence });
+    expect(await response.json()).toEqual({
+      ok: true,
+      rooms: 0,
+      roomsByState: { lobby: 0, running: 0, desynced: 0 },
+      connections: 0,
+      world,
+      limits,
+      persistence,
+    });
 
     const alice = await connect();
     alice.send({ type: "join", room: "demo", name: "alice" });
     await alice.next("welcome");
     const second = await fetch(`http://127.0.0.1:${server.port}/health`);
-    expect(await second.json()).toEqual({ ok: true, rooms: 1, connections: 1, world, limits, persistence });
+    expect(await second.json()).toEqual({
+      ok: true,
+      rooms: 1,
+      roomsByState: { lobby: 1, running: 0, desynced: 0 },
+      connections: 1,
+      world,
+      limits,
+      persistence,
+    });
   });
 
   it("renvoie 404 ailleurs", async () => {
     const response = await fetch(`http://127.0.0.1:${server.port}/autre`);
     expect(response.status).toBe(404);
+  });
+});
+
+describe("découverte des salles (GET /rooms)", () => {
+  it("liste les salles ouvertes, lobbies d'abord puis par nom, avec CORS et sans cache", async () => {
+    const alice = await connect();
+    alice.send({ type: "join", room: "zzz-en-jeu", name: "alice" });
+    await alice.next("welcome");
+    alice.send({ type: "start", seed: 1, width: 32, height: 32 });
+    await alice.next("start");
+
+    const bob = await connect();
+    bob.send({ type: "join", room: "aaa-en-attente", name: "bob" });
+    await bob.next("welcome");
+
+    const response = await fetch(`http://127.0.0.1:${server.port}/rooms`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+
+    const body = (await response.json()) as { rooms: Array<Record<string, unknown>>; truncated: boolean };
+    expect(body.truncated).toBe(false);
+    // Lobbies d'abord malgré l'ordre alphabétique inverse des deux noms.
+    expect(body.rooms.map((r) => r.name)).toEqual(["aaa-en-attente", "zzz-en-jeu"]);
+
+    const lobbyRoom = body.rooms.find((r) => r.name === "aaa-en-attente")!;
+    expect(lobbyRoom).toMatchObject({ state: "lobby", players: 1, maxPlayers: 4, tick: 0, isTile: false });
+    expect(lobbyRoom.tile).toBeUndefined();
+    expect(lobbyRoom.seed).toBeUndefined();
+    expect(typeof lobbyRoom.createdAt).toBe("number");
+
+    const runningRoom = body.rooms.find((r) => r.name === "zzz-en-jeu")!;
+    expect(runningRoom).toMatchObject({ state: "running", players: 1, maxPlayers: 4, seed: 1, isTile: false });
+  });
+
+  it("liste une colonie fondée avec isTile, tile et ownerName résolu, sans le moindre secret", async () => {
+    const globe = sharedWorld(DEFAULT_WORLD_SUBDIVISIONS, DEFAULT_WORLD_SEED);
+    const landTile = globe.tiles.findIndex((tile) => movementCost(tile.biome) !== null);
+
+    const alice = await connect();
+    alice.send({ type: "world_join", name: "alice" });
+    await alice.next("world_welcome");
+    alice.send({ type: "settle", tile: landTile });
+    const settled = await alice.next("settled");
+    alice.send({ type: "join", room: settled.room, name: "alice" });
+    await alice.next("welcome");
+
+    const body = (await (await fetch(`http://127.0.0.1:${server.port}/rooms`)).json()) as {
+      rooms: Array<Record<string, unknown>>;
+    };
+    const tileRoom = body.rooms.find((r) => r.name === settled.room)!;
+    expect(tileRoom).toBeDefined();
+    expect(tileRoom).toMatchObject({
+      isTile: true,
+      tile: landTile,
+      ownerName: "alice",
+      seed: settled.seed,
+      state: "lobby",
+    });
+    // Aucun secret : ni jeton, ni clé de joueur, seulement le nom résolu.
+    expect(JSON.stringify(tileRoom)).not.toMatch(/token|owner"/);
+  });
+
+  it("filtre par état (?state=) et par nom (?q=, insensible à la casse)", async () => {
+    const alice = await connect();
+    alice.send({ type: "join", room: "salle-un", name: "alice" });
+    await alice.next("welcome");
+
+    const bob = await connect();
+    bob.send({ type: "join", room: "salle-deux", name: "bob" });
+    await bob.next("welcome");
+    bob.send({ type: "start", seed: 1, width: 32, height: 32 });
+    await bob.next("start");
+
+    const onlyLobby = (await (await fetch(`http://127.0.0.1:${server.port}/rooms?state=lobby`)).json()) as {
+      rooms: Array<{ name: string }>;
+    };
+    expect(onlyLobby.rooms.map((r) => r.name)).toEqual(["salle-un"]);
+
+    const onlyRunning = (await (await fetch(`http://127.0.0.1:${server.port}/rooms?state=running`)).json()) as {
+      rooms: Array<{ name: string }>;
+    };
+    expect(onlyRunning.rooms.map((r) => r.name)).toEqual(["salle-deux"]);
+
+    const byQuery = (await (await fetch(`http://127.0.0.1:${server.port}/rooms?q=DEUX`)).json()) as {
+      rooms: Array<{ name: string }>;
+    };
+    expect(byQuery.rooms.map((r) => r.name)).toEqual(["salle-deux"]);
+  });
+
+  it("tronque à maxListedRooms, en ne gardant que les salles les plus récemment créées", async () => {
+    const guarded = await startServer({ port: 0, log: () => {}, maxListedRooms: 2 });
+    const guardedClients: TestClient[] = [];
+    try {
+      for (const name of ["r1", "r2", "r3"]) {
+        const client = await TestClient.connect(guarded.url);
+        guardedClients.push(client);
+        client.send({ type: "join", room: name, name: "p" });
+        await client.next("welcome");
+      }
+      const body = (await (await fetch(`http://127.0.0.1:${guarded.port}/rooms`)).json()) as {
+        rooms: Array<{ name: string }>;
+        truncated: boolean;
+      };
+      expect(body.truncated).toBe(true);
+      // r1 est la plus ancienne, donc la première évincée.
+      expect(body.rooms.map((r) => r.name)).toEqual(["r2", "r3"]);
+    } finally {
+      for (const client of guardedClients) {
+        client.close();
+      }
+      await guarded.close();
+    }
   });
 });
 
@@ -307,15 +439,22 @@ describe("garde-fous avant hébergement public", () => {
   });
 
   it("signale un dépassement de débit sans fermer sur une simple rafale", async () => {
-    const guarded = await startServer({ port: 0, log: () => {}, maxMessagesPerSecond: 10 });
+    // Horloge fausse figée : le limiteur de débit lit `now()` à chaque
+    // message reçu (`docs/protocol.md` §2, « Limites »), mais elle ne bouge
+    // jamais ici. L'écart `now - overLimitSince` reste donc mathématiquement
+    // nul, quel que soit le temps réel que ce test met à s'exécuter — plus
+    // besoin d'un vrai délai pour être sûr que la connexion ne se ferme pas.
+    const guarded = await startServer({ port: 0, log: () => {}, maxMessagesPerSecond: 10, now: () => 0 });
     try {
       const alice = await TestClient.connect(guarded.url);
       for (let i = 0; i < 30; i += 1) {
         alice.send({ type: "ping" });
       }
       await alice.waitUntil("rate_limited signalé", () => alice.ofType("error").some((entry) => entry.code === "rate_limited"));
-      // Une rafale ponctuelle ne fait pas fermer la connexion.
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      // Laisse les messages en vol se traiter ; l'assertion qui suit ne
+      // dépend plus de cette durée pour être vraie (voir l'horloge figée
+      // ci-dessus), seulement du temps de traiter la rafale déjà envoyée.
+      await new Promise((resolve) => setTimeout(resolve, 20));
       expect(alice.closed).toBe(false);
     } finally {
       await guarded.close();
@@ -323,25 +462,33 @@ describe("garde-fous avant hébergement public", () => {
   });
 
   it("ferme la connexion après un dépassement de débit soutenu 3 s", async () => {
-    const guarded = await startServer({ port: 0, log: () => {}, maxMessagesPerSecond: 10 });
+    // Horloge fausse qui avance de 50 ms virtuelles à chaque appel (donc à
+    // chaque message vu par le serveur) : deux fois le débit autorisé sur la
+    // fenêtre d'une seconde, ce qui maintient le dépassement en continu, et
+    // de quoi couvrir RATE_CLOSE_AFTER_MS (3 s, `docs/protocol.md` §2) en une
+    // poignée de messages plutôt qu'en attendant 3 vraies secondes — c'est
+    // cette attente réelle qui rendait le test fragile sous charge machine.
+    let fakeNow = 0;
+    const guarded = await startServer({
+      port: 0,
+      log: () => {},
+      maxMessagesPerSecond: 10,
+      now: () => (fakeNow += 50),
+    });
     try {
       const alice = await TestClient.connect(guarded.url);
-      // 50 msg/s, très au-dessus de la limite, en continu.
-      const interval = setInterval(() => {
+      // 80 × 50 ms virtuelles = 4 s, confortablement au-delà des 3 s requises.
+      for (let i = 0; i < 80; i += 1) {
         if (!alice.closed) {
           alice.send({ type: "ping" });
         }
-      }, 20);
-      try {
-        await alice.waitUntil("fermeture pour dépassement soutenu", () => alice.closed, 6000);
-      } finally {
-        clearInterval(interval);
       }
+      await alice.waitUntil("fermeture pour dépassement soutenu", () => alice.closed);
       expect(alice.ofType("error").some((entry) => entry.code === "rate_limited")).toBe(true);
     } finally {
       await guarded.close();
     }
-  }, 8000);
+  });
 
   it("refuse la (N+1)-ième connexion d'une même IP, laisse les autres ouvertes", async () => {
     const guarded = await startServer({ port: 0, log: () => {}, maxConnectionsPerIp: 2 });

@@ -12,9 +12,34 @@ Concrètement, un seul processus expose sur un port HTTP/WebSocket unique :
 - `GET /health` — diagnostic (salles ouvertes, état du globe, persistance).
 - `GET /world` — géométrie complète du globe (`WorldWire`), gzippée, mise en
   cache une heure côté client, jamais régénérée côté client.
+- `GET /rooms` — liste des salles ouvertes (lobby, en jeu, désynchronisées),
+  pour un écran « parties en cours » avant même de rejoindre. Voir plus bas.
 - l'upgrade WebSocket — lobby de salles (une carte, lockstep) et couche monde
   (rejoindre le globe, fonder/visiter/abandonner une colonie, faire voyager
   une caravane).
+
+## `GET /rooms` — découverte des salles
+
+Détail complet du format et des invariants : `docs/protocol.md` §2,
+« Découverte des salles ». En bref :
+
+```
+GET /rooms                → toutes les salles (au plus 200, les plus récentes)
+GET /rooms?state=lobby    → uniquement celles qui attendent des joueurs
+GET /rooms?q=alice        → recherche insensible à la casse sur le nom
+```
+
+Réponse : `{ rooms: [...], truncated: boolean }`, triée lobbies d'abord puis
+par nom. Une salle « case » du monde (`tile-<id>`) porte en plus `isTile: true`,
+`tile` et `ownerName` (le nom d'affichage résolu de la colonie — jamais la clé
+du propriétaire ni un jeton : cette liste ne transporte aucun secret). Sans
+cache (`Cache-Control: no-store`, contrairement à `GET /world`) : cette liste
+change à chaque `join`/`leave`/`start`. Le nombre de salles renvoyées est
+plafonné par `maxListedRooms` de `ServerOptions` (200 par défaut, pas de
+variable d'environnement dédiée) ; `truncated` signale le dépassement, et le
+filtrage (`state`/`q`) s'applique **après** cette troncature — un serveur qui
+héberge plus de 200 salles n'en laisse jamais deviner le nombre réel par ce
+chemin. `GET /health` porte le résumé correspondant (`roomsByState`).
 
 ## Variables d'environnement
 

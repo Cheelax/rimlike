@@ -175,12 +175,28 @@ describe("WorldStore : écriture et lecture", () => {
 describe("WorldStore : débounce", () => {
   it("n'écrit qu'une fois pour trois scheduleSave() rapprochés", async () => {
     const file = join(dir, "world-state.json");
+    // Horloge de planification fausse (`schedule`) : le test déclenche
+    // lui-même le minuteur au lieu d'attendre un vrai `setTimeout` plus
+    // longtemps que `debounceMs` en espérant que la machine n'était pas trop
+    // chargée — c'est exactement ce qui rendait ce test occasionnellement
+    // fragile (un délai de 80 ms pour un débounce de 20 ms).
+    let scheduledMs: number | null = null;
+    let fire: (() => void) | null = null;
+    let cancelCount = 0;
     const store = new WorldStore({
       file,
       worldSeed: DEFAULT_WORLD_SEED,
       subdivisions: SUBDIVISIONS,
       debounceMs: 20,
       log: () => {},
+      schedule: (callback, ms) => {
+        scheduledMs = ms;
+        fire = callback;
+        return () => {
+          cancelCount += 1;
+          fire = null;
+        };
+      },
     });
     let writes = 0;
     const realSave = store.save.bind(store);
@@ -195,9 +211,19 @@ describe("WorldStore : débounce", () => {
     store.scheduleSave(state);
     store.scheduleSave(state);
 
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    // Les deux premiers minuteurs ont été annulés par l'appel suivant : un
+    // seul reste programmé, avec le bon délai.
+    expect(cancelCount).toBe(2);
+    expect(scheduledMs).toBe(20);
+    expect(fire).not.toBeNull();
+
+    fire!();
+    // `save` reste asynchrone (écriture disque réelle) : on attend son
+    // résultat observable (`lastSavedAt`), pas seulement le déclenchement du
+    // minuteur, sans quoi la lecture de `writes` pourrait devancer la fin de
+    // l'écriture.
+    await until("écriture terminée", () => store.lastSavedAt !== null);
     expect(writes).toBe(1);
-    expect(store.lastSavedAt).not.toBeNull();
     expect((await stat(file)).isFile()).toBe(true);
   });
 });

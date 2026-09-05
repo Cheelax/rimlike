@@ -54,6 +54,25 @@ const SUPPORTED_WORLD_STATE_FILE_VERSIONS = [1, 2] as const;
 /** Délai de débounce par défaut entre deux écritures, en millisecondes. */
 export const SAVE_DEBOUNCE_MS = 2000;
 
+/** Annule un minuteur programmé par `ScheduleTimeout`, avant qu'il ne se déclenche. */
+export type CancelTimeout = () => void;
+
+/**
+ * Démarre un minuteur à usage unique qui appelle `callback` après `ms`
+ * millisecondes, et renvoie de quoi l'annuler (même schéma que `ClockStarter`
+ * dans `room.ts`). Défaut : `setTimeout`/`clearTimeout` réels. Injectable pour
+ * rendre le débounce de `scheduleSave` déterministe dans un test : plutôt que
+ * de dormir plus longtemps que `debounceMs` en espérant que la machine n'était
+ * pas trop chargée, le test déclenche lui-même le minuteur au moment voulu.
+ */
+export type ScheduleTimeout = (callback: () => void, ms: number) => CancelTimeout;
+
+const defaultScheduleTimeout: ScheduleTimeout = (callback, ms) => {
+  const handle = setTimeout(callback, ms);
+  handle.unref?.();
+  return () => clearTimeout(handle);
+};
+
 /**
  * Chemin par défaut de `WORLD_STATE_FILE` : `apps/server/data/world-state.json`,
  * résolu depuis ce module (et non depuis le répertoire courant du processus,
@@ -94,6 +113,11 @@ export interface WorldStoreOptions {
   readonly log?: (line: string) => void;
   /** Délai de débounce, injectable pour les tests. Défaut : `SAVE_DEBOUNCE_MS`. */
   readonly debounceMs?: number;
+  /**
+   * Planificateur du minuteur de débounce, injectable pour des tests
+   * déterministes (voir `ScheduleTimeout`). Défaut : `setTimeout`/`clearTimeout` réels.
+   */
+  readonly schedule?: ScheduleTimeout;
 }
 
 /**
@@ -138,8 +162,9 @@ export class WorldStore {
   private readonly now: () => number;
   private readonly log: (line: string) => void;
   private readonly debounceMs: number;
+  private readonly schedule: ScheduleTimeout;
 
-  private timer: NodeJS.Timeout | null = null;
+  private cancelTimer: CancelTimeout | null = null;
   private pendingState: WorldState | null = null;
   private lastSavedAtValue: number | null = null;
 
@@ -150,6 +175,7 @@ export class WorldStore {
     this.now = options.now ?? Date.now;
     this.log = options.log ?? ((line) => console.error(line));
     this.debounceMs = options.debounceMs ?? SAVE_DEBOUNCE_MS;
+    this.schedule = options.schedule ?? defaultScheduleTimeout;
   }
 
   /** Date de la dernière écriture réussie, `null` si aucune n'a encore eu lieu. */
@@ -264,26 +290,21 @@ export class WorldStore {
    */
   scheduleSave(state: WorldState): void {
     this.pendingState = state;
-    if (this.timer !== null) {
-      clearTimeout(this.timer);
-    }
-    this.timer = setTimeout(() => {
-      this.timer = null;
+    this.cancelTimer?.();
+    this.cancelTimer = this.schedule(() => {
+      this.cancelTimer = null;
       const toSave = this.pendingState;
       this.pendingState = null;
       if (toSave !== null) {
         void this.save(toSave);
       }
     }, this.debounceMs);
-    this.timer.unref?.();
   }
 
   /** Annule une écriture programmée non encore déclenchée, sans rien écrire. */
   private cancelScheduled(): void {
-    if (this.timer !== null) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
+    this.cancelTimer?.();
+    this.cancelTimer = null;
     this.pendingState = null;
   }
 

@@ -138,7 +138,7 @@ export class Room {
   readonly name: string;
   private readonly tickRate: number;
   private readonly bundleTicks: number;
-  private readonly maxPlayers: number;
+  private readonly maxPlayersLimit: number;
   private readonly now: () => number;
   private readonly startClock: ClockStarter;
   private readonly log: (line: string) => void;
@@ -146,6 +146,15 @@ export class Room {
   private readonly onSnapshot: ((snapshot: RoomSnapshotReport) => void) | null;
   private readonly onHostReady: ((hostId: PlayerId) => void) | null;
   private readonly snapshotEveryTicks: number;
+  /**
+   * Horodatage de création de cet **objet** salle (`this.now()`), pour
+   * `GET /rooms` (`docs/protocol.md` §2, « Découverte des salles »). Pour une
+   * salle « case » toujours colonisée, le serveur préfère la date de
+   * fondation de la colonie (`Settlement.createdAt`, stable à travers les
+   * réouvertures) : ce champ ne sert alors que de repli si la colonie a été
+   * abandonnée pendant que la salle restait peuplée.
+   */
+  private readonly createdAtValue: number;
 
   private readonly players: RoomPlayer[] = [];
   private readonly history: BundleHistory;
@@ -156,7 +165,7 @@ export class Room {
   private hostId: PlayerId | null = null;
   private roomState: RoomState = "lobby";
   private stopClock: StopClock | null = null;
-  private seed: number | null = null;
+  private mapSeed: number | null = null;
   private width: number | null = null;
   private height: number | null = null;
   /** Snapshot d'ouverture, servi au premier joueur puis oublié. */
@@ -182,8 +191,9 @@ export class Room {
     this.name = options.name;
     this.tickRate = options.tickRate ?? TICK_RATE;
     this.bundleTicks = options.bundleTicks ?? BUNDLE_TICKS;
-    this.maxPlayers = options.maxPlayers ?? MAX_PLAYERS;
+    this.maxPlayersLimit = options.maxPlayers ?? MAX_PLAYERS;
     this.now = options.now ?? Date.now;
+    this.createdAtValue = this.now();
     this.startClock = options.startClock ?? defaultClock;
     this.log = options.log ?? ((line) => console.log(line));
     this.tile = options.tile ?? null;
@@ -198,7 +208,7 @@ export class Room {
 
     if (this.tile !== null) {
       // La graine d'une case est imposée : le `start` de l'hôte ne la choisit pas.
-      this.seed = this.tile.seed;
+      this.mapSeed = this.tile.seed;
     }
     if (options.restore !== undefined) {
       if (this.tile === null) {
@@ -233,16 +243,37 @@ export class Room {
     return this.players.length;
   }
 
+  /** Joueurs tolérés dans cette salle, pour `GET /rooms` (`docs/protocol.md` §2). */
+  get maxPlayers(): number {
+    return this.maxPlayersLimit;
+  }
+
   get isEmpty(): boolean {
     return this.players.length === 0;
   }
 
   get isFull(): boolean {
-    return this.players.length >= this.maxPlayers;
+    return this.players.length >= this.maxPlayersLimit;
   }
 
   get host(): PlayerId | null {
     return this.hostId;
+  }
+
+  /**
+   * Graine de la carte, `null` tant qu'une salle simple n'a pas démarré (une
+   * salle « case » la connaît dès la construction, imposée par le serveur
+   * monde). Pas un secret : elle part de toute façon dans `start` à tous les
+   * joueurs de la salle (`docs/protocol.md` §3.2) ; exposée aussi par
+   * `GET /rooms`.
+   */
+  get seed(): number | null {
+    return this.mapSeed;
+  }
+
+  /** Horodatage de création de cet objet salle. Voir `createdAtValue`. */
+  get createdAt(): number {
+    return this.createdAtValue;
   }
 
   /** Période d'émission d'un bundle, en millisecondes réelles. */
@@ -277,8 +308,8 @@ export class Room {
       players: this.playerList(),
       state: this.roomState,
       tick: this.tick,
-      ...(this.seed !== null && this.width !== null && this.height !== null
-        ? { seed: this.seed, width: this.width, height: this.height }
+      ...(this.mapSeed !== null && this.width !== null && this.height !== null
+        ? { seed: this.mapSeed, width: this.width, height: this.height }
         : {}),
     });
     this.log(`[${this.name}] joueur ${player.id} (${name}) rejoint — ${this.players.length} présent(s)`);
@@ -461,7 +492,7 @@ export class Room {
     // Dans une salle « case », la graine appartient à la case : le `seed`
     // annoncé par l'hôte est ignoré et c'est celui du serveur qui est diffusé.
     const effectiveSeed = this.tile === null ? seed : this.tile.seed;
-    this.seed = effectiveSeed;
+    this.mapSeed = effectiveSeed;
     this.width = width;
     this.height = height;
     this.roomState = "running";

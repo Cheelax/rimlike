@@ -85,6 +85,94 @@ raisonnables :
 que le nombre de connexions ouvertes (`connections`), en plus des champs déjà
 documentés ci-dessus.
 
+### Découverte des salles
+
+Avant même de rejoindre quoi que ce soit, un client peut lister les salles
+déjà ouvertes sur ce serveur — utile pour un écran d'accueil « parties en
+cours », en salle simple comme en salle « case » du monde (§11). Ce n'est
+qu'une liste de lecture : aucune commande, aucun état de jeu, rien qui passe
+par le lockstep ou par le monde (`world_join` n'est pas nécessaire).
+
+```
+GET /rooms
+GET /rooms?state=lobby
+GET /rooms?q=alice
+→ 200
+{
+  "rooms": [
+    {
+      "name": "demo",
+      "state": "lobby",
+      "players": 1,
+      "maxPlayers": 4,
+      "tick": 0,
+      "isTile": false,
+      "createdAt": 1757000000000
+    },
+    {
+      "name": "tile-1732",
+      "state": "running",
+      "players": 2,
+      "maxPlayers": 4,
+      "tick": 1806,
+      "isTile": true,
+      "tile": 1732,
+      "ownerName": "alice",
+      "seed": 2007225770,
+      "createdAt": 1757000000000
+    }
+  ],
+  "truncated": false
+}
+Content-Type: application/json; charset=utf-8
+Access-Control-Allow-Origin: *
+Cache-Control: no-store
+```
+
+- **Triées lobbies d'abord, puis par nom** : une salle qui attend encore des
+  joueurs se distingue d'un coup d'œil d'une partie déjà en cours.
+- `isTile`/`tile`/`ownerName` distinguent une salle « case » du monde (§11) —
+  `ownerName` est le nom d'affichage résolu de la colonie à cet instant
+  (`WorldState.nameOf`), **jamais** la clé du propriétaire : comme partout
+  ailleurs, aucun secret ne transite ici (pas de jeton, pas de clé de joueur,
+  pas de `owner`). `ownerName` est absent si la colonie a été abandonnée
+  pendant qu'une salle encore peuplée continuait de tourner (§11.3) — la
+  salle existe encore, la colonie non. `seed` n'apparaît que si elle est déjà
+  connue : pour une salle « case » elle l'est toujours (imposée par le
+  serveur dès la création de la salle, §11.2) ; pour une salle simple,
+  seulement une fois `start` passé.
+- `?state=lobby|running|desynced` ne renvoie que les salles dans cet état ;
+  une valeur qui n'en fait pas partie est ignorée (ce n'est qu'un filtre
+  d'affichage, pas une validation de protocole). `?q=` filtre par nom,
+  insensible à la casse, sous-chaîne ; tronqué à 32 caractères comme un nom
+  de joueur plutôt que refusé.
+- Au plus `MAX_LISTED_ROOMS` (200 par défaut, `maxListedRooms` de
+  `ServerOptions`, pas de variable d'environnement dédiée) salles, **les plus
+  récemment créées** : une liste illimitée serait elle-même un vecteur de
+  déni de service sur un serveur qui en héberge beaucoup. `truncated` dans la
+  réponse signale le dépassement ; les filtres (`state`, `q`) s'appliquent
+  **après** cette troncature, jamais avant — un serveur qui héberge plus de
+  200 salles ne laisse jamais deviner qu'il y en a davantage par ce chemin,
+  filtre bien choisi ou non.
+- Pas de cache (`Cache-Control: no-store`), contrairement à `GET /world` : le
+  globe ne change pas, cette liste change à chaque `join`/`leave`/`start`.
+- `GET /health` porte un résumé du même calcul, sans le détail par salle :
+  `roomsByState: { lobby, running, desynced }`.
+
+### Ce dont le client aura besoin
+
+- Un écran « Salles ouvertes » sur l'accueil, avant même `world_join` ou un
+  premier `join` : `GET /rooms` en sondage (par exemple toutes les 5 s, pas
+  de flux poussé — ce n'est pas un message du protocole lockstep) suffit à
+  l'alimenter (nom, joueurs/`maxPlayers`, état, et pour une case son
+  propriétaire).
+- Un bouton « Rejoindre » par salle simple envoie `join { room: name, name }`
+  comme aujourd'hui ; pour une salle « case », `visit { tile }` puis
+  `join { room, name }` (§11.4) — `GET /rooms` ne remplace aucun message
+  existant, il aide seulement à choisir où aller.
+- Griser ou masquer une salle déjà pleine (`players === maxPlayers`) avant
+  même d'essayer de la rejoindre, plutôt que d'attendre `error room_full`.
+
 ## 3. Messages
 
 ### 3.1 Client → serveur

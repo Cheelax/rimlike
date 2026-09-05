@@ -28,6 +28,7 @@ import {
   type ClientMessage,
   type ErrorCode,
   type PlayerId,
+  type RoomState,
   type WorldErrorCode,
   type WorldPlayerInfo,
 } from "@rimlike/protocol";
@@ -95,6 +96,14 @@ export interface ServerOptions {
   /** Délai de débounce des sauvegardes, injectable pour les tests. Défaut : `SAVE_DEBOUNCE_MS`. */
   readonly saveDebounceMs?: number;
 
+  /**
+   * Salles renvoyées au plus par `GET /rooms` (les plus récemment créées),
+   * `docs/protocol.md` §2 « Découverte des salles ». Une liste illimitée
+   * serait elle-même un vecteur de déni de service sur un serveur qui héberge
+   * beaucoup de salles. Défaut : `DEFAULT_MAX_LISTED_ROOMS` (200).
+   */
+  readonly maxListedRooms?: number;
+
   // --- Garde-fous avant hébergement public (`docs/protocol.md` §2, « Limites ») ---
 
   /**
@@ -137,6 +146,18 @@ export interface ServerOptions {
    * sans quoi un client peut usurper l'adresse d'un autre.
    */
   readonly trustProxy?: boolean;
+
+  /**
+   * Horloge murale utilisée pour les accusés de réception de connexion
+   * (`lastSeen`), le limiteur de débit (fenêtre glissante d'une seconde,
+   * dépassement soutenu de 3 s) et le heartbeat. Distincte de `worldNow`
+   * (l'horloge de **jeu** du monde, en heures de caravane) : celle-ci ne
+   * sert qu'à des durées réelles courtes, au niveau transport. Défaut :
+   * `Date.now`. Injectable pour rendre déterministe un test du limiteur de
+   * débit sans attendre de vraies secondes (`apps/server/test/server.test.ts`,
+   * « garde-fous avant hébergement public »).
+   */
+  readonly now?: () => number;
 }
 
 export interface RunningServer {
@@ -224,6 +245,8 @@ export const DEFAULT_MAX_SNAPSHOT_BYTES = 8_388_608;
 export const DEFAULT_MAX_MESSAGES_PER_SECOND = 120;
 export const DEFAULT_MAX_CONNECTIONS_PER_IP = 16;
 export const DEFAULT_MAX_ROOMS = 500;
+/** Salles renvoyées au plus par `GET /rooms` (les plus récemment créées). */
+export const DEFAULT_MAX_LISTED_ROOMS = 200;
 
 /** Fenêtre glissante du limiteur de débit. */
 const RATE_WINDOW_MS = 1000;
@@ -355,10 +378,15 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const maxMessagesPerSecond = options.maxMessagesPerSecond ?? DEFAULT_MAX_MESSAGES_PER_SECOND;
   const maxConnectionsPerIp = options.maxConnectionsPerIp ?? DEFAULT_MAX_CONNECTIONS_PER_IP;
   const maxRooms = options.maxRooms ?? DEFAULT_MAX_ROOMS;
+  const maxListedRooms = options.maxListedRooms ?? DEFAULT_MAX_LISTED_ROOMS;
   const trustProxy = options.trustProxy ?? false;
   const maxPlayersPerRoom = options.roomOptions?.maxPlayers ?? MAX_PLAYERS;
   /** Connexions ouvertes par adresse IP, pour `maxConnectionsPerIp`. */
   const ipConnectionCounts = new Map<string, number>();
+  // Horloge murale du transport (accusés de réception, débit, heartbeat) —
+  // distincte de `worldNow` (horloge de jeu du monde). Injectable pour un
+  // test déterministe du limiteur de débit, sans attendre de vraies secondes.
+  const wallNow = options.now ?? Date.now;
 
   const worldSeed = options.worldSeed ?? DEFAULT_WORLD_SEED;
   const worldSubdivisions = options.worldSubdivisions ?? DEFAULT_WORLD_SUBDIVISIONS;
@@ -467,12 +495,129 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     response.end(body);
   };
 
+  // --- Découverte des salles (`docs/protocol.md` §2, « Découverte des salles ») ---
+
+  /** Valeurs valides du filtre `?state=` de `GET /rooms`. */
+  const LISTED_ROOM_STATES = ["lobby", "running", "desynced"] as const;
+  const isListedRoomState = (value: string): value is RoomState =>
+    (LISTED_ROOM_STATES as readonly string[]).includes(value);
+
+  /** Longueur maximale du filtre `?q=` : tronqué plutôt que refusé, ce n'est qu'un affichage. */
+  const MAX_ROOM_QUERY_LENGTH = 32;
+
+  interface ListedRoom {
+    readonly name: string;
+    readonly state: RoomState;
+    readonly players: number;
+    readonly maxPlayers: number;
+    readonly tick: number;
+    readonly isTile: boolean;
+    readonly tile?: number;
+    readonly ownerName?: string;
+    readonly seed?: number;
+    readonly createdAt: number;
+  }
+
+  /**
+   * Description publique d'une salle pour `GET /rooms` : aucun secret (pas de
+   * jeton, pas de clé de joueur — seulement `ownerName`, déjà résolu par
+   * `WorldState.nameOf`). Une salle « case » dont la colonie a été abandonnée
+   * pendant qu'elle restait peuplée (`docs/protocol.md` §11.3) n'a plus de
+   * colonie à décrire : `ownerName` est alors absent et `createdAt` retombe
+   * sur la création de l'objet salle plutôt que sur celle de la colonie.
+   */
+  const describeRoom = (room: Room): ListedRoom => {
+    const base = {
+      name: room.name,
+      state: room.state,
+      players: room.playerCount,
+      maxPlayers: room.maxPlayers,
+      tick: room.tick,
+    };
+    const tileId = room.tileId;
+    if (tileId === null) {
+      return {
+        ...base,
+        isTile: false,
+        ...(room.seed !== null ? { seed: room.seed } : {}),
+        createdAt: room.createdAt,
+      };
+    }
+    const settlement = worldState.settlementAt(tileId);
+    return {
+      ...base,
+      isTile: true,
+      tile: tileId,
+      ...(settlement !== undefined ? { ownerName: settlement.ownerName } : {}),
+      ...(room.seed !== null ? { seed: room.seed } : {}),
+      createdAt: settlement?.createdAt ?? room.createdAt,
+    };
+  };
+
+  const serveRooms = (request: IncomingMessage, response: ServerResponse): void => {
+    const url = new URL(request.url ?? "/", "http://rimlike.invalid");
+    const stateFilter = url.searchParams.get("state");
+    const rawQuery = url.searchParams.get("q");
+    const query = rawQuery === null ? null : rawQuery.slice(0, MAX_ROOM_QUERY_LENGTH).toLowerCase();
+
+    // Troncature **avant** filtrage : un serveur qui héberge plus de
+    // `maxListedRooms` salles ne doit jamais en laisser deviner le nombre réel
+    // par un filtre bien choisi. Ordre d'insertion de la `Map` = ordre de
+    // création ; les plus récentes sont à la fin.
+    const names = [...rooms.keys()];
+    const truncated = names.length > maxListedRooms;
+    const candidates = truncated ? names.slice(-maxListedRooms) : names;
+
+    let listed: ListedRoom[] = [];
+    for (const name of candidates) {
+      const room = rooms.get(name);
+      if (room !== undefined) {
+        listed.push(describeRoom(room));
+      }
+    }
+
+    if (stateFilter !== null && isListedRoomState(stateFilter)) {
+      listed = listed.filter((room) => room.state === stateFilter);
+    }
+    if (query !== null && query.length > 0) {
+      listed = listed.filter((room) => room.name.toLowerCase().includes(query));
+    }
+
+    // Lobbies d'abord (une partie qui attend se distingue d'un coup d'œil
+    // d'une partie déjà en cours), puis par nom.
+    listed.sort((a, b) => {
+      const rank = (room: ListedRoom): 0 | 1 => (room.state === "lobby" ? 0 : 1);
+      const byRank = rank(a) - rank(b);
+      if (byRank !== 0) {
+        return byRank;
+      }
+      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    });
+
+    const body = JSON.stringify({ rooms: listed, truncated });
+    response.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "Access-Control-Allow-Origin": "*",
+      // Contrairement à `GET /world` (le globe ne change pas), cette liste
+      // change à chaque `join`/`leave`/`start` : jamais de cache.
+      "cache-control": "no-store",
+    });
+    response.end(body);
+  };
+
   const httpServer = createHttpServer((request: IncomingMessage, response: ServerResponse) => {
     const path = (request.url ?? "/").split("?")[0];
     if (request.method === "GET" && path === "/health") {
+      // Résumé par état, sans le détail (voir `GET /rooms` pour la liste,
+      // `docs/protocol.md` §2 « Découverte des salles »).
+      const roomsByState = { lobby: 0, running: 0, desynced: 0 };
+      for (const room of rooms.values()) {
+        roomsByState[room.state] += 1;
+      }
       const body = JSON.stringify({
         ok: true,
         rooms: rooms.size,
+        roomsByState,
         connections: connections.size,
         world: {
           seed: worldState.seed,
@@ -503,6 +648,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     }
     if (request.method === "GET" && path === "/world") {
       serveWorld(request, response);
+      return;
+    }
+    if (request.method === "GET" && path === "/rooms") {
+      serveRooms(request, response);
       return;
     }
     response.writeHead(404, { "content-type": "application/json; charset=utf-8" });
@@ -1063,7 +1212,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       worldName: null,
       worldPlayerKey: null,
       worldPlayerId: null,
-      lastSeen: Date.now(),
+      lastSeen: wallNow(),
       ip,
       messageTimestamps: [],
       overLimitSince: null,
@@ -1095,8 +1244,8 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     };
 
     socket.on("message", (data: unknown) => {
-      const now = Date.now();
-      connection.lastSeen = now;
+      const receivedAt = wallNow();
+      connection.lastSeen = receivedAt;
       const rawText = String(data);
       const byteLength = Buffer.byteLength(rawText, "utf8");
 
@@ -1114,7 +1263,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
 
       // --- Débit (`docs/protocol.md` §2, « Limites »). Le `pong` ne compte pas. ---
       if (message === null || message.type !== "pong") {
-        const verdict = checkRate(now);
+        const verdict = checkRate(receivedAt);
         if (verdict === "close") {
           log(`[débit] connexion ${ip} fermée — dépassement soutenu depuis 3 s (limite ${maxMessagesPerSecond}/s)`);
           socket.close(CLOSE_RATE_LIMITED, "rate_limited");
@@ -1213,10 +1362,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   });
 
   const heartbeat = setInterval(() => {
-    const now = Date.now();
+    const checkedAt = wallNow();
     for (const connection of connections) {
-      if (now - connection.lastSeen > timeoutMs) {
-        log(`[heartbeat] connexion silencieuse depuis ${now - connection.lastSeen} ms, fermée`);
+      if (checkedAt - connection.lastSeen > timeoutMs) {
+        log(`[heartbeat] connexion silencieuse depuis ${checkedAt - connection.lastSeen} ms, fermée`);
         connection.socket.terminate();
         continue;
       }
