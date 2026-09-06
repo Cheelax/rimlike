@@ -444,6 +444,185 @@ Deux voies, et une seule est bonne :
    vérification. C'est la vraie correction, et elle ne change pas une décision
    de colon.
 
+### La vraie correction : l'index de régions (2026-09-06)
+
+C'est la seconde voie qui a été prise, et elle tient ses promesses : la
+campagne de trente graines passe de **1 033 s à 31 s**, aucune graine ne reste
+sous 100 000 ticks/s, et les trente colonies finissent **ligne pour ligne**
+identiques — mêmes morts, mêmes raids, mêmes richesses, mêmes technologies.
+
+Mais elle ne les tient qu'au deuxième essai, et ce que le premier a appris vaut
+d'être écrit : **ce n'était pas l'enceinte, c'étaient les pièges.**
+
+#### La structure
+
+`crates/sim/src/regions.rs`, tenu dans `Map` sur le patron de la couche
+« intérieur ». Deux couches d'un `u16` par case (0 = infranchissable), une par
+sorte de marcheur (`path::Walker`) :
+
+| couche | ce qui ferme | qui la lit |
+|---|---|---|
+| `anyone` | murs, rochers, eau profonde, arbres, feux de camp, établis. **Les portes ouvrent.** | pillard, bête, marchand |
+| `colonist` | la même chose **plus les pièges armés** — un membre de la colonie ne marche jamais dessus | les colons |
+
+La seconde n'est bâtie que s'il y a un piège armé sur la carte ; sinon elle
+serait la copie de la première, et les questions y retombent. **Le feu reste
+dehors**, et c'est exact : il renchérit la route (`FIRE_PATH_COST_MULT`), il ne
+la ferme pas — il ne peut donc jamais rendre une cible inatteignable.
+
+Trois détails qui comptent :
+
+1. **Quatre voisines suffisent** là où l'A\* en a huit. Une diagonale n'est
+   prise que si ses deux orthogonales le sont (pas de coupe de coin) : tout
+   chemin à huit directions se double d'un chemin à quatre, et les deux
+   découpages en composantes sont le même.
+2. **L'invalidation suit la franchissabilité, pas la carte.** `set_feature` et
+   `set_terrain` périment l'index quand un mur se bâtit, une porte se perce, un
+   rocher se mine, un arbre tombe, un piège s'arme ou se désarme — et
+   seulement alors. Un buisson cueilli, un plant semé, un sol de bois coulé, un
+   lit posé ne périment rien, exactement comme pour `room_key`.
+3. **Une couche périmée se tait.** Le recalcul se fait au début de
+   `Sim::update`, comme `refresh_indoor` ; si la carte change **pendant** un
+   tick, l'index reste périmé pour le reste de ce tick et toute question rend
+   « je ne sais pas », donc l'A\* tranche comme avant. C'est ce qui interdit
+   qu'une couche en retard refuse un chemin qui vient de s'ouvrir.
+
+Coût de reconstruction, `--release`, comparé à ce qu'il évite :
+
+| carte | une couche | deux couches | un seul A\* **raté** |
+|---|---|---|---|
+| 64×64 | 0,058 ms | 0,084 ms | 0,29 ms |
+| 128×128 | 0,133 ms | 0,218 ms | 1,21 ms |
+| 192×192 | 0,224 ms | 0,481 ms | 2,74 ms |
+
+Une reconstruction **complète** coûte le cinquième d'un unique A\* qui échoue,
+et elle n'est payée qu'après un changement de carte — une fois par tick au
+plus, jamais par colon. La question, elle, coûte 10 ns : deux lectures et une
+comparaison.
+
+#### La surprise : ce n'était pas l'enceinte
+
+La première version n'avait que la couche de base — c'était le plan, les pièges
+devant rester une exception que l'A\* traiterait comme avant. Mesurée sur la
+campagne, elle ne règle presque rien :
+
+| | témoin | couche de base seule | deux couches |
+|---|---|---|---|
+| campagne, 30 graines × 30 jours | 1 033 s | 885 s | **31 s** |
+| graines sous 100 000 ticks/s | 5 | 4 | **0** |
+| graine la plus lente | 8, **742 ticks/s** | 8, **837 ticks/s** | 8, **116 756 ticks/s** |
+
+Une seule des cinq graines lentes est guérie (la 6, 14 000 → 296 000 ticks/s) :
+celle-là avait bien une cible derrière un mur. Les quatre autres ne bougent
+pas.
+
+Profil `sample` sur la campagne en cours, version couche de base : **56 % des
+piles** dans `do_cook` → `path_adjacent_for` → `path::find_path_for`, et 41 %
+de plus dans `find_job` → `try_start`. Des A\* qui échouent, donc, malgré
+l'index — ce qui ne laisse qu'une explication, par élimination : la cible est
+dans la même région de base que le colon, et pourtant hors d'atteinte **pour
+lui**. Le seul obstacle du sim qui dépend de qui passe est le piège armé.
+
+Et le joueur scripté en pose trois. Relire le tableau du §1 : « porte **puis**
+l'enceinte de bois, puis 3 pièges devant la porte ». La porte est l'unique
+ouverture d'un pourtour de 48 cases ; les trois cases devant elle sont les
+trois seules par où l'on sort — et ce sont précisément celles que la colonie
+vient de hérisser de pointes. **La colonie se mure pour elle-même.** Un colon
+resté dehors ne rentre plus ; un feu de camp dedans n'est plus atteignable
+depuis dehors. Pour la carte, en revanche, rien n'est fermé : porte et pièges
+sont franchissables, la couche de base voit une région unique et ne peut rien
+démontrer.
+
+D'où la seconde couche, qui n'était pas prévue et que la mesure a imposée. Elle
+ne coûte que là où il y a des pièges, et elle est exacte pour la même raison
+que la première : retirer des cases à un marcheur ne peut que **séparer**,
+jamais joindre.
+
+#### Les points d'usage
+
+Trois, et tous en amont d'un A\* :
+
+1. `path::find_path_for`, juste après le test de franchissabilité de la cible :
+   régions différentes ⇒ `None` immédiat. Tous les appelants en profitent,
+   `try_start_work` / `haul` / `farm` / `deliver` compris, sans qu'une ligne y
+   bouge.
+2. `jobs::path_adjacent_for` et `jobs::reach_adjacent` : les voisines de la
+   cible qui ne communiquent pas avec le marcheur sont rayées **avant** le tri.
+   Un poste muré, qui coûtait ses huit A\*, n'en coûte plus aucun.
+3. `jobs::reach_tile` : la démonstration se fait sans A\*. Le **budget** est
+   quand même consommé — le candidat a bien été examiné — mais `Sim::job_paths`
+   ne bouge pas, puisqu'il compte les A\* lancés. C'est ce qui permet aux tests
+   d'attendre zéro.
+
+#### Ce que ça donne
+
+Les cinq graines lentes, `--release` (les 432 000 ticks d'une graine) :
+
+| graine | avant | après |
+|---|---|---|
+| 3 | 3 948 ticks/s | **179 925** |
+| 6 | 14 027 | **295 890** |
+| 8 | **742** | **116 756** |
+| 12 | 7 518 | **355 263** |
+| 18 | 1 881 | **428 146** |
+
+Les vingt-cinq autres ne perdent rien (l'index leur coûte un booléen par tick
+et deux lectures par recherche) : la médiane monte plutôt de quelques pour
+cent, et la campagne entière passe de 12 549 à **414 624 ticks/s**.
+
+Banc de tests (`crates/sim/tests/regions.rs`), A\* de recherche de travail sur
+600 ticks, mesurés des deux côtés :
+
+| scène | avant | après |
+|---|---|---|
+| réduit de roche scellé (postes, dépouilles, bois dedans) | 629 | **0** |
+| porte piégée : la colonie murée pour elle-même | 860 | **0** |
+
+`bench --size 128 --ticks 100000` : `demo` 892 416 → **1 066 730** ticks/s,
+`demo+12` 450 985 → **483 468**, à vide 3 642 362 → 3 741 751 (bruit).
+
+#### Aucune décision n'a changé
+
+C'est la condition de tout le reste, et elle est vérifiée de quatre façons
+indépendantes :
+
+- `verify --seed 1 --size 64 --ticks 10000 --scenario demo` : **OK**, et le
+  hash final vaut `2fe88821b6299966` avant comme après ;
+- `fuzz --seed 1 --size 24 --ticks 20000 --runs 4 --commands-per-tick 6` : les
+  quatre hashes sont bit-à-bit ceux d'avant ;
+- la campagne de trente graines rend un tableau identique **colonne par
+  colonne**, la seule qui bouge étant celle des millisecondes ;
+- un test (`snapshot_roundtrip_recomputes_regions`) fait tourner côte à côte
+  une sim dont l'index est calculé et la même relue d'un snapshot, dont l'index
+  repart périmé : mêmes hashes, cent ticks plus loin comme au premier.
+
+#### Pourquoi une couche hors snapshot est ici légitime
+
+L'invariant « pas de cache non sérialisé qui influence le futur » vise les
+caches qui **décident** : `Map::stockpile_tiles` dit où un colon porte sa
+charge, elle voyage donc avec l'état. L'index de régions ne décide rien. Il
+répond à une question dont la réponse est **déjà entièrement contenue** dans
+`tiles` et `features` — « ces deux cases communiquent-elles pour ce
+marcheur ? » — et la seule chose qu'il autorise est de ne pas lancer un A\* qui
+aurait rendu `None`. Il est donc `#[serde(skip)]`, hors du hash et hors de
+l'égalité de deux cartes (`PartialEq` toujours vrai, comme `WorkCounter`), et
+une carte relue le recalcule à son premier tick. Entre-temps il se tait, ce qui
+est la seule chose qu'une couche périmée ait le droit de faire.
+
+#### Ce qui reste
+
+- **La cuisine n'a toujours pas sa vérification de poste au démarrage.** Elle
+  la mériterait maintenant que l'échec est gratuit, mais la poser déplace le
+  hash du scénario `demo` — le seul de ces travaux que `demo` exerce. À
+  décider, comme la cadence de `RETRY_TICKS` sur les recherches par
+  désignation : ce sont des changements de comportement, pas des correctifs de
+  performance.
+- **Le découpage est global, pas hiérarchique.** Un changement de carte fait
+  repayer la carte entière ; à 0,2 ms sur 128×128 et une poignée de changements
+  par seconde de jeu, la note est invisible. Elle cesserait de l'être sur une
+  carte dix fois plus grande, où il faudrait un découpage par blocs, invalidé
+  bloc par bloc.
+
 ---
 
 ## 4. Constat n°2 — « difficile » n'était pas une difficulté, c'était une extinction

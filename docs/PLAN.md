@@ -543,6 +543,20 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-06 : l'atteignabilité est une question O(1). `Map` porte un index de régions
+  (composantes connexes des cases franchissables, remplissage 4-connexe, 0,13 ms sur 128×128
+  contre 1,2 ms pour un seul A* raté) recalculé au début du tick quand la franchissabilité a
+  changé, consulté avant tout A* des recherches de travail. **Deux couches** : la couche de base
+  seule ne réglait presque rien (885 s de campagne contre 1 033), parce que le joueur scripté
+  pose ses trois pièges devant sa seule porte : la colonie se mure pour elle-même sans rien
+  fermer pour la carte ; une couche « colon » qui compte les pièges armés comme des murs
+  (bâtie seulement s'il y a un piège) ramène la campagne à **31 s** et la pire graine de 742 à
+  116 756 ticks/s. Le feu reste hors index : un surcoût, jamais un mur. L'index est un cache
+  **non sérialisé**, exception assumée à la règle : il ne décide rien (il n'autorise qu'à ne
+  pas lancer un A* qui aurait échoué), périmé il répond « je ne sais pas », et un test fait
+  tourner côte à côte une sim indexée et sa relecture de snapshot : mêmes hashes. Scénario
+  `demo` et tableau de campagne identiques colonne par colonne.
+
 - 2026-09-06 : un poste hors d'atteinte ne se retente plus à chaque tick. Dépeçage, fabrication
   (donc fonte), recherche, chasse, réarmement, apprivoisement et abattage passent par trois
   pièces communes : le poste est vérifié au démarrage du job, le budget compte les candidats

@@ -1044,6 +1044,15 @@ impl Sim {
         target: (u32, u32),
         walker: Walker,
     ) -> Option<Vec<path::Tile>> {
+        // Un poste hors d'atteinte est le pire cas de tout le module : huit
+        // voisines franchissables, huit A\* qui explorent chacun toute la
+        // région du marcheur avant de rendre `None`. L'index de régions raye
+        // d'avance les voisines qui ne communiquent pas avec lui (voir
+        // `crate::regions`) : quand elles le sont toutes, le poste est
+        // démontré inatteignable sans un seul A\*. La voisine retenue en cas
+        // de succès, elle, ne change pas — on ne retire que des candidates
+        // dont l'A\* aurait échoué.
+        let home = self.map.region_of_for(from.0, from.1, walker);
         let mut neighbours: Vec<(u32, u32, u32)> = Vec::new();
         for dy in -1i32..=1 {
             for dx in -1i32..=1 {
@@ -1055,6 +1064,9 @@ impl Sim {
                 if self.map.in_bounds(nx, ny) && self.map.passable_for(nx as u32, ny as u32, walker)
                 {
                     let n = (nx as u32, ny as u32);
+                    if self.other_region(home, n, walker) {
+                        continue;
+                    }
                     neighbours.push((chebyshev(from, n), n.0, n.1));
                 }
             }
@@ -1063,6 +1075,17 @@ impl Sim {
         neighbours
             .iter()
             .find_map(|&(_, x, y)| path::find_path_for(&self.map, from, (x, y), walker))
+    }
+
+    /// La case `to` est-elle **démontrée** hors de la région `home` du
+    /// marcheur ? Faux dès qu'on ne sait pas — région de départ inconnue
+    /// (case infranchissable : l'A\* n'y teste jamais la case de départ) ou
+    /// index périmé —, auquel cas la candidate est gardée et l'A\* tranche.
+    fn other_region(&self, home: Option<u16>, to: (u32, u32), walker: Walker) -> bool {
+        match (home, self.map.region_of_for(to.0, to.1, walker)) {
+            (Some(a), Some(b)) => a != b,
+            _ => false,
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1107,6 +1130,13 @@ impl Sim {
             return Reach::OutOfBudget;
         }
         *budget -= 1;
+        // L'index de régions tranche en une lecture (voir `crate::regions`) :
+        // la démonstration est la même que celle de l'A\*, sans l'A\*. Le
+        // **budget** est consommé — le candidat a bien été examiné — mais le
+        // compteur ne bouge pas, puisqu'il compte les A\* lancés.
+        if self.map.same_region_for(from, to, Walker::COLONIST) == Some(false) {
+            return Reach::Unreachable;
+        }
         self.count_job_path(1);
         match self.colonist_path(from, to) {
             Some(p) => Reach::Path(p),
@@ -1133,6 +1163,13 @@ impl Sim {
             return Reach::OutOfBudget;
         }
         *budget -= 1;
+        // Même court-circuit que `path_adjacent_for` : les voisines qui ne
+        // communiquent pas avec le colon ne sont pas essayées, et un poste
+        // dont aucune voisine ne communique est démontré hors d'atteinte sans
+        // un seul A\* (voir `crate::regions`). Le budget, lui, est déjà
+        // consommé : il compte des **candidats examinés**, et l'examen a bien
+        // eu lieu — il est simplement devenu gratuit.
+        let home = self.map.region_of_for(from.0, from.1, Walker::COLONIST);
         let mut neighbours: Vec<(u32, u32, u32)> = Vec::new();
         for dy in -1i32..=1 {
             for dx in -1i32..=1 {
@@ -1147,6 +1184,9 @@ impl Sim {
                         .passable_for(nx as u32, ny as u32, Walker::COLONIST)
                 {
                     let n = (nx as u32, ny as u32);
+                    if self.other_region(home, n, Walker::COLONIST) {
+                        continue;
+                    }
                     neighbours.push((chebyshev(from, n), n.0, n.1));
                 }
             }

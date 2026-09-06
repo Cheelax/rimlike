@@ -84,6 +84,23 @@ pub fn find_path_for(
     if from == to {
         return Some(Vec::new());
     }
+    // Le court-circuit qui vaut toute cette page : un A\* qui **échoue**
+    // explore toute la composante où se tient le marcheur avant de rendre
+    // `None`, et il échoue si et seulement si la cible est ailleurs. L'index
+    // de régions répond à cette question en une lecture (voir
+    // `crate::regions`), et il ne répond qu'à elle : `Some(false)` est une
+    // démonstration d'échec, tandis que `Some(true)` et `None` (case de départ
+    // infranchissable, index périmé) laissent l'A\* trancher exactement comme
+    // avant.
+    //
+    // Le marcheur passé ici est déjà **normalisé** (les deux lignes
+    // ci-dessus) : `avoids_traps` n'est vrai que s'il y a un piège armé sur la
+    // carte, ce qui est exactement la condition sous laquelle l'index tient sa
+    // seconde couche. Le feu, lui, n'entre pas dans la question : il renchérit
+    // la route, il ne la ferme pas.
+    if map.same_region_for(from, to, walker) == Some(false) {
+        return None;
+    }
     let w = map.width() as usize;
     let h = map.height() as usize;
     let n = w * h;

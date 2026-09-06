@@ -97,7 +97,11 @@ Ils sont imposés par les lints là où c'est possible, et par le test de déter
   `stockpile_count`, `growing_count`, `bed_count`, `campfire_count`). Un colon inactif
   relance sa recherche à chaque tick.
 - **Tout l'état est dans `Sim`** et sérialisé par serde/postcard. Pas de cache non
-  sérialisé qui influence le futur. Un nouveau champ = pensé pour le snapshot.
+  sérialisé qui influence le futur. Un nouveau champ = pensé pour le snapshot. Seule
+  exception admise : un cache **dérivé** qui ne décide rien (`map::regions`, `indoor`) : sa
+  réponse est une fonction pure de l'état sérialisé, périmé il répond « je ne sais pas » et le
+  calcul complet tranche comme avant ; les compteurs d'observation (`haul_scans`, `job_paths`…)
+  sont hors snapshot et hors hash et ne servent qu'aux tests de travail borné.
 - **Les ordres du joueur sont des `Command`** appliquées au début d'un tick. Aucune
   mutation directe de l'état depuis l'extérieur en dehors des tests.
 - Un test nouveau par comportement nouveau. Les cartes ASCII de `sim::testmap` servent à

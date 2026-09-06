@@ -34,6 +34,7 @@ pub mod names;
 pub mod noise;
 pub mod path;
 pub mod pawn;
+pub mod regions;
 pub mod research;
 pub mod rng;
 pub mod social;
@@ -668,6 +669,9 @@ impl Sim {
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
         sim.map.refresh_indoor();
+        // L'index de régions aussi : un chemin demandé avant le premier tick
+        // (un test, un scénario) doit pouvoir s'appuyer dessus.
+        sim.map.refresh_regions();
         sim.spawn_starting_pawns(3);
         sim.spawn_starting_animals();
         sim.schedule_first_raid();
@@ -951,6 +955,11 @@ impl Sim {
         // températures. Elle ne coûte que si un mur, une porte ou un feu a
         // bougé depuis le dernier tick.
         self.map.refresh_indoor();
+        // Puis l'index de régions, même patron : tout ce qui suit cherche des
+        // chemins. Il ne coûte que si la franchissabilité d'une case a changé
+        // depuis le dernier tick, et il ne coûte alors qu'un passage sur la
+        // carte — là où un seul A\* raté en coûte autant.
+        self.map.refresh_regions();
         self.tick_weather();
         // La température extérieure est la même pour toute la carte : une
         // seule lecture par tick, partagée par le calendrier, les plants, les
@@ -1190,11 +1199,29 @@ impl Sim {
     /// (`jobs::Sim::reach_tile`, `reach_adjacent`) : c'est exactement
     /// l'ensemble des recherches corrigées, et c'est ce qui rend le plafond du
     /// test lisible.
+    ///
+    /// Ce sont bien des **A\* lancés**, pas des candidats examinés : depuis
+    /// l'index de régions (`crate::regions`), une cible démontrée hors
+    /// d'atteinte en O(1) consomme un candidat du budget sans lancer de
+    /// recherche, et ne compte donc pas ici. C'est ce qui permet à
+    /// `tests/regions.rs` d'attendre **zéro**.
     pub fn job_paths(&self) -> u64 {
         self.job_paths.get()
     }
 
     pub(crate) fn count_job_path(&mut self, n: u64) {
         self.job_paths.add(n);
+    }
+
+    /// Recalculs de l'index de régions (`crate::regions`) depuis le début de
+    /// la partie. Compteur d'**observation**, au même titre que `haul_scans` :
+    /// il ne vit pas dans un `WorkCounter` parce qu'il n'a rien à compter de
+    /// son côté — c'est la version de la couche elle-même, incrémentée à
+    /// chaque recalcul effectif, et donc déjà hors snapshot et hors hash.
+    ///
+    /// Ce qu'il sert à vérifier (`tests/regions.rs`) : l'index se rebâtit
+    /// quand la carte change, **pas à chaque tick**.
+    pub fn region_rebuilds(&self) -> u64 {
+        self.map.region_version()
     }
 }

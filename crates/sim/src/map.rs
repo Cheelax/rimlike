@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::noise;
+use crate::regions::Regions;
 
 /// Sol d'une case. Stocké en `u8`, lu en zéro-copie par le client. Les valeurs
 /// sont un contrat avec `apps/client/src/render/terrain.ts`.
@@ -373,6 +374,24 @@ pub struct Map {
     /// de structure** : un vieux snapshot est refusé net plutôt que relu de
     /// travers.
     forge_count: u32,
+    /// Index des composantes connexes de cases franchissables (voir
+    /// `crate::regions`). Il ne sert qu'à **démontrer qu'un A\* échouerait**,
+    /// donc à ne pas le lancer.
+    ///
+    /// **Hors snapshot, contrairement à `stockpile_tiles` et `grave_tiles`.**
+    /// Ces deux listes-là décident de l'avenir — où un colon porte sa charge,
+    /// où il porte un mort — et doivent voyager avec l'état. Celle-ci ne
+    /// décide de rien : elle répond à une question dont la réponse est déjà
+    /// entièrement contenue dans `tiles` et `features`, et une carte relue la
+    /// recalcule avant d'y répondre. Tant qu'elle est périmée, elle se tait et
+    /// l'A\* tranche comme avant. Elle n'entre donc ni dans le snapshot, ni
+    /// dans le hash, ni dans l'égalité de deux cartes.
+    ///
+    /// **Champ ajouté en fin de structure**, comme les autres — et sans effet
+    /// sur le format : `#[serde(skip)]` ne pose pas un octet sur le fil, un
+    /// snapshot d'avant cette tranche reste relisible.
+    #[serde(skip)]
+    regions: Regions,
 }
 
 /// Un rocher sur `ORE_IN_ROCKS` est veiné (`Feature::OreRock`). Le tirage est
@@ -536,6 +555,8 @@ impl Map {
             stockpile_tiles: Vec::new(),
             grave_tiles,
             forge_count,
+            // Périmé par défaut : la première question le fera calculer.
+            regions: Regions::default(),
         }
     }
 
@@ -575,6 +596,12 @@ impl Map {
     pub fn set_terrain(&mut self, x: u32, y: u32, t: Terrain) {
         let i = self.index(x, y);
         if self.tiles[i] != t as u8 {
+            // L'index de régions ne suit que la franchissabilité : poser un
+            // sol de bois sur de l'herbe ne le périme pas, assécher de l'eau
+            // profonde si.
+            if Terrain::from_u8(self.tiles[i]).walkable() != t.walkable() {
+                self.regions.mark_dirty();
+            }
             self.tiles[i] = t as u8;
             self.version += 1;
         }
@@ -618,6 +645,19 @@ impl Map {
             }
             if old.room_key() != f.room_key() {
                 self.indoor_dirty = true;
+            }
+            // Même patron que `room_key`, sur un autre critère : seul ce qui
+            // ouvre ou ferme le passage périme l'index de régions. Un mur
+            // bâti, une porte percée, un rocher miné, un arbre abattu comptent ;
+            // un buisson cueilli, un plant semé, un lit posé ne comptent pas.
+            //
+            // Le piège **armé** compte aussi, alors qu'il ne ferme rien pour
+            // la carte : il ferme pour la colonie, qui ne marche jamais
+            // dessus, et c'est la seconde couche de l'index (voir
+            // `crate::regions`).
+            let trap = |g: Feature| g == Feature::SpikeTrap;
+            if old.passable() != f.passable() || trap(old) != trap(f) {
+                self.regions.mark_dirty();
             }
             self.features[i] = f as u8;
             self.version += 1;
@@ -967,6 +1007,90 @@ impl Map {
                 self.room_campfires[room as usize] += 1;
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Index de régions (voir `crate::regions`)
+    // ------------------------------------------------------------------
+
+    /// Recalcule l'index de régions s'il est périmé, sinon ne fait rien.
+    ///
+    /// Appelé au début de `Sim::update`, juste après `refresh_indoor` et pour
+    /// la même raison : la carte y est celle que le tick précédent a laissée,
+    /// et tout ce qui suit l'interroge. Une carte qui change **pendant** un
+    /// tick — un rocher miné, un mur bâti, un arbre consumé — périme l'index
+    /// pour le reste de ce tick : les questions suivantes rendent « je ne sais
+    /// pas » et l'A\* tranche, comme avant l'index. C'est ce qui garantit
+    /// qu'aucune décision ne change.
+    pub fn refresh_regions(&mut self) {
+        self.regions.refresh(
+            self.width,
+            self.height,
+            &self.tiles,
+            &self.features,
+            self.trap_count,
+        );
+    }
+
+    /// Numéro de la région d'une case pour un marcheur qui ne sait rien
+    /// (pillard, bête, marchand) : `None` si elle est infranchissable, ou si
+    /// l'index est périmé (voir `Regions::id`).
+    pub fn region_of(&self, x: u32, y: u32) -> Option<u16> {
+        self.regions.id(self.index(x, y), false)
+    }
+
+    /// Même chose pour un marcheur donné : un membre de la colonie ne traverse
+    /// jamais un piège armé, il a donc son propre découpage (voir
+    /// `crate::regions`).
+    pub fn region_of_for(&self, x: u32, y: u32, walker: crate::path::Walker) -> Option<u16> {
+        self.regions.id(self.index(x, y), walker.avoids_traps)
+    }
+
+    /// Les deux cases communiquent-elles, pour qui ne sait rien de la carte ?
+    /// `None` si l'une d'elles est infranchissable ou si l'index est périmé —
+    /// dans ce cas on ne sait rien et il faut chercher un chemin pour de bon.
+    pub fn same_region(&self, a: (u32, u32), b: (u32, u32)) -> Option<bool> {
+        self.same_region_for(a, b, crate::path::Walker::ANYONE)
+    }
+
+    /// Même chose pour un marcheur donné.
+    ///
+    /// **`Some(false)` est une preuve d'échec**, et c'est le seul usage : ce
+    /// marcheur-là ne peut pas passer d'une composante à l'autre. `Some(true)`
+    /// ne promet rien — le feu renchérit la route sans la fermer, l'A\* dira
+    /// le reste.
+    pub fn same_region_for(
+        &self,
+        a: (u32, u32),
+        b: (u32, u32),
+        walker: crate::path::Walker,
+    ) -> Option<bool> {
+        let ra = self.region_of_for(a.0, a.1, walker)?;
+        let rb = self.region_of_for(b.0, b.1, walker)?;
+        Some(ra == rb)
+    }
+
+    /// Version de l'index de régions : elle change à chaque recalcul effectif,
+    /// jamais autrement (voir `Sim::region_rebuilds`).
+    pub fn region_version(&self) -> u64 {
+        self.regions.version()
+    }
+
+    /// Régions du dernier calcul, telles que les voit un marcheur ordinaire.
+    /// 0 tant que l'index n'a jamais été bâti.
+    pub fn region_count(&self) -> u32 {
+        self.regions.counts().0
+    }
+
+    /// Régions du dernier calcul telles que les voit la colonie, pièges armés
+    /// compris. Égale à `region_count` tant qu'aucun piège n'est armé.
+    pub fn colonist_region_count(&self) -> u32 {
+        self.regions.counts().1
+    }
+
+    /// L'index de régions attend un recalcul.
+    pub fn regions_dirty(&self) -> bool {
+        self.regions.dirty()
     }
 
     /// Sol cultivable.
