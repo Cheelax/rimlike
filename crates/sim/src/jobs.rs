@@ -95,7 +95,7 @@ impl Slot {
 /// démonstration — toutes les cases visées ont été essayées — et seule une
 /// démonstration autorise à rayer la cible pour le reste de l'appel.
 /// `OutOfBudget` ne dit rien : le budget s'est épuisé avant la fin.
-enum Reach {
+pub(crate) enum Reach {
     /// Chemin trouvé.
     Path(Vec<path::Tile>),
     /// Toutes les cases visées ont été essayées, aucune n'est atteignable.
@@ -1088,6 +1088,48 @@ impl Sim {
         }
     }
 
+    /// L'index de régions **démontre-t-il** qu'aucun de ces postes n'est
+    /// tenable par le colon parti de `from` ?
+    ///
+    /// Un poste (feu de camp, poste de fabrication, forge) est infranchissable :
+    /// on s'y tient depuis une **voisine**, et `reach_adjacent` raye d'avance
+    /// les voisines qui ne communiquent pas avec le colon. Quand elles le sont
+    /// toutes, pour tous les postes, `reach_station` finira par rendre `None`
+    /// sans lancer un seul A\* — mais l'appelant, lui, aura déjà payé la
+    /// recherche vers sa **charge**. Cette question-ci ne coûte que des
+    /// lectures de tableau : elle se pose donc **avant** la charge.
+    ///
+    /// Comme partout dans `regions`, seul « non » est une démonstration : on
+    /// rend `false` — donc « peut-être » — dès qu'une voisine n'est pas
+    /// démontrée ailleurs, index périmé ou case de départ inconnue comprises.
+    /// La décision du colon ne change jamais, seul le chemin pour y arriver.
+    fn stations_out_of_reach(&self, from: (u32, u32), stations: &[(u32, u32)]) -> bool {
+        let home = self.map.region_of_for(from.0, from.1, Walker::COLONIST);
+        if home.is_none() {
+            return false;
+        }
+        for &(sx, sy) in stations {
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let (nx, ny) = (sx as i32 + dx, sy as i32 + dy);
+                    if !self.map.in_bounds(nx, ny) {
+                        continue;
+                    }
+                    let n = (nx as u32, ny as u32);
+                    if self.map.passable_for(n.0, n.1, Walker::COLONIST)
+                        && !self.other_region(home, n, Walker::COLONIST)
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
     // ------------------------------------------------------------------
     // Recherches de chemin bornées (voir `RETRY_TICKS`)
     // ------------------------------------------------------------------
@@ -1125,7 +1167,12 @@ impl Sim {
     /// essais — donc jamais inscriptible au tableau des inatteignables, et la
     /// recherche buterait éternellement sur le même. `Sim::job_paths`, lui,
     /// compte bien les A\* : c'est la mesure, pas la borne.
-    fn reach_tile(&mut self, from: (u32, u32), to: (u32, u32), budget: &mut usize) -> Reach {
+    pub(crate) fn reach_tile(
+        &mut self,
+        from: (u32, u32),
+        to: (u32, u32),
+        budget: &mut usize,
+    ) -> Reach {
         if *budget == 0 {
             return Reach::OutOfBudget;
         }
@@ -1153,7 +1200,7 @@ impl Sim {
     /// colon, et l'appelant recommençait au tick suivant. Le budget borne le
     /// nombre de postes examinés, `RETRY_TICKS` espace les tentatives, et
     /// `Sim::job_paths` compte ce que tout cela coûte vraiment.
-    fn reach_adjacent(
+    pub(crate) fn reach_adjacent(
         &mut self,
         from: (u32, u32),
         target: (u32, u32),
@@ -1993,6 +2040,12 @@ impl Sim {
             return false;
         }
         let from = self.pawns[i].tile();
+        // Aucun feu tenable, l'index de régions le démontre : inutile de payer
+        // la recherche vers le vivre pour l'apprendre ensuite (voir
+        // `stations_out_of_reach`).
+        if self.stations_out_of_reach(from, &fires) {
+            return false;
+        }
         let mut stacks: Vec<(u32, u32, u32, usize)> = self
             .items
             .iter()
@@ -2655,6 +2708,14 @@ impl Sim {
             return false;
         }
         let from = self.pawns[i].tile();
+        // Aucun poste tenable, l'index de régions le démontre : c'est le cas du
+        // colon resté dehors quand la colonie s'est refermée sur ses pièges. Il
+        // payait jusqu'ici un A\* vers la dépouille **à chaque tick** pour
+        // découvrir ensuite qu'aucun poste n'était joignable — 111 756 A\* sur
+        // une graine de campagne (voir `CAMPAIGN-FINDINGS.md`, §10).
+        if self.stations_out_of_reach(from, &spots) {
+            return false;
+        }
         let mut stacks: Vec<(u32, u32, u32, usize)> = self
             .items
             .iter()

@@ -542,6 +542,18 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-06 : l'ordre des questions compte. Les trois graines encore lentes ne devaient rien au
+  minage : 98 % des A* venaient du dépeçage et de l'apprivoisement, et presque tous
+  **réussissaient** — un colon payait l'aller vers la dépouille à chaque tick pour redécouvrir
+  qu'aucun poste n'était derrière (117 545 fois). L'index de régions avait rendu la seconde
+  question gratuite et inversé le bon ordre. Désormais on demande d'abord si un poste est
+  joignable (lecture de l'index), puis seulement le chemin vers la charge ; les deux dernières
+  recherches invisibles au compteur `job_paths` (apprivoisement, abattage) passent par les
+  aides bornées. Cinq campagnes identiques octet pour octet hors durée, pire graine 58 584 →
+  124 388 ticks/s. Le rapport mesure maintenant forges, lingots, épées et réputation : le
+  joueur scripté ne forge jamais (forge proposée sur des cases d'entrepôt occupées, pas de
+  rocher dans son rayon), la réputation bouge (Guilde +43), le tribut est rare.
+
 - 2026-09-06 : rapport de campagne remis à plat après les réglages. Les cinq campagnes de
   référence tournent en moins d'une minute chacune (4 à 43 minutes la veille) ; les cinq
   constats tiennent (feu : pire incendie 121 cases soit 3 % de la carte ; soins : rapport

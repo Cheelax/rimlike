@@ -817,6 +817,34 @@ struct Run {
     /// une porte : un chiffre qui reste haut dit que la colonie n'a jamais fini
     /// de se fermer, ce qui change la lecture des morts en raid.
     blueprints_left: u32,
+    /// Forges debout en fin de partie (`Map::forge_count`). Le joueur scripté
+    /// vise la métallurgie en troisième technologie : sans ce chiffre, on ne
+    /// sait pas si la recherche a servi à quelque chose ou si elle s'est
+    /// arrêtée au parchemin.
+    forges: u32,
+    /// Lingots fondus sur toute la partie (`EventKind::ItemCrafted`, `arg` =
+    /// `ItemKind::Metal`). Compté au journal et non au stock : un lingot
+    /// consommé par une épée ne se voit plus en stock, et c'est bien la
+    /// **production** qu'on mesure.
+    ingots: u32,
+    /// Épées forgées sur toute la partie (`EventKind::WeaponCrafted`, `arg` =
+    /// `ItemKind::Sword`).
+    swords: u32,
+    /// Colons vivants qui portent une **épée** en fin de partie. À comparer à
+    /// `armed`, qui compte toutes les armes : c'est l'écart entre « la colonie
+    /// s'arme » et « la colonie est allée au bout de la chaîne du métal ».
+    swordsmen: u32,
+    /// Réputation finale envers les trois factions, dans l'ordre des ids
+    /// (`factions::FACTIONS` : deux tribus puis la Guilde).
+    goodwill: [i32; factions::FACTION_COUNT],
+    /// Tributs offerts sur toute la partie (`EventKind::Gift`). Le joueur en
+    /// envoie un dès qu'une tribu passe sous `GIFT_GOODWILL` : ce compteur, lu
+    /// à côté de `goodwill`, dit si le bois offert a acheté quelque chose.
+    tributes: u32,
+    /// Jour où la métallurgie est tombée, `None` si elle n'a jamais été
+    /// acquise. À lire avec `forges` : une technologie obtenue au jour 28 ne
+    /// laisse pas le temps de miner vingt-cinq pierres.
+    metallurgy_day: Option<u32>,
     /// Événements annoncés par le sim mais lus trop tard (journal débordé).
     /// Doit rester à 0 : sinon les comptes de raids sont sous-évalués.
     lost_events: u32,
@@ -844,6 +872,18 @@ struct Journal {
     fires: u32,
     burned: u32,
     deaths_announced: u32,
+    /// Lingots et épées **produits**, et tributs offerts : trois faits qui ne
+    /// laissent aucune trace lisible dans l'état final (un lingot se consomme,
+    /// une épée se perd avec son porteur, un tribut ne laisse qu'un delta de
+    /// réputation). Le journal est la seule mémoire qu'on en ait.
+    ingots: u32,
+    swords: u32,
+    tributes: u32,
+    /// Tick où la métallurgie a été acquise (`EventKind::ResearchDone`,
+    /// `arg` = `Tech::Metallurgy`). C'est elle qui ouvre la forge : savoir
+    /// **quand** elle tombe est la moitié de la réponse à « la colonie
+    /// forge-t-elle ? ».
+    metallurgy_tick: Option<u64>,
     lost: u32,
 }
 
@@ -866,6 +906,14 @@ impl Journal {
                 EventKind::FireStarted => self.fires += 1,
                 EventKind::FireOut => self.burned += e.arg,
                 EventKind::ColonistDied => self.deaths_announced += 1,
+                // `arg` porte le genre fabriqué : les armes passent par
+                // `WeaponCrafted`, tout le reste par `ItemCrafted`.
+                EventKind::ItemCrafted if e.arg == ItemKind::Metal as u32 => self.ingots += 1,
+                EventKind::WeaponCrafted if e.arg == ItemKind::Sword as u32 => self.swords += 1,
+                EventKind::Gift => self.tributes += 1,
+                EventKind::ResearchDone if e.arg == Tech::Metallurgy as u32 => {
+                    self.metallurgy_tick.get_or_insert(e.tick);
+                }
                 _ => {}
             }
         }
@@ -980,6 +1028,15 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
         .iter()
         .filter(|p| p.is_colonist() && p.is_alive() && p.weapon.is_some())
         .count() as u32;
+    let swordsmen = sim
+        .pawns()
+        .iter()
+        .filter(|p| p.is_colonist() && p.is_alive() && p.weapon == Some(ItemKind::Sword))
+        .count() as u32;
+    let mut goodwill = [0i32; factions::FACTION_COUNT];
+    for (k, f) in factions::FACTIONS.iter().enumerate() {
+        goodwill[k] = sim.faction_goodwill(f.id);
+    }
 
     Run {
         seed,
@@ -999,6 +1056,15 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
         mood_percent,
         armed,
         blueprints_left: sim.blueprints().len() as u32,
+        forges: sim.map().forge_count(),
+        ingots: journal.ingots,
+        swords: journal.swords,
+        swordsmen,
+        goodwill,
+        tributes: journal.tributes,
+        metallurgy_day: journal
+            .metallurgy_tick
+            .map(|t| (t / u64::from(TICKS_PER_DAY)) as u32),
         lost_events: journal.lost,
         deaths_announced: journal.deaths_announced,
         elapsed_ms: start.elapsed().as_millis(),
@@ -1043,6 +1109,22 @@ fn tenths(v: u64) -> String {
     format!("{},{}", v / 10, v % 10)
 }
 
+/// La même moyenne en dixièmes, sur des valeurs **signées** : une réputation
+/// va de −100 à +100, et c'est presque toujours du côté négatif qu'elle vit.
+fn mean_tenths_signed(values: impl Iterator<Item = i64>, count: usize) -> i64 {
+    if count == 0 {
+        return 0;
+    }
+    let total: i64 = values.sum();
+    total * 10 / count as i64
+}
+
+fn signed_tenths(v: i64) -> String {
+    let sign = if v < 0 { "−" } else { "" };
+    let v = v.unsigned_abs();
+    format!("{sign}{},{}", v / 10, v % 10)
+}
+
 /// Moyenne d'un jalon sur les graines qui l'ont atteint, « — » si aucune.
 fn mean_milestone(runs: &[Run], pick: impl Fn(&Run) -> Option<u32>) -> String {
     let values: Vec<u64> = runs.iter().filter_map(|r| pick(r).map(u64::from)).collect();
@@ -1063,9 +1145,16 @@ fn milestone(v: Option<u32>) -> String {
     }
 }
 
+/// Réputation envers les trois factions, dans l'ordre des ids : deux tribus
+/// puis la Guilde. Une seule colonne pour trois chiffres — les lire séparément
+/// n'apprendrait rien, c'est leur écart qui parle.
+fn goodwill_cell(g: &[i32; factions::FACTION_COUNT]) -> String {
+    g.iter().map(i32::to_string).collect::<Vec<_>>().join("/")
+}
+
 fn print_table(runs: &[Run]) {
     println!(
-        "{:>6} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>8} {:>7}",
+        "{:>6} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>7}",
         "graine",
         "fin",
         "j10",
@@ -1089,13 +1178,19 @@ fn print_table(runs: &[Run]) {
         "feux",
         "brûlé",
         "armés",
+        "forges",
+        "ling.",
+        "épées",
+        "portées",
+        "réputation",
+        "trib.",
         "humeur",
         "chantier",
         "ms"
     );
     for r in runs {
         println!(
-            "{:>6} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>8} {:>7}",
+            "{:>6} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>7}",
             r.seed,
             r.colonists_end,
             milestone(r.colonists_day10),
@@ -1119,6 +1214,12 @@ fn print_table(runs: &[Run]) {
             r.fires,
             r.burned,
             r.armed,
+            r.forges,
+            r.ingots,
+            r.swords,
+            r.swordsmen,
+            goodwill_cell(&r.goodwill),
+            r.tributes,
             r.mood_percent,
             r.blueprints_left,
             r.elapsed_ms
@@ -1223,6 +1324,53 @@ fn print_summary(runs: &[Run], ticks: u64, elapsed: std::time::Duration) {
             .filter(|r| r.colonists_end > 0 && r.armed == 0)
             .count(),
     );
+    // La chaîne du métal, de bout en bout : la technologie ne dit rien tant
+    // qu'on ne sait pas si la forge est sortie de terre, si elle a fondu quelque
+    // chose, et si ce quelque chose a fini dans une main.
+    println!(
+        "  chaîne du métal        : {} forges, {} lingots, {} épées — colonies à la forge : {}/{n}, épée en main : {} sur {} vivants",
+        runs.iter().map(|r| r.forges).sum::<u32>(),
+        runs.iter().map(|r| r.ingots).sum::<u32>(),
+        runs.iter().map(|r| r.swords).sum::<u32>(),
+        runs.iter().filter(|r| r.forges > 0).count(),
+        runs.iter().map(|r| u64::from(r.swordsmen)).sum::<u64>(),
+        runs.iter().map(|r| u64::from(r.colonists_end)).sum::<u64>(),
+    );
+    // Ce que la ligne précédente ne dit pas : le **moment**. Une métallurgie
+    // acquise la veille de la fin n'ouvre rien.
+    println!(
+        "  métallurgie            : acquise par {}/{n} colonies, au jour moyen {}",
+        runs.iter().filter(|r| r.metallurgy_day.is_some()).count(),
+        mean_milestone(runs, |r| r.metallurgy_day),
+    );
+    // La diplomatie : ce que le tribut a coûté, et où en est la réputation.
+    // Moyenne **par faction**, dans l'ordre des ids (deux tribus, la Guilde) :
+    // une moyenne d'ensemble mélangerait ceux qui nous attaquent et celui qui
+    // nous vend du grain.
+    let means: Vec<String> = (0..factions::FACTION_COUNT)
+        .map(|k| {
+            signed_tenths(mean_tenths_signed(
+                runs.iter().map(|r| i64::from(r.goodwill[k])),
+                n,
+            ))
+        })
+        .collect();
+    println!(
+        "  réputation finale      : {} (deux tribus, Guilde) — colonies détestées d'une tribu : {}/{n}",
+        means.join(" / "),
+        runs.iter()
+            .filter(|r| r
+                .goodwill
+                .iter()
+                .enumerate()
+                .any(|(k, &g)| factions::is_tribe(factions::FACTIONS[k].id) && g < GIFT_GOODWILL))
+            .count(),
+    );
+    println!(
+        "  tributs offerts        : {} en tout — colonies qui en ont offert : {}/{n}",
+        runs.iter().map(|r| r.tributes).sum::<u32>(),
+        runs.iter().filter(|r| r.tributes > 0).count(),
+    );
     println!(
         "  chantiers non finis    : moyenne {} — colonies au chantier propre : {}/{n}",
         tenths(mean_tenths(
@@ -1280,8 +1428,9 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
             .iter()
             .map(|&c| format!("\"{}\": {}", c.label(), r.deaths[c as usize]))
             .collect();
+        let goodwill: Vec<String> = r.goodwill.iter().map(i32::to_string).collect();
         println!(
-            "    {{\"seed\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
+            "    {{\"seed\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"metallurgy_day\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
             r.seed,
             r.colonists_end,
             json_milestone(r.colonists_day10),
@@ -1299,6 +1448,13 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
             r.mood_percent,
             r.armed,
             r.blueprints_left,
+            r.forges,
+            r.ingots,
+            r.swords,
+            r.swordsmen,
+            goodwill.join(", "),
+            r.tributes,
+            json_milestone(r.metallurgy_day),
             r.lost_events,
             r.deaths_announced,
             r.elapsed_ms,
@@ -1342,8 +1498,10 @@ hostiles. Il ne pilote aucun combat et ne soigne personne à la main.
 
 Affiche une ligne par graine (colons vivants en fin et aux jours 10 et 20,
 morts par cause déduite, raids reçus et repoussés, richesse, technologies,
-jours de vivres, bétail, incendies) puis un résumé. Sort toujours en 0 : c'est
-une mesure, pas un test.
+jours de vivres, bétail, incendies, chaîne du métal — forges debout, lingots
+et épées produits, épées portées —, réputation envers les trois factions et
+tributs offerts) puis un résumé. Sort toujours en 0 : c'est une mesure, pas un
+test.
 ";
 
 pub fn campaign(args: &[String]) -> u8 {
@@ -1796,6 +1954,81 @@ mod tests {
             .filter(|c| matches!(c, Command::Gift { .. }))
             .count();
         assert_eq!(gifts, 1, "un seul tribut à la fois : {cmds:?}");
+    }
+
+    /// Ce que le rapport ne voyait pas : la forge, le lingot, l'épée. Aucun
+    /// des trois ne se lit dans l'état final — un lingot se consomme, une épée
+    /// se perd avec son porteur, une forge peut brûler —, ils se comptent donc
+    /// au journal, et c'est ce comptage qu'on vérifie ici.
+    #[test]
+    fn le_journal_compte_les_lingots_et_les_epees() {
+        let mut s = clearing();
+        let (ax, ay) = anchor(&s).expect("repère");
+        // De quoi tenir sans que la faim interrompe l'atelier.
+        s.spawn_item(ItemKind::Berries, 200, ax as u32, (ay + 1) as u32);
+        s.map_mut()
+            .set_feature((ax + 5) as u32, ay as u32, Feature::CraftingSpot);
+        s.map_mut()
+            .set_feature((ax + 5) as u32, (ay + 2) as u32, Feature::Forge);
+        assert_eq!(s.map().forge_count(), 1, "la forge n'est pas debout");
+        s.spawn_item(ItemKind::Ore, 12, (ax + 3) as u32, ay as u32);
+        // Quatre lingots posés d'avance : l'épée n'attend pas la fonte, le test
+        // tient en trois jours de jeu.
+        s.spawn_item(
+            ItemKind::Metal,
+            METAL_PER_SWORD,
+            (ax + 3) as u32,
+            (ay + 1) as u32,
+        );
+        s.step(&[
+            Command::SetCraftTarget {
+                kind: ItemKind::Metal,
+                target: METAL_PER_SWORD + 2,
+            },
+            Command::SetCraftTarget {
+                kind: ItemKind::Sword,
+                target: 1,
+            },
+        ]);
+        let mut journal = Journal::default();
+        for _ in 0..3 * u64::from(TICKS_PER_DAY) {
+            s.step(&[]);
+            if s.tick() % EVENT_POLL == 0 {
+                journal.drain(&s);
+            }
+        }
+        journal.drain(&s);
+        assert!(journal.ingots > 0, "aucun lingot compté");
+        assert!(journal.swords > 0, "aucune épée comptée");
+        assert_eq!(journal.lost, 0, "journal débordé");
+    }
+
+    /// Le tribut et la réputation, l'autre angle mort : `Command::Gift` ne
+    /// laisse qu'un `EventKind::Gift` derrière lui, et la réputation qu'il
+    /// achète ne se lit que faction par faction.
+    #[test]
+    fn le_journal_compte_les_tributs_et_la_reputation_suit() {
+        let mut s = installed();
+        store_wood(&mut s, 150);
+        s.set_goodwill(0, -60);
+        let before = s.faction_goodwill(0);
+        let cmds = plan(&s);
+        assert!(
+            cmds.iter().any(|c| matches!(c, Command::Gift { .. })),
+            "aucun tribut émis : {cmds:?}"
+        );
+        s.step(&cmds);
+        let mut journal = Journal::default();
+        journal.drain(&s);
+        assert_eq!(journal.tributes, 1, "tribut non compté");
+        assert!(
+            s.faction_goodwill(0) > before,
+            "la réputation n'a pas bougé : {before} → {}",
+            s.faction_goodwill(0)
+        );
+        // Les trois factions sont bien lisibles une à une : c'est ce que le
+        // rapport exporte désormais.
+        assert_eq!(factions::FACTIONS.len(), factions::FACTION_COUNT);
     }
 
     #[test]

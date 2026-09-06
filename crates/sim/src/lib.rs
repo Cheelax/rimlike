@@ -1190,15 +1190,20 @@ impl Sim {
 
     /// A\* lancés depuis le début de la partie par la **recherche de travail**
     /// qui vise un poste ou une cible : dépeçage, fabrication, fonte,
-    /// recherche, chasse, réarmement. Même usage que `haul_scans`
-    /// (`tests/jobs_perf.rs`) : le coût de la recherche par tick doit rester
-    /// borné par le nombre de colons, jamais par le nombre de cibles au sol ni
-    /// par la surface de la carte.
+    /// recherche, chasse, réarmement, apprivoisement et abattage. Même usage
+    /// que `haul_scans` (`tests/jobs_perf.rs`, `tests/stations_perf.rs`) : le
+    /// coût de la recherche par tick doit rester borné par le nombre de colons,
+    /// jamais par le nombre de cibles au sol ni par la surface de la carte.
     ///
     /// Ne compte que les recherches passées par un **budget**
     /// (`jobs::Sim::reach_tile`, `reach_adjacent`) : c'est exactement
     /// l'ensemble des recherches corrigées, et c'est ce qui rend le plafond du
-    /// test lisible.
+    /// test lisible. L'élevage y est entré le 2026-09-06 : ses deux recherches
+    /// à cible mouvante (`livestock::Sim::try_start_tame` et
+    /// `try_start_slaughter`) étaient les dernières à passer par
+    /// `colonist_adjacent` en direct, donc les dernières invisibles au
+    /// compteur — et c'est précisément là que se cachait le défaut du §10 du
+    /// rapport de campagne.
     ///
     /// Ce sont bien des **A\* lancés**, pas des candidats examinés : depuis
     /// l'index de régions (`crate::regions`), une cible démontrée hors

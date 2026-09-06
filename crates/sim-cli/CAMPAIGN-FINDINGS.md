@@ -10,7 +10,9 @@ maintenant l'état du 2026-09-06, mesuré sur cinq nouvelles campagnes de
 référence (mêmes graines, mêmes commandes), avec les chiffres du 2026-09-05
 gardés à côté sous « avant réglages ». Les §3 à §7 ne sont **pas** retouchés :
 ils portent l'historique de chaque correction, écrit au moment où elle a été
-faite. Le détail graine par graine des campagnes du 2026-09-06 est au §9.
+faite. Le détail graine par graine des campagnes du 2026-09-06 est au §9, et
+la suite du même jour — les trois graines lentes élucidées, la chaîne du métal
+et la diplomatie enfin mesurées — au **§10**.
 
 **Ce document mesure, il ne règle rien.** Aucune constante du sim n'a été
 touchée pour l'écrire. Chaque constat porte une proposition chiffrée, à
@@ -70,7 +72,11 @@ plusieurs dizaines de minutes.
 ## Constats ouverts au 2026-09-06
 
 Cinq points, chiffrés sur les campagnes du §9, chacun rattaché à une
-constante ou un mécanisme précis, avec une proposition **non appliquée** :
+constante ou un mécanisme précis, avec une proposition **non appliquée**.
+Trois d'entre eux ont été repris le **2026-09-06 dans la journée** (§10) : le
+n°2 est corrigé, les n°3 et n°5 sont mesurés — leur texte d'origine est gardé
+tel quel, suivi de ce que la mesure a donné, y compris quand elle contredit
+l'hypothèse écrite.
 
 1. **La campagne automne-hiver s'est effondrée depuis le 2026-09-05.**
    28/30 colonies éteintes contre 12/30 alors, et surtout **0 colon armé sur
@@ -85,17 +91,20 @@ constante ou un mécanisme précis, avec une proposition **non appliquée** :
    produits tick après tick sur une graine d'automne-hiver, pour trancher
    entre « le bois manque structurellement en hiver » et « l'ordre des
    recettes bloque les arcs ».
-2. **Des graines retombent sous le seuil de perf promis par l'index de
-   régions.** Le §3 visait « aucune graine sous 100 000 ticks/s » ; sur les
-   campagnes du 2026-09-06, trois graines n'y sont plus : chaude/graine 8 à
-   **58 584 ticks/s**, normale/graine 12 à **79 734**, froide/graine 8 à
-   **97 253** (§9). La graine 8 est récurrente (déjà la plus lente avant
-   l'index de régions) ; la métallurgie a ajouté un nouveau balayage minier
-   (`designate_rocks`, `MINE_RADIUS` = 12, `crates/sim-cli/src/campaign.rs`)
-   qui n'existait pas quand le seuil a été mesuré. Proposition : profiler la
-   graine 8 sous climat chaud (`sample`) pour confirmer que le minage est en
-   cause, et lui appliquer le même remède qu'au rangement (compteur de
-   désignations minières, court-circuit).
+2. ~~**Des graines retombent sous le seuil de perf promis par l'index de
+   régions.**~~ **Corrigé le 2026-09-06, voir §10.1.** Le §3 visait « aucune
+   graine sous 100 000 ticks/s » ; trois graines n'y étaient plus :
+   chaude/graine 8 à **58 584 ticks/s**, normale/graine 12 à **79 734**,
+   froide/graine 8 à **97 253** (§9). **L'hypothèse écrite ici — le balayage
+   minier de la métallurgie — était fausse** : quatorze des quinze graines qui
+   atteignent la métallurgie n'ont pas un seul rocher dans le rayon de minage,
+   le balayage ne trouve rien et ne coûte rien. Le vrai coupable était l'ordre
+   des questions dans `try_start_butcher`, `try_start_cook` et
+   `try_start_tame` — la charge cherchée avant l'endroit où la porter — soit
+   98 % des A\* de la graine chaude 8, et des A\* qui **aboutissent**, donc
+   invisibles à l'index de régions. Les trois graines sont maintenant à
+   173 285, 181 665 et 240 668 ticks/s, aucune graine des cinq campagnes n'est
+   sous 100 000, et le tableau du §9 est identique colonne par colonne.
 3. **Le rapport ne voit ni la forge, ni le minerai, ni l'épée.** `research.rs`
    compte maintenant six technologies (`Tech::ALL`, `Preservation`, `Archery`
    et `Masonry` en plus des trois d'origine) et le joueur scripté en vise
@@ -108,6 +117,19 @@ constante ou un mécanisme précis, avec une proposition **non appliquée** :
    recherche est un investissement perdu. Proposition : ajouter
    `forges_built` et `swords_equipped` aux champs JSON de `Run`
    (`crates/sim-cli/src/campaign.rs`).
+
+   **Mesuré le 2026-09-06 (§10.2), et la réponse est franche : la recherche
+   est un investissement perdu.** `campaign` exporte désormais forges,
+   lingots, épées produites, épées portées et jour d'acquisition de la
+   métallurgie. Quinze colonies sur trente paient la métallurgie (jour 16 en
+   moyenne), **une seule** pose sa forge, **aucune** ne fond un lingot ni ne
+   forge une épée ; la seule épée de la campagne a été ramassée sur un pillard
+   mort par un colon qui n'a **aucune** technologie. Deux blocages du joueur
+   scripté, indépendants, expliquent tout : la forge est proposée sur trois
+   cases **de l'entrepôt**, que `Command::Build` refuse dès qu'elles portent
+   une pile, et il n'y a aucun rocher dans `MINE_RADIUS` sur quatorze des
+   quinze graines. Le constat reste ouvert sur ces deux réglages, qui ne sont
+   pas appliqués (ils déplaceraient le tableau du §9).
 4. **L'apprivoisement n'aboutit que dans un quart des colonies.** Le joueur
    scripté le tente dès le jour 8 si les baies dépassent 30
    (`TAME_DAY`, `TAME_BERRIES`) ; le taux de réussite reste bas et stable sur
@@ -116,12 +138,17 @@ constante ou un mécanisme précis, avec une proposition **non appliquée** :
    dans le harnais, les `Command::Tame` envoyés face aux marquages qui
    aboutissent réellement (`livestock_count() > 0`), pour savoir si c'est le
    seuil de baies ou l'échec de la traque qui borne le chiffre.
-5. **La réputation et le tribut ne sont mesurés nulle part.** `plan` envoie
-   un tribut dès qu'une tribu déteste la colonie (`GIFT_GOODWILL` = −40, §1),
-   mais aucune des cinq campagnes n'exporte de compteur de tributs payés ni
-   la pire réputation observée : impossible de dire si le tribut évite des
-   raids ou s'il ne fait que dépenser du bois en pure perte. Proposition :
-   exporter `tributes_paid` et `worst_reputation` dans `Run`.
+5. ~~**La réputation et le tribut ne sont mesurés nulle part.**~~ **Mesurés le
+   2026-09-06, voir §10.2.** `plan` envoie un tribut dès qu'une tribu déteste
+   la colonie (`GIFT_GOODWILL` = −40, §1), et le rapport exporte maintenant la
+   réputation finale **envers chacune des trois factions** — une moyenne
+   d'ensemble mélangerait ceux qui nous attaquent et celui qui nous vend du
+   grain — ainsi que les tributs offerts. Ce qu'on y lit : la réputation bouge
+   vraiment (Guilde à **+43** en moyenne, tribus à −17,6 et −15,1, de −46 à
+   +11 selon la graine), mais le tribut reste rare — **18** en campagne
+   normale, concentrés sur **cinq** colonies sur trente, faute d'atteindre à
+   la fois le seuil de −40 et les 80 bois qu'il exige. Reste ouvert, pour
+   trancher son utilité : compter en face la réputation **perdue** par raid.
 
 ---
 
@@ -240,6 +267,11 @@ cinq en même temps le 2026-09-05 — §1) :
 | durée totale, 30 graines | **28,8 s** | 17,0 s | 29,3 s | 30,4 s | 16,5 s |
 | ticks/s moyen | 449 938 | 760 474 | 442 155 | 426 007 | 784 409 |
 | graine la plus lente | 12 : **79 734** ticks/s | 8 : 175 041 | 8 : 97 253 | 8 : **58 584** | 11 : 195 034 |
+
+Ces trois chiffres en gras sont ceux du constat ouvert n°2, **corrigé le même
+jour** : voir le §10.1 pour la cause et les vitesses d'arrivée (aucune graine
+sous 100 000 ticks/s). Le reste du tableau, lui, ne bouge pas d'une colonne —
+c'est la condition qu'on s'était fixée.
 
 La ligne « technologies acquises » se lit avec une réserve encore plus forte
 qu'avant : `research.rs` compte maintenant **six** technologies (`Tech::ALL` :
@@ -1698,3 +1730,265 @@ rapportés au nombre de colons vivants en fin de partie (0 si la colonie est
 cinq fichiers `--json` bruts (`campaign --seeds 30 --days 30 --size 64
 --json`, avec les mêmes options que ci-dessus) se régénèrent en moins d'une
 minute chacun ; ce sont eux qui ont servi à ce tableau et à celui du §2.
+
+---
+
+## 10. Mesures du 2026-09-06 (suite)
+
+Deux choses ce jour-là, dans cet ordre : **les trois graines lentes** (constat
+ouvert n°2), qui se sont révélées être un défaut du sim et non du joueur
+scripté ; puis **ce que le rapport ne mesurait pas** (constats ouverts n°3 et
+n°5), maintenant exporté — et dont la première lecture est franche.
+
+### 10.1 Les trois graines lentes : l'ordre des questions
+
+#### Ce qu'on cherchait, et ce qu'on a trouvé à la place
+
+Le §9 laissait trois graines sous le seuil de 100 000 ticks/s que l'index de
+régions avait promis : chaude/8 à **58 584**, normale/12 à **79 734**,
+froide/8 à **97 253**. L'hypothèse écrite était le balayage minier ajouté par
+la métallurgie (`designate_rocks`, `MINE_RADIUS` = 12). **Elle est fausse**, et
+c'est la mesure qui l'a dit : sur les quinze graines de la campagne normale qui
+acquièrent la métallurgie, **quatorze n'ont pas un seul rocher** dans le rayon
+de minage (§10.2) — le balayage ne trouve rien et ne coûte rien.
+
+Rejouer une graine seule ne demande aucune option nouvelle : `--seed S` est la
+**première** graine et `--seeds 1` n'en joue qu'une, donc
+
+```bash
+cargo run -p sim-cli --release -- campaign --seeds 1 --seed 8 --days 30 --size 64 --climate 300
+```
+
+est exactement la graine chaude 8 du §9, aux millisecondes près.
+
+Profil `sample` (5 s, chaude/graine 8) : **3 765 échantillons sur 3 856
+(98 %)** dans `tick_pawn` → `find_job` → `try_start`, et l'essentiel dans
+`path::find_path_for`. Des A\*, donc, comme les trois fois précédentes — mais
+pas du tout les mêmes.
+
+Compteurs posés par site d'appel le temps d'une mesure (A\* **lancés**,
+c'est-à-dire ceux que l'index de régions n'a pas déjà écartés, sur les 432 000
+ticks d'une graine) :
+
+| site d'appel | chaude/8 | normale/12 | froide/8 |
+|---|---|---|---|
+| `try_start_tame` | **157 434** | 39 235 | 61 652 |
+| `try_start_butcher` | **111 756** | **68 622** | **97 952** |
+| `try_start_cook` | 1 150 | 2 717 | 452 |
+| `try_start_work` | 540 | 941 | 454 |
+| tous les autres réunis | ~4 800 | ~4 600 | ~2 900 |
+| **total** | **275 634** | **116 152** | **163 439** |
+
+Deux sites font 98 %, 93 % et 98 % du total. Et le chiffre qui a tout
+retourné : sur ces 275 634 A\* de la graine chaude 8, **41 seulement
+échouent**. Ce ne sont donc ni des A\* ratés (le cas des trois correctifs
+précédents, celui que l'index de régions sait supprimer), ni un balayage. Ce
+sont des recherches qui **aboutissent** — et qui ne servent à rien.
+
+#### Le mécanisme, deux fois le même
+
+Une recherche de travail qui porte une charge d'un point à un autre pose deux
+questions : *puis-je atteindre la charge ?* et *puis-je atteindre l'endroit où
+la porter ?* Les deux doivent être vraies. Les poser dans le mauvais ordre ne
+change rien au résultat — et tout au prix, dès que la seconde est
+définitivement fausse.
+
+1. **`try_start_butcher` et `try_start_cook` : la charge avant le poste.**
+   Le code demandait d'abord un chemin vers la dépouille (ou le vivre), puis un
+   poste où la porter. Le commentaire justifiait cet ordre — « le test le moins
+   cher, une recherche contre huit pour un poste » — et c'était vrai **avant**
+   l'index de régions. Depuis, un poste dont aucune voisine ne communique avec
+   le colon se démontre hors d'atteinte en O(1), sans un seul A\* : la question
+   du poste est devenue la **moins** chère des deux, et l'ordre s'est inversé
+   sans que personne ne le remarque.
+
+   Or c'est exactement la situation que le joueur scripté fabrique : il referme
+   son enceinte et pose trois pièges devant l'unique porte (§3, « la surprise :
+   ce n'était pas l'enceinte »). Un colon resté dehors a ses dépouilles sous la
+   main et son poste de fabrication enfermé **pour toujours**. Compteurs sur la
+   graine chaude 8 : **117 545** fois la dépouille atteinte, **117 544** fois
+   aucun poste derrière. Un aller pour rien, à chaque tick, pendant trente
+   jours.
+
+2. **`try_start_tame` : la bête avant le fourrage.**
+   Même inversion, cause différente. Le code vérifiait d'abord que la bête
+   marquée était joignable — un A\* qui aboutit, elle broute à côté — puis
+   cherchait un chemin vers la pile de fourrage. Quand cette pile devient
+   injoignable, `find_path_for` le dit **gratuitement** (la cible est
+   infranchissable, ou dans une autre région) : tout le coût de l'appel est
+   dans la question posée en premier. Et le marquage, lui, ne s'efface jamais —
+   `plan` ne remarque une bête que s'il n'y en a plus aucune de marquée (§1).
+   **157 434 A\*** sur la graine chaude 8, pour zéro tentative
+   d'apprivoisement.
+
+   Ce qui enterre le fourrage n'est d'ailleurs pas anecdotique : le joueur
+   scripté plante son feu de camp, son poste de fabrication et **sa forge** à
+   l'intérieur ou au bord de son entrepôt 4×4 (§10.2) — et une pile sous un
+   élément infranchissable n'est plus atteignable par personne.
+
+Un dernier fil relie les deux : la cadence `RETRY_TICKS` ne les freinait pas.
+Elle ne s'applique qu'au colon qui **tourne à vide** (`Sim::job_retry_due`, et
+c'est délibéré, §3), or ces colonies-là sont actives — elles cultivent, elles
+rangent. Un colon occupé repose donc les deux questions **à chaque tick**.
+
+#### La correction
+
+La même des deux côtés, et c'est celle du rangement et de l'inhumation avant
+elle : **la question la moins chère d'abord.**
+
+- `Sim::stations_out_of_reach` (`crates/sim/src/jobs.rs`) : l'index de régions
+  démontre-t-il qu'aucune voisine d'aucun poste ne communique avec le colon ?
+  Une lecture de tableau par voisine, aucun A\*. Posée en tête de
+  `try_start_butcher` et de `try_start_cook`, avant la moindre recherche vers
+  la charge. Comme partout dans `regions`, seul « non » est une démonstration :
+  index périmé ou case de départ inconnue rendent « peut-être », et tout se
+  passe comme avant.
+- `try_start_tame` (`crates/sim/src/livestock.rs`) : le chemin vers le fourrage
+  est sorti de la boucle des bêtes. Il n'en dépendait pas — mêmes `from`, mêmes
+  coordonnées de pile, aucune mutation entre deux tours —, le sortir ne change
+  donc aucune décision.
+- Au passage, `try_start_tame` et `try_start_slaughter` passent enfin par
+  `reach_tile` / `reach_adjacent`, comme toutes les autres recherches à cible
+  mouvante. C'étaient les deux dernières à appeler `colonist_adjacent` en
+  direct, donc les deux dernières **invisibles à `Sim::job_paths`** : le défaut
+  n'était pas mesurable par le compteur qui existait précisément pour ça.
+  Budget identique au nombre de candidats examinés, aucune décision ne change.
+
+#### Ce que ça donne
+
+| | avant (§9) | après |
+|---|---|---|
+| chaude, graine 8 | **58 584** ticks/s | **173 285** |
+| normale, graine 12 | **79 734** | **181 665** |
+| froide, graine 8 | **97 253** | **240 668** |
+| campagne normale, 30 graines | 28,8 s — 449 938 ticks/s | **24,5 s — 529 693** |
+| campagne chaude | 30,4 s — 426 007 | **22,8 s — 568 346** |
+| campagne froide | 29,3 s — 442 155 | **24,5 s — 528 440** |
+| graine la plus lente, toutes campagnes | 8 : **58 584** | 6 (froide) : **124 388** |
+
+**Aucune graine ne reste sous 100 000 ticks/s**, sur les cinq campagnes.
+
+#### Aucune décision n'a changé
+
+Vérifié de quatre façons, comme pour l'index de régions :
+
+- les **cinq** campagnes de trente graines rendent un JSON identique **octet
+  pour octet** hors `elapsed_ms` (comparaison de deux binaires, l'un compilé à
+  la révision `17603dd`, l'autre sur l'arbre corrigé) — le tableau du §9 tient
+  donc colonne par colonne ;
+- `verify --seed 1 --size 64 --ticks 10000 --scenario demo` : **OK**, et
+  `run` sur le même scénario rend le même hash final, `5fdc5754c55cc434`, avec
+  les mêmes hashes intermédiaires tous les mille ticks ;
+- `fuzz --seed 1 --size 24 --ticks 20000 --runs 4 --commands-per-tick 6` : la
+  sortie entière est identique, durée mise à part ;
+- `cargo test --workspace` et `cargo clippy --workspace --all-targets` passent.
+
+#### Le banc
+
+`crates/sim/tests/stations_perf.rs`. Trois scènes minimales — le seul poste de
+fabrication, le seul feu de camp, le seul entrepôt et ses baies, chacun scellé
+dans un réduit de roche, la charge (ou la bête) au pied des colons — et un
+garde-fou par famille qui vérifie que le travail se fait encore quand la chose
+est à portée. Six cents ticks, trois colons :
+
+| scène | A\* avant | A\* après |
+|---|---|---|
+| poste de fabrication scellé, dépouilles sous la main | 37 | **0** |
+| feu de camp scellé, vivres sous la main | 37 | **0** |
+| fourrage scellé, bête sous la main | 36 | **0** |
+
+Le « avant » est mesuré sur la révision `17603dd` **avec le seul comptage
+ajouté** (sans la correction), pour que les deux colonnes parlent du même
+compteur. Les chiffres sont petits parce que la scène l'est : les colons y sont
+désœuvrés, donc freinés par `RETRY_TICKS`. Dans une colonie qui travaille, le
+frein ne s'applique pas — d'où les 111 756 et 157 434 de la campagne.
+
+### 10.2 Ce que le rapport ne mesurait pas
+
+`campaign` exporte maintenant, au tableau, au résumé et au JSON : **forges**
+debout en fin de partie, **lingots** et **épées** produits (comptés au journal —
+`EventKind::ItemCrafted` d'`ItemKind::Metal` et `WeaponCrafted` d'`ItemKind::Sword`
+—, parce qu'un lingot se consomme et qu'une épée se perd avec son porteur),
+**épées portées** en fin de partie, **réputation** finale envers les trois
+factions, **tributs** offerts, et le **jour** où la métallurgie est tombée.
+
+Deux campagnes rejouées avec ces colonnes (30 graines × 30 jours, 64×64) :
+
+| | normale | chaude (+30 °C) |
+|---|---|---|
+| colonies à 3 technologies | 15/30 | 7/30 |
+| métallurgie acquise (jour moyen) | **16,0** | 14,7 |
+| **forges bâties** | **1** | **1** |
+| **lingots fondus** | **0** | **0** |
+| **épées forgées** | **0** | **0** |
+| épées portées en fin | 1 (sur 74 vivants) | 0 (sur 43) |
+| réputation finale (tribu, tribu, Guilde) | −17,6 / −15,1 / **+43,1** | −17,2 / −12,0 / **+39,0** |
+| colonies détestées d'une tribu (< −40) | 4/30 | 6/30 |
+| **tributs offerts** | **18**, par 5 colonies | **12**, par 4 colonies |
+
+**Le joueur scripté ne forge pas.** C'est net : quinze colonies sur trente
+paient la métallurgie (3 500 points de recherche, la plus chère des six) et une
+seule pose sa forge ; aucune ne fond un lingot, aucune ne forge une épée. La
+seule épée de la campagne est portée par un colon de la graine **21**, qui n'a
+acquis **aucune** technologie : elle a été **ramassée sur un pillard mort**
+(`storyteller::WEAPON_OPTIONS` arme les bandes à l'épée au-delà de
+`SWORD_THREAT_POINTS`), pas fabriquée. La recherche est donc, en l'état, un
+investissement entièrement perdu.
+
+**Pourquoi**, et ce ne sont pas les quatorze jours qui restent après le jour 16
+qui manquent — deux blocages indépendants, tous deux dans le joueur scripté :
+
+1. **La forge est plantée dans l'entrepôt.** `plan` lui propose trois cases,
+   `(ax+3, ay+3)`, `(ax+4, ay+3)` et `(ax+3, ay+4)`, toutes **à l'intérieur**
+   du stockage 4×4 posé en `(ax+2 … ax+5, ay+2 … ay+5)`. Or `Command::Build`
+   refuse une case qui porte une pile (`crates/sim/src/lib.rs`), et un entrepôt
+   qui sert en porte toujours une. Relevé en fin de partie sur la graine 22,
+   qui a 69 pierres en stock et pas de forge : `(35,35)` porte 55 cuirs,
+   `(36,35)` 58 bois, `(35,36)` 3 cuirs. L'ordre est refusé **en silence** —
+   `build_free` teste `build::can_place`, qui ignore les piles — et il repart
+   identique au passage suivant, indéfiniment. La graine 15 est l'unique
+   exception de la campagne : sa case `(35,35)` était libre au moment où la
+   pierre a passé le seuil.
+2. **Il n'y a pas de rocher à miner.** `MINE_RADIUS` = 12 autour du repère, et
+   sur les quinze graines qui atteignent la métallurgie, **quatorze n'ont aucun
+   rocher** dans ce carré (la quinzième en a deux). Le minage ajouté avec le
+   métal ne se déclenche donc jamais : la pierre qu'on voit en stock — 24 à 69
+   unités selon les graines — vient des **largages** (`SUPPLY_TABLE`), pas de
+   la pioche. Et sans veine minée, pas de minerai : `minerai = 0` sur les
+   quinze graines, donc pas un lingot même là où la forge existe.
+
+Proposition (non appliquée, elle changerait le tableau du §9) : sortir les
+cases candidates de la forge de l'entrepôt — le poste de fabrication et
+l'établi, eux, tombent hors zone et se bâtissent bien —, et porter
+`MINE_RADIUS` à la moitié de la carte ou faire chercher le rocher le plus
+proche sans rayon. À mesurer ensuite : la chaîne minerai → lingot → épée
+tient-elle en trente jours, ou faut-il une campagne de soixante ?
+
+**La réputation, elle, bouge — et pas dans le même sens selon l'interlocuteur.**
+La Guilde grimpe à **+43** en moyenne (chaque bande repoussée la fait monter,
+et la colonie en repousse 6,6 sur 6,7) ; les deux tribus tombent à −17,6 et
+−15,1, avec un écart réel d'une graine à l'autre (de −46 à +11) — ce n'est donc
+pas une constante déguisée. Quatre colonies sur trente finissent détestées
+(< −40) d'au moins une tribu.
+
+**Le tribut est rare et ne renverse rien.** Dix-huit tributs en campagne
+normale, soit 720 bois offerts, mais concentrés sur **cinq** colonies : les
+autres n'atteignent jamais le seuil `GIFT_GOODWILL` = −40 **et** les 80 bois
+qu'il faut en caisse. Les deux plus généreuses (graines 9 et 29, six tributs
+chacune) finissent l'une à −8 et l'autre à **−46** : le même effort ne donne
+pas le même résultat, et sur la seconde il ne suffit pas à sortir la tribu de
+la détestation. Proposition : compter, en face, la réputation **perdue** par
+raid, pour savoir si +goodwill par tribut peut seulement compenser le rythme
+des bandes.
+
+### 10.3 État des constats ouverts
+
+- n°2 (graines lentes) : **traité**, §10.1.
+- n°3 (forge, minerai, épée invisibles) : **mesuré**, §10.2 — et la réponse est
+  que la chaîne ne démarre pas. Deux blocages du joueur scripté restent à
+  corriger, avec la mesure qui va avec.
+- n°5 (réputation et tribut) : **mesurés**, §10.2.
+- n°1 (effondrement de l'automne-hiver) et n°4 (apprivoisement) : inchangés,
+  toujours ouverts. Le n°4 gagne toutefois une piste solide : le défaut de
+  §10.1 montre qu'un fourrage enseveli condamne **toutes** les tentatives
+  d'apprivoisement d'une partie, sans rien annoncer.

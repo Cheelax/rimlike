@@ -38,7 +38,7 @@ use crate::animals::{SPECIES_COUNT, Species, straight_walk};
 use crate::combat::EngageOutcome;
 use crate::health::{BodyPart, SEVERITY_MAX};
 use crate::items::ItemKind;
-use crate::jobs::PATH_ATTEMPTS;
+use crate::jobs::{PATH_ATTEMPTS, Reach};
 use crate::map::{Zone, chebyshev};
 use crate::pawn::{Faction, Job, NEED_MAX};
 use crate::work::WorkType;
@@ -534,29 +534,52 @@ impl Sim {
         let Some(&(.., sx, sy, _, k)) = stacks.first() else {
             return false;
         };
+        // **Le fourrage avant la bête.** Le chemin vers la pile ne dépend ni de
+        // la bête ni du tour de boucle : le sortir de la boucle ne change aucune
+        // décision (mêmes `from`, `sx`, `sy`, aucune mutation entre deux tours)
+        // et évite de payer la recherche vers la bête pour découvrir ensuite
+        // que le fourrage est hors d'atteinte. Une pile devenue injoignable —
+        // un feu de camp ou une forge bâtis par-dessus, l'enceinte refermée
+        // entre le colon et l'entrepôt — coûtait sinon un A\* par colon et par
+        // tick, indéfiniment : 157 434 A\* sur une seule graine de campagne
+        // (voir `CAMPAIGN-FINDINGS.md`, §10).
+        //
+        // Son essai a son propre budget : il ne dépend d'aucune bête, il n'a
+        // donc pas à en prendre la place.
+        let mut fodder_budget = 1;
+        let Reach::Path(p) = self.reach_tile(from, (sx, sy), &mut fodder_budget) else {
+            return false;
+        };
+        let mut budget = PATH_ATTEMPTS;
+        let mut chosen = None;
         for &(_, x, y, animal) in candidates.iter().take(PATH_ATTEMPTS) {
             // La bête bouge : le chemin sera refait au fil des ticks. Ici on
             // vérifie seulement qu'elle est atteignable, pour qu'un éleveur ne
             // parte pas après un cerf de l'autre rive.
-            if chebyshev(from, (x, y)) > 1 && self.colonist_adjacent(from, (x, y)).is_none() {
-                continue;
+            if chebyshev(from, (x, y)) > 1 {
+                match self.reach_adjacent(from, (x, y), &mut budget) {
+                    Reach::Path(_) => {}
+                    Reach::Unreachable => continue,
+                    Reach::OutOfBudget => break,
+                }
             }
-            let Some(p) = self.colonist_path(from, (sx, sy)) else {
-                return false;
-            };
-            let pawn = self.pawns[i].id;
-            self.items[k].reserved_by = Some(pawn);
-            let item = self.items[k].id;
-            self.pawns[i].set_path(p);
-            self.pawns[i].job = Job::Tame {
-                animal,
-                item,
-                picked: false,
-                progress: 0,
-            };
-            return true;
+            chosen = Some(animal);
+            break;
         }
-        false
+        let Some(animal) = chosen else {
+            return false;
+        };
+        let pawn = self.pawns[i].id;
+        self.items[k].reserved_by = Some(pawn);
+        let item = self.items[k].id;
+        self.pawns[i].set_path(p);
+        self.pawns[i].job = Job::Tame {
+            animal,
+            item,
+            picked: false,
+            progress: 0,
+        };
+        true
     }
 
     /// Va chercher le fourrage, rejoint la bête, l'amadoue — ou la fait fuir.
@@ -721,8 +744,19 @@ impl Sim {
             candidates.push((chebyshev(from, (x, y)), x, y, p.id));
         }
         candidates.sort_unstable();
+        // Même budget compté que partout ailleurs : la bête bouge, la recherche
+        // est celle d'une cible mouvante (voir `Sim::job_paths`). Six candidats
+        // pour six unités de budget : toutes sont examinées, aucune décision ne
+        // change, mais le coût cesse d'être invisible.
+        let mut budget = PATH_ATTEMPTS;
         for &(d, x, y, animal) in candidates.iter().take(PATH_ATTEMPTS) {
-            if d <= 1 || self.colonist_adjacent(from, (x, y)).is_some() {
+            let reached = d <= 1
+                || match self.reach_adjacent(from, (x, y), &mut budget) {
+                    Reach::Path(_) => true,
+                    Reach::Unreachable => false,
+                    Reach::OutOfBudget => break,
+                };
+            if reached {
                 self.pawns[i].path.clear();
                 self.pawns[i].job = Job::Slaughter {
                     animal,
