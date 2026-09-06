@@ -543,6 +543,17 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-06 : un poste hors d'atteinte ne se retente plus à chaque tick. Dépeçage, fabrication
+  (donc fonte), recherche, chasse, réarmement, apprivoisement et abattage passent par trois
+  pièces communes : le poste est vérifié au démarrage du job, le budget compte les candidats
+  examinés (pas les A* : un poste muré a huit voisines pour six essais), et un colon **qui
+  tourne à vide** ne réessaie qu'un tick sur trente. La cadence sans condition affamait les
+  travaux de fin de liste (46 → 22 technologies en campagne) : elle ne s'applique qu'à
+  `idle_ticks > 0`. Scénario `demo` bit-identique. Campagne : 1 100 → 921 s, 52 → 69 colons
+  vivants. Cinq graines restent lentes à cause de `try_start_work` / `haul` / `farm` /
+  `deliver` : la vraie correction est un index de régions sur `Map` (un A* échoue si et seulement
+  si la cible est hors de la région du marcheur), prochaine tranche.
+
 - 2026-09-06 : le métal est le premier palier verrouillé. La recherche ne donnait que des bonus ;
   la forge exige la technologie Métallurgie (3 500 points), parce qu'un palier de matériau
   justifie un verrou là où un bonus n'en justifiait pas. Le minerai vient des rochers veinés

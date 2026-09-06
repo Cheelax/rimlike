@@ -556,6 +556,12 @@ pub struct Sim {
     /// **hors état**, ni snapshot, ni hash, ni égalité.
     #[serde(skip)]
     firefight_paths: WorkCounter,
+    /// A\* lancés par la **recherche de travail** depuis le début de la partie
+    /// (`jobs::Sim::reach_tile` et `reach_adjacent`, les seules recherches de
+    /// chemin bornées par un budget). Même facture que `haul_scans` :
+    /// **hors état**, ni snapshot, ni hash, ni égalité.
+    #[serde(skip)]
+    job_paths: WorkCounter,
 }
 
 /// Compteur d'observation. Il compte du **travail**, jamais de l'état : il
@@ -657,6 +663,7 @@ impl Sim {
             haul_scans: WorkCounter::default(),
             bury_scans: WorkCounter::default(),
             firefight_paths: WorkCounter::default(),
+            job_paths: WorkCounter::default(),
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -1170,5 +1177,24 @@ impl Sim {
 
     pub(crate) fn count_firefight_path(&mut self, n: u64) {
         self.firefight_paths.add(n);
+    }
+
+    /// A\* lancés depuis le début de la partie par la **recherche de travail**
+    /// qui vise un poste ou une cible : dépeçage, fabrication, fonte,
+    /// recherche, chasse, réarmement. Même usage que `haul_scans`
+    /// (`tests/jobs_perf.rs`) : le coût de la recherche par tick doit rester
+    /// borné par le nombre de colons, jamais par le nombre de cibles au sol ni
+    /// par la surface de la carte.
+    ///
+    /// Ne compte que les recherches passées par un **budget**
+    /// (`jobs::Sim::reach_tile`, `reach_adjacent`) : c'est exactement
+    /// l'ensemble des recherches corrigées, et c'est ce qui rend le plafond du
+    /// test lisible.
+    pub fn job_paths(&self) -> u64 {
+        self.job_paths.get()
+    }
+
+    pub(crate) fn count_job_path(&mut self, n: u64) {
+        self.job_paths.add(n);
     }
 }

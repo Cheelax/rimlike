@@ -28,6 +28,29 @@ use crate::{EventKind, Sim, TICKS_PER_DAY, Tech, Weather};
 
 /// Nombre maximal de candidats pour lesquels on tente un A* par recherche.
 pub(crate) const PATH_ATTEMPTS: usize = 6;
+
+/// Cadence de réessai des recherches de travail qui visent un **poste** ou une
+/// **cible** dont rien ne garantit qu'elle soit atteignable : dépeçage,
+/// fabrication, fonte, recherche, chasse, réarmement. Une demi-seconde de jeu.
+///
+/// Ce qui coûte n'est pas l'A\* qui aboutit — il s'arrête sur sa cible — mais
+/// celui qui **échoue** : il explore toute la région où se tient le colon
+/// avant de rendre `None`. Entre deux essais, ni les murs, ni les postes, ni
+/// les régions de la carte ne bougent : un colon inactif qui recherche à
+/// chaque tick paie trente fois le même prix pour la même réponse.
+///
+/// **Sans état ajouté.** Le pas se lit dans `Sim::tick`, l'identité du colon et
+/// son `idle_ticks`, tous déjà sérialisés : rien de plus au snapshot, donc rien
+/// de plus au hash. Et la cadence ne s'applique qu'au colon qui **tourne à
+/// vide** — voir `Sim::job_retry_due`, qui dit pourquoi.
+///
+/// Contrairement à `fire::FIREFIGHT_RETRY`, la phase est **décalée par colon**
+/// (`(tick + id) % RETRY_TICKS`) : aucun de ces travaux n'enchaîne deux
+/// questions dans le même tick, on peut donc étaler la charge au lieu de faire
+/// chercher tout le monde ensemble. C'est aussi ce qui rend la salve inutile
+/// ici — deux colons ne testent presque jamais les mêmes postes au même tick
+/// (voir `Sim::reach_station`).
+pub const RETRY_TICKS: u64 = 30;
 /// Un colon en crise ne change de direction que tous ces ticks.
 const BREAK_WANDER_INTERVAL: u64 = 30;
 /// Chance par tick qu'un colon au moral à zéro craque : une fois toutes les
@@ -65,6 +88,20 @@ impl Slot {
     fn accepts_anything(self) -> bool {
         self != Slot::Taken
     }
+}
+
+/// Ce qu'une recherche de chemin **bornée** a pu conclure. Même distinction
+/// que `fire::Beside`, et pour la même raison : seul `Unreachable` est une
+/// démonstration — toutes les cases visées ont été essayées — et seule une
+/// démonstration autorise à rayer la cible pour le reste de l'appel.
+/// `OutOfBudget` ne dit rien : le budget s'est épuisé avant la fin.
+enum Reach {
+    /// Chemin trouvé.
+    Path(Vec<path::Tile>),
+    /// Toutes les cases visées ont été essayées, aucune n'est atteignable.
+    Unreachable,
+    /// Le budget d'A\* s'est épuisé avant la fin : on ne sait pas.
+    OutOfBudget,
 }
 
 /// Minerai tiré d'un rocher veiné : `ORE_YIELD_MIN` à
@@ -473,8 +510,18 @@ impl Sim {
             // tampons de priorités ne bougent. Le champ passe d'abord — un
             // plant mûr ne se garde pas — puis l'abattoir, puis
             // l'apprivoisement, qui est le plus long et le moins pressé.
+            //
+            // Les deux dernières visent une **bête**, donc une case qui bouge :
+            // elles vérifient l'accès par `colonist_adjacent`, six candidates
+            // fois huit voisines, et le refaisaient à chaque tick tant qu'une
+            // bête marquée restait de l'autre côté d'un ruisseau. La cadence
+            // (`RETRY_TICKS`) se pose ici plutôt que dans `livestock` : c'est
+            // le seul endroit où les deux recherches se lisent ensemble, et
+            // elles répondent au même ordre du joueur.
             WorkType::Farm => {
-                self.try_start_farm(i) || self.try_start_slaughter(i) || self.try_start_tame(i)
+                self.try_start_farm(i)
+                    || (self.job_retry_due(i)
+                        && (self.try_start_slaughter(i) || self.try_start_tame(i)))
             }
             WorkType::Research => self.try_start_research(i),
             // Enterrer un cadavre suit le rangement : même priorité, même
@@ -1016,6 +1063,157 @@ impl Sim {
         neighbours
             .iter()
             .find_map(|&(_, x, y)| path::find_path_for(&self.map, from, (x, y), walker))
+    }
+
+    // ------------------------------------------------------------------
+    // Recherches de chemin bornées (voir `RETRY_TICKS`)
+    // ------------------------------------------------------------------
+
+    /// Le colon `i` peut-il relancer une recherche de travail coûteuse ?
+    ///
+    /// **Oui tant qu'il ne tourne pas à vide.** `Pawn::idle_ticks` retombe à
+    /// zéro dès qu'un colon prend un chemin, donc dès qu'il a trouvé à faire :
+    /// celui qui enchaîne les besognes cherche à chaque tick comme avant,
+    /// mêmes cibles, sans une seconde de retard. La distinction n'est pas
+    /// cosmétique — c'est ce qui sépare cette cadence de celle du feu. Freiner
+    /// un colon **occupé** ne l'aurait pas fait attendre : il serait tombé sur
+    /// le travail suivant de `WorkType::ORDER`, où la recherche à l'établi est
+    /// avant-dernière et le rangement dernier. Mesuré sur trente graines de
+    /// campagne : la moitié des technologies en moins.
+    ///
+    /// **Non s'il n'a rien trouvé au tick précédent** : c'est exactement le cas
+    /// pathologique — la même recherche, le même échec, soixante fois par
+    /// seconde. Il repassera dans `RETRY_TICKS` ticks au plus, la phase décalée
+    /// par son identité pour que les colons ne cherchent pas tous ensemble.
+    ///
+    /// **Sans état ajouté** : `idle_ticks`, le tick et l'identité sont déjà là
+    /// et déjà sérialisés. Rien de plus au snapshot, donc rien de plus au hash.
+    fn job_retry_due(&self, i: usize) -> bool {
+        self.pawns[i].idle_ticks == 0
+            || (self.tick + u64::from(self.pawns[i].id)) % RETRY_TICKS == 0
+    }
+
+    /// Chemin d'un colon vers une case, pour un essai du budget.
+    ///
+    /// Le budget compte des **candidats examinés**, pas des A\* : une case
+    /// franchissable en vaut un, un poste en vaut un aussi bien qu'il coûte ses
+    /// huit voisines (voir `reach_adjacent`). Compter les A\* serait plus fin
+    /// mais rendrait un poste muré **indémontrable** — huit voisines pour six
+    /// essais — donc jamais inscriptible au tableau des inatteignables, et la
+    /// recherche buterait éternellement sur le même. `Sim::job_paths`, lui,
+    /// compte bien les A\* : c'est la mesure, pas la borne.
+    fn reach_tile(&mut self, from: (u32, u32), to: (u32, u32), budget: &mut usize) -> Reach {
+        if *budget == 0 {
+            return Reach::OutOfBudget;
+        }
+        *budget -= 1;
+        self.count_job_path(1);
+        match self.colonist_path(from, to) {
+            Some(p) => Reach::Path(p),
+            None => Reach::Unreachable,
+        }
+    }
+
+    /// Chemin d'un colon vers une voisine franchissable de `target`, la plus
+    /// proche d'abord : version **bornée et comptée** de `colonist_adjacent`.
+    ///
+    /// C'est ici que se jouait le point chaud. `path_adjacent_for` essaie
+    /// jusqu'à huit voisines et rend `None` quand aucune n'aboutit : sur un
+    /// poste muré, c'est **huit** A\* qui explorent chacun toute la région du
+    /// colon, et l'appelant recommençait au tick suivant. Le budget borne le
+    /// nombre de postes examinés, `RETRY_TICKS` espace les tentatives, et
+    /// `Sim::job_paths` compte ce que tout cela coûte vraiment.
+    fn reach_adjacent(
+        &mut self,
+        from: (u32, u32),
+        target: (u32, u32),
+        budget: &mut usize,
+    ) -> Reach {
+        if *budget == 0 {
+            return Reach::OutOfBudget;
+        }
+        *budget -= 1;
+        let mut neighbours: Vec<(u32, u32, u32)> = Vec::new();
+        for dy in -1i32..=1 {
+            for dx in -1i32..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let nx = target.0 as i32 + dx;
+                let ny = target.1 as i32 + dy;
+                if self.map.in_bounds(nx, ny)
+                    && self
+                        .map
+                        .passable_for(nx as u32, ny as u32, Walker::COLONIST)
+                {
+                    let n = (nx as u32, ny as u32);
+                    neighbours.push((chebyshev(from, n), n.0, n.1));
+                }
+            }
+        }
+        neighbours.sort_unstable();
+        for (_, x, y) in neighbours {
+            self.count_job_path(1);
+            if let Some(p) = path::find_path_for(&self.map, from, (x, y), Walker::COLONIST) {
+                return Reach::Path(p);
+            }
+        }
+        // Toutes les voisines tenables essayées, aucune n'aboutit : la cible
+        // est hors d'atteinte, et c'est une démonstration — l'appelant peut la
+        // rayer pour le reste de l'appel.
+        Reach::Unreachable
+    }
+
+    /// Version bornée et comptée de `path_to_work` : sur la case si elle est
+    /// franchissable, sinon sur une voisine.
+    fn reach_work(&mut self, from: (u32, u32), target: (u32, u32), budget: &mut usize) -> Reach {
+        if self.map.passable_for(target.0, target.1, Walker::COLONIST) {
+            return self.reach_tile(from, target, budget);
+        }
+        self.reach_adjacent(from, target, budget)
+    }
+
+    /// Le poste le plus proche de `near` où le colon peut **effectivement** se
+    /// poster, et le chemin pour y aller. Les postes sont départagés par
+    /// `(distance, x, y)` comme partout ailleurs, et l'on s'arrête au premier
+    /// atteignable.
+    ///
+    /// Sans cette vérification au démarrage, un colon retenait le poste le
+    /// plus proche sans se demander s'il y menait un chemin : il partait
+    /// chercher sa charge, la ramassait, découvrait le mur dans `do_butcher`
+    /// ou `pick_ingredient`, reposait tout — et recommençait au tick suivant.
+    ///
+    /// `blocked` retient les postes démontrés hors d'atteinte **pendant cet
+    /// appel** : la démonstration coûte cher et la réponse ne dépend pas de la
+    /// charge à porter, un seul colon la paie une seule fois par salve. Ce
+    /// n'est pas de l'état : la liste naît et meurt dans l'appelant.
+    ///
+    /// `from` est le point de départ du colon, `near` celui dont on mesure la
+    /// distance (la dépouille à porter, par exemple). Les deux vivent dans la
+    /// même région dès lors que l'appelant a vérifié qu'il pouvait rejoindre
+    /// sa charge : tester depuis l'un ou l'autre donne la même réponse.
+    fn reach_station(
+        &mut self,
+        from: (u32, u32),
+        stations: &[(u32, u32)],
+        near: (u32, u32),
+        budget: &mut usize,
+        blocked: &mut Vec<(u32, u32)>,
+    ) -> Option<((u32, u32), Vec<path::Tile>)> {
+        let mut sorted: Vec<(u32, u32, u32)> = stations
+            .iter()
+            .filter(|s| !blocked.contains(s))
+            .map(|&(x, y)| (chebyshev(near, (x, y)), x, y))
+            .collect();
+        sorted.sort_unstable();
+        for (_, x, y) in sorted {
+            match self.reach_adjacent(from, (x, y), budget) {
+                Reach::Path(p) => return Some(((x, y), p)),
+                Reach::Unreachable => blocked.push((x, y)),
+                Reach::OutOfBudget => return None,
+            }
+        }
+        None
     }
 
     /// Cherche une pile au sol à porter à l'entrepôt.
@@ -1642,11 +1840,14 @@ impl Sim {
     // Pièges à pointes
     // ------------------------------------------------------------------
 
-    /// Va réarmer le piège déclenché le plus proche. Court-circuit avant tout
-    /// balayage : le compteur de la carte. La case est réservée comme celle
-    /// d'un travail désigné — deux colons ne réarment pas le même piège.
+    /// Va réarmer le piège déclenché le plus proche. Deux court-circuits avant
+    /// tout balayage : le compteur de la carte, puis le tour du colon
+    /// (`RETRY_TICKS`) — un piège resté du mauvais côté d'une brèche refermée
+    /// se redemandait six fois par tick, indéfiniment. La case est réservée
+    /// comme celle d'un travail désigné : deux colons ne réarment pas le même
+    /// piège.
     fn try_start_rearm(&mut self, i: usize) -> bool {
-        if self.map.sprung_trap_count() == 0 {
+        if self.map.sprung_trap_count() == 0 || !self.job_retry_due(i) {
             return false;
         }
         let from = self.pawns[i].tile();
@@ -1659,11 +1860,14 @@ impl Sim {
             }
         }
         traps.sort_unstable();
+        let mut budget = PATH_ATTEMPTS;
         for &(_, x, y) in traps.iter().take(PATH_ATTEMPTS) {
             // Un piège déclenché est franchissable par tout le monde : le
             // colon va se planter dessus pour le remonter.
-            let Some(p) = self.path_to_work(from, (x, y)) else {
-                continue;
+            let p = match self.reach_work(from, (x, y), &mut budget) {
+                Reach::Path(p) => p,
+                Reach::Unreachable => continue,
+                Reach::OutOfBudget => break,
             };
             let pawn = self.pawns[i].id;
             self.reservations.push(Reservation { x, y, pawn });
@@ -1749,6 +1953,14 @@ impl Sim {
             .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
             .collect();
         stacks.sort_unstable();
+        // La cuisine garde son feu **non vérifié** au démarrage, contrairement
+        // au dépeçage : elle est le seul de ces travaux que le scénario `demo`
+        // exerce, donc le seul qui ne puisse pas recevoir la cadence de
+        // `RETRY_TICKS` sans déplacer le hash de référence. Or vérifier le
+        // poste sans pouvoir espacer les essais coûte **plus** que la boucle
+        // qu'on voulait supprimer : mesuré sur la graine 3 de la campagne,
+        // 71 000 → 581 000 A\*. La vérification et la cadence vont ensemble ou
+        // pas du tout (voir `CAMPAIGN-FINDINGS.md`, §3).
         for &(_, sx, sy, k) in stacks.iter().take(PATH_ATTEMPTS) {
             let Some(&(_, fx, fy)) = fires
                 .iter()
@@ -1926,14 +2138,20 @@ impl Sim {
         })
     }
 
-    /// Fabrique s'il y a un atelier libre, un objectif non atteint et de quoi
-    /// tenir la recette. Les piles nécessaires sont réservées d'un coup : un
-    /// colon ne part pas chercher du bois pour un épieu sans pierre.
+    /// Fabrique s'il y a un atelier libre **atteignable**, un objectif non
+    /// atteint et de quoi tenir la recette. Les piles nécessaires sont
+    /// réservées d'un coup : un colon ne part pas chercher du bois pour un
+    /// épieu sans pierre.
+    ///
+    /// Comme le dépeçage : trois court-circuits avant le premier A\* (aucun
+    /// atelier, aucun objectif posé, ce n'est pas le tour du colon), puis un
+    /// budget partagé par l'atelier et la première pile. L'atelier est vérifié
+    /// **ici** — un atelier muré retenu au démarrage se payait autrement dans
+    /// `pick_ingredient`, à chaque tick, huit A\* ratés à la fois.
     fn try_start_craft(&mut self, i: usize) -> bool {
-        // Deux court-circuits avant tout le reste : aucun atelier, ou aucun
-        // objectif posé.
         if (self.map.crafting_spot_count() == 0 && self.map.forge_count() == 0)
             || self.craft_targets.iter().all(|&t| t == 0)
+            || !self.job_retry_due(i)
         {
             return false;
         }
@@ -1942,21 +2160,25 @@ impl Sim {
             return false;
         };
         let station = recipe.station;
-        let mut spots: Vec<(u32, u32, u32)> = Vec::new();
+        let mut spots: Vec<(u32, u32)> = Vec::new();
         for y in 0..self.map.height() {
             for x in 0..self.map.width() {
                 if self.map.feature(x, y) == station && !self.is_reserved(x, y) {
-                    spots.push((chebyshev(from, (x, y)), x, y));
+                    spots.push((x, y));
                 }
             }
         }
-        spots.sort_unstable();
-        let Some(&(_, fx, fy)) = spots.first() else {
+        let mut budget = PATH_ATTEMPTS;
+        let mut blocked: Vec<(u32, u32)> = Vec::new();
+        // L'atelier le plus proche du colon : c'est lui qui va y retourner
+        // autant de fois que la recette a d'ingrédients.
+        let Some(((fx, fy), _)) = self.reach_station(from, &spots, from, &mut budget, &mut blocked)
+        else {
             return false;
         };
         let first = picks[0];
         let target = (self.items[first].x, self.items[first].y);
-        let Some(p) = self.colonist_path(from, target) else {
+        let Reach::Path(p) = self.reach_tile(from, target, &mut budget) else {
             return false;
         };
         let pawn = self.pawns[i].id;
@@ -2274,12 +2496,16 @@ impl Sim {
     /// Part chasser le gibier marqué le plus proche. **Un colon à mains nues
     /// ne chasse pas** : on ne court pas après un cerf pour l'étrangler.
     fn try_start_hunt(&mut self, i: usize) -> bool {
-        // Deux court-circuits : pas d'arme, ou rien de marqué sur la carte.
+        // Trois court-circuits : pas d'arme, rien de marqué sur la carte, ou
+        // ce n'est pas le tour du colon. Le dernier vaut son pesant : une bête
+        // marquée de l'autre rive coûtait six candidats fois huit voisines,
+        // soit quarante-huit A\* ratés, à chaque tick et pour chaque chasseur.
         if self.pawns[i].weapon.is_none()
             || !self
                 .pawns
                 .iter()
                 .any(|p| p.hunted && p.faction == Faction::Animal && p.is_alive())
+            || !self.job_retry_due(i)
         {
             return false;
         }
@@ -2296,11 +2522,22 @@ impl Sim {
             candidates.push((chebyshev(from, (x, y)), x, y, p.id));
         }
         candidates.sort_unstable();
+        let mut budget = PATH_ATTEMPTS;
         for &(d, x, y, target) in candidates.iter().take(PATH_ATTEMPTS) {
             // La bête bouge : le chemin sera refait à chaque tick par
             // `engage`. Ici on vérifie seulement qu'elle est atteignable, pour
             // qu'un chasseur ne parte pas après un lapin de l'autre rive.
-            if d <= 1 || self.colonist_adjacent(from, (x, y)).is_some() {
+            let reachable = match d {
+                0 | 1 => true,
+                _ => match self.reach_adjacent(from, (x, y), &mut budget) {
+                    Reach::Path(_) => true,
+                    Reach::Unreachable => false,
+                    // Budget épuisé : on ne sait pas, et on ne le saura pas ce
+                    // tick-ci. Le chasseur repassera à la prochaine salve.
+                    Reach::OutOfBudget => break,
+                },
+            };
+            if reachable {
                 self.pawns[i].path.clear();
                 self.pawns[i].job = Job::Hunt { target };
                 return true;
@@ -2327,17 +2564,28 @@ impl Sim {
         }
     }
 
-    /// Dépèce s'il y a un poste libre et une dépouille au sol. Aucun objectif à
-    /// régler : dès qu'une bête est morte, on la débite (voir
+    /// Dépèce s'il y a un poste libre **atteignable** et une dépouille au sol.
+    /// Aucun objectif à régler : dès qu'une bête est morte, on la débite (voir
     /// `craft::BUTCHER_TICKS`).
+    ///
+    /// Trois court-circuits avant le premier A\* : pas de poste (un compteur),
+    /// pas de dépouille (un test sur les piles), et ce n'est pas le tour du
+    /// colon (`RETRY_TICKS`). Le budget borne ensuite les recherches de
+    /// chemin, dépouilles et postes confondus.
+    ///
+    /// **Le poste est vérifié ici**, pas dans `do_butcher` : c'était le point
+    /// chaud du profil de campagne (`CAMPAIGN-FINDINGS.md`, §3, « le poste hors
+    /// d'atteinte »). Un poste muré était retenu quand même, le
+    /// colon allait chercher la dépouille, la ramassait, découvrait qu'aucun
+    /// chemin n'y menait, la reposait — et recommençait au tick suivant, huit
+    /// A\* ratés à chaque fois.
     fn try_start_butcher(&mut self, i: usize) -> bool {
-        // Deux court-circuits avant tout balayage : pas de poste, pas de
-        // dépouille. Le premier est un compteur, le second un test sur les piles.
         if self.map.crafting_spot_count() == 0
             || !self
                 .items
                 .iter()
                 .any(|s| s.kind.is_animal_corpse() && s.reserved_by.is_none() && s.count > 0)
+            || !self.job_retry_due(i)
         {
             return false;
         }
@@ -2361,30 +2609,39 @@ impl Sim {
             .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
             .collect();
         stacks.sort_unstable();
+        let mut budget = PATH_ATTEMPTS;
+        let mut blocked: Vec<(u32, u32)> = Vec::new();
         for &(_, sx, sy, k) in stacks.iter().take(PATH_ATTEMPTS) {
+            // La dépouille **avant** le poste : c'est le test le moins cher
+            // (une recherche, contre huit pour un poste dont on essaie les
+            // voisines). Une dépouille hors d'atteinte ne fait donc pas payer
+            // le poste, et un appel qui n'aboutit à rien coûte un A\* au lieu
+            // de neuf.
+            let p = match self.reach_tile(from, (sx, sy), &mut budget) {
+                Reach::Path(p) => p,
+                Reach::Unreachable => continue,
+                Reach::OutOfBudget => break,
+            };
             // Le poste le plus proche de la dépouille, pas du colon : c'est
             // elle qu'il va falloir porter.
-            let Some(&(_, fx, fy)) = spots
-                .iter()
-                .map(|&(x, y)| (chebyshev((sx, sy), (x, y)), x, y))
-                .min()
-                .as_ref()
-            else {
-                return false;
-            };
-            if let Some(p) = self.colonist_path(from, (sx, sy)) {
-                let pawn = self.pawns[i].id;
-                self.items[k].reserved_by = Some(pawn);
-                self.reservations.push(Reservation { x: fx, y: fy, pawn });
-                let item = self.items[k].id;
-                self.pawns[i].set_path(p);
-                self.pawns[i].job = Job::Butcher {
-                    spot: (fx, fy),
-                    item,
-                    picked: false,
-                    progress: 0,
-                };
-                return true;
+            match self.reach_station(from, &spots, (sx, sy), &mut budget, &mut blocked) {
+                Some(((fx, fy), _)) => {
+                    let pawn = self.pawns[i].id;
+                    self.items[k].reserved_by = Some(pawn);
+                    self.reservations.push(Reservation { x: fx, y: fy, pawn });
+                    let item = self.items[k].id;
+                    self.pawns[i].set_path(p);
+                    self.pawns[i].job = Job::Butcher {
+                        spot: (fx, fy),
+                        item,
+                        picked: false,
+                        progress: 0,
+                    };
+                    return true;
+                }
+                // Plus un poste atteignable, ou budget épuisé : les dépouilles
+                // suivantes visent les mêmes postes, elles n'iront pas plus loin.
+                None => break,
             }
         }
         false
@@ -2418,6 +2675,10 @@ impl Sim {
                 self.items.remove(j);
             }
             self.pawns[i].carrying = Some((kind, 1));
+            // `try_start_butcher` a démontré que ce poste était atteignable
+            // avant d'envoyer le colon : l'échec ici veut dire qu'un mur s'est
+            // élevé entre-temps, pas qu'on a retenu un poste muré. C'est la
+            // différence entre un cas rare et une boucle à chaque tick.
             match self.colonist_adjacent(here, spot) {
                 Some(p) => {
                     self.pawns[i].set_path(p);
@@ -2466,34 +2727,40 @@ impl Sim {
     // Recherche
     // ------------------------------------------------------------------
 
-    /// Cherche s'il y a une technologie en cours et un établi libre. Deux
-    /// court-circuits avant tout balayage : sans établi ou sans technologie
-    /// choisie, un colon inactif ne parcourt pas la carte.
+    /// Cherche s'il y a une technologie en cours et un établi libre. Trois
+    /// court-circuits avant le premier A\* : sans établi ou sans technologie
+    /// choisie, un colon inactif ne parcourt pas la carte ; et hors de son
+    /// tour (`RETRY_TICKS`), il ne teste pas un établi muré une trente-et-
+    /// unième fois. Le budget borne le reste : la boucle valait jusqu'à six
+    /// établis fois huit voisines, soit quarante-huit A\* ratés par tick.
     fn try_start_research(&mut self, i: usize) -> bool {
-        if self.map.research_bench_count() == 0 || self.research.current().is_none() {
+        if self.map.research_bench_count() == 0
+            || self.research.current().is_none()
+            || !self.job_retry_due(i)
+        {
             return false;
         }
         let from = self.pawns[i].tile();
-        let mut benches: Vec<(u32, u32, u32)> = Vec::new();
+        let mut benches: Vec<(u32, u32)> = Vec::new();
         for y in 0..self.map.height() {
             for x in 0..self.map.width() {
                 if self.map.feature(x, y) == Feature::ResearchBench && !self.is_reserved(x, y) {
-                    benches.push((chebyshev(from, (x, y)), x, y));
+                    benches.push((x, y));
                 }
             }
         }
-        benches.sort_unstable();
-        for &(_, bx, by) in benches.iter().take(PATH_ATTEMPTS) {
-            let Some(p) = self.colonist_adjacent(from, (bx, by)) else {
-                continue;
-            };
-            let pawn = self.pawns[i].id;
-            self.reservations.push(Reservation { x: bx, y: by, pawn });
-            self.pawns[i].set_path(p);
-            self.pawns[i].job = Job::Research { bench: (bx, by) };
-            return true;
-        }
-        false
+        let mut budget = PATH_ATTEMPTS;
+        let mut blocked: Vec<(u32, u32)> = Vec::new();
+        let Some(((bx, by), p)) =
+            self.reach_station(from, &benches, from, &mut budget, &mut blocked)
+        else {
+            return false;
+        };
+        let pawn = self.pawns[i].id;
+        self.reservations.push(Reservation { x: bx, y: by, pawn });
+        self.pawns[i].set_path(p);
+        self.pawns[i].job = Job::Research { bench: (bx, by) };
+        true
     }
 
     /// Une séance à l'établi. Les points vont dans `Sim::research`, pas dans le

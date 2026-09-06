@@ -282,6 +282,168 @@ scripté des campagnes ne creusant jamais de tombe (§8, biais n°2), ce défaut
 pesait sur aucun chiffre de ce rapport — il attendait le premier joueur qui
 enterre ses morts.
 
+### Le même défaut ailleurs : le poste hors d'atteinte (corrigé le 2026-09-06)
+
+**C'est un défaut du sim, pas un réglage** — le troisième de la famille, après
+le rangement et la lutte contre le feu (§6, « Le coût de la lutte »).
+
+Profil `sample` sur une graine de campagne tombée à **2 600 ticks/s** : **88 %
+des piles** dans `do_butcher` → `path_adjacent_for` → `path::find_path_for`.
+Le mécanisme, une fois de plus, est celui de l'A\* qui **échoue** : il explore
+toute la région où se tient le colon avant de rendre `None`, là où celui qui
+aboutit s'arrête sur sa cible.
+
+Ce qui le déclenchait est particulier à cette famille de travaux : un job qui
+vise un **poste** (poste de fabrication, forge, feu de camp) retenait le poste
+le plus proche de sa charge **sans vérifier qu'un chemin y menait**. Le colon
+partait chercher sa dépouille, la ramassait, découvrait le mur dans `do_butcher`,
+la reposait — et recommençait au tick suivant, huit A\* ratés à chaque tour (une
+par voisine du poste). Un poste muré, ou simplement laissé hors de l'enceinte
+qu'on vient de fermer, suffisait. Les recherches qui visent un poste sans rien
+porter (`try_start_research`) ou une cible mouvante (`try_start_hunt`) avaient
+la même note sans même la boucle : six candidats fois huit voisines, quarante-
+huit A\* ratés par tick et par colon inactif.
+
+Trois pièces, les mêmes partout, dans `crates/sim/src/jobs.rs` :
+
+1. **Le poste est vérifié au démarrage** (`Sim::reach_station`) : on retient le
+   plus proche **atteignable**, départagé par `(distance, x, y)` comme partout
+   ailleurs. Plus de ramasse-repose.
+2. **Un budget par recherche.** `PATH_ATTEMPTS` = 6 **candidats examinés** pour
+   tout l'appel — et non six A\*, sans quoi un poste muré (huit voisines) serait
+   indémontrable, donc jamais inscriptible au tableau des inatteignables. Une
+   liste locale à l'appel retient les postes démontrés hors d'atteinte : la
+   démonstration coûte cher et ne dépend pas de la charge à porter.
+3. **Une cadence de réessai, pour le colon qui tourne à vide.**
+   `jobs::RETRY_TICKS` = 30 : entre deux essais, ni les murs, ni les postes, ni
+   les régions de la carte ne bougent. **Sans état ajouté** —
+   `(tick + pawn.id) % 30` et `Pawn::idle_ticks`, tous deux déjà sérialisés,
+   rien de plus au snapshot — et la phase est décalée par colon, ce qu'on ne
+   pouvait pas faire pour le feu (§6) : aucun de ces travaux n'enchaîne deux
+   questions dans le même tick.
+
+   La condition « à vide » n'est pas un raffinement, c'est une correction.
+   Freinée sans condition, la cadence ne faisait pas attendre le colon : elle le
+   faisait **tomber sur le travail suivant** de `WorkType::ORDER`, où la
+   recherche à l'établi est avant-dernière et le rangement dernier. Mesuré sur
+   les trente graines : 46 technologies acquises → 22. `Pawn::idle_ticks`
+   retombe à zéro dès qu'un colon prend un chemin : celui qui enchaîne les
+   besognes cherche à chaque tick comme avant, celui qui n'a rien trouvé au
+   tick précédent attend son tour.
+
+Traités : dépeçage, fabrication (donc la fonte, même code), recherche à
+l'établi, chasse, réarmement des pièges, abattage et apprivoisement (leur
+cadence se pose au dispatch de `WorkType::Farm`).
+
+**Pas la cuisine**, et c'est instructif. Elle a le même défaut — le feu de camp
+retenu sans vérification, la découverte du mur dans `do_cook` — mais c'est le
+seul de ces travaux que le scénario `demo` exerce, donc le seul qui ne puisse
+pas recevoir la cadence sans déplacer le hash de référence. La vérification lui
+a été posée seule, puis retirée : **sans cadence, elle coûte plus cher que la
+boucle qu'elle supprime** (graine 3 de la campagne, 71 000 → 581 000 A\*). La
+boucle ne se paie qu'une fois par aller-retour du colon ; la vérification, elle,
+se paie à **chaque** recherche. Les trois pièces vont ensemble ou pas du tout.
+
+### Mesure (après) — le poste hors d'atteinte
+
+Banc : `crates/sim/tests/jobs_perf.rs`. Un réduit de roche à dix cases de trois
+colons, le poste de fabrication au milieu ; ses huit voisines sont
+franchissables et pourtant hors d'atteinte — c'est le pire cas. Soixante
+dépouilles au sol, un objectif d'arcs et le bois pour un. 600 ticks, `release` :
+
+| scène | A\* avant | A\* après | ticks/s avant | ticks/s après |
+|---|---|---|---|---|
+| 96×96, 60 dépouilles | 2 718 | **634** | 377 | **1 549** |
+| 96×96, 10 dépouilles | 2 718 | **634** | 382 | **1 564** |
+| 192×192, 60 dépouilles (200 ticks) | 306 | **136** | 269 | **586** |
+
+(A\* toutes recherches confondues, comptées par un compteur posé dans
+`path::find_path_for` le temps de la mesure ; le test, lui, lit
+`Sim::job_paths`, qui ne compte que les recherches bornées : 629 des 634.)
+Le plafond que le test impose vaut `colons × recherches × (poste + candidats) ×
+ticks / RETRY_TICKS` = 1 680 ; la mesure est à 629, et elle ne bouge ni avec le
+nombre de dépouilles ni avec la surface. Un poste atteignable ajouté à la scène
+est bien utilisé : la viande tombe au pied du poste dans les mêmes 600 ticks.
+
+### Ce qui reste (non traité)
+
+**La campagne de trente graines ne valide pas ce correctif, et il faut le dire
+net.** Elle passe de 1 100 s à **921 s**, mais le critère « aucune graine sous
+100 000 ticks/s » n'est **pas** atteint : les cinq mêmes graines (3, 6, 8, 12,
+18) restent lentes, la pire à 832 ticks/s.
+
+| | avant | après |
+|---|---|---|
+| campagne, 30 graines × 30 jours | 1 100 s | **921 s** |
+| graines sous 100 000 ticks/s | 5 | 5 |
+| graine la plus lente | 8, **1 058 ticks/s** | 8, **832 ticks/s** |
+| colons vivants au jour 30 | 52 | **69** |
+| technologies acquises | 46 | **50** |
+
+Deux raisons, et aucune n'est un détail. D'abord, ces graines sont dominées par
+des A\* qui échouent venus de recherches **hors de ce constat**. Ensuite, la
+comparaison au chronomètre est faussée : les colonies ne meurent plus au même
+moment. La graine 8 met 519 s au lieu de 408 — et finit avec **trois colons
+vivants au lieu de zéro**. Une colonie éteinte au jour 12 simule dix-huit jours
+de ticks vides ; une colonie vivante travaille, et cherche, jusqu'au bout.
+
+Compteurs par site d'appel, posés le temps d'une mesure (A\* sur 432 000 ticks,
+carte 64×64). La colonne « après » est celle de la variante où **la cuisine
+aussi** avait reçu la vérification du poste : c'est cette mesure-là qui a fait
+la retirer, et c'est aussi la seule qui montre ce que la boucle de `do_cook`
+coûtait :
+
+| site d'appel | graine 3 avant | graine 3 après | graine 8 avant | graine 8 après |
+|---|---|---|---|---|
+| `do_butcher` (la boucle du constat) | 374 965 | **12** | 92 849 | **10** |
+| `do_cook` (même boucle, cuisine traitée) | 63 251 | **150** | 253 395 | **139** |
+| `try_start_hunt` | 937 530 | **3 794** | 4 | 6 |
+| `try_start_butcher` | 262 644 | 909 872 | 14 497 | 485 308 |
+| `try_start_work` (travail désigné) | 1 134 056 | 307 312 | 19 965 | 155 429 |
+| `try_start_farm` | 980 666 | 341 815 | 418 130 | 477 716 |
+| `try_start_haul` | 266 427 | 209 945 | 24 270 | 319 892 |
+| **total, tous sites** | **4 150 000** | **2 540 000** | 1 150 000 | 1 970 000 |
+
+Ce que ça dit, dans l'ordre :
+
+1. **Les boucles visées sont mortes.** `do_butcher` et `do_cook` passent de
+   centaines de milliers d'A\* à une douzaine : le colon ne ramasse plus une
+   charge pour la reposer. `try_start_hunt` perd 99,6 % de sa note grâce à la
+   seule cadence. (La ligne `do_cook` est celle de la variante retirée : dans le
+   code livré, la cuisine garde sa boucle, faute de pouvoir espacer ses essais.)
+2. **Le coût s'est déplacé, pas seulement effacé.** `try_start_butcher` monte,
+   parce que la vérification du poste se paie à chaque recherche là où la boucle
+   se payait à chaque aller-retour. Le solde reste bon quand la cadence mord
+   (graine 3 : 4,15 M → 2,54 M d'A\* au total) et il faut la cadence pour cela —
+   c'est la démonstration que la cuisine, laissée sans, a faite à l'envers.
+3. **Le temps n'y suit pas le compte.** La graine 3 lance 39 % d'A\* en moins et
+   met pourtant trois fois plus longtemps : sa colonie survit (quatre colons au
+   jour 30 contre trois), s'étend, et chaque A\* qui échoue explore une région
+   plus grande. Sur les trente graines, 70 colons vivants à la fin contre 52, et
+   50 technologies contre 46 — la simulation fait plus de travail utile.
+
+Ce qui tient les cinq graines lentes, ce sont `try_start_work`,
+`try_start_haul`, `try_start_farm` et `try_start_deliver` : elles ne visent pas
+un poste mais une désignation, une pile, un chantier, tous **déjà bornés** à
+`PATH_ATTEMPTS` candidats. Ce qui les rend chères, c'est l'enceinte que le
+joueur scripté referme — tout ce qui reste dehors est à jamais inatteignable, et
+chaque colon le redemande.
+
+Deux voies, et une seule est bonne :
+
+1. Étendre `RETRY_TICKS` à ces recherches. Trente fois moins cher dans le cas
+   pathologique, mais c'est un **changement de comportement** — un colon
+   désœuvré ne chercherait plus de quoi couper qu'un tick sur trente — et le
+   hash du scénario `demo` bouge, puisque le scénario exerce précisément ces
+   travaux-là. À décider, pas à glisser dans un correctif de performance.
+2. **Un index de régions sur `Map`** (composantes connexes, tenues comme
+   `refresh_indoor` l'est déjà). Un A\* échoue si et seulement si la cible n'est
+   pas dans la région du marcheur : la question devient O(1), la réponse est
+   **exactement la même**, et tous les sites du tableau ci-dessus en profitent
+   d'un coup — y compris la cuisine, qui pourrait alors recevoir sa
+   vérification. C'est la vraie correction, et elle ne change pas une décision
+   de colon.
+
 ---
 
 ## 4. Constat n°2 — « difficile » n'était pas une difficulté, c'était une extinction
