@@ -380,8 +380,9 @@ d'alice arrivé chez bob).
 - **Vêtements** (2026-09-05, sim + interface client) : tunique (6 cuir) et manteau
   (12 cuir) au poste, isolation ajoutée au confort (+6 et +15 °C), habillage automatique
   sous 6 °C (seuil mesuré sur dix graines : 12 °C habillait la colonie la moitié du
-  temps en climat doux), manteau préféré, habit perdu à la mort. Pas de gestion de la
-  chaleur excessive (le manteau reste porté). Interface : habit dans le panneau et sur
+  temps en climat doux), manteau préféré, habit perdu à la mort ; depuis le 2026-09-06, au-delà
+  de 26 °C de ressenti pendant 600 ticks le colon pose son habit le plus chaud et le reprend
+  sous 6 °C (chaleur excessive divisée par plus de deux, mesuré). Interface : habit dans le panneau et sur
   le corps du colon ; au passage, barre des colons (santé, humeur, à terre, endormi) et
   journal des événements filtrable (touche N).
 - **Storyteller adaptatif** (2026-09-05, sim + interface client, réglé le 2026-09-06) :
@@ -522,8 +523,6 @@ d'alice arrivé chez bob).
   armes).
 - Faune : coût par tick qui suit le nombre de pawns, bêtes comprises — à surveiller,
   pas encore mesuré ni optimisé.
-- Vêtements : pas de gestion de la chaleur excessive (le colon garde son manteau même
-  par forte chaleur).
 
 **Mesure** : chaque chiffre ci-dessus vient d'un test statistique sur plusieurs graines,
 jamais de l'intuition (règle « on mesure avant de régler », `AGENTS.md`) ; méthode et
@@ -542,6 +541,15 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-06 : la cuisine vérifie son poste et les colons se découvrent. La cuisine reçoit le
+  patron des autres postes (feu de camp vérifié au démarrage, budget, cadence à vide) : fini le
+  ramasse-repose devant un feu muré ; changement de comportement assumé, le hash du scénario
+  `demo` passe de `2fe88821b6299966` à `5fdc5754c55cc434`, `verify` reste OK. Chaleur : au-delà
+  de 26 °C de ressenti pendant 600 ticks, le colon pose son habit le plus chaud, qu'il reprend
+  sous 6 °C (hystérésis de 20 °C) ; mesuré en climat forcé chaud : 100 % des ticks en chaleur
+  excessive avec le manteau, 42,5 % sans. Le compteur vit dans `Pawn` (`heat_ticks`, fin de
+  structure).
 
 - 2026-09-06 : l'atteignabilité est une question O(1). `Map` porte un index de régions
   (composantes connexes des cases franchissables, remplissage 4-connexe, 0,13 ms sur 128×128

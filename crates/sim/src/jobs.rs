@@ -1957,9 +1957,28 @@ impl Sim {
     // Cuisine et culture
     // ------------------------------------------------------------------
 
-    /// Cuisine s'il y a un feu libre, de la nourriture crue et pas assez de repas.
+    /// Cuisine s'il y a un feu de camp libre **atteignable**, des vivres crus
+    /// et l'objectif de repas non atteint.
+    ///
+    /// Même patron que le dépeçage et la fabrication (`CAMPAIGN-FINDINGS.md`,
+    /// §3, « le poste hors d'atteinte ») : trois court-circuits avant le
+    /// premier A\* (pas de feu, pas de vivres, pas le tour du colon), un
+    /// budget qui borne les candidats **examinés**, et **le feu vérifié ici**,
+    /// pas dans `do_cook`. Le scénario `demo` en est changé bit à bit : c'est
+    /// le prix assumé de corriger le seul de ces travaux qui restait sur la
+    /// boucle ramasse-repose (un vivre cru pris, porté, reposé au tick
+    /// suivant en découvrant le mur, à chaque tour d'un colon inactif).
     fn try_start_cook(&mut self, i: usize) -> bool {
-        if self.map.campfire_count() == 0 {
+        if self.map.campfire_count() == 0 || !self.job_retry_due(i) {
+            return false;
+        }
+        let meals: u32 = self
+            .items
+            .iter()
+            .filter(|s| s.kind == ItemKind::Meal)
+            .map(|s| s.count)
+            .sum();
+        if meals >= farm::MEALS_TARGET {
             return false;
         }
         let mut fires: Vec<(u32, u32)> = Vec::new();
@@ -1973,15 +1992,6 @@ impl Sim {
         if fires.is_empty() {
             return false;
         }
-        let meals: u32 = self
-            .items
-            .iter()
-            .filter(|s| s.kind == ItemKind::Meal)
-            .map(|s| s.count)
-            .sum();
-        if meals >= farm::MEALS_TARGET {
-            return false;
-        }
         let from = self.pawns[i].tile();
         let mut stacks: Vec<(u32, u32, u32, usize)> = self
             .items
@@ -1993,36 +2003,37 @@ impl Sim {
             .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
             .collect();
         stacks.sort_unstable();
-        // La cuisine garde son feu **non vérifié** au démarrage, contrairement
-        // au dépeçage : elle est le seul de ces travaux que le scénario `demo`
-        // exerce, donc le seul qui ne puisse pas recevoir la cadence de
-        // `RETRY_TICKS` sans déplacer le hash de référence. Or vérifier le
-        // poste sans pouvoir espacer les essais coûte **plus** que la boucle
-        // qu'on voulait supprimer : mesuré sur la graine 3 de la campagne,
-        // 71 000 → 581 000 A\*. La vérification et la cadence vont ensemble ou
-        // pas du tout (voir `CAMPAIGN-FINDINGS.md`, §3).
+        let mut budget = PATH_ATTEMPTS;
+        let mut blocked: Vec<(u32, u32)> = Vec::new();
         for &(_, sx, sy, k) in stacks.iter().take(PATH_ATTEMPTS) {
-            let Some(&(_, fx, fy)) = fires
-                .iter()
-                .map(|&(x, y)| (chebyshev((sx, sy), (x, y)), x, y))
-                .min()
-                .as_ref()
-            else {
-                return false;
+            // Le vivre **avant** le feu : le test le moins cher (une
+            // recherche, contre huit pour un poste dont on essaie les
+            // voisines) écarte les piles hors d'atteinte sans payer le feu.
+            let p = match self.reach_tile(from, (sx, sy), &mut budget) {
+                Reach::Path(p) => p,
+                Reach::Unreachable => continue,
+                Reach::OutOfBudget => break,
             };
-            if let Some(p) = self.colonist_path(from, (sx, sy)) {
-                let pawn = self.pawns[i].id;
-                self.items[k].reserved_by = Some(pawn);
-                self.reservations.push(Reservation { x: fx, y: fy, pawn });
-                let item = self.items[k].id;
-                self.pawns[i].set_path(p);
-                self.pawns[i].job = Job::Cook {
-                    campfire: (fx, fy),
-                    item,
-                    picked: false,
-                    progress: 0,
-                };
-                return true;
+            // Le feu le plus proche du vivre, pas du colon : c'est lui qui va
+            // y retourner une fois la pile en main.
+            match self.reach_station(from, &fires, (sx, sy), &mut budget, &mut blocked) {
+                Some(((fx, fy), _)) => {
+                    let pawn = self.pawns[i].id;
+                    self.items[k].reserved_by = Some(pawn);
+                    self.reservations.push(Reservation { x: fx, y: fy, pawn });
+                    let item = self.items[k].id;
+                    self.pawns[i].set_path(p);
+                    self.pawns[i].job = Job::Cook {
+                        campfire: (fx, fy),
+                        item,
+                        picked: false,
+                        progress: 0,
+                    };
+                    return true;
+                }
+                // Plus un feu atteignable, ou budget épuisé : les vivres
+                // suivants visent les mêmes feux, ils n'iront pas plus loin.
+                None => break,
             }
         }
         false
@@ -2056,6 +2067,9 @@ impl Sim {
                 self.items.remove(j);
             }
             self.pawns[i].carrying = Some((kind, farm::RAW_PER_MEAL));
+            // `try_start_cook` a démontré que ce feu était atteignable avant
+            // d'envoyer le colon : l'échec ici veut dire qu'un mur s'est élevé
+            // entre-temps, pas qu'on a retenu un feu muré (voir `do_butcher`).
             match self.colonist_adjacent(here, campfire) {
                 Some(p) => {
                     self.pawns[i].set_path(p);

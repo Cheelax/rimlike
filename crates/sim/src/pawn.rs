@@ -488,6 +488,12 @@ pub struct Pawn {
     /// La bête **de la colonie** est marquée pour l'abattoir
     /// (`Command::Slaughter`). Une bête sauvage ne s'abat pas, elle se chasse.
     pub slaughter_marked: bool,
+    /// Ticks consécutifs passés au-dessus de `climate::UNDRESS_ABOVE` : au bout
+    /// de `climate::UNDRESS_TICKS`, le colon retire son habit (voir
+    /// `Sim::tick_heat`). Retombe à zéro dès que le ressenti repasse sous le
+    /// seuil. **Champ ajouté en fin de structure** : un vieux snapshot est
+    /// refusé net plutôt que relu de travers.
+    pub heat_ticks: u32,
 }
 
 impl Pawn {
@@ -550,6 +556,7 @@ impl Pawn {
             tame_marked: false,
             tame_retry_at: 0,
             slaughter_marked: false,
+            heat_ticks: 0,
         }
     }
 

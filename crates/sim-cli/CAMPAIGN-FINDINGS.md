@@ -611,12 +611,16 @@ est la seule chose qu'une couche périmée ait le droit de faire.
 
 #### Ce qui reste
 
-- **La cuisine n'a toujours pas sa vérification de poste au démarrage.** Elle
-  la mériterait maintenant que l'échec est gratuit, mais la poser déplace le
-  hash du scénario `demo` — le seul de ces travaux que `demo` exerce. À
-  décider, comme la cadence de `RETRY_TICKS` sur les recherches par
-  désignation : ce sont des changements de comportement, pas des correctifs de
-  performance.
+- **La cuisine a sa vérification de poste au démarrage (corrigé le
+  2026-09-06).** Les trois pièces posées ensemble, comme partout ailleurs :
+  le feu vérifié par `Sim::reach_station` avant tout A\*, un budget de
+  candidats examinés, et la cadence de `RETRY_TICKS` pour le colon qui tourne
+  à vide. Le hash du scénario `demo` en est changé — c'était le prix connu de
+  ce correctif, assumé cette fois : `verify --seed 1 --size 64 --ticks 10000
+  --scenario demo` reste `OK` (deux sims comparées, pas un hash figé). Mesuré
+  sur un feu de camp muré, trois colons, 600 ticks
+  (`crates/sim/tests/cooking_and_heat.rs`) : **39** A\* lancés par la recherche
+  de travail, aucun vivre ramassé puis reposé.
 - **Le découpage est global, pas hiérarchique.** Un changement de carte fait
   repayer la carte entière ; à 0,2 ms sur 128×128 et une poignée de changements
   par seconde de jeu, la note est invisible. Elle cesserait de l'être sur une

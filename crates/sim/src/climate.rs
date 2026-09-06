@@ -18,11 +18,13 @@
 //! chaleur des feux de camp qu'elle contient (voir `Map::refresh_indoor`).
 //!
 //! La température **ressentie** d'un colon (`Pawn::comfort`) est celle de sa
-//! case plus l'isolation de son vêtement (`Pawn::insulation_tenths`). Rien
-//! d'autre ne change : humeur et hypothermie lisent `comfort` comme avant.
-//! Limite assumée de cette tranche : au-dessus de `HOT_MOOD_TEMP`, l'isolation
-//! joue contre son porteur et personne ne se déshabille — la gestion de la
-//! chaleur viendra avec les toits.
+//! case plus l'isolation de son vêtement (`Pawn::insulation_tenths`). Humeur
+//! et hypothermie lisent `comfort` comme avant. Chaleur excessive : au-dessus
+//! d'`UNDRESS_ABOVE` pendant `UNDRESS_TICKS` d'affilée, le colon retire son
+//! habit et le laisse tomber au sol (`Sim::tick_heat`) ; il ne le reprend que
+//! si le ressenti retombe sous `DRESS_TEMP` (`Sim::try_start_wear`, déjà en
+//! place), avec assez d'écart entre les deux seuils pour qu'aucun colon
+//! n'oscille d'un tick à l'autre.
 //!
 //! Le climat est un champ de `Sim` : une salle du globe reçoit le sien par
 //! `Command::SetClimate`, en lockstep, sans changer la construction de la
@@ -107,6 +109,27 @@ pub const DRESS_TEMP: i32 = 60;
 pub const HYPOTHERMIA_TEMP: i32 = -50;
 /// Au-dessus, le colon a trop chaud.
 pub const HOT_MOOD_TEMP: i32 = 320;
+/// Au-dessus, un colon en tenue étouffe et finit par retirer son habit le plus
+/// chaud (voir `Sim::tick_heat`) : la pile tombe à ses pieds comme tout habit
+/// quitté. Choisi sous `HOT_MOOD_TEMP` (32 °C), comme `DRESS_TEMP` est choisi
+/// au-dessus de `COLD_MOOD_TEMP` côté froid : le colon se découvre **avant**
+/// que la chaleur ne pèse sur son humeur, pas après.
+///
+/// **Hystérésis avec `DRESS_TEMP`** (6 °C) : vingt degrés séparent les deux
+/// seuils, aucun colon ne peut osciller d'un tick à l'autre entre se couvrir
+/// et se découvrir.
+///
+/// **Mesuré.** Sur climat forcé chaud (`Climate::new(300, 0)`), un colon
+/// encore couvert passe **100 %** de son temps au-dessus de `HOT_MOOD_TEMP`
+/// (1 794 ticks sur 1 794, trois colons) ; une fois découvert, ce taux tombe à
+/// **42,5 %** (36 003 sur 84 606) — c'est la raison d'être de la règle (voir
+/// `tests/cooking_and_heat.rs`, `undressing_reduces_heat_injuries`).
+pub const UNDRESS_ABOVE: i32 = 260;
+/// Ticks consécutifs au-dessus d'`UNDRESS_ABOVE` avant qu'un colon ne retire
+/// son habit. Une demi-minute de jeu : assez pour ignorer un pic isolé de
+/// météo (bruit ±3 °C, `WEATHER_NOISE`), assez court pour ne pas cuire un
+/// colon qui vient d'entrer dans une pièce surchauffée.
+pub const UNDRESS_TICKS: u32 = 600;
 /// Un colon sous `HYPOTHERMIA_TEMP` prend une blessure de froid tous ces ticks.
 pub const HYPOTHERMIA_INTERVAL: u64 = 200;
 /// Sévérité ajoutée par chaque atteinte du froid.
@@ -383,16 +406,40 @@ impl Sim {
         let comfort = outdoor + self.indoor_bonus(x, y) + self.pawns[i].insulation_tenths();
         self.pawns[i].comfort = comfort;
         self.pawns[i].in_snow = self.weather() == Weather::Snow;
-        // Les bêtes ne souffrent pas du froid, apprivoisées comprises : un
-        // troupeau se nourrit (voir `livestock`), il ne grelotte pas.
-        if self.pawns[i].is_colonist()
-            && comfort < HYPOTHERMIA_TEMP
-            && self.tick() % HYPOTHERMIA_INTERVAL == 0
-        {
-            // Rester dehors par −5 °C se paie, manteau ou pas : l'habit
-            // remonte le ressenti, il ne rend pas invulnérable. L'atteinte
-            // guérit comme les autres une fois au chaud.
-            self.pawns[i].chill_torso();
+        // Les bêtes ne souffrent pas du froid ni de la chaleur, apprivoisées
+        // comprises : un troupeau se nourrit (voir `livestock`), il ne
+        // grelotte pas et ne retire pas d'habit qu'il ne porte jamais.
+        if self.pawns[i].is_colonist() {
+            if comfort < HYPOTHERMIA_TEMP && self.tick() % HYPOTHERMIA_INTERVAL == 0 {
+                // Rester dehors par −5 °C se paie, manteau ou pas : l'habit
+                // remonte le ressenti, il ne rend pas invulnérable. L'atteinte
+                // guérit comme les autres une fois au chaud.
+                self.pawns[i].chill_torso();
+            }
+            self.tick_heat(i, comfort);
+        }
+    }
+
+    /// Retire l'habit le plus chaud d'un colon qui étouffe depuis
+    /// `UNDRESS_TICKS` d'affilée au-dessus d'`UNDRESS_ABOVE` : la pile tombe à
+    /// ses pieds, exactement comme l'habit quitté pour une meilleure pièce
+    /// (`Sim::do_equip`) — le rangement s'en charge ensuite comme de
+    /// n'importe quelle pile au sol. Le colon ne le reprend que si le ressenti
+    /// retombe sous `DRESS_TEMP` : c'est `Sim::try_start_wear`, déjà en place,
+    /// qui s'en occupe, dos nu comme aujourd'hui.
+    fn tick_heat(&mut self, i: usize, comfort: i32) {
+        if comfort <= UNDRESS_ABOVE {
+            self.pawns[i].heat_ticks = 0;
+            return;
+        }
+        self.pawns[i].heat_ticks += 1;
+        if self.pawns[i].heat_ticks < UNDRESS_TICKS {
+            return;
+        }
+        self.pawns[i].heat_ticks = 0;
+        if let Some(old) = self.pawns[i].apparel.take() {
+            let (x, y) = self.pawns[i].tile();
+            self.spawn_item(old, 1, x, y);
         }
     }
 
