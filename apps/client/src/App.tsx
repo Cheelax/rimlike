@@ -10,7 +10,7 @@ import { FactionsPanel } from "./FactionsPanel";
 import { HelpPanel } from "./HelpPanel";
 import { JournalPanel, type JournalEntry, type JournalFilter } from "./JournalPanel";
 import { Minimap, type MinimapHandle } from "./Minimap";
-import { decodeResearch, researchPercent, TECHS } from "./research";
+import { decodeResearch, researchPercent, TECH_METALLURGY, TECHS } from "./research";
 import { ResearchPanel } from "./ResearchPanel";
 import { decodeOpinions, opinionLabel, sortOpinions, type Opinion } from "./social";
 import { TradePanel } from "./TradePanel";
@@ -146,6 +146,8 @@ const BLOCKING_FEATURES = new Set<number>([
   FEATURE.Campfire,
   FEATURE.CraftingSpot,
   FEATURE.ResearchBench,
+  FEATURE.OreRock,
+  FEATURE.Forge,
 ]);
 
 const DEFAULT_SERVER = "ws://localhost:8787";
@@ -197,12 +199,13 @@ const BUILD_TOOL_KIND: Partial<Record<Tool, number>> = {
   campfire: BUILD_KIND.Campfire,
   craftingSpot: BUILD_KIND.CraftingSpot,
   researchBench: BUILD_KIND.ResearchBench,
+  forge: BUILD_KIND.Forge,
   grave: BUILD_KIND.Grave,
   spikeTrap: BUILD_KIND.SpikeTrap,
 };
 const WOOD_ONLY: ReadonlySet<Tool> = new Set<Tool>(["bed", "campfire", "craftingSpot", "researchBench", "spikeTrap"]);
-/** Les tombes n'existent qu'en pierre (contrat sim) : jamais le matériau courant du joueur. */
-const STONE_ONLY: ReadonlySet<Tool> = new Set<Tool>(["grave"]);
+/** Tombes et forge n'existent qu'en pierre (contrat sim) : jamais le matériau courant du joueur. */
+const STONE_ONLY: ReadonlySet<Tool> = new Set<Tool>(["grave", "forge"]);
 
 /** Une ligne de blessure du panneau Santé, depuis `pawn_injuries` (voir `pawnInjuries`). */
 interface InjuryInfo {
@@ -348,6 +351,12 @@ interface Stats {
    * schéma). Sans lui, aucun colon ne peut faire avancer une recherche.
    */
   hasResearchBench: boolean;
+  /**
+   * Un `Feature::Forge` existe sur la carte, compté dans `features` au
+   * changement de `map_version`, même schéma que `hasCraftingSpot` et
+   * `hasResearchBench`. Sans elle, aucun colon ne peut fondre de lingot.
+   */
+  hasForge: boolean;
   /** Une pastille par colon de la colonie, pour `ColonistBar` (voir §2 de la mission). */
   colonistBadges: ColonistBadge[];
   /** Ticks d'un jour de jeu (`frame.ticksPerDay`), pour l'horodatage du Journal. */
@@ -371,8 +380,8 @@ interface Stats {
    */
   foodFreshness: number[];
   /**
-   * Copie de `frame.researchState` (`sim-wasm::research_state`), 16 entiers :
-   * `[courante, (avancement, coût, acquise) × 5]`, décodée par
+   * Copie de `frame.researchState` (`sim-wasm::research_state`), 19 entiers :
+   * `[courante, (avancement, coût, acquise) × 6]`, décodée par
    * `research.ts::decodeResearch` là où elle sert (HUD, `ResearchPanel`).
    */
   researchState: number[];
@@ -414,7 +423,7 @@ const INITIAL: Stats = {
   dayOfYear: 0,
   yearDays: 60,
   temperature: 120,
-  stored: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  stored: new Array(ITEM_NAMES.length).fill(0),
   blueprints: 0,
   colonists: 0,
   hostiles: 0,
@@ -426,9 +435,10 @@ const INITIAL: Stats = {
   colonistList: [],
   departures: 0,
   lag: 0,
-  craftTargets: [0, 0, 0, 0, 0, 0, 0, 0, 0],
+  craftTargets: new Array(ITEM_NAMES.length).fill(0),
   hasCraftingSpot: false,
   hasResearchBench: false,
+  hasForge: false,
   colonistBadges: [],
   ticksPerDay: TICKS_PER_DAY,
   difficulty: DIFFICULTY.Normal,
@@ -438,8 +448,8 @@ const INITIAL: Stats = {
   traderOffers: [],
   buyPrices: new Array(ITEM_NAMES.length).fill(0),
   foodFreshness: new Array(ITEM_NAMES.length).fill(-1),
-  // 255 = aucune recherche en cours, cinq technologies à 0/0/non acquise.
-  researchState: [255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  // 255 = aucune recherche en cours, six technologies à 0/0/non acquise.
+  researchState: [255, ...new Array(TECHS.length * 3).fill(0)],
   fireCount: 0,
   livestockCount: 0,
   // Réputation de départ (`sim::factions::START_GOODWILL`) : les deux tribus
@@ -1200,6 +1210,8 @@ export function App() {
      * seulement (comme `craftingSpotCount`), jamais à chaque frame.
      */
     let researchBenchCount = 0;
+    /** Nombre de `Feature::Forge` sur la carte, même schéma que `researchBenchCount`. */
+    let forgeCount = 0;
     /**
      * Dernière couche « feu » reçue (`onFire`), pour la mini-carte : elle ne
      * la peint qu'à la cadence du HUD (voir l'intervalle plus bas), jamais à
@@ -1255,12 +1267,15 @@ export function App() {
         minimapRef.current?.setMap(m.width, m.height, m.tiles, m.features);
         let spots = 0;
         let benches = 0;
+        let forges = 0;
         for (const f of m.features) {
           if (f === FEATURE.CraftingSpot) spots++;
           else if (f === FEATURE.ResearchBench) benches++;
+          else if (f === FEATURE.Forge) forges++;
         }
         craftingSpotCount = spots;
         researchBenchCount = benches;
+        forgeCount = forges;
       },
       onOverlays: (m) => renderer.setOverlays(m.zones, m.designations),
       onIndoor: (m) => renderer.setIndoor(m.indoor),
@@ -1661,6 +1676,13 @@ export function App() {
           // toute façon) : jamais `materialRef.current`, comme la tombe force
           // la pierre juste en dessous.
           issue(encodeBuild(BUILD_KIND.ResearchBench, MATERIAL.Wood, rect.x0, rect.y0, rect.x1, rect.y1));
+          break;
+        case "forge":
+          // La forge n'existe qu'en pierre (contrat sim, qui l'imposerait de
+          // toute façon) : jamais `materialRef.current`, même schéma que la
+          // tombe. Refusée en silence par le sim sans `Tech::Metallurgy`, mais
+          // l'outil est déjà grisé dans ce cas (voir le rendu de la barre).
+          issue(encodeBuild(BUILD_KIND.Forge, MATERIAL.Stone, rect.x0, rect.y0, rect.x1, rect.y1));
           break;
         case "grave":
           // Les tombes n'existent qu'en pierre (contrat sim, qui l'imposerait
@@ -2276,6 +2298,7 @@ export function App() {
         craftTargets: Array.from(f.craftTargets),
         hasCraftingSpot: craftingSpotCount > 0,
         hasResearchBench: researchBenchCount > 0,
+        hasForge: forgeCount > 0,
         ticksPerDay: f.ticksPerDay,
         difficulty: f.difficulty,
         wealth: f.wealth,
@@ -2551,6 +2574,9 @@ export function App() {
   // Recherche : décodée une fois ici, réutilisée par le HUD et `ResearchPanel`.
   const researchInfo = decodeResearch(stats.researchState);
   const currentTechInfo = researchInfo.techs.find((t) => t.tech === researchInfo.current) ?? null;
+  // Seule technologie qui verrouille quelque chose (voir `research.ts`) :
+  // grise l'outil Forge de la barre d'outils tant qu'elle n'est pas acquise.
+  const metallurgyDone = researchInfo.techs.find((t) => t.tech === TECH_METALLURGY)?.done ?? false;
   const cyclePriority = (pawn: number, work: number, shown: number, dir: 1 | -1) => {
     const current = actionsRef.current?.currentPriority(pawn, work) ?? shown;
     actionsRef.current?.setPriority(pawn, work, nextPriority(current, dir));
@@ -3003,16 +3029,22 @@ export function App() {
               </button>
             ))}
             <span className="sep" />
-            {TOOLS.filter((t) => t.group === "build").map((t) => (
-              <button
-                key={t.id}
-                className={t.id === tool ? "active" : ""}
-                onClick={() => setTool(t.id)}
-                title={t.hint ?? `Touche ${t.key}`}
-              >
-                {t.label} {t.key && <span className="key">{t.key}</span>}
-              </button>
-            ))}
+            {TOOLS.filter((t) => t.group === "build").map((t) => {
+              // Seul l'outil Forge se grise : la seule construction que la
+              // recherche verrouille (`TECH_METALLURGY`, voir `research.ts`).
+              const forgeLocked = t.id === "forge" && !metallurgyDone;
+              return (
+                <button
+                  key={t.id}
+                  className={t.id === tool ? "active" : ""}
+                  disabled={forgeLocked}
+                  onClick={() => setTool(t.id)}
+                  title={forgeLocked ? "Demande la technologie Métallurgie" : (t.hint ?? `Touche ${t.key}`)}
+                >
+                  {t.label} {t.key && <span className="key">{t.key}</span>}
+                </button>
+              );
+            })}
             <button
               className={`material ${tool in BUILD_TOOL_KIND ? "lit" : ""}`}
               onClick={() => setMaterial(material === 0 ? 1 : 0)}
@@ -3191,6 +3223,7 @@ export function App() {
               stored={stats.stored}
               targets={stats.craftTargets}
               hasCraftingSpot={stats.hasCraftingSpot}
+              hasForge={stats.hasForge}
               onSetTarget={setCraftTarget}
               onClose={() => setShowCraft(false)}
             />

@@ -64,6 +64,18 @@ export const FEATURE = {
   SpikeTrap: 17,
   /** Piège déclenché, inoffensif : posé par le job `RearmTrap` (code 26) le temps qu'un colon le réarme. */
   SpikeTrapSprung: 18,
+  /**
+   * Rocher veiné (`crates/sim/src/map.rs`) : un rocher sur huit (bruit dérivé,
+   * déterministe), infranchissable et minable comme `Rock`, mais donne aussi
+   * du minerai (`ItemKind::Ore`) en plus de la pierre.
+   */
+  OreRock: 19,
+  /**
+   * Forge (`crates/sim/src/craft.rs`) : on y fond le minerai en lingots.
+   * Infranchissable, une case, comme le poste de fabrication ; matériau
+   * pierre imposé (`BuildKind::Forge`, refusée sans `Tech::Metallurgy`).
+   */
+  Forge: 20,
 } as const;
 
 export const BUILD_KIND = {
@@ -76,6 +88,8 @@ export const BUILD_KIND = {
   Grave: 6,
   ResearchBench: 7,
   SpikeTrap: 8,
+  /** Forge (20 pierre, pierre imposée) : refusée en silence sans `Tech::Metallurgy` (voir `research.ts::TECH_METALLURGY`). */
+  Forge: 9,
 } as const;
 export const MATERIAL = { Wood: 0, Stone: 1 } as const;
 export const MATERIAL_NAMES = ["bois", "pierre"] as const;
@@ -104,6 +118,9 @@ export const ITEM_NAMES = [
   "cuir",
   "tuniques",
   "manteaux",
+  "minerai",
+  "métal",
+  "épée",
 ] as const;
 /**
  * Cinq genres de base (bois, pierre, baies, légumes, repas), toujours
@@ -145,14 +162,21 @@ export const ITEM_COLORS: readonly number[] = [
   0xc9a06a /* cuir : brun clair */,
   0x99917a /* tunique : lin */,
   0x6c7461 /* manteau : laine */,
+  0xa8672e /* minerai : ocre-rouille */,
+  0x8f97a0 /* métal : gris acier */,
+  0xc9d3da /* épée : acier clair */,
 ];
 
 /**
- * Contrat avec `items::ItemKind` (armes seulement, 6 gourdin, 7 épieu, 8 arc) :
- * noms au singulier, pour l'arme équipée d'un colon (panneau) et l'événement 14
- * (`WeaponCrafted`). Les trois sont masculins : pas d'accord à porter.
+ * Contrat avec `items::ItemKind` (armes seulement, 6 gourdin, 7 épieu, 8 arc,
+ * 18 épée) : noms au singulier, pour l'arme équipée d'un colon (panneau) et
+ * l'événement 14 (`WeaponCrafted`). Les trois premières sont masculines, pas
+ * d'accord à porter ; l'épée est féminine (voir `WEAPON_FEMININE`).
  */
-export const WEAPON_NAMES: Readonly<Record<number, string>> = { 6: "gourdin", 7: "épieu", 8: "arc" };
+export const WEAPON_NAMES: Readonly<Record<number, string>> = { 6: "gourdin", 7: "épieu", 8: "arc", 18: "épée" };
+
+/** Vrai pour une arme féminine (« une épée ») : accord de `eventLabel` (14). */
+const WEAPON_FEMININE: Readonly<Record<number, boolean>> = { 6: false, 7: false, 8: false, 18: true };
 
 /**
  * Contrat avec `items::ItemKind` (habits seulement, 14 tunique, 15 manteau) :
@@ -369,6 +393,9 @@ export const JOB_LABELS = [
   "combat le feu",
   "apprivoise",
   "abat",
+  // Code 30 (`pawn::Job::code()`) : fabrication de lingot, distinguée du
+  // reste de la fabrication (code 18, « fabrique ») comme `Job::Farm` sème/récolte.
+  "fond le métal",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
@@ -422,7 +449,7 @@ export function eventLabel(
     case 14: {
       // `arg` = le genre d'arme fabriquée (`sim::ItemKind`), pas un id de pawn.
       const name = WEAPON_NAMES[arg] ?? "objet";
-      return `Un ${name} a été fabriqué`;
+      return WEAPON_FEMININE[arg] ? `Une ${name} a été fabriquée` : `Un ${name} a été fabriqué`;
     }
     case 15:
       // `arg` = la saison qui commence (`sim::climate::Season`).
@@ -442,8 +469,13 @@ export function eventLabel(
       // `arg` = l'id du sanglier qui charge (`sim::EventKind::BoarAttacks`), pas affiché.
       return "Un sanglier charge !";
     case 20: {
-      // `arg` = le genre d'habit fabriqué (`sim::ItemKind`), pas un id de pawn.
-      // Les armes gardent l'événement 14 : celui-ci ne voit jamais 6, 7 ou 8.
+      // `arg` = le genre fabriqué (`sim::ItemKind`), pas un id de pawn. Les
+      // armes gardent l'événement 14 : celui-ci ne voit jamais 6, 7, 8 ou 18.
+      if (arg === 17) {
+        // Le lingot (`ItemKind::Metal`) se fond, il ne se « fabrique » pas :
+        // un texte à part, fidèle à `Job::code() === 30` (« fond le métal »).
+        return "Un lingot a été fondu";
+      }
       const name = APPAREL_NAMES[arg];
       if (!name) return "Un habit a été fabriqué";
       return APPAREL_FEMININE[arg] ? `Une ${name} a été fabriquée` : `Un ${name} a été fabriqué`;

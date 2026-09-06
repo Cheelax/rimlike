@@ -71,6 +71,23 @@ describe("catalogue de props modulaires", () => {
     library.dispose();
   });
 
+  it("forge : pierre forcée (contrat sim), une seule géométrie quel que soit le matériau demandé", () => {
+    const library = new PropLibrary();
+    expect(blueprintKey(BUILD_KIND.Forge, 0)).toBe(`feature:${FEATURE.Forge}`);
+    expect(blueprintKey(BUILD_KIND.Forge, 0)).toBe(blueprintKey(BUILD_KIND.Forge, 1));
+    library.dispose();
+  });
+
+  it("rocher veiné : filons cuivrés distincts du rocher ordinaire", () => {
+    const library = new PropLibrary();
+    const rock = library.geometry(`feature:${FEATURE.Rock}`);
+    const oreRock = library.geometry(`feature:${FEATURE.OreRock}`);
+    // Le rocher veiné ajoute des filons par-dessus le même rocher : plus de
+    // sommets, jamais moins.
+    expect(oreRock.getAttribute("position").count).toBeGreaterThan(rock.getAttribute("position").count);
+    library.dispose();
+  });
+
   it("distingue le piège armé du piège déclenché, pointes dressées plus haut", () => {
     const library = new PropLibrary();
     const armed = library.geometry(`feature:${FEATURE.SpikeTrap}`).boundingBox!;
@@ -94,8 +111,9 @@ describe("catalogue de props modulaires", () => {
       FEATURE.ResearchBench,
       FEATURE.SpikeTrap,
       FEATURE.SpikeTrapSprung,
+      FEATURE.Forge,
     ];
-    const decorativeAtMedium = [FEATURE.Rock, FEATURE.Bush, FEATURE.BushUnripe];
+    const decorativeAtMedium = [FEATURE.Rock, FEATURE.OreRock, FEATURE.Bush, FEATURE.BushUnripe];
     const decorativeOnlyAtLow = [FEATURE.Crop, FEATURE.CropRipe];
 
     for (const f of [...meaningful, ...decorativeAtMedium, ...decorativeOnlyAtLow]) {

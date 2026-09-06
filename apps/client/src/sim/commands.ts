@@ -113,9 +113,10 @@ export function encodeFastForward(ticks: number): Uint8Array {
 }
 
 /**
- * Objectif de fabrication d'une arme. `kind` suit `sim::ItemKind` (6 gourdin,
- * 7 épieu, 8 arc) ; un genre sans recette est ignoré par le sim. `target` n'a
- * pas de borne côté sim, mais le panneau Fabrication le contient à 0..20
+ * Objectif de fabrication d'un genre. `kind` suit `sim::ItemKind` (6 gourdin,
+ * 7 épieu, 8 arc, 14 tunique, 15 manteau, 17 lingot à la forge, 18 épée) ; un
+ * genre sans recette est ignoré par le sim. `target` n'a pas de borne côté
+ * sim, mais le panneau Fabrication le contient à 0..20
  * (`render/terrain.ts::clampCraftTarget`).
  */
 export function encodeSetCraftTarget(kind: number, target: number): Uint8Array {
@@ -201,9 +202,10 @@ export function encodeTrade(give: number, giveCount: number, take: number, takeC
 
 /**
  * Technologie cherchée (`sim::research::Tech` : 0 agriculture, 1 médecine,
- * 2 conservation, 3 archerie, 4 maçonnerie), ou 255 pour ne plus rien
- * chercher. Une technologie déjà acquise ou un numéro invalide sont ignorés
- * en silence par le sim.
+ * 2 conservation, 3 archerie, 4 maçonnerie, 5 métallurgie — la seule qui
+ * déverrouille quelque chose, la forge), ou 255 pour ne plus rien chercher.
+ * Une technologie déjà acquise ou un numéro invalide sont ignorés en silence
+ * par le sim.
  */
 export function encodeSetResearch(tech: number): Uint8Array {
   return WasmSim.encode_set_research(tech);

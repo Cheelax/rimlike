@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   clampRect,
   MINIMAP_SCALE,
+  MINIMAP_ORE_ROCK_COLOR,
   MINIMAP_ROCK_COLOR,
   MINIMAP_TREE_COLOR,
   paintBackground,
@@ -37,6 +38,11 @@ describe("tileColor", () => {
     expect(tileColor(TERRAIN.Gravel, FEATURE.Rock)).toBe(MINIMAP_ROCK_COLOR);
   });
 
+  it("un rocher veiné est cuivré, distinct du rocher ordinaire", () => {
+    expect(tileColor(TERRAIN.Gravel, FEATURE.OreRock)).toBe(MINIMAP_ORE_ROCK_COLOR);
+    expect(MINIMAP_ORE_ROCK_COLOR).not.toBe(MINIMAP_ROCK_COLOR);
+  });
+
   it("un mur reprend la couleur de son matériau (contrat sim::build::Material)", () => {
     expect(tileColor(TERRAIN.Dirt, FEATURE.WallWood)).toBe(WALL_COLORS[MATERIAL.Wood]);
     expect(tileColor(TERRAIN.Dirt, FEATURE.WallStone)).toBe(WALL_COLORS[MATERIAL.Stone]);
@@ -44,6 +50,9 @@ describe("tileColor", () => {
 
   it("un élément non couvert (porte, lit...) laisse la couleur de terrain", () => {
     expect(tileColor(TERRAIN.Grass, FEATURE.Bed)).toBe(TERRAIN_COLORS[TERRAIN.Grass]);
+    // La forge n'a pas de teinte dédiée, comme les autres constructions hors
+    // murs (établi, poste, tombe...).
+    expect(tileColor(TERRAIN.Grass, FEATURE.Forge)).toBe(TERRAIN_COLORS[TERRAIN.Grass]);
   });
 });
 

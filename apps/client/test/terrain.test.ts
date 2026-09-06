@@ -24,6 +24,7 @@ import {
   freshnessLevel,
   freshnessPercent,
   hKeyAction,
+  ITEM_COLORS,
   ITEM_NAMES,
   JOB_LABELS,
   moodIcon,
@@ -87,6 +88,11 @@ describe("eventLabel", () => {
     expect(eventLabel(14, 6, { 6: "Alice" })).toBe("Un gourdin a été fabriqué");
   });
 
+  it("accorde l'épée au féminin, seule arme dans ce cas (mission « métal »)", () => {
+    expect(eventLabel(14, 18)).toBe("Une épée a été fabriquée");
+    expect(eventLabel(14, 18, { 18: "Alice" })).toBe("Une épée a été fabriquée");
+  });
+
   it("annonce le changement de saison avec l'article qui va bien, `arg` suivant `sim::climate::Season`", () => {
     // Contrat avec `sim::EventKind::SeasonChanged` (15).
     expect(eventLabel(15, 0)).toBe("Le printemps commence");
@@ -128,6 +134,12 @@ describe("eventLabel", () => {
     expect(eventLabel(20, 15)).toBe("Un manteau a été fabriqué");
     // Un nom connu ne doit pas s'y glisser : ce n'est pas un id de pawn.
     expect(eventLabel(20, 14, { 14: "Alice" })).toBe("Une tunique a été fabriquée");
+  });
+
+  it("annonce le lingot fondu à part, `arg` = 17 (`ItemKind::Metal`), même événement 20", () => {
+    // Le lingot se fond (job 30), il ne se « fabrique » pas comme un habit.
+    expect(eventLabel(20, 17)).toBe("Un lingot a été fondu");
+    expect(eventLabel(20, 17, { 17: "Alice" })).toBe("Un lingot a été fondu");
   });
 
   it("annonce un raid en approche, `arg` suivant `sim::storyteller::RaidKind`", () => {
@@ -298,6 +310,15 @@ describe("BUILD_KIND et FEATURE : piège à pointes", () => {
   });
 });
 
+describe("BUILD_KIND et FEATURE : métal", () => {
+  it("ajoute le rocher veiné et la forge à la suite du piège, sans renuméroter le reste", () => {
+    expect(FEATURE.OreRock).toBe(19);
+    expect(FEATURE.Forge).toBe(20);
+    expect(BUILD_KIND.Forge).toBe(9);
+    expect(BUILD_KIND.SpikeTrap).toBe(8);
+  });
+});
+
 describe("WORK_LABELS", () => {
   it("porte Rechercher en dernier (`sim::WorkType::Research` = 6)", () => {
     expect(WORK_LABELS[6]).toBe("Rechercher");
@@ -367,10 +388,11 @@ describe("formatTemperature", () => {
 });
 
 describe("WEAPON_NAMES", () => {
-  it("donne le nom singulier des trois armes, indexé par `ItemKind`", () => {
+  it("donne le nom singulier des quatre armes, indexé par `ItemKind`", () => {
     expect(WEAPON_NAMES[6]).toBe("gourdin");
     expect(WEAPON_NAMES[7]).toBe("épieu");
     expect(WEAPON_NAMES[8]).toBe("arc");
+    expect(WEAPON_NAMES[18]).toBe("épée");
   });
 });
 
@@ -508,6 +530,12 @@ describe("JOB_LABELS", () => {
   it("nomme les jobs Tame (code 28) et Slaughter (code 29), `crates/sim/src/livestock.rs`", () => {
     expect(JOB_LABELS[28]).toBe("apprivoise");
     expect(JOB_LABELS[29]).toBe("abat");
+  });
+
+  it("nomme le job Smelt (code 30) « fond le métal », distinct de « fabrique »", () => {
+    // Contrat avec `pawn::Job::code()` : fabrication de lingot à la forge.
+    expect(JOB_LABELS[30]).toBe("fond le métal");
+    expect(JOB_LABELS[18]).toBe("fabrique");
   });
 });
 
@@ -659,5 +687,29 @@ describe("visibleStock", () => {
     const lines = visibleStock([9, 8, 7, 6, 5]); // les cinq genres de base seulement
     expect(lines.length).toBe(BASE_STOCK_COUNT);
     expect(lines[0]).toEqual({ name: "bois", count: 9 });
+  });
+
+  it("porte le minerai, le métal et l'épée comme n'importe quel genre au-delà des cinq de base", () => {
+    // Régression : `ItemKind::COUNT` 16 → 19 (mission « métal »).
+    const stored = new Array(ITEM_NAMES.length).fill(0);
+    expect(visibleStock(stored).map((l) => l.name)).not.toContain("minerai");
+    stored[16] = 4; // minerai
+    stored[17] = 2; // métal
+    stored[18] = 1; // épée
+    const names = visibleStock(stored).map((l) => l.name);
+    expect(names).toEqual(["bois", "pierre", "baies", "légumes", "repas", "minerai", "métal", "épée"]);
+  });
+});
+
+describe("ITEM_NAMES : métal", () => {
+  it("nomme le minerai, le métal et l'épée (16, 17, 18), `ItemKind::COUNT` = 19", () => {
+    expect(ITEM_NAMES.length).toBe(19);
+    expect(ITEM_NAMES[16]).toBe("minerai");
+    expect(ITEM_NAMES[17]).toBe("métal");
+    expect(ITEM_NAMES[18]).toBe("épée");
+  });
+
+  it("a une couleur par genre, même longueur que `ITEM_NAMES`", () => {
+    expect(ITEM_COLORS.length).toBe(ITEM_NAMES.length);
   });
 });

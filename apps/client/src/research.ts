@@ -3,15 +3,19 @@
  * sim ni rendu — décodage de `research_state()` et calculs affichés par
  * `ResearchPanel` et le HUD (`App.tsx`).
  *
- * Rien n'est verrouillé : chaque technologie n'apporte qu'un bonus une fois
- * acquise, jamais une condition pour construire ou fabriquer quoi que ce soit.
+ * Les cinq premières technologies ne verrouillent rien : chacune n'apporte
+ * qu'un bonus une fois acquise, jamais une condition pour construire ou
+ * fabriquer quoi que ce soit. `Tech::Metallurgy` (la sixième) fait exception,
+ * et c'est délibéré : sans elle, la forge (`BuildKind::Forge`) est refusée en
+ * silence par le sim, donc pas de lingot, donc pas d'épée — la seule chose
+ * que la recherche interdise (voir `TECH_METALLURGY`).
  */
 
 /**
  * Contrat avec `sim::research::Tech` : `value` = index de l'enum, dans
  * l'ordre attendu par `Command::SetResearch` (voir `encodeSetResearch`).
- * Les coûts en points (2 000, 2 500, 2 500, 3 000, 3 000) viennent du sim via
- * `research_state()` : ils ne sont pas dupliqués ici.
+ * Les coûts en points (2 000, 2 500, 2 500, 3 000, 3 000, 3 500) viennent du
+ * sim via `research_state()` : ils ne sont pas dupliqués ici.
  */
 export interface TechInfo {
   readonly value: number;
@@ -25,7 +29,16 @@ export const TECHS: readonly TechInfo[] = [
   { value: 2, name: "Conservation", description: "péremption des vivres divisée par deux" },
   { value: 3, name: "Archerie", description: "portée de tir 10 cases, dégâts +25 %" },
   { value: 4, name: "Maçonnerie", description: "bâtir en pierre 25 % plus vite" },
+  { value: 5, name: "Métallurgie", description: "débloque la forge ; les lingots servent aux épées" },
 ];
+
+/**
+ * Index de `sim::research::Tech::Metallurgy` : la seule technologie qui
+ * verrouille quelque chose (la forge, voir le commentaire d'en-tête). Sert à
+ * griser l'outil Forge de la barre d'outils tant qu'elle n'est pas acquise
+ * (`App.tsx`).
+ */
+export const TECH_METALLURGY = 5;
 
 /** 255 : aucune recherche en cours (`sim-wasm::research_state`, champ `current`). */
 const NO_RESEARCH = 255;
@@ -49,8 +62,8 @@ export interface ResearchState {
 }
 
 /**
- * Décode `research_state()` (`sim-wasm`, 16 entiers : `[courante,
- * (avancement, coût, acquise) × 5]`) en une structure lisible. Un tampon trop
+ * Décode `research_state()` (`sim-wasm`, 19 entiers : `[courante,
+ * (avancement, coût, acquise) × 6]`) en une structure lisible. Un tampon trop
  * court (sim pas encore démarré, ou pas assez de technologies dedans) rend
  * les lignes qu'il peut plutôt que de planter ; un tampon vide rend un état
  * vide, `current` compris.

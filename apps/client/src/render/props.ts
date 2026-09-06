@@ -193,6 +193,49 @@ function rocks(m: Model): void {
   m.stone(0.03, 0.1, 0.3, 0.12, 0.12, 0.13, 0xa4a294);
 }
 
+/**
+ * Rocher veiné (`Feature::OreRock` = 19) : la même silhouette que `rocks`,
+ * avec des filons cuivrés en surface — le minerai qu'on en tire une fois
+ * miné, même teinte que la pastille de la mini-carte (`minimapPaint.ts`).
+ * Recopié plutôt que partagé avec `rocks` : les quatre pierres y remontent
+ * légèrement (un icosaèdre déborde sous zéro d'environ 0,85 fois son échelle
+ * verticale) pour rester dans la case une fois cette feature couverte par le
+ * test de bornes (`props.test.ts`, `Rock` seul n'y était pas soumis, sous le
+ * seuil `FEATURE.WallWood`).
+ */
+function oreRock(m: Model): void {
+  m.stone(-0.07, 0.34, -0.03, 0.34, 0.39, 0.3);
+  m.stone(0.26, 0.19, 0.1, 0.21, 0.22, 0.24, 0x99998c);
+  m.stone(-0.26, 0.13, 0.26, 0.16, 0.14, 0.19, 0x72786f);
+  m.stone(0.03, 0.11, 0.3, 0.12, 0.12, 0.13, 0xa4a294);
+  const copper = 0xb5651d;
+  m.stone(-0.06, 0.34, -0.04, 0.09, 0.05, 0.28, copper);
+  m.stone(0.24, 0.2, 0.09, 0.06, 0.04, 0.19, copper);
+  m.stone(-0.22, 0.14, 0.25, 0.05, 0.035, 0.15, copper);
+}
+
+/**
+ * Forge (`Feature::Forge` = 20) : un socle de pierre à un seul foyer (braises
+ * orangées, contrat visuel avec le feu de camp) et une enclume sur son
+ * billot, matériau pierre imposé (le sim l'imposerait de toute façon, comme
+ * pour la tombe). Une case entière, comme le poste de fabrication.
+ */
+function forge(m: Model): void {
+  // Socle de pierre, avec sa margelle.
+  m.box(0.82, 0.26, 0.66, C.stone, 0, 0.13, -0.06);
+  for (let i = 0; i < 4; i++) {
+    m.box(0.19, 0.03, 0.15, [0x9b998b, 0x8c8e82, 0xa19d90, 0x929487][i], (i % 2 - 0.5) * 0.58, 0.275, (Math.floor(i / 2) - 0.5) * 0.56 - 0.06);
+  }
+  // Foyer : ouverture sombre, braises et flamme, comme le feu de camp en plus petit.
+  m.box(0.32, 0.15, 0.05, C.dark, 0, 0.15, 0.28);
+  m.add(new THREE.ConeGeometry(0.09, 0.17, 5).rotateZ(0.1), 0xdb8139, -0.02, 0.19, 0.27);
+  m.add(new THREE.ConeGeometry(0.05, 0.12, 5), 0xffc668, 0.03, 0.185, 0.26);
+  // Enclume sur son billot, dans un coin de la case.
+  m.add(new THREE.CylinderGeometry(0.08, 0.1, 0.16, 8), C.wood, 0.27, 0.08, 0.22);
+  m.box(0.21, 0.05, 0.1, C.iron, 0.27, 0.185, 0.22);
+  m.box(0.05, 0.06, 0.05, C.iron, 0.27, 0.24, 0.22);
+}
+
 function basket(m: Model, kind: number): void {
   m.add(new THREE.CylinderGeometry(0.3, 0.23, 0.22, 10), C.wood, 0, 0.11);
   m.add(new THREE.TorusGeometry(0.287, 0.027, 4, 12).rotateX(Math.PI / 2), C.end, 0, 0.23);
@@ -232,6 +275,21 @@ function item(m: Model, kind: number): void {
     m.box(0.33, 0.08, 0.4, cloth, 0, 0.065);
     for (const x of [-0.19, 0.19]) m.box(0.12, 0.08, 0.23, cloth, x, 0.065, -0.065);
     m.box(0.13, 0.025, 0.08, C.linen, 0, 0.117, -0.155);
+  } else if (kind === 16) {
+    // Minerai : le même petit tas que la pierre (`kind === 1`), des filons
+    // cuivrés parmi les cailloux gris.
+    for (let i = 0; i < 6; i++) {
+      const copper = i % 3 === 0;
+      m.stone((i % 3 - 1) * 0.2, 0.095 + Math.floor(i / 3) * 0.12, (i % 2 - 0.5) * 0.24, 0.15, 0.11, 0.15, copper ? 0xb5651d : 0x8c8e82);
+    }
+  } else if (kind === 17) {
+    // Métal : une petite pile de lingots gris acier.
+    for (let i = 0; i < 3; i++) m.box(0.34 - i * 0.02, 0.045, 0.16, i % 2 ? 0x9098a0 : 0x7d848c, i * 0.015, 0.03 + i * 0.05);
+  } else if (kind === 18) {
+    // Épée : lame posée au sol, garde et poignée distinctes du gourdin/épieu.
+    m.box(0.06, 0.02, 0.6, 0xc9d3da, 0, 0.03);
+    m.box(0.16, 0.025, 0.05, C.iron, 0, 0.035, -0.28);
+    m.box(0.05, 0.025, 0.18, C.dark, 0, 0.035, -0.4);
   } else m.box(0.32, 0.22, 0.32, C.wood);
 }
 
@@ -328,14 +386,17 @@ export type PropDensity = "haute" | "moyenne" | "basse";
  * décoratif pur, sans information de jeu — la désignation de coupe se lit
  * sur l'overlay orange, pas sur la silhouette du buisson. `basse` retire en
  * plus les cultures : la zone de culture (overlay brun) suffit à savoir où
- * elles poussent. Arbres, murs, portes, lits, feux de camp, établis, tombes
- * et pièges — les constructions au sens de `BUILD_KIND`, plus l'arbre —
+ * elles poussent. Arbres, murs, portes, lits, feux de camp, établis, forges,
+ * tombes et pièges — les constructions au sens de `BUILD_KIND`, plus l'arbre —
  * restent dessinés à toute densité, comme les objets (`itemProps`) et les
  * chantiers (`blueprintProps`), jamais filtrés ici.
  */
 export function featureVisibleAtDensity(f: number, density: PropDensity): boolean {
   if (density === "haute") return true;
-  if (f === FEATURE.Rock || f === FEATURE.Bush || f === FEATURE.BushUnripe) return false;
+  // Le rocher veiné reste un rocher côté densité (même détail décoratif pur,
+  // sans information de jeu) : la teinte cuivrée de la mini-carte suffit à
+  // savoir où il se trouve, comme l'overlay orange pour la coupe.
+  if (f === FEATURE.Rock || f === FEATURE.OreRock || f === FEATURE.Bush || f === FEATURE.BushUnripe) return false;
   if (density === "basse" && (f === FEATURE.Crop || f === FEATURE.CropRipe)) return false;
   return true;
 }
@@ -355,6 +416,9 @@ export function blueprintKey(kind: number, material: number): string {
     case BUILD_KIND.ResearchBench: return `feature:${FEATURE.ResearchBench}`;
     // Matériau bois imposé, même contrat ; posé, le piège est armé d'emblée.
     case BUILD_KIND.SpikeTrap: return `feature:${FEATURE.SpikeTrap}`;
+    // Matériau pierre imposé, même contrat que la tombe (le sim refuse de
+    // toute façon la forge sans `Tech::Metallurgy`, voir `App.tsx`).
+    case BUILD_KIND.Forge: return `feature:${FEATURE.Forge}`;
     default: return "item:unknown";
   }
 }
@@ -405,6 +469,8 @@ export class PropLibrary {
       case FEATURE.ResearchBench: researchBench(m); break;
       case FEATURE.SpikeTrap: spikeTrap(m, false); break;
       case FEATURE.SpikeTrapSprung: spikeTrap(m, true); break;
+      case FEATURE.OreRock: oreRock(m); break;
+      case FEATURE.Forge: forge(m); break;
       default: m.box(0.3, 0.3, 0.3, C.wood);
     }
     const g = m.finish();

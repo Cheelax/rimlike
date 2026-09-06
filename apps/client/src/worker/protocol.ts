@@ -167,7 +167,7 @@ export interface FrameMessage {
    */
   readonly names: Record<number, string>;
   readonly stored: Uint32Array;
-  /** Objectifs de fabrication courants, indexés par `ItemKind` (9 entrées, `sim-wasm::craft_targets`). */
+  /** Objectifs de fabrication courants, indexés par `ItemKind` (19 entrées, `sim-wasm::craft_targets`). */
   readonly craftTargets: Uint32Array;
   /**
    * Arme équipée de chaque pawn armé, aplatie : `[id, genre]×n` (`sim::ItemKind`
@@ -233,13 +233,13 @@ export interface FrameMessage {
    */
   readonly traderOffers: Int32Array;
   /**
-   * Prix unitaire d'achat par genre, indexé par `ItemKind` (16 entrées,
+   * Prix unitaire d'achat par genre, indexé par `ItemKind` (19 entrées,
    * `sim-wasm::buy_prices`) : ce que la colonie touche en cédant une unité,
    * indépendant de la présence du marchand.
    */
   readonly buyPrices: Uint32Array;
   /**
-   * Fraîcheur la plus basse par genre, indexée par `ItemKind` (16 entrées) :
+   * Fraîcheur la plus basse par genre, indexée par `ItemKind` (19 entrées) :
    * le ‰ restant (`sim-wasm::item_freshness`) de la pile la plus proche de
    * disparaître parmi celles de ce genre sur la carte, −1 si aucune pile n'en
    * existe ou si le genre ne périme pas. Recalculée chaque frame depuis
@@ -248,8 +248,8 @@ export interface FrameMessage {
    */
   readonly foodFreshness: Int32Array;
   /**
-   * Où en est la recherche (`sim-wasm::research_state`) : 16 entiers,
-   * `[courante, (avancement, coût, acquise) × 5]` dans l'ordre de
+   * Où en est la recherche (`sim-wasm::research_state`) : 19 entiers,
+   * `[courante, (avancement, coût, acquise) × 6]` dans l'ordre de
    * `sim::research::Tech`. `courante` vaut 255 quand personne ne cherche rien.
    * Voir `apps/client/src/research.ts::decodeResearch`.
    */

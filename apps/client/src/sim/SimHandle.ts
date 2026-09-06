@@ -200,13 +200,14 @@ export class SimHandle implements SimLike {
 
   /**
    * Objectif de fabrication d'un genre (`sim::ItemKind` 6 gourdin, 7 épieu,
-   * 8 arc). Un genre sans recette est ignoré par le sim.
+   * 8 arc, 14 tunique, 15 manteau, 17 lingot, 18 épée). Un genre sans recette
+   * est ignoré par le sim.
    */
   setCraftTarget(kind: number, target: number): void {
     this.inner.set_craft_target(kind, target);
   }
 
-  /** Objectifs de fabrication courants, indexés par `ItemKind` (9 entrées). */
+  /** Objectifs de fabrication courants, indexés par `ItemKind` (19 entrées). */
   craftTargets(): Uint32Array {
     return this.inner.craft_targets();
   }
@@ -325,7 +326,7 @@ export class SimHandle implements SimLike {
   }
 
   /**
-   * Prix unitaire d'achat par genre, indexé par `ItemKind` (16 entrées) : ce
+   * Prix unitaire d'achat par genre, indexé par `ItemKind` (19 entrées) : ce
    * que la colonie touche en cédant une unité. Indépendant de la présence du
    * marchand.
    */
@@ -390,8 +391,8 @@ export class SimHandle implements SimLike {
   }
 
   /**
-   * Où en est la recherche : `[courante, (avancement, coût, acquise) × 5]`,
-   * 16 entiers (`sim::research::Tech::COUNT` = 5). `courante` vaut 255 quand
+   * Où en est la recherche : `[courante, (avancement, coût, acquise) × 6]`,
+   * 19 entiers (`sim::research::Tech::COUNT` = 6). `courante` vaut 255 quand
    * la colonie ne cherche rien ; voir `apps/client/src/research.ts::decodeResearch`.
    */
   researchState(): Uint32Array {

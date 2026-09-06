@@ -249,10 +249,12 @@ class FakeSim implements RunnerSim {
   }
 
   buyPrices(): Uint32Array {
-    return new Uint32Array(16);
+    return new Uint32Array(19);
   }
 
-  researchStateBuf = new Uint32Array([255, 0, 2000, 0, 0, 2500, 0, 0, 2500, 0, 0, 3000, 0, 0, 3000, 0]);
+  researchStateBuf = new Uint32Array([
+    255, 0, 2000, 0, 0, 2500, 0, 0, 2500, 0, 0, 3000, 0, 0, 3000, 0, 0, 3500, 0,
+  ]);
 
   researchState(): Uint32Array {
     return this.researchStateBuf;
@@ -541,7 +543,7 @@ describe("foodFreshnessOf", () => {
     sim.freshnessById.set(2, 400);
     const items = new Int32Array([1, 3, 10, 0, 0, 2, 3, 5, 1, 0]); // deux piles de baies (genre 3)
     const out = foodFreshnessOf(sim, items);
-    expect(out.length).toBe(16);
+    expect(out.length).toBe(19);
     expect(out[3]).toBe(400);
     expect(out[0]).toBe(-1);
   });

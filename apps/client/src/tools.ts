@@ -20,6 +20,7 @@ export type Tool =
   | "campfire"
   | "craftingSpot"
   | "researchBench"
+  | "forge"
   | "grave"
   | "spikeTrap"
   | "cancel";
@@ -51,6 +52,11 @@ export const TOOLS: {
   // par la rotation de caméra, R par le panneau Recherche) : pas de raccourci
   // clavier, un bouton suffit, comme pour la tombe ci-dessous.
   { id: "researchBench", label: "Établi de recherche", key: "", color: 0x4ad9ff, group: "build", hint: "15 bois" },
+  // Aucune lettre libre ne rappelle « forge » (F est prise par le feu de
+  // camp) : pas de raccourci clavier, un bouton suffit, juste après l'établi
+  // de recherche. Grisé sans `Tech::Metallurgy` (voir `App.tsx`), l'infobulle
+  // le rappelle alors à la place du coût.
+  { id: "forge", label: "Forge", key: "", color: 0x4ad9ff, group: "build", hint: "20 pierre" },
   // Aucune lettre libre ne rappelle « tombe » (T, O, G... sont déjà pris) :
   // pas de raccourci clavier, un bouton suffit (mission tombes §1).
   { id: "grave", label: "Tombe", key: "", color: 0x4ad9ff, group: "build", hint: "5 pierre" },

@@ -19,6 +19,8 @@ export const MINIMAP_SCALE = 1.5;
 export const MINIMAP_TREE_COLOR = 0x1d3a1d;
 /** Rocher : gris clair, distinct du gravier et de la pierre du sol. */
 export const MINIMAP_ROCK_COLOR = 0x9a9a9a;
+/** Rocher veiné : teinte cuivrée, distincte du rocher ordinaire, pour repérer le minerai sans miner à l'aveugle. */
+export const MINIMAP_ORE_ROCK_COLOR = 0xb5651d;
 
 /** Un rectangle, en cases ou en coordonnées monde flottantes (vue caméra). */
 export interface Rect {
@@ -40,11 +42,12 @@ export function pixelToTile(pixel: number, scale: number = MINIMAP_SCALE): numbe
 
 /**
  * Couleur de fond d'une case (0xRRGGBB) : la case elle-même (`TERRAIN_COLORS`,
- * qui couvre déjà les sols posés, planche et dallage), puis un arbre ou un
- * rocher par-dessus (vert sombre / gris), puis un mur selon son matériau
- * (`WALL_COLORS`, contrat `sim::build::Material`). Les autres éléments
- * (buissons, portes, lits, cultures, tombes...) restent la couleur de la
- * case : une mini-carte lisible d'un coup d'œil n'a pas besoin de plus.
+ * qui couvre déjà les sols posés, planche et dallage), puis un arbre, un
+ * rocher ou un rocher veiné par-dessus (vert sombre / gris / cuivré), puis un
+ * mur selon son matériau (`WALL_COLORS`, contrat `sim::build::Material`). Les
+ * autres éléments (buissons, portes, lits, cultures, tombes, forges...)
+ * restent la couleur de la case : une mini-carte lisible d'un coup d'œil n'a
+ * pas besoin de plus.
  */
 export function tileColor(terrain: number, feature: number): number {
   switch (feature) {
@@ -52,6 +55,8 @@ export function tileColor(terrain: number, feature: number): number {
       return MINIMAP_TREE_COLOR;
     case FEATURE.Rock:
       return MINIMAP_ROCK_COLOR;
+    case FEATURE.OreRock:
+      return MINIMAP_ORE_ROCK_COLOR;
     case FEATURE.WallWood:
       return WALL_COLORS[MATERIAL.Wood];
     case FEATURE.WallStone:

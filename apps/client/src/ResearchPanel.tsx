@@ -1,13 +1,15 @@
 /**
- * Le panneau « Recherche » : cinq technologies indépendantes, aucune ne
- * verrouille quoi que ce soit — chacune n'apporte qu'un bonus une fois
- * acquise (`crates/sim/src/research.rs`). Purement présentationnel, comme
- * `CraftingPanel` : il reçoit l'état décodé du dernier `frame`
- * (`research.ts::decodeResearch`) et laisse `App.tsx` encoder et émettre
- * `SetResearch`. Sans établi de recherche (`Feature::ResearchBench`) sur la
- * carte, ni colon dont la priorité Rechercher est active, rien n'avance quel
- * que soit le choix : une note le rappelle, comme `CraftingPanel` le fait
- * pour le poste de fabrication.
+ * Le panneau « Recherche » : six technologies (`crates/sim/src/research.rs`).
+ * Les cinq premières n'apportent qu'un bonus une fois acquises, aucune ne
+ * verrouille quoi que ce soit ; la sixième (Métallurgie) fait exception et
+ * déverrouille la forge (voir `research.ts::TECH_METALLURGY`, `App.tsx`
+ * grise l'outil Forge tant qu'elle n'est pas acquise). Purement
+ * présentationnel, comme `CraftingPanel` : il reçoit l'état décodé du dernier
+ * `frame` (`research.ts::decodeResearch`) et laisse `App.tsx` encoder et
+ * émettre `SetResearch`. Sans établi de recherche (`Feature::ResearchBench`)
+ * sur la carte, ni colon dont la priorité Rechercher est active, rien
+ * n'avance quel que soit le choix : une note le rappelle, comme
+ * `CraftingPanel` le fait pour le poste de fabrication.
  */
 
 import { researchPercent, TECHS } from "./research";

@@ -5,12 +5,19 @@
 
 import { describe, expect, it } from "vitest";
 
-import { decodeResearch, researchPercent, TECHS } from "../src/research";
+import { decodeResearch, researchPercent, TECH_METALLURGY, TECHS } from "../src/research";
 
 describe("TECHS", () => {
-  it("couvre les cinq technologies de `sim::research::Tech`, dans l'ordre de l'enum", () => {
-    expect(TECHS.map((t) => t.value)).toEqual([0, 1, 2, 3, 4]);
-    expect(TECHS.map((t) => t.name)).toEqual(["Agriculture", "Médecine", "Conservation", "Archerie", "Maçonnerie"]);
+  it("couvre les six technologies de `sim::research::Tech`, dans l'ordre de l'enum", () => {
+    expect(TECHS.map((t) => t.value)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(TECHS.map((t) => t.name)).toEqual([
+      "Agriculture",
+      "Médecine",
+      "Conservation",
+      "Archerie",
+      "Maçonnerie",
+      "Métallurgie",
+    ]);
   });
 
   it("donne une description non vide par technologie", () => {
@@ -19,10 +26,15 @@ describe("TECHS", () => {
       expect(tech.description.length).toBeGreaterThan(0);
     }
   });
+
+  it("TECH_METALLURGY pointe la sixième technologie, la seule qui verrouille quelque chose", () => {
+    expect(TECH_METALLURGY).toBe(5);
+    expect(TECHS[TECH_METALLURGY].name).toBe("Métallurgie");
+  });
 });
 
 describe("decodeResearch", () => {
-  it("décode `[courante, (avancement, coût, acquise) × 5]`", () => {
+  it("décode `[courante, (avancement, coût, acquise) × 6]`", () => {
     const buf = new Uint32Array([
       1, // la médecine (tech 1) est en cours
       500, 2000, 0, // Agriculture : en cours d'aucune recherche, pas acquise
@@ -30,6 +42,7 @@ describe("decodeResearch", () => {
       2500, 2500, 1, // Conservation : acquise
       0, 3000, 0, // Archerie : rien
       0, 3000, 0, // Maçonnerie : rien
+      0, 3500, 0, // Métallurgie : rien
     ]);
     const state = decodeResearch(buf);
     expect(state.current).toBe(1);
@@ -39,11 +52,12 @@ describe("decodeResearch", () => {
       { tech: 2, progress: 2500, cost: 2500, done: true },
       { tech: 3, progress: 0, cost: 3000, done: false },
       { tech: 4, progress: 0, cost: 3000, done: false },
+      { tech: 5, progress: 0, cost: 3500, done: false },
     ]);
   });
 
   it("renvoie `current: null` quand rien n'est cherché (255)", () => {
-    const buf = new Uint32Array(16).fill(0);
+    const buf = new Uint32Array(19).fill(0);
     buf[0] = 255;
     expect(decodeResearch(buf).current).toBeNull();
   });
@@ -58,8 +72,8 @@ describe("decodeResearch", () => {
   });
 
   it("accepte un tableau ordinaire, pas seulement un `Uint32Array`", () => {
-    const buf = [255, 0, 2000, 0, 0, 2500, 0, 0, 2500, 0, 0, 3000, 0, 0, 3000, 0];
-    expect(decodeResearch(buf).techs.length).toBe(5);
+    const buf = [255, 0, 2000, 0, 0, 2500, 0, 0, 2500, 0, 0, 3000, 0, 0, 3000, 0, 0, 3500, 0];
+    expect(decodeResearch(buf).techs.length).toBe(6);
     expect(decodeResearch(buf).current).toBeNull();
   });
 });

@@ -510,8 +510,10 @@ d'alice arrivé chez bob).
   Métallurgie (3 500 points, premier verrou) qui débloque la forge (20 pierre), fonte de 3
   minerais en un lingot, épée (4 lingots, 200 % de dégâts de mêlée, mesurée en duel sur 30
   graines), épées chez l'armurier et chez les pillards à forte menace ; objectif intenable
-  sauté au lieu de bloquer la file. Interface à faire (outil Forge grisé sans métallurgie,
-  minerai, lingot et épée nommés, sixième technologie).
+  sauté au lieu de bloquer la file. Interface livrée le 2026-09-06 : contrat des tailles porté à
+  19 genres et 6 technologies, outil Forge grisé sans métallurgie, props du rocher veiné et de la
+  forge, lingots et épées dans la fabrication ; vérifié : forge refusée puis acceptée après la
+  technologie, 19 entrées dans le stock et la recherche.
 
 **Reste**
 

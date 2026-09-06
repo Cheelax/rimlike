@@ -26,6 +26,7 @@ protocole réseau, `docs/protocol.md`.
    - [Élevage](#élevage)
    - [Vêtements et armes](#vêtements-et-armes)
    - [Recherche](#recherche)
+   - [Métal](#métal)
 4. [Dangers](#4-dangers)
    - [Raids](#raids)
    - [Pièges à pointes](#pièges-à-pointes)
@@ -102,6 +103,7 @@ Constructions (posées en plans, matériau réglé par `T`) :
 | F | Feu | 8, bois seulement (feu de camp) |
 | A | Poste | 10, bois seulement (poste de fabrication) |
 | — | Établi de recherche (bouton, pas de raccourci) | 15, bois seulement |
+| — | Forge (bouton, pas de raccourci) | 20, pierre seulement, demande la technologie Métallurgie (voir « Métal », §3) |
 | — | Tombe (bouton, pas de raccourci) | 5, pierre seulement |
 | — | Piège à pointes (bouton, pas de raccourci) | 5, bois seulement, franchissable |
 
@@ -121,8 +123,8 @@ côté client.
 | Touche | Panneau | Contenu |
 |---|---|---|
 | J | Travail | priorités de chaque colon par type de travail (Construire, Livrer, Cuisiner, Désignations, Cultiver, Ranger, Rechercher) : clic pour la priorité suivante, clic droit pour la précédente. 1 = urgent, 4 = en dernier recours, — = jamais. |
-| K | Fabrication | objectif de stock (0 à 20) par arme et par vêtement ; nécessite un poste de fabrication posé sur la carte |
-| R | Recherche | choisir une des cinq technologies ; nécessite un établi de recherche posé sur la carte et un colon dont la priorité Rechercher est active (voir « Recherche », §3) |
+| K | Fabrication | objectif de stock (0 à 20) par arme, par vêtement et par lingot ; nécessite un poste de fabrication posé sur la carte (une forge en plus pour les lingots, voir « Métal », §3) |
+| R | Recherche | choisir une des six technologies ; nécessite un établi de recherche posé sur la carte et un colon dont la priorité Rechercher est active (voir « Recherche », §3) |
 | I | Chaleur | colore les cases par température |
 | N | Journal | événements de la partie, filtrables (Tout / Menaces / Colonie) |
 | V | Caravane | former une caravane (seulement dans une colonie du monde partagé, voir §5) |
@@ -302,16 +304,18 @@ Fabrication : gourdin (8 bois), épieu (6 bois, 4 pierre), arc (12 bois),
 tunique (6 cuir, +6 °C ressentis) et manteau (12 cuir, +15 °C). Un colon
 s'équipe automatiquement de la meilleure arme et du meilleur habit
 disponibles en stock ; sous 6 °C de température ambiante, il va chercher un
-vêtement de lui-même.
+vêtement de lui-même. L'épée, la meilleure arme de mêlée, demande la
+métallurgie et une forge : voir « Métal » ci-dessous.
 
 ### Recherche
 
 L'établi de recherche (bouton dédié de la barre d'outils, 15 bois, une case)
 laisse un colon dont la priorité Rechercher est active faire avancer, par
-séances, la technologie choisie au panneau Recherche (touche `R`). Rien n'est
-verrouillé : les cinq technologies sont indépendantes, chacune n'apporte
-qu'un bonus une fois acquise, jamais une condition pour construire ou
-fabriquer quoi que ce soit.
+séances, la technologie choisie au panneau Recherche (touche `R`). Les cinq
+premières technologies ne verrouillent rien : chacune n'apporte qu'un bonus
+une fois acquise, jamais une condition pour construire ou fabriquer quoi que
+ce soit. La sixième, Métallurgie, fait exception : sans elle, la forge est
+refusée (voir « Métal » ci-dessous, la seule chose que la recherche interdise).
 
 | Technologie | Coût | Effet |
 |---|---|---|
@@ -320,11 +324,27 @@ fabriquer quoi que ce soit.
 | Conservation | 2 500 | péremption des vivres divisée par deux |
 | Archerie | 3 000 | portée de tir 10 cases, dégâts +25 % |
 | Maçonnerie | 3 000 | bâtir en pierre 25 % plus vite |
+| Métallurgie | 3 500 | débloque la forge (voir « Métal » ci-dessous) |
 
 Une seule technologie avance à la fois ; le bouton « Arrêter » du panneau
 libère le colon pour autre chose sans perdre l'avancement déjà fait. Le HUD
 affiche la technologie en cours et son pourcentage tant qu'une recherche est
 lancée, et une notification annonce chaque technologie acquise.
+
+### Métal
+
+Un rocher sur huit environ est un rocher veiné (teinte cuivrée sur la
+mini-carte, distincte du rocher gris ordinaire) : le miner (`M`) donne du
+minerai en plus de la pierre habituelle. Le minerai ne sert à rien tel quel,
+il se fond à la forge.
+
+La forge (bouton dédié de la barre d'outils, 20 pierre, une case) est
+grisée, infobulle à l'appui, tant que la technologie Métallurgie n'est pas
+acquise (voir « Recherche » ci-dessus) : y poser un plan échoue sinon en
+silence. Une fois bâtie, un colon y fond trois minerais en un lingot, sur
+objectif réglé au panneau Fabrication (« Lingots », comme une arme). Au
+poste de fabrication, quatre lingots donnent ensuite une épée — la meilleure
+arme de mêlée du jeu, devant l'épieu et l'arc, mais la plus chère à produire.
 
 ## 4. Dangers
 
@@ -562,8 +582,10 @@ effacé) est une identité perdue, sans recours simple.
 
 - Pas de toits : la chaleur ne se gère pas encore (voir « Famine, froid et
   chaleur », §4).
-- Pas de métal : bois et pierre sont les deux seuls matériaux, à construire
-  comme à fabriquer.
+- Pas de nouveau matériau de construction : bois et pierre restent les deux
+  seuls choix pour murs, portes et sols ; le métal (minerai, lingot, épée,
+  voir « Métal », §3) est une chaîne de fabrication à part, pas un matériau
+  de bâtiment.
 - Pas de compte joueur : identité par jeton local uniquement, sans
   recouvrement en cas de perte (voir « Identité et profil local », §6).
 - Réputation locale à la colonie : chaque colonie du monde partagé tient sa

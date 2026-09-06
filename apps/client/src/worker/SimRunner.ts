@@ -28,8 +28,8 @@ import {
 const PAWN_STRIDE = 12;
 /** Entiers par pile dans le tampon `items()` : `[id, genre, quantité, x, y]` (`sim-wasm::ITEM_STRIDE`). */
 const ITEM_STRIDE = 5;
-/** Genres de `sim::ItemKind` (contrat `AGENTS.md` : `ItemKind::COUNT` = 16). */
-const ITEM_KIND_COUNT = 16;
+/** Genres de `sim::ItemKind` (contrat `AGENTS.md` : `ItemKind::COUNT` = 19). */
+const ITEM_KIND_COUNT = 19;
 
 /** 60 ticks de jeu par seconde à la vitesse x1. */
 export const TICKS_PER_SECOND = 60;
@@ -74,7 +74,7 @@ export interface RunnerSim extends SimLike {
    * (`sim-wasm::ANIMAL_STRIDE`).
    */
   animals(): Int32Array;
-  /** Objectifs de fabrication courants, indexés par `ItemKind` (9 entrées). */
+  /** Objectifs de fabrication courants, indexés par `ItemKind` (19 entrées). */
   craftTargets(): Uint32Array;
   /** Arme équipée de chaque pawn armé : `[id, genre]` par pawn qui en porte une. */
   weapons(): Int32Array;
@@ -108,11 +108,11 @@ export interface RunnerSim extends SimLike {
   traderLeavesIn(): number;
   /** Étal du marchand, à plat : `[genre, quantité, prix unitaire de vente] × n`. */
   traderOffers(): Int32Array;
-  /** Prix unitaire d'achat par genre, indexé par `ItemKind` (16 entrées). */
+  /** Prix unitaire d'achat par genre, indexé par `ItemKind` (19 entrées). */
   buyPrices(): Uint32Array;
   /**
-   * Où en est la recherche : `[courante, (avancement, coût, acquise) × 5]`,
-   * 16 entiers. `courante` vaut 255 quand personne ne cherche rien.
+   * Où en est la recherche : `[courante, (avancement, coût, acquise) × 6]`,
+   * 19 entiers. `courante` vaut 255 quand personne ne cherche rien.
    */
   researchState(): Uint32Array;
   /**
