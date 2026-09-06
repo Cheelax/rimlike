@@ -1,44 +1,127 @@
 # Campagnes d'équilibrage — constatations
 
 Mesures produites par `cargo run -p sim-cli --release -- campaign`
-(`crates/sim-cli/src/campaign.rs`), le 2026-09-05, sur la révision de travail de
-la phase 2c.
+(`crates/sim-cli/src/campaign.rs`). Rapport écrit le 2026-09-05 sur la révision
+de travail de la phase 2c, puis annoté tranche par tranche le même jour
+(rangement, difficulté, menace, feu, soins) et les 2026-09-06 suivants (postes
+hors d'atteinte, index de régions, cuisine). **Remis à plat le 2026-09-06**,
+révision `661d1b3` (`git log --oneline -1`) : le résumé et le §2 donnent
+maintenant l'état du 2026-09-06, mesuré sur cinq nouvelles campagnes de
+référence (mêmes graines, mêmes commandes), avec les chiffres du 2026-09-05
+gardés à côté sous « avant réglages ». Les §3 à §7 ne sont **pas** retouchés :
+ils portent l'historique de chaque correction, écrit au moment où elle a été
+faite. Le détail graine par graine des campagnes du 2026-09-06 est au §9.
 
 **Ce document mesure, il ne règle rien.** Aucune constante du sim n'a été
 touchée pour l'écrire. Chaque constat porte une proposition chiffrée, à
 éprouver par un test statistique sur plusieurs graines avant d'être appliquée
 (règle « on mesure avant de régler », `AGENTS.md`).
 
-Les constats, eux, ont été traités **le même jour** ; chacun porte alors une
-section « après réglage » qui donne les chiffres d'arrivée, mesurés de la même
-façon, et dit ce qui a été essayé puis rejeté en route. La proposition d'origine
-reste écrite telle quelle : plusieurs se sont révélées fausses à la mesure, et
-c'est le genre de chose qu'on regrette d'avoir effacée.
+Les constats d'origine, eux, ont été traités **le même jour** (2026-09-05) ;
+chacun porte alors une section « après réglage » qui donne les chiffres
+d'arrivée, mesurés de la même façon, et dit ce qui a été essayé puis rejeté en
+route. La proposition d'origine reste écrite telle quelle : plusieurs se sont
+révélées fausses à la mesure, et c'est le genre de chose qu'on regrette d'avoir
+effacée. Trois défauts de performance, distincts des cinq constats
+d'équilibrage, ont été corrigés depuis (§3 : inhumation le 2026-09-05, postes
+hors d'atteinte et index de régions le 2026-09-06) — c'est ce qui fait tourner
+les cinq campagnes ci-dessous en moins d'une minute chacune au lieu de
+plusieurs dizaines de minutes.
 
 ## Les cinq constats, en une ligne chacun
 
 1. **Rangement** (**corrigé le 2026-09-05**, voir le journal du plan) — dès qu'un entrepôt est plein, chaque colon relance un
    balayage complet de la carte **par pile au sol et par tick** : 1 870 fois
-   plus lent à 60 piles. Défaut du sim, pas réglage. (§3)
+   plus lent à 60 piles. Défaut du sim, pas réglage. (§3) — état au
+   2026-09-06 : tient toujours (`Map::stockpile_tiles` et `attempts` bornés
+   dans `try_start_haul`, voir le code) ; combiné à l'index de régions, la
+   campagne normale tourne maintenant en **28,8 s** contre les dizaines de
+   minutes d'origine (§9).
 2. **Difficulté** (**réglée le 2026-09-05**, voir « Après réglage » en §4) —
    « difficile » éteignait **30 colonies sur 30**, 25 avant le jour 10 : le
    premier raid y faisait trois pillards armés contre trois colons qui n'ont pas
    encore d'arme. La première bande est maintenant plafonnée à deux têtes à
    toutes les difficultés : 24 colonies sur 30 passent le jour 10 et 8 voient le
-   jour 30. (§4)
+   jour 30. (§4) — état au 2026-09-06 : tient toujours, mesuré à nouveau
+   (§9) : **24/30** au jour 10 (identique), **7/30** encore vivantes au jour 30
+   (8/30 le 2026-09-05, dans le bruit d'une campagne à trente graines).
 3. **Menace** (**réglée le 2026-09-05**, voir « Après réglage » en §5) — une
    bande valait 1,9 pillard au premier raid comme au neuvième : tripler sa
    richesse ne changeait la taille des raids que de 3 %. La richesse compte
    maintenant **deux fois** au-delà de 2 000, et une colonie trois fois plus
-   riche reçoit une tête de plus. (§5)
+   riche reçoit une tête de plus. (§5) — état au 2026-09-06 : tient toujours,
+   2,2 à 2,3 pillards par bande sur les cinq campagnes (§9), contre 1,7 à 2,0
+   le 2026-09-05.
 4. **Feu** (**réglé le 2026-09-05**, voir « Ce qui a été fait » en §6) — médiane
    3 cases brûlées, maximum 2 339 sur une carte qui en compte 4 096, et rien
    entre les deux. Le feu suit maintenant le vent : le pire incendie de la
    campagne normale tombe à 534 cases (13 %), et la tranche « quelques dizaines
-   de cases », jusque-là vide, se remplit. (§6)
+   de cases », jusque-là vide, se remplit. (§6) — état au 2026-09-06 : tient
+   toujours, et même mieux : maximum à **121 cases (3 %)** en normale sur la
+   nouvelle mesure (§9), médiane à 2.
 5. **Soins** (**corrigé le 2026-09-05**, voir le journal du plan) — pour deux
    colons tués au combat, un troisième mourait de ses plaies après, faute de
-   débit de pansement. Rapport stable à 0,5. (§7)
+   débit de pansement. Rapport stable à 0,5. (§7) — état au 2026-09-06 : tient
+   toujours et s'est amélioré : rapport blessures/raid à **0,13** en normale
+   sur la nouvelle mesure (§9), contre 0,55 le 2026-09-05 et 0,17 le
+   2026-09-05 après réglage — la médecine à trois technologies (constat
+   ouvert n°3 ci-dessous) y est sans doute pour quelque chose.
+
+## Constats ouverts au 2026-09-06
+
+Cinq points, chiffrés sur les campagnes du §9, chacun rattaché à une
+constante ou un mécanisme précis, avec une proposition **non appliquée** :
+
+1. **La campagne automne-hiver s'est effondrée depuis le 2026-09-05.**
+   28/30 colonies éteintes contre 12/30 alors, et surtout **0 colon armé sur
+   74 vivants au total, sur les 30 graines** (19/55 le 2026-09-05) : aucune
+   graine ne finit avec un arc ou une épée en main. C'est la seule des cinq
+   campagnes qui démarre en automne (`--day-of-year 30`, `SetCalendar`), donc
+   la seule où l'objectif « une tunique par colon » (`craft::plan`, §1) est
+   posé **dès le tick 0** et le reste toute la partie de trente jours ; il se
+   dispute le même `WorkType::Build` — et la même réserve de bois — que
+   l'enceinte, la forge et les arcs (`craft::RECIPES`, `crates/sim/src/craft.rs`).
+   Proposition : un banc isolé qui suit le stock de bois et le nombre d'arcs
+   produits tick après tick sur une graine d'automne-hiver, pour trancher
+   entre « le bois manque structurellement en hiver » et « l'ordre des
+   recettes bloque les arcs ».
+2. **Des graines retombent sous le seuil de perf promis par l'index de
+   régions.** Le §3 visait « aucune graine sous 100 000 ticks/s » ; sur les
+   campagnes du 2026-09-06, trois graines n'y sont plus : chaude/graine 8 à
+   **58 584 ticks/s**, normale/graine 12 à **79 734**, froide/graine 8 à
+   **97 253** (§9). La graine 8 est récurrente (déjà la plus lente avant
+   l'index de régions) ; la métallurgie a ajouté un nouveau balayage minier
+   (`designate_rocks`, `MINE_RADIUS` = 12, `crates/sim-cli/src/campaign.rs`)
+   qui n'existait pas quand le seuil a été mesuré. Proposition : profiler la
+   graine 8 sous climat chaud (`sample`) pour confirmer que le minage est en
+   cause, et lui appliquer le même remède qu'au rangement (compteur de
+   désignations minières, court-circuit).
+3. **Le rapport ne voit ni la forge, ni le minerai, ni l'épée.** `research.rs`
+   compte maintenant six technologies (`Tech::ALL`, `Preservation`, `Archery`
+   et `Masonry` en plus des trois d'origine) et le joueur scripté en vise
+   trois — Agriculture, Médecine, **Métallurgie** — contre deux le 2026-09-05 ;
+   la distribution des technologies acquises passe d'un chiffre binaire 0/2 à
+   surtout 0/3 (15/30 colonies à trois technologies en campagne normale, §9).
+   Mais `campaign --json` n'exporte ni `Map::forge_count()`, ni le nombre
+   d'épées produites ou portées : impossible de dire si une colonie qui
+   recherche la métallurgie bâtit sa forge avant de mourir, ou si la
+   recherche est un investissement perdu. Proposition : ajouter
+   `forges_built` et `swords_equipped` aux champs JSON de `Run`
+   (`crates/sim-cli/src/campaign.rs`).
+4. **L'apprivoisement n'aboutit que dans un quart des colonies.** Le joueur
+   scripté le tente dès le jour 8 si les baies dépassent 30
+   (`TAME_DAY`, `TAME_BERRIES`) ; le taux de réussite reste bas et stable sur
+   les cinq campagnes : 7/30, 5/30, 7/30, 8/30, et 1/30 en automne-hiver
+   (§9) — jamais la majorité, même en trente jours. Proposition : compter,
+   dans le harnais, les `Command::Tame` envoyés face aux marquages qui
+   aboutissent réellement (`livestock_count() > 0`), pour savoir si c'est le
+   seuil de baies ou l'échec de la traque qui borne le chiffre.
+5. **La réputation et le tribut ne sont mesurés nulle part.** `plan` envoie
+   un tribut dès qu'une tribu déteste la colonie (`GIFT_GOODWILL` = −40, §1),
+   mais aucune des cinq campagnes n'exporte de compteur de tributs payés ni
+   la pire réputation observée : impossible de dire si le tribut évite des
+   raids ou s'il ne fait que dépenser du bois en pure perte. Proposition :
+   exporter `tributes_paid` et `worst_reputation` dans `Run`.
 
 ---
 
@@ -123,43 +206,66 @@ jours restent trente jours.
 ## 2. Ce que les campagnes donnent
 
 Chaque campagne : 30 graines, 30 jours (432 000 ticks), carte 64×64, le même
-joueur scripté.
+joueur scripté. « avant réglages » reprend telles quelles les mesures du
+2026-09-05 (avant les cinq corrections des §3-§7) ; « après » est la mesure du
+2026-09-06, révision `661d1b3`, cinq campagnes relancées avec les mêmes graines
+et les mêmes commandes (§9 pour le détail graine par graine et les JSON bruts).
 
-| | normale | difficile | froide (−5 °C) | chaude (+30 °C) | automne-hiver |
+| | normale (avant) | normale (après) | difficile (avant) | difficile (après) | froide (avant) | froide (après) | chaude (avant) | chaude (après) | automne-hiver (avant) | automne-hiver (après) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| colonies éteintes | 14/30 | 6/30 | **30/30** | 23/30 | 12/30 | 19/30 | 20/30 | 16/30 | 12/30 | **28/30** |
+| colonies à ≥ 3 colons | 10/30 | **17/30** | 0/30 | 2/30 | 10/30 | 9/30 | 6/30 | 10/30 | 13/30 | **1/30** |
+| colons vivants (moy. fin) | 1,6 | 2,5 | 0,0 | 0,6 | 1,6 | 1,1 | 0,9 | 1,4 | 1,8 | **0,1** |
+| colons au jour 10 / 20 | 2,3 / 1,8 | 3,0 / 2,8 | 0,2 / 0,0 | 2,4 / 1,6 | 2,0 / 1,5 | 2,2 / 1,4 | 2,2 / 1,2 | 3,0 / 1,9 | 2,3 / 1,8 | 1,6 / 0,7 |
+| morts au total | 187 | 200 | 118 | 202 | 187 | 186 | 177 | 193 | 180 | 169 |
+| dont raid / blessures | 57 % / 31 % | 86 % / 11 % | 77 % / 14 % | 84 % / 13 % | 56 % / 37 % | 80 % / 18 % | 61 % / 29 % | 81 % / 17 % | 60 % / 27 % | 76 % / 14 % |
+| dont froid | 0 % | 0 % | 0 % | 0 % | 2 % | 0 % | 0 % | 0 % | 6 % | 4 % |
+| raids reçus / colonie | 5,9 | 6,8 | 2,0 | 5,7 | 6,1 | 5,1 | 5,0 | 6,0 | 6,1 | 3,9 |
+| raids repoussés (part) | n.d. | 98 % | n.d. | 92 % | n.d. | 95 % | n.d. | 96 % | n.d. | 86 % |
+| pillards par bande | 1,9 | 2,2 | 2,7 | 2,3 | 1,7 | 2,3 | 1,9 | 2,3 | 2,0 | 2,2 |
+| richesse finale (moy.) | 1 436 | 2 196 | 332 | 1 244 | 2 562 | 2 093 | 1 018 | 1 503 | 3 240 | 1 288 |
+| vivres en stock (jours) | 10,2 | 14,0 | 0,0 | 2,4 | 20,5 | 13,0 | 5,6 | 5,8 | **30,1** | **0,0** |
+| technologies acquises (moy.) | 0,8 | 1,57 | 0,0 | 1,13 | 0,8 | 0,77 | 0,8 | 0,87 | 0,8 | 0,87 |
+| bétail (colonies à ≥ 1) | n.d. | 7/30 | n.d. | 5/30 | n.d. | 7/30 | n.d. | 8/30 | n.d. | 1/30 |
+| feux (départs) | 71 | 76 | 60 | 65 | 39 | 31 | 76 | 96 | 33 | 29 |
+| cases brûlées (total) | 8 877 | 309 | 13 818 | 1 021 | 39 | 31 | 9 835 | 966 | 33 | 28 |
+| colons armés / vivants | 23/49 | 43/74 | 0/0 | 12/18 | 25/49 | 14/34 | 16/28 | 25/43 | 19/55 | **0/4** |
+| humeur finale (vivantes) | 52 % | 53 % | — | 40 % | 35 % | 31 % | 49 % | 52 % | 51 % | 40 % |
+
+Perf (mesurée sans contention cette fois, une campagne à la fois, contre les
+cinq en même temps le 2026-09-05 — §1) :
+
+| | normale | difficile | froide | chaude | automne-hiver |
 |---|---|---|---|---|---|
-| colonies éteintes | **14/30** | **30/30** | 12/30 | 20/30 | 12/30 |
-| colonies à ≥ 3 colons | 10/30 | 0/30 | 10/30 | 6/30 | 13/30 |
-| colons vivants (moy.) | 1,6 | 0,0 | 1,6 | 0,9 | 1,8 |
-| colons au jour 10 / 20 | 2,3 / 1,8 | 0,2 / 0,0 | 2,0 / 1,5 | 2,2 / 1,2 | 2,3 / 1,8 |
-| morts au total | 187 | 118 | 187 | 177 | 180 |
-| dont raid / blessures | 57 % / 31 % | 77 % / 14 % | 56 % / 37 % | 61 % / 29 % | 60 % / 27 % |
-| dont froid | 0 % | 0 % | 2 % | 0 % | 6 % |
-| raids reçus / colonie | 5,9 | 2,0 | 6,1 | 5,0 | 6,1 |
-| pillards par bande | 1,9 | 2,7 | 1,7 | 1,9 | 2,0 |
-| richesse finale (moy.) | 1 436 | 332 | 2 562 | 1 018 | 3 240 |
-| vivres en stock (jours) | 10,2 | 0,0 | 20,5 | 5,6 | 30,1 |
-| technologies acquises | 0,8 | 0,0 | 0,8 | 0,8 | 0,8 |
-| cases brûlées (total) | 8 877 | 13 818 | **39** | 9 835 | **33** |
-| colons armés / vivants | 23/49 | 0/0 | 25/49 | 16/28 | 19/55 |
-| humeur finale | 52 % | — | **35 %** | 49 % | 51 % |
+| durée totale, 30 graines | **28,8 s** | 17,0 s | 29,3 s | 30,4 s | 16,5 s |
+| ticks/s moyen | 449 938 | 760 474 | 442 155 | 426 007 | 784 409 |
+| graine la plus lente | 12 : **79 734** ticks/s | 8 : 175 041 | 8 : 97 253 | 8 : **58 584** | 11 : 195 034 |
 
-La ligne « technologies acquises » se lit avec une réserve : le joueur scripté
-n'en vise que **deux** (agriculture puis médecine, `plan` §3), jamais les cinq.
-Et le résultat est binaire — sur les trente graines de la campagne normale,
-**dix-sept colonies en ont zéro et treize en ont exactement deux**, jamais une
-seule. Une colonie qui pose son établi finit les deux ; une colonie qui meurt
-avant le jour 5 n'en voit aucune.
+La ligne « technologies acquises » se lit avec une réserve encore plus forte
+qu'avant : `research.rs` compte maintenant **six** technologies (`Tech::ALL` :
+Agriculture, Médecine, Préservation, Archerie, Maçonnerie, Métallurgie), le
+joueur scripté en vise **trois** (agriculture, médecine puis métallurgie,
+`plan` §1), jamais les six. Le résultat, toujours binaire, a changé de forme :
+sur les trente graines de la campagne normale, quatorze colonies en ont zéro,
+quinze en ont exactement **trois** (Métallurgie comprise) et une seule s'arrête
+à deux — contre « zéro ou deux, jamais un seul cas intermédiaire » le
+2026-09-05. Une colonie qui pose son établi et survit assez longtemps
+recherche maintenant jusqu'à la forge ; voir le constat ouvert n°3 en tête de
+ce document sur ce que ces trois technologies produisent réellement (forge
+bâtie, épée en main).
 
-Deux vérifications de bonne foi tiennent sur les cinq campagnes : la colonne
-« morts inexpliquées » est restée à **0**, et le total des morts déduites égale
-exactement celui annoncé par le sim (187 = 187, 118 = 118, 177 = 177,
-180 = 180). Aucun événement n'a été perdu (`lost_events` = 0 partout).
+Deux vérifications de bonne foi tiennent toujours sur les cinq nouvelles
+campagnes : la colonne « morts inexpliquées » est restée à **0**, et le total
+des morts déduites égale exactement celui annoncé par le sim (200 = 200,
+202 = 202, 186 = 186, 193 = 193, 169 = 169). Aucun événement n'a été perdu
+(`lost_events` = 0 partout).
 
-Une graine sur trente (la 7, en 64×64) ne reçoit **aucun** raid des trente
-jours et perd ses trois colons de faim : la colonie y naît sur un morceau de
-terre isolé, où `find_entry_tile` ne trouve pas d'entrée. C'est le même monde
-dans les cinq campagnes ; il ne fausse rien, mais il rappelle qu'une carte sur
-trente est injouable telle quelle.
+Une graine sur trente (la 7, en 64×64) ne reçoit **toujours aucun** raid des
+trente jours et perd ses trois colons de faim, à l'identique dans les cinq
+campagnes (`raids: 0`, `deaths: {"famine": 3}` dans les cinq JSON) : la colonie
+y naît sur un morceau de terre isolé, où `find_entry_tile` ne trouve pas
+d'entrée. Il ne fausse rien, mais il rappelle qu'une carte sur trente est
+injouable telle quelle.
 
 ---
 
@@ -1385,3 +1491,210 @@ Deux garde-fous rendent malgré tout les chiffres exploitables : la colonne `?`
 (morts inexpliquées) est restée à **0** sur les 150 colonies, et le total des
 morts déduites égale exactement celui annoncé par le sim. Le tableau ne raconte
 donc pas d'histoire que la simulation n'ait pas racontée d'abord.
+
+---
+
+## 9. Campagnes du 2026-09-06
+
+(Le §8 existait déjà — biais du joueur scripté — donc cette nouvelle tranche
+prend le numéro suivant plutôt que de réutiliser « §8 ».)
+
+Cinq commandes, chacune lancée seule (pas en parallèle, contrairement au
+2026-09-05 — §1) sur la révision `661d1b3` :
+
+```bash
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --difficulty 2 --json
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --difficulty 3 --json
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --difficulty 2 --climate -50 --json
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --difficulty 2 --climate 300 --json
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --difficulty 2 --day-of-year 30 --json
+```
+
+Chacune a tourné en 16 à 31 secondes (colonne « durée totale » du §2) — à
+comparer aux 4 à 43 minutes du 2026-09-05, contendues à cinq en même temps sur
+la même machine. Les tableaux du §2 ci-dessus donnent la synthèse ; ce qui suit
+est le détail par graine des cinq campagnes, pour qui veut vérifier un chiffre
+sans relancer les commandes.
+
+### Normale (`--difficulty 2`)
+
+| seed | fin | j10 | j20 | morts | raids/raiders | richesse | vivres (j) | tech | bétail | feux/brûlées | armés | humeur | ms |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 4 | 3 | 4 | 6 | 8/17 | 2061 | 4.3 | 3 | 1 | 2/2 | 0 | 51 % | 579 |
+| 2 | 1 | 3 | 3 | 9 | 8/15 | 2473 | 85.2 | 3 | 0 | 6/43 | 1 | 48 % | 314 |
+| 3 | 0 | 4 | 0 | 7 | 5/14 | 2564 | 0.0 | 3 | 0 | 3/3 | 0 | 0 % | 495 |
+| 4 | 4 | 2 | 2 | 6 | 8/14 | 1745 | 0.0 | 0 | 0 | 2/2 | 0 | 37 % | 340 |
+| 5 | 2 | 4 | 3 | 8 | 8/20 | 2859 | 36.5 | 3 | 0 | 4/9 | 2 | 60 % | 708 |
+| 6 | 2 | 3 | 4 | 8 | 8/15 | 1464 | 10.9 | 0 | 0 | 1/1 | 2 | 64 % | 1516 |
+| 7 | 0 | 0 | 0 | 3 | 0/0 | 0 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 313 |
+| 8 | 4 | 2 | 2 | 6 | 7/15 | 2866 | 11.4 | 3 | 0 | 4/5 | 1 | 57 % | 2788 |
+| 9 | 3 | 2 | 2 | 7 | 7/13 | 2513 | 30.2 | 3 | 0 | 3/4 | 3 | 55 % | 226 |
+| 10 | 0 | 5 | 0 | 6 | 4/10 | 763 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 525 |
+| 11 | 3 | 3 | 3 | 7 | 8/18 | 2350 | 22.6 | 0 | 0 | 2/2 | 3 | 45 % | 631 |
+| 12 | 2 | 4 | 4 | 8 | 7/21 | 4070 | 28.4 | 3 | 0 | 2/2 | 1 | 68 % | 5418 |
+| 13 | 5 | 4 | 5 | 5 | 7/16 | 2364 | 23.3 | 3 | 1 | 1/1 | 5 | 64 % | 743 |
+| 14 | 0 | 2 | 0 | 6 | 5/8 | 1495 | 0.0 | 2 | 0 | 9/121 | 0 | 0 % | 133 |
+| 15 | 2 | 3 | 4 | 8 | 7/18 | 2253 | 15.7 | 3 | 0 | 6/10 | 2 | 46 % | 614 |
+| 16 | 4 | 3 | 4 | 5 | 5/10 | 1139 | 0.0 | 0 | 0 | 0/0 | 0 | 52 % | 2044 |
+| 17 | 3 | 2 | 3 | 7 | 8/19 | 4460 | 9.1 | 3 | 1 | 8/15 | 1 | 62 % | 612 |
+| 18 | 3 | 3 | 2 | 7 | 7/15 | 2349 | 0.0 | 3 | 0 | 2/2 | 0 | 44 % | 910 |
+| 19 | 4 | 3 | 4 | 7 | 8/19 | 3002 | 13.0 | 0 | 1 | 2/2 | 4 | 59 % | 285 |
+| 20 | 0 | 4 | 5 | 8 | 6/15 | 740 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 860 |
+| 21 | 4 | 3 | 4 | 6 | 8/19 | 1266 | 6.1 | 0 | 1 | 0/0 | 4 | 55 % | 324 |
+| 22 | 2 | 3 | 2 | 8 | 7/16 | 2874 | 8.7 | 3 | 0 | 1/1 | 2 | 50 % | 358 |
+| 23 | 5 | 3 | 4 | 5 | 7/16 | 3027 | 24.8 | 3 | 1 | 1/1 | 5 | 72 % | 812 |
+| 24 | 0 | 3 | 0 | 5 | 3/6 | 532 | 0.0 | 0 | 0 | 4/22 | 0 | 0 % | 122 |
+| 25 | 3 | 4 | 4 | 6 | 8/19 | 2092 | 0.0 | 0 | 0 | 2/2 | 0 | 50 % | 1709 |
+| 26 | 3 | 2 | 3 | 7 | 8/15 | 1232 | 0.0 | 0 | 0 | 0/0 | 0 | 48 % | 1263 |
+| 27 | 3 | 3 | 4 | 7 | 8/23 | 3782 | 30.1 | 0 | 0 | 4/5 | 3 | 45 % | 934 |
+| 28 | 3 | 3 | 3 | 7 | 8/17 | 920 | 0.0 | 0 | 0 | 0/0 | 0 | 33 % | 2094 |
+| 29 | 3 | 4 | 3 | 7 | 8/19 | 4045 | 47.3 | 3 | 0 | 6/53 | 3 | 43 % | 266 |
+| 30 | 2 | 2 | 3 | 8 | 7/14 | 2581 | 12.5 | 3 | 1 | 0/0 | 1 | 63 % | 850 |
+
+### Difficile (`--difficulty 3`)
+
+| seed | fin | j10 | j20 | morts | raids/raiders | richesse | vivres (j) | tech | bétail | feux/brûlées | armés | humeur | ms |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 0 | 4 | 0 | 5 | 3/7 | 231 | 0.0 | 2 | 0 | 2/3 | 0 | 0 % | 203 |
+| 2 | 0 | 4 | 0 | 7 | 5/11 | 884 | 0.0 | 0 | 0 | 1/2 | 0 | 0 % | 308 |
+| 3 | 0 | 4 | 0 | 5 | 4/12 | 1549 | 0.0 | 2 | 0 | 1/422 | 0 | 0 % | 243 |
+| 4 | 0 | 0 | 0 | 5 | 2/4 | 251 | 0.0 | 0 | 0 | 3/3 | 0 | 0 % | 148 |
+| 5 | 0 | 5 | 0 | 7 | 5/18 | 927 | 0.0 | 3 | 0 | 1/1 | 0 | 0 % | 600 |
+| 6 | 5 | 2 | 4 | 5 | 8/18 | 1868 | 10.9 | 0 | 1 | 2/2 | 5 | 65 % | 2048 |
+| 7 | 0 | 0 | 0 | 3 | 0/0 | 0 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 320 |
+| 8 | 0 | 2 | 5 | 10 | 8/21 | 2030 | 0.0 | 2 | 0 | 4/11 | 0 | 0 % | 2468 |
+| 9 | 0 | 3 | 3 | 8 | 5/12 | 1347 | 0.0 | 3 | 1 | 3/32 | 0 | 0 % | 158 |
+| 10 | 0 | 0 | 0 | 4 | 3/7 | 368 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 210 |
+| 11 | 0 | 2 | 4 | 8 | 8/21 | 1205 | 0.0 | 0 | 0 | 2/2 | 0 | 0 % | 463 |
+| 12 | 0 | 0 | 0 | 4 | 2/5 | 782 | 0.0 | 0 | 0 | 4/402 | 0 | 0 % | 389 |
+| 13 | 3 | 3 | 3 | 7 | 8/17 | 2645 | 33.0 | 3 | 0 | 0/0 | 3 | 40 % | 269 |
+| 14 | 0 | 2 | 1 | 7 | 6/12 | 1811 | 0.0 | 2 | 0 | 4/4 | 0 | 0 % | 150 |
+| 15 | 2 | 3 | 3 | 8 | 10/27 | 2740 | 20.7 | 3 | 0 | 6/6 | 2 | 69 % | 1187 |
+| 16 | 2 | 2 | 3 | 7 | 8/15 | 1139 | 0.0 | 0 | 0 | 0/0 | 0 | 14 % | 1568 |
+| 17 | 0 | 3 | 2 | 8 | 7/18 | 2336 | 0.0 | 2 | 0 | 8/21 | 0 | 0 % | 277 |
+| 18 | 0 | 3 | 0 | 6 | 5/8 | 1067 | 0.0 | 1 | 0 | 2/2 | 0 | 0 % | 108 |
+| 19 | 0 | 3 | 3 | 9 | 6/14 | 1046 | 0.0 | 3 | 0 | 3/3 | 0 | 0 % | 168 |
+| 20 | 0 | 3 | 0 | 7 | 5/10 | 566 | 0.0 | 0 | 1 | 0/0 | 0 | 0 % | 386 |
+| 21 | 2 | 4 | 2 | 7 | 8/16 | 1137 | 6.0 | 0 | 1 | 4/4 | 2 | 9 % | 221 |
+| 22 | 0 | 2 | 0 | 6 | 4/7 | 1199 | 0.0 | 2 | 1 | 0/0 | 0 | 0 % | 106 |
+| 23 | 0 | 3 | 2 | 8 | 7/12 | 1073 | 0.0 | 3 | 0 | 2/3 | 0 | 0 % | 138 |
+| 24 | 0 | 3 | 2 | 10 | 8/17 | 2551 | 0.0 | 3 | 0 | 3/3 | 0 | 0 % | 255 |
+| 25 | 2 | 3 | 3 | 8 | 9/21 | 1659 | 0.0 | 0 | 0 | 2/2 | 0 | 35 % | 1307 |
+| 26 | 2 | 2 | 3 | 8 | 8/17 | 1270 | 0.0 | 0 | 0 | 0/0 | 0 | 46 % | 1320 |
+| 27 | 0 | 2 | 4 | 9 | 8/17 | 2254 | 0.0 | 0 | 0 | 4/5 | 0 | 0 % | 393 |
+| 28 | 0 | 4 | 0 | 7 | 5/13 | 157 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 980 |
+| 29 | 0 | 0 | 0 | 4 | 2/5 | 955 | 0.0 | 0 | 0 | 2/86 | 0 | 0 % | 76 |
+| 30 | 0 | 0 | 0 | 5 | 3/7 | 281 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 555 |
+
+### Froide (`--climate -50`)
+
+| seed | fin | j10 | j20 | morts | raids/raiders | richesse | vivres (j) | tech | bétail | feux/brûlées | armés | humeur | ms |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 4 | 3 | 3 | 6 | 7/15 | 2598 | 9.0 | 3 | 0 | 0/0 | 0 | 34 % | 611 |
+| 2 | 0 | 3 | 3 | 9 | 7/14 | 2043 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 621 |
+| 3 | 0 | 0 | 0 | 5 | 2/6 | 1961 | 0.0 | 1 | 0 | 1/1 | 0 | 0 % | 198 |
+| 4 | 0 | 0 | 0 | 4 | 2/4 | 75 | 0.0 | 0 | 0 | 2/2 | 0 | 0 % | 146 |
+| 5 | 0 | 2 | 0 | 6 | 4/8 | 962 | 0.0 | 1 | 0 | 0/0 | 0 | 0 % | 326 |
+| 6 | 5 | 3 | 4 | 6 | 7/19 | 2825 | 16.7 | 0 | 1 | 0/0 | 1 | 52 % | 3466 |
+| 7 | 0 | 0 | 0 | 3 | 0/0 | 0 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 256 |
+| 8 | 0 | 3 | 3 | 8 | 6/15 | 3605 | 0.0 | 3 | 0 | 0/0 | 0 | 0 % | 4442 |
+| 9 | 0 | 2 | 0 | 5 | 3/6 | 1171 | 0.0 | 1 | 1 | 1/1 | 0 | 0 % | 103 |
+| 10 | 3 | 4 | 5 | 7 | 8/21 | 2494 | 28.9 | 0 | 1 | 2/2 | 3 | 39 % | 1633 |
+| 11 | 0 | 4 | 1 | 9 | 6/15 | 2583 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 678 |
+| 12 | 0 | 0 | 0 | 4 | 2/4 | 972 | 0.0 | 0 | 0 | 3/3 | 0 | 0 % | 66 |
+| 13 | 3 | 2 | 2 | 6 | 9/23 | 4363 | 35.9 | 3 | 1 | 0/0 | 3 | 23 % | 1454 |
+| 14 | 0 | 2 | 1 | 8 | 6/14 | 3526 | 0.0 | 1 | 0 | 1/1 | 0 | 0 % | 1944 |
+| 15 | 0 | 2 | 3 | 10 | 8/18 | 4480 | 0.0 | 3 | 1 | 1/1 | 0 | 0 % | 398 |
+| 16 | 2 | 2 | 3 | 7 | 6/11 | 1785 | 0.0 | 0 | 0 | 0/0 | 0 | 11 % | 1359 |
+| 17 | 0 | 0 | 0 | 4 | 2/5 | 1694 | 0.0 | 1 | 0 | 0/0 | 0 | 0 % | 182 |
+| 18 | 0 | 0 | 0 | 5 | 2/5 | 1024 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 67 |
+| 19 | 3 | 4 | 2 | 7 | 8/21 | 5009 | 71.5 | 0 | 0 | 1/1 | 1 | 42 % | 1435 |
+| 20 | 3 | 2 | 2 | 7 | 8/12 | 2378 | 41.6 | 0 | 0 | 1/1 | 3 | 39 % | 480 |
+| 21 | 3 | 1 | 3 | 7 | 8/14 | 1369 | 13.3 | 0 | 1 | 2/2 | 3 | 32 % | 328 |
+| 22 | 0 | 0 | 0 | 3 | 1/2 | 676 | 0.0 | 0 | 0 | 2/2 | 0 | 0 % | 61 |
+| 23 | 1 | 3 | 3 | 9 | 7/19 | 4603 | 156.7 | 2 | 1 | 2/2 | 0 | 30 % | 1289 |
+| 24 | 0 | 3 | 0 | 5 | 3/6 | 610 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 268 |
+| 25 | 0 | 2 | 0 | 5 | 4/8 | 485 | 0.0 | 0 | 0 | 3/3 | 0 | 0 % | 385 |
+| 26 | 0 | 3 | 0 | 7 | 5/9 | 301 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 933 |
+| 27 | 0 | 4 | 0 | 6 | 3/9 | 903 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 674 |
+| 28 | 4 | 5 | 2 | 6 | 8/17 | 1464 | 0.0 | 0 | 0 | 2/2 | 0 | 9 % | 3173 |
+| 29 | 0 | 3 | 0 | 5 | 3/7 | 1088 | 0.0 | 1 | 0 | 2/2 | 0 | 0 % | 187 |
+| 30 | 3 | 3 | 3 | 7 | 7/20 | 5732 | 15.1 | 3 | 0 | 1/1 | 0 | 25 % | 2126 |
+
+### Chaude (`--climate 300`)
+
+| seed | fin | j10 | j20 | morts | raids/raiders | richesse | vivres (j) | tech | bétail | feux/brûlées | armés | humeur | ms |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 4 | 4 | 5 | 6 | 8/22 | 1823 | 4.6 | 3 | 1 | 8/9 | 0 | 59 % | 733 |
+| 2 | 0 | 5 | 0 | 7 | 6/19 | 1129 | 0.0 | 0 | 1 | 5/49 | 0 | 0 % | 587 |
+| 3 | 0 | 3 | 2 | 8 | 7/16 | 2142 | 0.0 | 3 | 0 | 4/7 | 0 | 0 % | 1573 |
+| 4 | 4 | 4 | 3 | 6 | 9/18 | 1285 | 0.0 | 0 | 0 | 2/2 | 0 | 57 % | 434 |
+| 5 | 3 | 4 | 3 | 7 | 7/16 | 2413 | 23.9 | 3 | 1 | 9/39 | 3 | 73 % | 677 |
+| 6 | 2 | 3 | 4 | 8 | 9/20 | 1495 | 2.4 | 0 | 1 | 1/1 | 2 | 47 % | 2044 |
+| 7 | 0 | 0 | 0 | 3 | 0/0 | 0 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 305 |
+| 8 | 3 | 3 | 4 | 7 | 8/19 | 2638 | 10.3 | 0 | 0 | 6/6 | 2 | 55 % | 7374 |
+| 9 | 3 | 4 | 3 | 7 | 6/17 | 2964 | 25.2 | 3 | 1 | 10/12 | 3 | 66 % | 635 |
+| 10 | 5 | 4 | 5 | 5 | 8/19 | 1396 | 3.0 | 0 | 0 | 1/1 | 5 | 63 % | 1259 |
+| 11 | 0 | 4 | 0 | 7 | 5/12 | 895 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 370 |
+| 12 | 0 | 4 | 0 | 6 | 4/10 | 1287 | 0.0 | 0 | 0 | 7/118 | 0 | 0 % | 2741 |
+| 13 | 0 | 5 | 0 | 7 | 5/15 | 999 | 0.0 | 0 | 0 | 2/2 | 0 | 0 % | 695 |
+| 14 | 3 | 3 | 2 | 7 | 7/15 | 3773 | 18.8 | 3 | 0 | 7/162 | 2 | 50 % | 1165 |
+| 15 | 0 | 3 | 0 | 6 | 4/8 | 979 | 0.0 | 1 | 0 | 5/78 | 0 | 0 % | 154 |
+| 16 | 0 | 2 | 0 | 4 | 4/6 | 302 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 652 |
+| 17 | 0 | 2 | 1 | 9 | 7/15 | 2166 | 0.0 | 3 | 0 | 5/65 | 0 | 0 % | 360 |
+| 18 | 0 | 4 | 0 | 5 | 4/9 | 1239 | 0.0 | 2 | 0 | 0/0 | 0 | 0 % | 114 |
+| 19 | 0 | 4 | 5 | 9 | 8/24 | 2258 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 1110 |
+| 20 | 0 | 3 | 0 | 7 | 5/9 | 448 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 432 |
+| 21 | 0 | 0 | 0 | 3 | 1/2 | 30 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 85 |
+| 22 | 4 | 3 | 3 | 6 | 7/16 | 3214 | 21.5 | 3 | 1 | 2/2 | 4 | 57 % | 446 |
+| 23 | 2 | 3 | 3 | 7 | 8/15 | 1832 | 21.0 | 0 | 1 | 2/2 | 2 | 51 % | 274 |
+| 24 | 0 | 0 | 0 | 5 | 3/6 | 256 | 0.0 | 0 | 0 | 4/168 | 0 | 0 % | 97 |
+| 25 | 0 | 3 | 4 | 9 | 7/16 | 862 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 1414 |
+| 26 | 3 | 4 | 2 | 7 | 9/16 | 1218 | 0.0 | 0 | 0 | 2/2 | 0 | 47 % | 1603 |
+| 27 | 2 | 3 | 3 | 8 | 8/18 | 2807 | 31.5 | 0 | 0 | 7/11 | 2 | 40 % | 396 |
+| 28 | 3 | 2 | 3 | 6 | 8/17 | 528 | 0.0 | 0 | 0 | 0/0 | 0 | 37 % | 1795 |
+| 29 | 0 | 0 | 0 | 3 | 1/2 | 413 | 0.0 | 0 | 0 | 2/225 | 0 | 0 % | 47 |
+| 30 | 2 | 3 | 2 | 8 | 8/16 | 2291 | 10.6 | 2 | 1 | 1/1 | 0 | 27 % | 829 |
+
+### Automne-hiver (`--day-of-year 30`)
+
+| seed | fin | j10 | j20 | morts | raids/raiders | richesse | vivres (j) | tech | bétail | feux/brûlées | armés | humeur | ms |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 0 | 3 | 0 | 7 | 5/10 | 1143 | 0.0 | 3 | 0 | 0/0 | 0 | 0 % | 386 |
+| 2 | 0 | 3 | 0 | 7 | 5/10 | 905 | 0.0 | 3 | 0 | 1/1 | 0 | 0 % | 527 |
+| 3 | 0 | 2 | 0 | 5 | 3/8 | 2276 | 0.0 | 3 | 0 | 0/0 | 0 | 0 % | 428 |
+| 4 | 1 | 2 | 4 | 8 | 8/15 | 4431 | 0.0 | 0 | 0 | 0/0 | 0 | 39 % | 283 |
+| 5 | 0 | 2 | 0 | 5 | 4/7 | 781 | 0.0 | 2 | 0 | 0/0 | 0 | 0 % | 279 |
+| 6 | 0 | 0 | 0 | 4 | 2/4 | 408 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 682 |
+| 7 | 0 | 0 | 0 | 3 | 0/0 | 0 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 320 |
+| 8 | 0 | 0 | 0 | 3 | 1/2 | 744 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 171 |
+| 9 | 0 | 3 | 1 | 8 | 5/14 | 2569 | 0.0 | 3 | 0 | 2/2 | 0 | 0 % | 654 |
+| 10 | 0 | 0 | 0 | 3 | 1/2 | 164 | 0.0 | 0 | 0 | 2/2 | 0 | 0 % | 161 |
+| 11 | 0 | 3 | 3 | 9 | 8/22 | 3429 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 2215 |
+| 12 | 0 | 0 | 0 | 4 | 2/5 | 967 | 0.0 | 0 | 0 | 4/4 | 0 | 0 % | 368 |
+| 13 | 0 | 3 | 0 | 7 | 5/12 | 983 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 1000 |
+| 14 | 0 | 2 | 0 | 5 | 3/7 | 1823 | 0.0 | 2 | 0 | 0/0 | 0 | 0 % | 147 |
+| 15 | 0 | 0 | 0 | 4 | 3/5 | 881 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 120 |
+| 16 | 0 | 0 | 0 | 4 | 2/3 | 243 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 465 |
+| 17 | 0 | 0 | 0 | 4 | 2/5 | 1673 | 0.0 | 0 | 0 | 1/0 | 0 | 0 % | 219 |
+| 18 | 0 | 0 | 0 | 3 | 1/2 | 809 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 60 |
+| 19 | 0 | 0 | 0 | 5 | 3/8 | 520 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 552 |
+| 20 | 0 | 2 | 2 | 8 | 6/11 | 1614 | 0.0 | 1 | 1 | 1/1 | 0 | 0 % | 527 |
+| 21 | 0 | 2 | 0 | 5 | 3/5 | 200 | 0.0 | 0 | 0 | 3/3 | 0 | 0 % | 126 |
+| 22 | 0 | 4 | 0 | 5 | 3/8 | 1544 | 0.0 | 2 | 0 | 1/1 | 0 | 0 % | 291 |
+| 23 | 0 | 4 | 0 | 7 | 6/17 | 1327 | 0.0 | 0 | 0 | 2/2 | 0 | 0 % | 1069 |
+| 24 | 0 | 2 | 2 | 8 | 5/11 | 2348 | 0.0 | 3 | 0 | 5/5 | 0 | 0 % | 414 |
+| 25 | 0 | 4 | 3 | 8 | 6/16 | 900 | 0.0 | 0 | 0 | 1/1 | 0 | 0 % | 1363 |
+| 26 | 0 | 3 | 0 | 7 | 5/10 | 681 | 0.0 | 0 | 0 | 0/0 | 0 | 0 % | 840 |
+| 27 | 0 | 0 | 0 | 4 | 2/4 | 449 | 0.0 | 0 | 0 | 3/3 | 0 | 0 % | 194 |
+| 28 | 3 | 2 | 2 | 7 | 8/11 | 1098 | 0.0 | 0 | 0 | 0/0 | 0 | 40 % | 1234 |
+| 29 | 0 | 0 | 0 | 4 | 3/8 | 1252 | 0.0 | 1 | 0 | 0/0 | 0 | 0 % | 144 |
+| 30 | 0 | 3 | 3 | 8 | 6/16 | 2477 | 0.0 | 3 | 0 | 0/0 | 0 | 0 % | 1264 |
+
+Colonne « feux/brûlées » : nombre de départs de feu observés puis cases
+brûlées au total sur la graine. « vivres (j) » : jours de vivres en stock
+rapportés au nombre de colons vivants en fin de partie (0 si la colonie est
+éteinte, cf. `food_days_tenths` dans `crates/sim-cli/src/campaign.rs`). Les
+cinq fichiers `--json` bruts (`campaign --seeds 30 --days 30 --size 64
+--json`, avec les mêmes options que ci-dessus) se régénèrent en moins d'une
+minute chacun ; ce sont eux qui ont servi à ce tableau et à celui du §2.

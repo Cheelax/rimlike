@@ -542,6 +542,15 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-06 : rapport de campagne remis à plat après les réglages. Les cinq campagnes de
+  référence tournent en moins d'une minute chacune (4 à 43 minutes la veille) ; les cinq
+  constats tiennent (feu : pire incendie 121 cases soit 3 % de la carte ; soins : rapport
+  plaies / combat 0,13). Constats ouverts : la campagne automne-hiver s'effondre (28/30
+  éteintes, aucun colon armé : la tunique d'automne se dispute le bois et la construction avec
+  l'enceinte, la forge et les arcs), trois graines retombent sous 100 000 ticks/s (piste : le
+  minage des veines), l'outil ne mesure ni forges ni épées ni réputation, l'apprivoisement
+  n'aboutit que dans 15 à 27 % des colonies. Prochaines tranches mesurées à partir de là.
+
 - 2026-09-06 : la cuisine vérifie son poste et les colons se découvrent. La cuisine reçoit le
   patron des autres postes (feu de camp vérifié au démarrage, budget, cadence à vide) : fini le
   ramasse-repose devant un feu muré ; changement de comportement assumé, le hash du scénario
