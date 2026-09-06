@@ -1,3 +1,4 @@
+import { Icon } from "./ui/Icon";
 /**
  * Overlay d'aide des raccourcis (touche `?` ou `F1`, bouton « ? » de la
  * barre) : purement présentationnel, comme les autres panneaux
@@ -25,7 +26,7 @@ const GROUP_LABELS: Readonly<Record<ShortcutGroup, string>> = {
 export function HelpPanel({ onClose }: HelpPanelProps) {
   return (
     <div className="help-panel" onContextMenu={(e) => e.preventDefault()}>
-      <div className="panel-title">Aide</div>
+      <div className="panel-title">Aide<button className="panel-close" aria-label="Fermer : Aide" onClick={onClose}><Icon name="close" size={18} /></button></div>
       <div className="help-panel-mouse">
         <div>Glisser gauche : trace un rectangle si un outil est actif, sinon déplace la caméra.</div>
         <div>Glisser droit, ou les flèches : déplace toujours la caméra.</div>

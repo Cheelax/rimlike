@@ -51,7 +51,7 @@ export function ColonistBar({ colonists, selection, onSelect, onFocus }: Colonis
         <button
           key={c.id}
           className={`colonist-badge${selection.includes(c.id) ? " selected" : ""}`}
-          style={{ borderColor: c.color }}
+          aria-pressed={selection.includes(c.id)}
           onClick={(e) => onSelect(c.id, e.shiftKey)}
           onDoubleClick={() => onFocus(c.id)}
           title={`${c.name || `Colon ${c.id}`} · ${c.job}${
@@ -61,6 +61,7 @@ export function ColonistBar({ colonists, selection, onSelect, onFocus }: Colonis
           <span className="colonist-initial" style={{ background: c.color }}>
             {c.initial}
           </span>
+          <span className="colonist-name">{c.name || `Colon ${c.id}`}</span>
           <span className="colonist-mood">{moodIcon(c.mood)}</span>
           {c.downed && <span className="colonist-dot downed" />}
           {c.sleeping && <span className="colonist-dot sleeping" />}

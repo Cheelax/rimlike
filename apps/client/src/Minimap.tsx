@@ -67,7 +67,8 @@ export const Minimap = forwardRef<MinimapHandle, MinimapProps>(function Minimap(
 
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem(COLLAPSE_KEY) === "1";
+      const saved = localStorage.getItem(COLLAPSE_KEY);
+      return saved === null ? window.matchMedia("(max-width: 760px)").matches : saved === "1";
     } catch {
       return false; // stockage indisponible : dépliée par défaut, comme au premier lancement
     }
@@ -197,9 +198,11 @@ export const Minimap = forwardRef<MinimapHandle, MinimapProps>(function Minimap(
       <button
         className="minimap-toggle"
         onClick={toggle}
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? "Déplier la mini-carte" : "Replier la mini-carte"}
         title={collapsed ? "Déplier la mini-carte" : "Replier la mini-carte"}
       >
-        {collapsed ? "+" : "−"}
+        {collapsed ? "Carte +" : "Carte −"}
       </button>
       {!collapsed && (
         <canvas

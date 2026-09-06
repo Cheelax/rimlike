@@ -1,3 +1,4 @@
+import { Icon } from "./ui/Icon";
 /**
  * Le panneau « Recherche » : six technologies (`crates/sim/src/research.rs`).
  * Les cinq premières n'apportent qu'un bonus une fois acquises, aucune ne
@@ -30,7 +31,7 @@ export interface ResearchPanelProps {
 export function ResearchPanel({ state, hasResearchBench, onSelect, onStop, onClose }: ResearchPanelProps) {
   return (
     <div className="research-panel" onContextMenu={(e) => e.preventDefault()}>
-      <div className="panel-title">Recherche</div>
+      <div className="panel-title">Recherche<button className="panel-close" aria-label="Fermer : Recherche" onClick={onClose}><Icon name="close" size={18} /></button></div>
       <div className="help">
         Il faut un établi de recherche et un colon dont la priorité Rechercher est active.
       </div>

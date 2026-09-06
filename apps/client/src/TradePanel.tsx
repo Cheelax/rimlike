@@ -1,3 +1,4 @@
+import { Icon } from "./ui/Icon";
 /**
  * Le panneau « Troc » : l'étal du marchand à gauche, ce que la colonie a en
  * stockage à droite, une balance en bas. Purement présentationnel, comme
@@ -57,7 +58,7 @@ export function TradePanel({ traderName, offers, stored, buyPrices, onTrade, onC
 
   return (
     <div className="trade-panel" onContextMenu={(e) => e.preventDefault()}>
-      <div className="panel-title">Troc · {traderName}</div>
+      <div className="panel-title"><span>Troc · {traderName}</span><button className="panel-close" aria-label="Fermer le troc" onClick={onClose}><Icon name="close" size={18} /></button></div>
       <div className="trade-columns">
         <div className="trade-col">
           <div className="panel-section">Il vend</div>

@@ -1,3 +1,4 @@
+import { Icon } from "./ui/Icon";
 /**
  * Panneau « Journal » (touche N) : les événements reçus depuis le début de la
  * session, les plus récents en haut, avec un filtre menaces/colonie.
@@ -62,7 +63,7 @@ export function JournalPanel({
     .reverse();
   return (
     <div className="journal-panel" onContextMenu={(e) => e.preventDefault()}>
-      <div className="panel-title">Journal</div>
+      <div className="panel-title">Journal<button className="panel-close" aria-label="Fermer : Journal" onClick={onClose}><Icon name="close" size={18} /></button></div>
       <div className="journal-filters">
         {FILTERS.map((f) => (
           <button key={f.id} className={f.id === filter ? "active" : ""} onClick={() => onFilterChange(f.id)}>

@@ -1,3 +1,4 @@
+import { Icon } from "./ui/Icon";
 /**
  * Le panneau « Fabrication » : un objectif de stock par arme, par habit ou
  * par lingot, borné à 0..20 côté affichage (`render/terrain.ts::clampCraftTarget`
@@ -59,7 +60,7 @@ export function CraftingPanel({
 }: CraftingPanelProps) {
   return (
     <div className="craft-panel" onContextMenu={(e) => e.preventDefault()}>
-      <div className="panel-title">Fabrication</div>
+      <div className="panel-title">Fabrication<button className="panel-close" aria-label="Fermer : Fabrication" onClick={onClose}><Icon name="close" size={18} /></button></div>
       {!hasCraftingSpot && <div className="help">nécessite un poste de fabrication</div>}
       {!hasForge && <div className="help">Lingots : nécessite une forge</div>}
       <ul className="craft-list">
@@ -74,11 +75,11 @@ export function CraftingPanel({
                 {hint ? ` · ${hint}` : ""}
               </span>
               <span className="craft-target">
-                <button disabled={target <= 0} onClick={() => onSetTarget(kind, clampCraftTarget(target - 1))}>
+                <button aria-label={`Réduire l’objectif : ${CRAFT_NAMES[kind] ?? ITEM_NAMES[kind]}`} disabled={target <= 0} onClick={() => onSetTarget(kind, clampCraftTarget(target - 1))}>
                   −
                 </button>
                 <span className="craft-target-value">{target}</span>
-                <button disabled={target >= 20} onClick={() => onSetTarget(kind, clampCraftTarget(target + 1))}>
+                <button aria-label={`Augmenter l’objectif : ${CRAFT_NAMES[kind] ?? ITEM_NAMES[kind]}`} disabled={target >= 20} onClick={() => onSetTarget(kind, clampCraftTarget(target + 1))}>
                   +
                 </button>
               </span>

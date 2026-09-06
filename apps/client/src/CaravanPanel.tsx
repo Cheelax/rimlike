@@ -1,3 +1,4 @@
+import { Icon } from "./ui/Icon";
 /**
  * Le panneau « Caravane » : qui part, avec quoi, et vers où.
  *
@@ -100,7 +101,7 @@ export function CaravanPanel({
 
   return (
     <div className="caravan-panel" onContextMenu={(e) => e.preventDefault()}>
-      <div className="panel-title">Caravane · depuis la case {fromTile}</div>
+      <div className="panel-title"><span>Caravane · depuis la case {fromTile}</span><button className="panel-close" aria-label="Fermer la caravane" onClick={onClose}><Icon name="close" size={18} /></button></div>
 
       <div className="panel-section">Colons ({boarding.length} au départ)</div>
       <ul className="caravan-list">

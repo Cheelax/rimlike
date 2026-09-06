@@ -1,3 +1,7 @@
+import { CommandDock } from "./ui/CommandDock";
+import { Icon } from "./ui/Icon";
+import { StockPanel } from "./ui/StockPanel";
+import { isTextEntry, nextPanel, type DockAction, type PanelId } from "./ui/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TICKS_PER_DAY, type SettledMessage } from "@rimlike/protocol";
 import { BIOME_NAMES, findRoute, type World } from "@rimlike/world";
@@ -56,10 +60,10 @@ import {
   formatTraderLeaves,
   formatWealth,
   freshnessLevel,
-  freshnessPercent,
   hKeyAction,
   HEALTH_STRIDE,
   ITEM_NAMES,
+  ITEM_COLORS,
   JOB_LABELS,
   MATERIAL,
   MATERIAL_NAMES,
@@ -74,7 +78,6 @@ import {
   TERRAIN,
   TRAIT_HINTS,
   TRAIT_LABELS,
-  visibleStock,
   WEAPON_NAMES,
   WEATHER_LABELS,
   WORK_LABELS,
@@ -153,7 +156,6 @@ const BLOCKING_FEATURES = new Set<number>([
 const DEFAULT_SERVER = "ws://localhost:8787";
 const DEFAULT_SEED = 42;
 const MAP_SIZE = 128;
-const MULTI_DISABLED = "indisponible en multijoueur";
 /** Période de sondage de `GET /rooms` tant que l'accueil est affiché (§2 du protocole). */
 const ROOMS_POLL_MS = 5000;
 /** Attente avant de resonder `GET /rooms` après un changement d'adresse de serveur. */
@@ -459,6 +461,8 @@ const INITIAL: Stats = {
 };
 
 interface Actions {
+  togglePause(): void;
+  changeSpeed(value: number): void;
   save(): void;
   load(): void;
   triggerRaid(): void;
@@ -470,6 +474,7 @@ interface Actions {
    * ou l'en retire, au lieu de la remplacer.
    */
   selectPawn(id: number, additive?: boolean): void;
+  clearSelection(): void;
   /** Centre la caméra sur un colon, sans changer le zoom (`ColonistBar`, double clic). */
   focusPawn(id: number): void;
   /**
@@ -616,41 +621,35 @@ export function App() {
   const [tool, setToolState] = useState<Tool>("select");
   const [material, setMaterialState] = useState<number>(0);
   const [stats, setStats] = useState<Stats>(INITIAL);
-  const [showWork, setShowWork] = useState(false);
-  const [showCraft, setShowCraft] = useState(false);
-  const [showResearch, setShowResearch] = useState(false);
-  /** Panneau Troc (bouton dans la barre, pas de raccourci : `T` est déjà pris par le matériau). */
-  const [showTrade, setShowTrade] = useState(false);
-  /** Panneau Factions (bouton dans la barre, pas de raccourci : `F` est déjà pris par l'outil Feu). */
-  const [showFactions, setShowFactions] = useState(false);
-  const [showJournal, setShowJournal] = useState(false);
-  const [journalFilter, setJournalFilter] = useState<JournalFilter>("all");
-  /**
-   * Menu « Options » (dose de menace, en cours de partie) : touche `O` est
-   * prise par l'outil Sol, donc bouton dans la barre pour l'ouvrir, `Échap`
-   * pour le fermer. `showOptionsRef` le rend lisible depuis le gestionnaire de
-   * `keydown`, fermé sur `[session]` et donc jamais à jour d'un état React lu
-   * directement (voir `toolRef`, même besoin).
-   */
-  const [showOptions, setShowOptionsState] = useState(false);
-  const showOptionsRef = useRef(false);
-  const setShowOptions = (v: boolean) => {
-    showOptionsRef.current = v;
-    setShowOptionsState(v);
-  };
-  /**
-   * Aide des raccourcis (touche `?`/`F1`, bouton « ? » de la barre) : ouverte
-   * et fermée par un effet à part (voir plus bas, comme la touche `V` de la
-   * Caravane), donc valable même hors partie. `showHelpRef` la rend lisible
-   * depuis le gestionnaire de `keydown` de la partie, qui la ferme en
-   * priorité sur `Échap` (même besoin que `showOptionsRef`).
-   */
-  const [showHelp, setShowHelpState] = useState(false);
+  // Un seul panneau ouvert ; la référence garde les raccourcis à jour dans la boucle de jeu.
+  const [activePanel, setActivePanel] = useState<PanelId | null>(null);
+  const panelRef = useRef<PanelId | null>(null);
   const showHelpRef = useRef(false);
-  const setShowHelp = (v: boolean) => {
-    showHelpRef.current = v;
-    setShowHelpState(v);
+  type PanelToggle = boolean | ((open: boolean) => boolean);
+  const setPanel = (id: PanelId, value: PanelToggle) => {
+    const next = nextPanel(panelRef.current, id, value);
+    panelRef.current = next;
+    showHelpRef.current = next === "help";
+    setActivePanel(next);
   };
+  const closePanel = () => { if (panelRef.current) setPanel(panelRef.current, false); };
+  const showWork = activePanel === "work";
+  const setShowWork = (value: PanelToggle) => setPanel("work", value);
+  const showCraft = activePanel === "craft";
+  const setShowCraft = (value: PanelToggle) => setPanel("craft", value);
+  const showResearch = activePanel === "research";
+  const setShowResearch = (value: PanelToggle) => setPanel("research", value);
+  const showTrade = activePanel === "trade";
+  const setShowTrade = (value: PanelToggle) => setPanel("trade", value);
+  const showFactions = activePanel === "factions";
+  const setShowFactions = (value: PanelToggle) => setPanel("factions", value);
+  const showJournal = activePanel === "journal";
+  const setShowJournal = (value: PanelToggle) => setPanel("journal", value);
+  const showOptions = activePanel === "options";
+  const setShowOptions = (value: PanelToggle) => setPanel("options", value);
+  const showHelp = activePanel === "help";
+  const setShowHelp = (value: PanelToggle) => setPanel("help", value);
+  const [journalFilter, setJournalFilter] = useState<JournalFilter>("all");
   /**
    * Réglages graphiques (menu Options → Graphismes, §settings.ts) : relus au
    * premier rendu, sauvés à chaque changement. `pixelRatio` et `propDensity`
@@ -676,7 +675,7 @@ export function App() {
    * prochain clic gauche sur la carte émet `encodeIgnite`, puis se désarme
    * (un clic droit l'annule aussi). Pas de raccourci clavier. `igniteArmedRef`
    * le rend lisible depuis le gestionnaire de `pointerup`, comme `toolRef` et
-   * `showOptionsRef` pour le même besoin.
+   * `panelRef` pour le même besoin.
    */
   const [igniteArmed, setIgniteArmedState] = useState(false);
   const igniteArmedRef = useRef(false);
@@ -734,7 +733,8 @@ export function App() {
   /** Identifiants des toasts du monde, hors de portée de ceux du sim et du réseau. */
   const worldToastId = useRef(-1_000_000);
   // --- Caravanes : le panneau, la destination, et l'expéditeur ---
-  const [caravanOpen, setCaravanOpen] = useState(false);
+  const caravanOpen = activePanel === "caravan";
+  const setCaravanOpen = (value: PanelToggle) => setPanel("caravan", value);
   /** Vrai pendant qu'on choisit la case d'arrivée sur le globe. */
   const [caravanPicking, setCaravanPicking] = useState(false);
   const [caravanTo, setCaravanTo] = useState<number | null>(null);
@@ -771,6 +771,7 @@ export function App() {
   };
 
   const setTool = (t: Tool) => {
+    closePanel();
     toolRef.current = t;
     setToolState(t);
     rendererRef.current?.setLeftDragPans(t === "select");
@@ -1130,6 +1131,7 @@ export function App() {
      * à un id se comporte exactement comme avant (`selected` = cet id).
      */
     const applySelection = (ids: number[]) => {
+      if (ids.length > 0) closePanel();
       selection = ids;
       selected = ids.length > 0 ? ids[0] : null;
       renderer.setSelection(selection);
@@ -1486,6 +1488,18 @@ export function App() {
 
     // --- Sauvegarde (solo seulement : l'horloge du multi ne s'arrête pas) ---
     const actions: Actions = {
+      togglePause() {
+        if (isMulti) return;
+        paused = !paused;
+        bridge.setPaused(paused);
+      },
+      changeSpeed(value) {
+        if (isMulti) return;
+        speed = value;
+        paused = false;
+        bridge.setSpeed(speed);
+        bridge.setPaused(false);
+      },
       save() {
         // `localStorage` n'existe pas dans un Worker : il rend les octets, on écrit.
         if (isMulti) return;
@@ -1526,6 +1540,7 @@ export function App() {
         }
         return null;
       },
+      clearSelection() { applySelection([]); },
       selectPawn(id, additive) {
         applySelection(additive ? toggle(selection, id) : [id]);
       },
@@ -1827,7 +1842,8 @@ export function App() {
     on(host, "pointerleave", () => renderer.setHover(null));
     on(host, "contextmenu", (e: MouseEvent) => e.preventDefault());
     on(window, "keydown", (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return;
+      if (isTextEntry(e.target)) return;
+      if (e.target instanceof HTMLButtonElement && (e.code === "Space" || e.key === "Enter")) return;
       if (e.code === "Space") {
         // Pas de pause en multi : l'horloge du serveur ne s'arrête jamais.
         if (!isMulti) {
@@ -1911,8 +1927,7 @@ export function App() {
           // menu Options : ni l'un ni l'autre n'a bougé l'outil ou la
           // sélection pendant qu'il était ouvert. L'outil « Mettre le feu »
           // désarmé ensuite, avant l'outil courant.
-          if (showHelpRef.current) setShowHelp(false);
-          else if (showOptionsRef.current) setShowOptions(false);
+          if (panelRef.current) closePanel();
           else if (igniteArmedRef.current) setIgniteArmed(false);
           else if (toolRef.current !== "select") setTool("select");
           else applySelection([]);
@@ -2491,7 +2506,7 @@ export function App() {
    */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return;
+      if (isTextEntry(e.target)) return;
       if (e.metaKey || e.ctrlKey) return;
       const k = e.key.toUpperCase();
       if (k === "ESCAPE" && caravanPicking) {
@@ -2526,7 +2541,7 @@ export function App() {
    */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return;
+      if (isTextEntry(e.target)) return;
       if (e.metaKey || e.ctrlKey) return;
       if (e.key === KEY.helpAlt || e.key === KEY.help) {
         e.preventDefault();
@@ -2649,9 +2664,38 @@ export function App() {
   // Graine effective d'un `start` : celle de la case l'emporte (le serveur
   // l'impose de toute façon, docs/protocol.md §11.2).
   const startSeed = Math.max(0, Math.floor(imposedSeed ?? seed));
+  const toolDescriptions: Partial<Record<Tool, string>> = {
+    select: "Inspecter et diriger les colons", chop: "Désigner les arbres à couper", mine: "Extraire pierre et minerai", harvest: "Récolter les ressources mûres", stockpile: "Tracer une zone de stockage", growing: "Tracer une parcelle cultivée", cancel: "Retirer ordres, zones et chantiers", wall: "Délimiter une pièce, case par case", door: "Créer un passage dans un mur", floor: "Poser un plancher ou un dallage", bed: "Un couchage pour un colon", campfire: "Cuisiner et chauffer une pièce", craftingSpot: "Fabriquer armes et vêtements",
+  };
+  const selectionClose = <button className="panel-close" aria-label="Fermer la sélection" onClick={() => actionsRef.current?.clearSelection()}><Icon name="close" size={18} /></button>;
+  const dockActions: DockAction[] = [
+    ...TOOLS.map((t): DockAction => ({ id: t.id, group: t.group, label: t.label, key: t.key, hint: t.hint ?? toolDescriptions[t.id] ?? "Placer sur la grille", active: tool === t.id, disabledReason: t.id === "forge" && !metallurgyDone ? "Rechercher Métallurgie pour débloquer" : undefined, run: () => setTool(t.id) })),
+    { id: "stock", group: "colony", label: "Réserves", hint: "Consulter toutes les ressources et leur fraîcheur", run: () => setPanel("stock", true) },
+    { id: "work", group: "colony", label: "Travail", key: KEY.work, hint: "Régler les priorités de chaque colon", active: showWork, run: () => setShowWork((v) => !v) },
+    { id: "craft", group: "colony", label: "Fabrication", key: KEY.craft, hint: "Objectifs d'armes, vêtements et métal", active: showCraft, run: () => setShowCraft((v) => !v) },
+    { id: "research", group: "colony", label: "Recherche", key: KEY.research, hint: "Choisir la prochaine technologie", active: showResearch, run: () => setShowResearch((v) => !v) },
+    { id: "journal", group: "colony", label: "Journal", key: KEY.journal, hint: "Événements et alertes de la colonie", active: showJournal, run: () => setShowJournal((v) => !v) },
+    { id: "heat", group: "colony", label: "Températures", key: KEY.heat, hint: "Afficher la chaleur de chaque case", active: heatMode, run: () => setHeatMode((v) => !v) },
+    { id: "caravan", group: "world", label: "Caravane", key: KEY.caravan, hint: "Envoyer colons et marchandises", disabledReason: roomTile === null ? "Disponible dans le monde partagé" : undefined, active: caravanOpen, run: () => { setCaravanOpen((v) => !v); setCaravanPicking(false); } },
+    { id: "trade", group: "world", label: "Troc", hint: "Échanger avec le marchand présent", disabledReason: stats.traderPresent < 0 ? "En attente du passage d'un marchand" : undefined, active: showTrade, run: () => setShowTrade((v) => !v) },
+    { id: "factions", group: "world", label: "Factions", hint: "Réputation, relations et tributs", active: showFactions, run: () => setShowFactions((v) => !v) },
+    ...(inWorld ? [{ id: "back", group: "world" as const, label: "Retour au monde", hint: "Retrouver le globe partagé", run: backToWorld }] : []),
+    { id: "save", group: "game", label: "Sauvegarder", hint: "Enregistrer la partie dans ce navigateur", disabledReason: multi ? "Sauvegarde gérée par le serveur" : undefined, run: () => actionsRef.current?.save() },
+    { id: "load", group: "game", label: "Charger", hint: "Reprendre la sauvegarde locale", disabledReason: multi ? "Chargement géré par le serveur" : undefined, run: () => actionsRef.current?.load() },
+    { id: "options", group: "game", label: "Options", hint: "Difficulté, graphismes et performances", active: showOptions, run: () => setShowOptions((v) => !v) },
+    { id: "help", group: "game", label: "Aide", key: "?", hint: "Commandes de la souris et raccourcis", active: showHelp, run: () => setShowHelp((v) => !v) },
+    ...(import.meta.env.DEV ? [
+      { id: "raid", group: "game" as const, label: "Déclencher un raid", hint: "Outil de développement", run: () => actionsRef.current?.triggerRaid() },
+      { id: "ignite", group: "game" as const, label: "Mettre le feu", hint: "Développement : choisir une case", active: igniteArmed, run: () => setIgniteArmed(!igniteArmed) },
+    ] : []),
+  ];
   return (
-    <>
+    <div onKeyDown={(event) => {
+      // Les champs et le défilement au clavier ne doivent pas déplacer la caméra.
+      if (isTextEntry(event.target) || (event.key.startsWith("Arrow") && event.target instanceof HTMLElement && event.target.closest("button, [tabindex]"))) event.stopPropagation();
+    }}>
       <div ref={sceneHostRef} className="scene" />
+      {running && <div className={`ui-layout-marker${activePanel || stats.selected || multiSelection ? " has-panel" : ""}`} aria-hidden="true" />}
       {/* Hors du bloc `running` exprès : l'aide (touche `?`/`F1`) doit rester
           consultable depuis l'accueil ou le lobby, pas seulement en partie. */}
       {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
@@ -2732,104 +2776,28 @@ export function App() {
           le HUD de colonie et sa barre d'outils passeraient par-dessus. */}
       {running && !caravanPicking && (
         <>
-          <div className="hud">
-            <div>
-              jour <b>{stats.day}</b> · <b>{stats.hour}</b> · {SEASON_LABELS[stats.season] ?? "?"} j.{dayInSeason}/
-              {seasonDays} · {formatTemperature(stats.temperature)} · {WEATHER_LABELS[stats.weather] ?? "?"} · tick{" "}
-              {stats.tick}
-              {multi ? "" : stats.paused ? <b> · PAUSE</b> : ` · x${stats.speed}`}
-              {stats.difficulty !== DIFFICULTY.Normal ? ` · ${DIFFICULTY_LABELS[stats.difficulty] ?? "?"}` : ""}
+          <header className="colony-header">
+            <div className="colony-heading"><span className="colony-emblem"><Icon name="colony" size={26} /></span><div><span className="eyebrow">{multi ? `Salle ${net?.room ?? ""}` : "Partie solo"}</span><h1>La colonie</h1></div></div>
+            <div className="colony-calendar"><strong>Jour {stats.day}<span>{stats.hour}</span></strong><span>{SEASON_LABELS[stats.season] ?? "?"} · {dayInSeason}/{seasonDays} · {formatTemperature(stats.temperature)} · {WEATHER_LABELS[stats.weather] ?? "?"}</span></div>
+            <div className="time-controls" aria-label="Vitesse de la partie">
+              <button className={stats.paused ? "active" : ""} aria-label={stats.paused ? "Reprendre la partie" : "Mettre en pause"} title={multi ? "Le temps est partagé en multijoueur" : "Pause / reprise · Espace"} disabled={multi} onClick={() => actionsRef.current?.togglePause()}><Icon name={stats.paused ? "play" : "pause"} size={17} /></button>
+              {[1, 2, 3].map((speed) => <button key={speed} aria-label={`Vitesse ×${speed}`} aria-pressed={!stats.paused && stats.speed === speed} disabled={multi} onClick={() => actionsRef.current?.changeSpeed(speed)}>×{speed}</button>)}
             </div>
-            {multi && net !== null && (
-              <div>
-                multi · salle <b>{net.room}</b> · <b>{net.players.length}</b> joueur{net.players.length > 1 ? "s" : ""} ·
-                retard <b>{stats.lag}</b> tick{stats.lag > 1 ? "s" : ""}
-              </div>
-            )}
-            <div>
-              <b>{stats.colonists}</b> colon{stats.colonists > 1 ? "s" : ""}
-              {stats.beasts > 0 ? (
-                <>
-                  {" · "}
-                  <b>{stats.beasts}</b> bête{stats.beasts > 1 ? "s" : ""}
-                </>
-              ) : (
-                ""
-              )}
-              {stats.livestockCount > 0 ? (
-                <>
-                  {" · "}
-                  Bétail : <b>{stats.livestockCount}</b>
-                </>
-              ) : (
-                ""
-              )}
-              {stats.hostiles > 0 ? (
-                <>
-                  {" · "}
-                  <b>{stats.hostiles}</b> ennemi{stats.hostiles > 1 ? "s" : ""}
-                </>
-              ) : (
-                ""
-              )}
-            </div>
-            <div>
-              stock :{" "}
-              {visibleStock(stats.stored).map(({ name, count }, i) => {
-                // Fraîcheur de la pile la plus ancienne de ce genre
-                // (`stats.foodFreshness`, indexé par `ItemKind` comme `ITEM_NAMES`).
-                const freshness = stats.foodFreshness[(ITEM_NAMES as readonly string[]).indexOf(name)] ?? -1;
-                return (
-                  <span key={name}>
-                    {i > 0 ? " · " : ""}
-                    {count} {name}
-                    {freshness >= 0 && (
-                      <span
-                        className={`freshness ${freshnessLevel(freshness)}`}
-                        title={`Pile la plus ancienne : ${freshnessPercent(freshness)} % de fraîcheur`}
-                      >
-                        {" "}
-                        · {freshnessPercent(freshness)} %
-                      </span>
-                    )}
-                  </span>
-                );
-              })}
-              {stats.blueprints > 0 ? ` · ${stats.blueprints} chantier${stats.blueprints > 1 ? "s" : ""}` : ""}
-              {" · richesse "}
-              {formatWealth(stats.wealth)}
-            </div>
-            {stats.traderPresent >= 0 && (
-              <div>
-                Marchand <b>{stats.names[stats.traderPresent] || "inconnu"}</b> · repart dans{" "}
-                {formatTraderLeaves(stats.traderLeavesIn)}
-              </div>
-            )}
-            {currentTechInfo && (
-              <div>
-                Recherche : <b>{TECHS[currentTechInfo.tech]?.name ?? "?"}</b> ·{" "}
-                {researchPercent(currentTechInfo.progress, currentTechInfo.cost)} %
-              </div>
-            )}
-            {stats.fireCount > 0 && (
-              <div className="fire-warning">
-                Feu : <b>{stats.fireCount}</b> case{stats.fireCount > 1 ? "s" : ""}
-              </div>
-            )}
-            <div className="help">
-              {stats.tps} tps · {stats.fps} fps · hash {stats.hash}
-              {multi && net !== null && (
-                <span
-                  className={`hashdot ${net.isOutlier ? "bad" : "good"}`}
-                  title={net.isOutlier ? "Votre copie diverge de la majorité (§7)" : "Votre copie concorde avec la majorité"}
-                />
-              )}
-            </div>
-            <div className="help">
-              glisser droit ou flèches : déplacer · molette : zoom · Q/E : tourner
-              {multi ? " · pause et vitesses indisponibles en multijoueur" : " · espace : pause · 1/2/3 : vitesse"}
-            </div>
+            <button className="header-menu icon-button" aria-label="Ouvrir les options" onClick={() => setShowOptions((v) => !v)}><Icon name="menu" /></button>
+          </header>
+          <div className="resource-strip" aria-label="Ressources principales">
+            {[0, 1, 2, 3, 4].map((kind) => <button key={kind} onClick={() => setPanel("stock", true)} title="Voir toutes les réserves"><span className="resource-dot" style={{ background: `#${ITEM_COLORS[kind].toString(16).padStart(6, "0")}` }} /><span>{ITEM_NAMES[kind]}</span><b>{stats.stored[kind] ?? 0}</b></button>)}
+            <button className="all-stock" aria-expanded={activePanel === "stock"} onClick={() => setPanel("stock", (v) => !v)}><Icon name="box" size={16} /><span>Toutes les réserves</span></button>
           </div>
+          <div className="colony-status">
+            <span>{stats.colonists} colons{stats.livestockCount > 0 ? ` · ${stats.livestockCount} animaux apprivoisés` : ""}</span>
+            {stats.blueprints > 0 && <span>{stats.blueprints} chantiers</span>}
+            {stats.hostiles > 0 && <span className="danger">{stats.hostiles} ennemis</span>}
+            {stats.fireCount > 0 && <span className="danger">Incendie · {stats.fireCount} cases</span>}
+            {stats.traderPresent >= 0 && <button onClick={() => setShowTrade(true)}>Marchand · {formatTraderLeaves(stats.traderLeavesIn)}</button>}
+            {currentTechInfo && <button onClick={() => setShowResearch(true)}>{TECHS[currentTechInfo.tech]?.name} · {researchPercent(currentTechInfo.progress, currentTechInfo.cost)} %</button>}
+          </div>
+          {activePanel === "stock" && <StockPanel stored={stats.stored} freshness={stats.foodFreshness} onClose={closePanel} />}
 
           <ColonistBar
             colonists={stats.colonistBadges}
@@ -2840,9 +2808,9 @@ export function App() {
 
           <Minimap ref={minimapRef} onFocus={(x, y) => rendererRef.current?.focusOn(x, y)} />
 
-          {multiSelection && (
+          {activePanel === null && multiSelection && (
             <div className="panel">
-              <div className="panel-title">{stats.selection.length} colons sélectionnés</div>
+              <div className="panel-title"><span>{stats.selection.length} colons sélectionnés</span>{selectionClose}</div>
               <ul className="panel-selection-list">
                 {stats.selection.map((id) => (
                   <li key={id}>{stats.names[id] || `Colon ${id}`}</li>
@@ -2851,14 +2819,14 @@ export function App() {
               <div className="help">clic droit : y aller tous, ou attaquer un ennemi ou un animal</div>
             </div>
           )}
-          {!multiSelection && sel && sel.animal && (
+          {activePanel === null && !multiSelection && sel && sel.animal && (
             <div className="panel">
-              <div className="panel-title">
+              <div className="panel-title"><span>
                 {SPECIES_LABELS[sel.species]
                   ? SPECIES_LABELS[sel.species].charAt(0).toUpperCase() + SPECIES_LABELS[sel.species].slice(1)
                   : "Bête"}{" "}
                 (sauvage)
-              </div>
+              </span>{selectionClose}</div>
               <div className="panel-section">Santé</div>
               <Bar label="PV" value={sel.hp} />
               <Bar label="Sang" value={sel.blood} />
@@ -2882,14 +2850,14 @@ export function App() {
               <div className="help">touche H : bascule la chasse · clic droit avec un colon sélectionné : attaquer</div>
             </div>
           )}
-          {!multiSelection && sel && sel.livestock && (
+          {activePanel === null && !multiSelection && sel && sel.livestock && (
             <div className="panel">
-              <div className="panel-title">
+              <div className="panel-title"><span>
                 {SPECIES_LABELS[sel.species]
                   ? SPECIES_LABELS[sel.species].charAt(0).toUpperCase() + SPECIES_LABELS[sel.species].slice(1)
                   : "Bête"}{" "}
                 de la colonie
-              </div>
+              </span>{selectionClose}</div>
               <div className="panel-section">Santé</div>
               <Bar label="PV" value={sel.hp} />
               <Bar label="Faim" value={sel.hunger} />
@@ -2905,15 +2873,15 @@ export function App() {
               </button>
             </div>
           )}
-          {!multiSelection && sel && !sel.animal && !sel.livestock && (
+          {activePanel === null && !multiSelection && sel && !sel.animal && !sel.livestock && (
             <div className="panel">
-              <div className="panel-title">
+              <div className="panel-title"><span>
                 {sel.hostile
                   ? `Ennemi ${sel.name || "inconnu"}`
                   : sel.trader
                     ? `Marchand ${sel.name || "inconnu"}`
                     : `${sel.name || "Colon " + sel.id} · (${sel.tile.x}, ${sel.tile.y})`}
-              </div>
+              </span>{selectionClose}</div>
               {sel.trader && (
                 <button className="panel-action" onClick={() => setShowTrade(true)}>
                   Troc
@@ -3022,142 +2990,7 @@ export function App() {
             </div>
           )}
 
-          <div className="toolbar">
-            {TOOLS.filter((t) => t.group === "orders").map((t) => (
-              <button key={t.id} className={t.id === tool ? "active" : ""} onClick={() => setTool(t.id)} title={`Touche ${t.key}`}>
-                {t.label} <span className="key">{t.key}</span>
-              </button>
-            ))}
-            <span className="sep" />
-            {TOOLS.filter((t) => t.group === "build").map((t) => {
-              // Seul l'outil Forge se grise : la seule construction que la
-              // recherche verrouille (`TECH_METALLURGY`, voir `research.ts`).
-              const forgeLocked = t.id === "forge" && !metallurgyDone;
-              return (
-                <button
-                  key={t.id}
-                  className={t.id === tool ? "active" : ""}
-                  disabled={forgeLocked}
-                  onClick={() => setTool(t.id)}
-                  title={forgeLocked ? "Demande la technologie Métallurgie" : (t.hint ?? `Touche ${t.key}`)}
-                >
-                  {t.label} {t.key && <span className="key">{t.key}</span>}
-                </button>
-              );
-            })}
-            <button
-              className={`material ${tool in BUILD_TOOL_KIND ? "lit" : ""}`}
-              onClick={() => setMaterial(material === 0 ? 1 : 0)}
-              title="Touche T : matériau des constructions"
-            >
-              {MATERIAL_NAMES[material]} <span className="key">T</span>
-            </button>
-            <span className="sep" />
-            <button
-              className={showWork ? "active" : ""}
-              onClick={() => setShowWork((v) => !v)}
-              title="Touche J : priorités de travail"
-            >
-              Travail <span className="key">J</span>
-            </button>
-            <button
-              className={showCraft ? "active" : ""}
-              onClick={() => setShowCraft((v) => !v)}
-              title="Touche K : fabrication d'armes et d'habits"
-            >
-              Fabrication <span className="key">K</span>
-            </button>
-            <button
-              className={showResearch ? "active" : ""}
-              onClick={() => setShowResearch((v) => !v)}
-              title="Touche R : recherche technologique"
-            >
-              Recherche <span className="key">R</span>
-            </button>
-            <button
-              className={heatMode ? "active" : ""}
-              onClick={() => setHeatMode((v) => !v)}
-              title="Touche I : colore les cases par température"
-            >
-              Chaleur <span className="key">I</span>
-            </button>
-            <button
-              className={showJournal ? "active" : ""}
-              onClick={() => setShowJournal((v) => !v)}
-              title="Touche N : journal des événements"
-            >
-              Journal <span className="key">N</span>
-            </button>
-            <button
-              className={showOptions ? "active" : ""}
-              onClick={() => setShowOptions(!showOptions)}
-              title="Dose de menace du storyteller · Échap pour fermer"
-            >
-              Options
-            </button>
-            <button
-              className={showHelp ? "active" : ""}
-              onClick={() => setShowHelp(!showHelp)}
-              title="Touche ? ou F1 : aide des raccourcis · Échap pour fermer"
-            >
-              Aide <span className="key">?</span>
-            </button>
-            <button
-              className={caravanOpen ? "active" : ""}
-              disabled={roomTile === null}
-              onClick={() => {
-                setCaravanOpen((v) => !v);
-                setCaravanPicking(false);
-              }}
-              title={
-                roomTile === null
-                  ? "Réservé aux colonies du monde partagé (salle tile-N)"
-                  : "Touche V : former une caravane"
-              }
-            >
-              Caravane <span className="key">V</span>
-            </button>
-            <button
-              className={showTrade ? "active" : ""}
-              disabled={stats.traderPresent < 0}
-              onClick={() => setShowTrade((v) => !v)}
-              title={stats.traderPresent < 0 ? "Aucun marchand de passage" : "Troc avec le marchand présent"}
-            >
-              Troc
-            </button>
-            <button
-              className={showFactions ? "active" : ""}
-              onClick={() => setShowFactions((v) => !v)}
-              title="Réputation des trois factions PNJ et tribut"
-            >
-              Factions
-            </button>
-            <button onClick={() => actionsRef.current?.save()} disabled={multi} title={multi ? MULTI_DISABLED : undefined}>
-              Sauver
-            </button>
-            <button onClick={() => actionsRef.current?.load()} disabled={multi} title={multi ? MULTI_DISABLED : undefined}>
-              Charger
-            </button>
-            {inWorld && (
-              <button onClick={backToWorld} title="Quitter la salle et revenir au globe">
-                Retour au monde
-              </button>
-            )}
-            {import.meta.env.DEV && (
-              <button onClick={() => actionsRef.current?.triggerRaid()} title="Déclencher un raid (dev)">
-                Raid
-              </button>
-            )}
-            {import.meta.env.DEV && (
-              <button
-                className={igniteArmed ? "active" : ""}
-                onClick={() => setIgniteArmed(!igniteArmed)}
-                title="Prochain clic gauche sur la carte : met le feu à la case (dev)"
-              >
-                Mettre le feu (débogage)
-              </button>
-            )}
-          </div>
+          <CommandDock actions={dockActions} toolLabel={TOOLS.find((t) => t.id === tool)?.label ?? "Sélection"} toolGroup={tool in BUILD_TOOL_KIND ? "build" : "orders"} selected={tool === "select"} activePanel={activePanel} onSelect={() => setTool("select")} material={material} onMaterial={setMaterial} />
           {heatMode && (
             <div className="heat-legend">
               <span>{formatTemperature(HEAT_COLD)}</span>
@@ -3182,8 +3015,8 @@ export function App() {
           {showWork && (
             // Frère du canvas : ses écouteurs souris ne voient pas ces clics.
             <div className="work-panel" onContextMenu={(e) => e.preventDefault()}>
-              <div className="panel-title">Travail</div>
-              <table className="work-table">
+              <div className="panel-title">Travail<button className="panel-close" aria-label="Fermer le travail" onClick={closePanel}><Icon name="close" size={18} /></button></div>
+              <div className="work-table-scroll" tabIndex={0} aria-label="Priorités de travail, tableau défilable"><table className="work-table">
                 <thead>
                   <tr>
                     <th />
@@ -3214,7 +3047,7 @@ export function App() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
               <div className="help">1 = urgent, 4 = quand il n'y a rien d'autre, — = jamais</div>
             </div>
           )}
@@ -3270,7 +3103,7 @@ export function App() {
           )}
           {showOptions && (
             <div className="options-panel" onContextMenu={(e) => e.preventDefault()}>
-              <div className="panel-title">Options</div>
+              <div className="panel-title">Options<button className="panel-close" aria-label="Fermer les options" onClick={closePanel}><Icon name="close" size={18} /></button></div>
               <div className="panel-section">Dose de menace</div>
               {!multi || (net?.isHost ?? false) ? (
                 <div className="options-row">
@@ -3325,9 +3158,7 @@ export function App() {
                 </button>
               </div>
               <div className="help">ombres : appliqué au prochain chargement</div>
-              <div className="help">
-                {stats.fps} fps · {stats.drawCalls} draw calls
-              </div>
+              <details className="diagnostics"><summary>Informations techniques</summary><div>{stats.fps} fps · {stats.tps} tps · {stats.drawCalls} appels de rendu</div><div>Tick {stats.tick} · hash {stats.hash}</div>{multi && <div>Retard : {stats.lag} ticks · {net?.players.length ?? 0} joueurs</div>}<div>Richesse : {formatWealth(stats.wealth)} · {DIFFICULTY_LABELS[stats.difficulty]}</div></details>
               <button className="wide" onClick={() => updateGraphics(DEFAULT_GRAPHICS)}>
                 Réinitialiser les graphismes
               </button>
@@ -3420,7 +3251,7 @@ export function App() {
         </div>
       )}
       {notice && <div className="notice">{notice}</div>}
-    </>
+    </div>
   );
 }
 

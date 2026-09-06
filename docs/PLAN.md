@@ -542,6 +542,22 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-06 : repasse de l’interface de colonie depuis l’état courant (base `6e8e5d0`).
+  La barre unique débordait et les panneaux indépendants se superposaient. Elle devient
+  cinq rubriques (Ordres, Construire, Colonie, Monde, Menu), avec recherche transversale
+  sans accents. Les 17 outils restent issus de `TOOLS`, les commandes indisponibles
+  expliquent leur prérequis (forge, marchand, monde partagé, sauvegarde serveur).
+  Un seul panneau de gestion s’ouvre à la fois ; Échap le ferme, la sélection d’un colon
+  rouvre sa fiche. Fermetures à la souris, titres persistants au défilement et tableau de
+  travail défilable avec noms fixes. Les 19 ressources sont consultables, même à zéro,
+  avec fraîcheur des vivres. Pause et vitesses sont visibles ; les champs et le défilement
+  au clavier ne déplacent plus la caméra. Surfaces olive sombre, accent doré et typographie
+  commune aux panneaux, à l’accueil et au monde. Mini-carte repliable et portraits restent
+  accessibles en petite fenêtre. Aucune règle du sim ni contrat réseau ne change.
+  Validation : WASM reconstruit, typecheck, 409 tests client, build de production ; essais
+  en solo à 1280×720, 740×480 et 390×844 (navigation, recherche, réserves, sélection,
+  priorités, recherche technologique et accès aux lignes hors écran).
+
 - 2026-09-06 : l'instrument avant le jeu. Le joueur scripté ne forgeait jamais (forge proposée
   sur des cases d'entrepôt occupées, refus silencieux de `Build`), ne minait pas (rayon fixe),
   désarmait sa colonie en automne (tuniques avant les arcs, objectif d'arcs abaissé à chaque

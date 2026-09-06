@@ -1,3 +1,4 @@
+import { Icon } from "./ui/Icon";
 /**
  * Le panneau « Factions » : les trois factions PNJ fixes
  * (`crates/sim/src/factions.rs`), chacune avec sa jauge de réputation et un
@@ -43,7 +44,7 @@ export function FactionsPanel({
 }: FactionsPanelProps) {
   return (
     <div className="factions-panel" onContextMenu={(e) => e.preventDefault()}>
-      <div className="panel-title">Factions</div>
+      <div className="panel-title">Factions<button className="panel-close" aria-label="Fermer : Factions" onClick={onClose}><Icon name="close" size={18} /></button></div>
       <div className="help">Une tribu alliée ne vous attaque plus ; la Guilde alliée vend moins cher.</div>
       <ul className="faction-list">
         {FACTIONS.map((faction) => {
