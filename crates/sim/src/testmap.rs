@@ -3,8 +3,8 @@
 
 use crate::map::{Feature, Map, Terrain};
 
-/// `.` herbe · `#` roche · `~` eau peu profonde · `T` arbre · `b` buisson mûr ·
-/// `,` terre · `W` eau profonde.
+/// `.` herbe · `#` roche · `%` roche veinée (minerai) · `~` eau peu profonde ·
+/// `T` arbre · `b` buisson mûr · `,` terre · `W` eau profonde.
 pub fn map_from(rows: &[&str]) -> Map {
     let h = rows.len() as u32;
     let w = rows[0].len() as u32;
@@ -15,6 +15,7 @@ pub fn map_from(rows: &[&str]) -> Map {
         for c in r.chars() {
             let (t, f) = match c {
                 '#' => (Terrain::Gravel, Feature::Rock),
+                '%' => (Terrain::Gravel, Feature::OreRock),
                 '~' => (Terrain::ShallowWater, Feature::None),
                 'W' => (Terrain::DeepWater, Feature::None),
                 'T' => (Terrain::Grass, Feature::Tree),

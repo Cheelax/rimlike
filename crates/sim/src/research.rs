@@ -1,10 +1,15 @@
-//! Recherche : cinq technologies, des points gagnés à l'établi, des bonus.
+//! Recherche : six technologies, des points gagnés à l'établi, des bonus.
 //!
-//! Rien n'est **verrouillé** derrière la recherche : tout ce que la colonie
-//! sait faire au premier tick, elle sait encore le faire sans avoir rien
-//! cherché. Une technologie acquise améliore ce qui existe déjà — les cultures
-//! poussent mieux, les soins vont plus vite, les vivres tiennent plus
-//! longtemps, l'arc porte plus loin, la pierre se taille plus vite.
+//! Les cinq premières ne **verrouillent** rien : tout ce que la colonie sait
+//! faire au premier tick, elle sait encore le faire sans avoir rien cherché.
+//! Une technologie acquise améliore ce qui existe déjà — les cultures poussent
+//! mieux, les soins vont plus vite, les vivres tiennent plus longtemps, l'arc
+//! porte plus loin, la pierre se taille plus vite.
+//!
+//! `Tech::Metallurgy` fait exception, et c'est délibéré : un **palier de
+//! matériau** n'est pas un bonus qu'on module, c'est une porte. Sans elle, la
+//! forge est refusée (`Sim::apply` sur `Command::Build`), donc pas de lingot,
+//! donc pas d'épée. C'est la seule chose que la recherche interdise.
 //!
 //! Chaque technologie dit **ici** ce qu'elle change, en constantes et en
 //! fonctions pures : les points d'application (`jobs`, `combat`, `build`,
@@ -15,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// Nombre de technologies. Contrat avec le client : `research_state()` renvoie
 /// `1 + 3 × COUNT` entiers.
-pub const TECH_COUNT: usize = 5;
+pub const TECH_COUNT: usize = 6;
 
 /// Ce qu'une colonie peut chercher. Les valeurs sont un contrat avec le client
 /// (`Command::SetResearch`, `arg` de `EventKind::ResearchDone`).
@@ -33,6 +38,10 @@ pub enum Tech {
     Archery = 3,
     /// Bâtir en pierre prend un quart de temps en moins.
     Masonry = 4,
+    /// Déverrouille la forge (`build::BuildKind::Forge`), donc la fonte du
+    /// minerai et l'épée. **Ajoutée en fin d'énumération** : le numéro est un
+    /// contrat avec le client (`Command::SetResearch`).
+    Metallurgy = 5,
 }
 
 impl Tech {
@@ -45,6 +54,7 @@ impl Tech {
         Tech::Preservation,
         Tech::Archery,
         Tech::Masonry,
+        Tech::Metallurgy,
     ];
 
     /// `None` pour un octet qui ne désigne aucune technologie — `NO_TECH`
@@ -58,6 +68,7 @@ impl Tech {
             2 => Some(Tech::Preservation),
             3 => Some(Tech::Archery),
             4 => Some(Tech::Masonry),
+            5 => Some(Tech::Metallurgy),
             _ => None,
         }
     }
@@ -74,6 +85,8 @@ impl Tech {
             Tech::Agriculture => 2_000,
             Tech::Medicine | Tech::Preservation => 2_500,
             Tech::Archery | Tech::Masonry => 3_000,
+            // La plus chère : c'est elle qui ouvre un âge, pas un bonus.
+            Tech::Metallurgy => 3_500,
         }
     }
 }

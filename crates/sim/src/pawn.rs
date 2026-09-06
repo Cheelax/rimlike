@@ -148,9 +148,11 @@ pub enum Job {
         target: u32,
         progress: u32,
     },
-    /// Fabrique au poste `spot` — une arme ou un vêtement : va chercher les
-    /// ingrédients de la recette qui produit `recipe`, les rapporte, puis
-    /// travaille (voir `craft`).
+    /// Fabrique à l'atelier `spot` — une arme, un vêtement ou un lingot : va
+    /// chercher les ingrédients de la recette qui produit `recipe`, les
+    /// rapporte, puis travaille (voir `craft`). `spot` est le poste de
+    /// fabrication, ou la forge quand la recette s'y travaille
+    /// (`craft::Recipe::station`) : le job est le même, l'atelier change.
     Craft {
         spot: (u32, u32),
         recipe: ItemKind,
@@ -308,6 +310,13 @@ impl Job {
             Job::Downed => 15,
             Job::Rescue { .. } => 16,
             Job::Tend { .. } => 17,
+            // La fonte est une fabrication comme une autre, mais elle mérite son
+            // libellé : « fond le métal » plutôt que « fabrique ». Même patron
+            // que `Job::Farm`, dont le code dépend déjà d'un champ.
+            Job::Craft {
+                recipe: ItemKind::Metal,
+                ..
+            } => 30,
             Job::Craft { .. } => 18,
             Job::Equip { .. } => 19,
             Job::Hunt { .. } => 20,

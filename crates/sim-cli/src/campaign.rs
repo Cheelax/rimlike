@@ -25,13 +25,14 @@
 use std::time::Instant;
 
 use sim::climate::{Climate, HYPOTHERMIA_TEMP, Season, YEAR_DAYS};
+use sim::craft::METAL_PER_SWORD;
 use sim::factions;
 use sim::health::BLOOD_MAX;
 use sim::map::chebyshev;
 use sim::pawn::{NEED_MAX, STARVING};
 use sim::{
-    BuildKind, Command, Designation, Difficulty, EventKind, Faction, ItemKind, Material, Sim,
-    Species, TICKS_PER_DAY, Tech, WorkType, Zone, build,
+    BuildKind, Command, Designation, Difficulty, EventKind, Faction, Feature, ItemKind, Material,
+    Sim, Species, TICKS_PER_DAY, Tech, WorkType, Zone, build,
 };
 
 use crate::cli::{CliError, Options, wants_help};
@@ -76,6 +77,16 @@ const WOOD_RESERVE: u32 = 40;
 const LEATHER_RESERVE: u32 = 6;
 /// Jour où l'on pose l'établi de recherche.
 const RESEARCH_DAY: u64 = 5;
+/// Demi-côté du carré où l'on cherche des rochers à miner : un joueur ne va
+/// pas creuser au bout de la carte.
+const MINE_RADIUS: i32 = 12;
+/// Rochers marqués d'un coup. Chaque case marquée est une commande, et un
+/// joueur ne désigne pas une montagne entière : deux rochers ordinaires
+/// suffisent à bâtir la forge (15 pierres chacun).
+const ROCKS_PER_PASS: usize = 4;
+/// Pierre qu'il faut en stock avant de bâtir la forge (20, plus la marge du
+/// transport en cours).
+const STONE_FOR_FORGE: u32 = 25;
 /// Jour où l'on tente un apprivoisement.
 const TAME_DAY: u64 = 8;
 /// Baies qu'il faut en stock pour se permettre d'apprivoiser.
@@ -171,6 +182,103 @@ fn build_free(
     }
 }
 
+/// Marque au minage les rochers les plus proches du repère — veinés
+/// (`want_ore`) ou ordinaires. Les candidats sont triés par `(distance, x, y)`,
+/// jamais « le premier trouvé », et une case déjà désignée n'est pas remarquée :
+/// `plan` reste idempotent sans mémoire.
+///
+/// Deux garde-fous, et ce sont eux qui comptent (le premier constat du rapport
+/// de campagne, celui du gibier inatteignable, se rejouait ici mot pour mot) :
+///
+/// 1. **la file est bornée à `max`** : tant qu'il reste des rochers marqués
+///    dans le rayon, on n'en marque pas d'autres. Sans cela, un joueur qui
+///    repasse toutes les `PLAN_INTERVAL` marquait quatre rochers de plus par
+///    passage, indéfiniment ;
+/// 2. **on ne marque que ce qu'un colon peut atteindre** : un rocher au cœur
+///    d'une montagne ou de l'autre côté d'un lac ne sera jamais miné, et chaque
+///    colon désœuvré recalculerait son chemin vers lui à chaque tick.
+///
+/// Mesuré : sans eux, la campagne de six graines × 30 jours passait de 63 s à
+/// 246 s, une graine à elle seule prenant 213 s.
+fn designate_rocks(sim: &Sim, cmds: &mut Vec<Command>, at: (i32, i32), want_ore: bool, max: usize) {
+    let from = (at.0.max(0) as u32, at.1.max(0) as u32);
+    let wanted = if want_ore {
+        Feature::OreRock
+    } else {
+        Feature::Rock
+    };
+    let mut found: Vec<(u32, u32, u32)> = Vec::new();
+    let mut pending = 0usize;
+    for y in at.1 - MINE_RADIUS..=at.1 + MINE_RADIUS {
+        for x in at.0 - MINE_RADIUS..=at.0 + MINE_RADIUS {
+            if !sim.map().in_bounds(x, y) {
+                continue;
+            }
+            let (ux, uy) = (x as u32, y as u32);
+            if sim.map().designation(ux, uy) == Designation::Mine {
+                pending += 1;
+                continue;
+            }
+            if sim.map().feature(ux, uy) != wanted
+                || sim.map().designation(ux, uy) != Designation::None
+            {
+                continue;
+            }
+            found.push((chebyshev((ux, uy), from), ux, uy));
+        }
+    }
+    if pending >= max {
+        return;
+    }
+    found.sort_unstable();
+    let mut left = max - pending;
+    for &(_, x, y) in found.iter().take(MINE_CANDIDATES) {
+        if left == 0 {
+            return;
+        }
+        if !minable(sim, from, (x, y)) {
+            continue;
+        }
+        cmds.push(Command::Designate {
+            kind: Designation::Mine,
+            x0: x as i32,
+            y0: y as i32,
+            x1: x as i32,
+            y1: y as i32,
+        });
+        left -= 1;
+    }
+}
+
+/// Rochers éprouvés avant de renoncer : chaque essai coûte un A\*, comme pour
+/// le gibier (`WILD_CANDIDATES`).
+const MINE_CANDIDATES: usize = 8;
+
+/// Un colon peut-il venir taper sur ce rocher ? Le rocher lui-même est
+/// infranchissable : c'est une case **voisine** qu'il faut pouvoir rejoindre.
+fn minable(sim: &Sim, from: (u32, u32), rock: (u32, u32)) -> bool {
+    for (dx, dy) in [
+        (0i32, -1i32),
+        (0, 1),
+        (-1, 0),
+        (1, 0),
+        (-1, -1),
+        (1, -1),
+        (-1, 1),
+        (1, 1),
+    ] {
+        let (nx, ny) = (rock.0 as i32 + dx, rock.1 as i32 + dy);
+        if !sim.map().in_bounds(nx, ny) {
+            continue;
+        }
+        let (nx, ny) = (nx as u32, ny as u32);
+        if sim.map().passable(nx, ny) && reachable(sim, from, (nx, ny)) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Bêtes candidates qu'on regarde avant de renoncer : au-delà, la bête est
 /// trop loin pour qu'un joueur s'y intéresse, et chaque essai coûte un A*.
 const WILD_CANDIDATES: usize = 4;
@@ -205,9 +313,11 @@ fn nearest_wild(sim: &Sim, at: (i32, i32), species: &[Species]) -> Option<u32> {
 /// Ce qu'un joueur attentif — mais pas génial — ferait de cette colonie
 /// maintenant. **Fonction pure** : mêmes états, mêmes commandes.
 ///
-/// Ce qu'il ne fait pas, et qui fausse d'autant la mesure : il ne mine pas (ni
-/// pierre, ni tombes, ni épieux), ne pilote aucun combat, ne soigne personne à
-/// la main, ne déplace jamais un colon et n'annule jamais un chantier.
+/// Ce qu'il ne fait pas, et qui fausse d'autant la mesure : il ne pilote aucun
+/// combat, ne soigne personne à la main, ne déplace jamais un colon et
+/// n'annule jamais un chantier. Il ne mine qu'**après la métallurgie**, et
+/// seulement de quoi bâtir sa forge puis creuser ses veines (voir §3 bis) :
+/// avant cela, pas une pierre, donc ni tombe ni épieu.
 pub fn plan(sim: &Sim) -> Vec<Command> {
     let mut cmds = Vec::new();
     let Some((ax, ay)) = anchor(sim) else {
@@ -386,6 +496,10 @@ pub fn plan(sim: &Sim) -> Vec<Command> {
             Some(Tech::Agriculture)
         } else if !r.is_done(Tech::Medicine) {
             Some(Tech::Medicine)
+        } else if !r.is_done(Tech::Metallurgy) {
+            // La métallurgie en troisième : c'est la seule qui ouvre quelque
+            // chose (la forge, donc le lingot, donc l'épée), et la plus chère.
+            Some(Tech::Metallurgy)
         } else {
             None
         };
@@ -393,6 +507,45 @@ pub fn plan(sim: &Sim) -> Vec<Command> {
             && r.current() != Some(tech)
         {
             cmds.push(Command::SetResearch { tech: tech as u8 });
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 3 bis. Le métal : forge, veines, lingots et épées
+    // ------------------------------------------------------------------
+    // Rien de tout cela avant la métallurgie : la forge serait refusée. C'est
+    // aussi le seul moment où ce joueur mine — jusque-là il ne touche pas un
+    // rocher (voir l'en-tête de `plan`).
+    if sim.research().is_done(Tech::Metallurgy) {
+        if sim.map().forge_count() == 0 {
+            if stored[ItemKind::Stone as usize] < STONE_FOR_FORGE {
+                designate_rocks(sim, &mut cmds, (ax, ay), false, ROCKS_PER_PASS);
+            } else {
+                build_free(
+                    sim,
+                    &mut cmds,
+                    BuildKind::Forge,
+                    &[(ax + 3, ay + 3), (ax + 4, ay + 3), (ax + 3, ay + 4)],
+                    1,
+                );
+            }
+        } else {
+            // Forge debout : on ne creuse plus que les veines, et on demande
+            // de quoi armer la colonie — les lingots d'abord, l'épée suit.
+            designate_rocks(sim, &mut cmds, (ax, ay), true, ROCKS_PER_PASS);
+            let ingots = METAL_PER_SWORD * n;
+            if sim.craft_targets()[ItemKind::Metal as usize] != ingots {
+                cmds.push(Command::SetCraftTarget {
+                    kind: ItemKind::Metal,
+                    target: ingots,
+                });
+            }
+            if sim.craft_targets()[ItemKind::Sword as usize] != n {
+                cmds.push(Command::SetCraftTarget {
+                    kind: ItemKind::Sword,
+                    target: n,
+                });
+            }
         }
     }
 
@@ -1410,6 +1563,71 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, Command::SetCraftTarget { .. })),
             "objectif de fabrication réémis : {second:?}"
+        );
+    }
+
+    /// La métallurgie ouvre une chaîne entière : on mine (ce que ce joueur ne
+    /// faisait jamais), on bâtit la forge, puis on demande lingots et épées.
+    /// Rien de tout cela avant la technologie — la forge serait refusée.
+    #[test]
+    fn la_forge_et_les_veines_attendent_la_metallurgie() {
+        let mut s = installed();
+        store_wood(&mut s, 200);
+        assert!(
+            !has_designation(&plan(&s), Designation::Mine),
+            "on mine sans métallurgie"
+        );
+        assert!(!has_build(&plan(&s), BuildKind::Forge), "forge sans techno");
+
+        s.research_mut().complete(Tech::Metallurgy);
+        // Sans pierre en stock : on marque des rochers, on ne bâtit pas encore.
+        let (ax, ay) = anchor(&s).expect("repère");
+        s.map_mut()
+            .set_feature((ax + 8) as u32, ay as u32, Feature::Rock);
+        let cmds = plan(&s);
+        assert!(
+            has_designation(&cmds, Designation::Mine),
+            "aucun rocher marqué : {cmds:?}"
+        );
+        assert!(!has_build(&cmds, BuildKind::Forge), "forge sans pierre");
+
+        // La pierre rentrée, la forge se plante et les objectifs suivent.
+        let (ax, ay) = anchor(&s).expect("repère");
+        s.spawn_item(
+            ItemKind::Stone,
+            STONE_FOR_FORGE + 5,
+            (ax + 2) as u32,
+            (ay + 2) as u32,
+        );
+        let cmds = plan(&s);
+        assert!(
+            has_build(&cmds, BuildKind::Forge),
+            "pas de forge : {cmds:?}"
+        );
+        s.step(&cmds);
+        s.map_mut()
+            .set_feature((ax + 3) as u32, (ay + 3) as u32, Feature::Forge);
+        s.map_mut()
+            .set_feature((ax + 8) as u32, (ay + 1) as u32, Feature::OreRock);
+        let cmds = plan(&s);
+        let colonists = colonist_ids(&s).len() as u32;
+        assert!(
+            cmds.contains(&Command::SetCraftTarget {
+                kind: ItemKind::Sword,
+                target: colonists
+            }),
+            "aucune épée demandée : {cmds:?}"
+        );
+        assert!(
+            cmds.contains(&Command::SetCraftTarget {
+                kind: ItemKind::Metal,
+                target: METAL_PER_SWORD * colonists
+            }),
+            "aucun lingot demandé : {cmds:?}"
+        );
+        assert!(
+            has_designation(&cmds, Designation::Mine),
+            "veine ignorée : {cmds:?}"
         );
     }
 

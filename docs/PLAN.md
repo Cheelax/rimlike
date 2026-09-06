@@ -506,10 +506,18 @@ d'alice arrivé chez bob).
   les 60 s et à la fermeture, dernier rapport gagnant, persistance v4). Vérifié : tribut dans
   une colonie, la suivante démarre avec la réputation obtenue.
 
+- **Métal** (2026-09-06, sim) : rochers veinés (un sur huit) qui donnent du minerai, technologie
+  Métallurgie (3 500 points, premier verrou) qui débloque la forge (20 pierre), fonte de 3
+  minerais en un lingot, épée (4 lingots, 200 % de dégâts de mêlée, mesurée en duel sur 30
+  graines), épées chez l'armurier et chez les pillards à forte menace ; objectif intenable
+  sauté au lieu de bloquer la file. Interface à faire (outil Forge grisé sans métallurgie,
+  minerai, lingot et épée nommés, sixième technologie).
+
 **Reste**
 
 - Mods de contenu : pas commencés.
-- Toits et métal (matériau de construction) : absents.
+- Toits : absents. Métal comme matériau de construction : absent (le métal ne sert qu'aux
+  armes).
 - Faune : coût par tick qui suit le nombre de pawns, bêtes comprises — à surveiller,
   pas encore mesuré ni optimisé.
 - Vêtements : pas de gestion de la chaleur excessive (le colon garde son manteau même
@@ -532,6 +540,18 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-06 : le métal est le premier palier verrouillé. La recherche ne donnait que des bonus ;
+  la forge exige la technologie Métallurgie (3 500 points), parce qu'un palier de matériau
+  justifie un verrou là où un bonus n'en justifiait pas. Le minerai vient des rochers veinés
+  (un sur huit, bruit dérivé), se fond à la forge (3 pour 1 lingot, 300 ticks) et l'épée (4
+  lingots) se fabrique au poste : une recette dit désormais où elle se travaille, et un objectif
+  intenable est sauté au lieu de bloquer la file. Dégâts de l'épée fixés à 200 % après un duel
+  mesuré sur 30 graines (à deux contre un : 21 victoires à l'épée contre 10 à l'épieu). Sous le
+  seuil de menace de l'épée, la table d'armes des pillards est bit-à-bit celle d'avant. Contrat
+  client : `ItemKind::COUNT` 16 → 19, `TECH_COUNT` 5 → 6, éléments 19-20, forge 9, job 30.
+  Point chaud relevé au passage, antérieur au métal : `do_butcher` relance un A* raté vers un
+  poste inatteignable à chaque tick.
 
 - 2026-09-06 : la réputation suit le joueur, pas la colonie. Le serveur monde tient une
   réputation par `playerKey`, l'impose à la fondation (`start.goodwill`) et à la réouverture

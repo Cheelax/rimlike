@@ -91,6 +91,17 @@ pub enum Feature {
     /// (`pawn::Job::RearmTrap`). Franchissable par tout le monde, colons
     /// compris.
     SpikeTrapSprung = 18,
+    /// Rocher veiné : un rocher comme un autre — infranchissable, il ferme une
+    /// pièce et se mine avec `Designation::Mine` — mais il rend du minerai
+    /// (`items::ItemKind::Ore`) au lieu de la pierre. Semé à la génération,
+    /// environ un rocher sur `ORE_IN_ROCKS` (voir `Map::generate`).
+    /// **Ajouté en fin d'énumération** : postcard encode l'indice.
+    OreRock = 19,
+    /// Forge : on y fond le minerai en lingots (voir `craft`). Infranchissable
+    /// comme le poste de fabrication, et bâtie en pierre
+    /// (`build::BuildKind::Forge`), donc elle ne brûle pas.
+    /// **Ajouté en fin d'énumération** : postcard encode l'indice.
+    Forge = 20,
 }
 
 impl Feature {
@@ -114,8 +125,16 @@ impl Feature {
             16 => Feature::ResearchBench,
             17 => Feature::SpikeTrap,
             18 => Feature::SpikeTrapSprung,
+            19 => Feature::OreRock,
+            20 => Feature::Forge,
             _ => Feature::None,
         }
+    }
+
+    /// Rocher, veiné ou non : ce qui se mine et ce qui ferme une pièce comme
+    /// de la pierre.
+    pub fn is_rock(self) -> bool {
+        matches!(self, Feature::Rock | Feature::OreRock)
     }
 
     /// Franchissable par n'importe qui. Les pièges à pointes le sont : ce
@@ -125,11 +144,13 @@ impl Feature {
             self,
             Feature::Tree
                 | Feature::Rock
+                | Feature::OreRock
                 | Feature::WallWood
                 | Feature::WallStone
                 | Feature::Campfire
                 | Feature::CraftingSpot
                 | Feature::ResearchBench
+                | Feature::Forge
         )
     }
 
@@ -142,7 +163,7 @@ impl Feature {
     /// futaie n'est pas un abri, et surtout couper un arbre ne doit pas faire
     /// recalculer la couche « intérieur » toutes les quatre secondes.
     pub fn blocks_room(self) -> bool {
-        self.is_wall() || self.is_door() || self == Feature::Rock
+        self.is_wall() || self.is_door() || self.is_rock()
     }
 
     /// Ce que l'élément change pour la couche « intérieur » : le fait de
@@ -211,7 +232,9 @@ impl Designation {
     pub fn applies_to(self, f: Feature) -> bool {
         match self {
             Designation::Chop => f == Feature::Tree,
-            Designation::Mine => f == Feature::Rock,
+            // Veiné ou non, un rocher se mine pareil : seul ce qu'il rend
+            // change (voir `jobs::yield_of`).
+            Designation::Mine => f.is_rock(),
             Designation::Harvest => f == Feature::Bush,
             Designation::None => false,
         }
@@ -345,7 +368,21 @@ pub struct Map {
     /// **Champ ajouté en fin de structure** : un vieux snapshot est refusé net
     /// plutôt que relu de travers.
     grave_tiles: Vec<(u32, u32)>,
+    /// Forges (`Feature::Forge`), pour court-circuiter la recherche d'un poste
+    /// de fonte, sur le modèle de `crafting_spot_count`. **Champ ajouté en fin
+    /// de structure** : un vieux snapshot est refusé net plutôt que relu de
+    /// travers.
+    forge_count: u32,
 }
+
+/// Un rocher sur `ORE_IN_ROCKS` est veiné (`Feature::OreRock`). Le tirage est
+/// un bruit par case (`noise::scatter` sur un seed dérivé), donc déterministe
+/// et sans rapport avec la dispersion des arbres et des buissons : même
+/// graine, mêmes veines, sur toutes les cibles.
+pub const ORE_IN_ROCKS: u32 = 8;
+/// Seed dérivé pour le tirage des veines : il doit être **différent** de celui
+/// des arbres, sinon les veines tomberaient toujours au même endroit du dé.
+const ORE_SEED_SALT: u64 = 0x0FE5_1CA1_0FE5_1CA1;
 
 /// Au-delà, la zone est trop vaste pour être une pièce : c'est le dehors.
 pub const ROOM_MAX_TILES: usize = 200;
@@ -401,6 +438,10 @@ impl Map {
                     }
                 } else if elevation < 204 {
                     (Terrain::Gravel, Feature::None)
+                } else if noise::scatter(seed ^ ORE_SEED_SALT, x, y) % ORE_IN_ROCKS == 0 {
+                    // Une veine : un rocher sur huit environ, tiré par un
+                    // bruit à part pour ne pas suivre le dé des arbres.
+                    (Terrain::Gravel, Feature::OreRock)
                 } else {
                     (Terrain::Gravel, Feature::Rock)
                 };
@@ -453,6 +494,10 @@ impl Map {
             .iter()
             .filter(|&&f| f == Feature::ResearchBench as u8)
             .count() as u32;
+        let forge_count = features
+            .iter()
+            .filter(|&&f| f == Feature::Forge as u8)
+            .count() as u32;
         let trap_count = features
             .iter()
             .filter(|&&f| f == Feature::SpikeTrap as u8)
@@ -490,6 +535,7 @@ impl Map {
             fire_version: 0,
             stockpile_tiles: Vec::new(),
             grave_tiles,
+            forge_count,
         }
     }
 
@@ -551,6 +597,7 @@ impl Map {
                 Feature::ResearchBench => self.research_bench_count -= 1,
                 Feature::SpikeTrap => self.trap_count -= 1,
                 Feature::SpikeTrapSprung => self.sprung_trap_count -= 1,
+                Feature::Forge => self.forge_count -= 1,
                 _ => {}
             }
             match f {
@@ -566,6 +613,7 @@ impl Map {
                 Feature::ResearchBench => self.research_bench_count += 1,
                 Feature::SpikeTrap => self.trap_count += 1,
                 Feature::SpikeTrapSprung => self.sprung_trap_count += 1,
+                Feature::Forge => self.forge_count += 1,
                 _ => {}
             }
             if old.room_key() != f.room_key() {
@@ -713,6 +761,21 @@ impl Map {
     /// Établis de recherche posés sur la carte (voir `research`).
     pub fn research_bench_count(&self) -> u32 {
         self.research_bench_count
+    }
+
+    /// Forges posées sur la carte (voir `craft`).
+    pub fn forge_count(&self) -> u32 {
+        self.forge_count
+    }
+
+    /// Postes où la recette `station` peut se travailler : le poste de
+    /// fabrication ou la forge. Court-circuit de `Sim::try_start_craft`, qui
+    /// n'a ainsi qu'un compteur à lire quel que soit l'atelier.
+    pub fn station_count(&self, station: Feature) -> u32 {
+        match station {
+            Feature::Forge => self.forge_count,
+            _ => self.crafting_spot_count,
+        }
     }
 
     /// Tombes vides, prêtes à recevoir un cadavre (voir `pawn::Job::Bury`).

@@ -107,7 +107,17 @@ const CRAFT_WARES: [ItemKind; 5] = [
     ItemKind::Tunic,
     ItemKind::Coat,
 ];
-const ARMS_WARES: [ItemKind; 3] = [ItemKind::Club, ItemKind::Spear, ItemKind::Bow];
+/// L'armurier vend aussi le métal et ce qu'on en tire : c'est le seul moyen
+/// d'avoir une épée sans forge — et le seul acheteur qui paie le lingot ce
+/// qu'il vaut, la Guilde achetant à `BUY_NUM`/`BUY_DEN` de sa valeur, la plus
+/// haute de la table (`ItemKind::wealth_value`) après l'arme elle-même.
+const ARMS_WARES: [ItemKind; 5] = [
+    ItemKind::Club,
+    ItemKind::Spear,
+    ItemKind::Bow,
+    ItemKind::Metal,
+    ItemKind::Sword,
+];
 
 /// Les trois profils, dans un ordre fixe : le tirage porte sur l'indice.
 const PROFILES: [&[ItemKind]; 3] = [&FOOD_WARES, &CRAFT_WARES, &ARMS_WARES];

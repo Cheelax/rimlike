@@ -308,10 +308,12 @@ pub fn random_command(rng: &mut Rng, sim: &Sim, size: u32) -> (Command, usize) {
         4 => {
             let (x0, y0, x1, y1) = random_rect_i32(rng, size);
             Command::Build {
-                // 0..=8 : murs, portes, sols, lits, feux, postes de
-                // fabrication, tombes, établis de recherche et pièges à
-                // pointes.
-                kind: BuildKind::from_u8(rng.below(9) as u8),
+                // 0..=9 : murs, portes, sols, lits, feux, postes de
+                // fabrication, tombes, établis de recherche, pièges à pointes
+                // et forges. La forge est refusée tant que la colonie n'a pas
+                // la métallurgie : c'est le seul genre que le sim puisse
+                // ignorer sur une case pourtant libre, et c'est voulu.
+                kind: BuildKind::from_u8(rng.below(10) as u8),
                 material: Material::from_u8(rng.below(2) as u8),
                 x0,
                 y0,
@@ -523,9 +525,9 @@ mod tests {
         assert!(seen.iter().all(|&s| s), "variantes manquantes : {seen:?}");
     }
 
-    /// `BuildKind::SpikeTrap` est la variante la plus récente (voir
+    /// `BuildKind::Forge` est la variante la plus récente (voir
     /// `sim::build::BuildKind`) : elle doit rester tirable comme les autres,
-    /// la tombe et l'établi avec elle.
+    /// la tombe, l'établi et le piège avec elle.
     #[test]
     fn build_covers_the_newest_kinds() {
         let mut rng = Rng::new(3);
@@ -533,20 +535,23 @@ mod tests {
         let mut seen_grave = false;
         let mut seen_bench = false;
         let mut seen_trap = false;
+        let mut seen_forge = false;
         for _ in 0..8000 {
             let (cmd, _) = random_command(&mut rng, &sim, 16);
             if let Command::Build { kind, .. } = cmd {
                 seen_grave |= kind == BuildKind::Grave;
                 seen_bench |= kind == BuildKind::ResearchBench;
                 seen_trap |= kind == BuildKind::SpikeTrap;
+                seen_forge |= kind == BuildKind::Forge;
             }
-            if seen_grave && seen_bench && seen_trap {
+            if seen_grave && seen_bench && seen_trap && seen_forge {
                 break;
             }
         }
         assert!(seen_grave, "BuildKind::Grave n'est jamais tiré");
         assert!(seen_bench, "BuildKind::ResearchBench n'est jamais tiré");
         assert!(seen_trap, "BuildKind::SpikeTrap n'est jamais tiré");
+        assert!(seen_forge, "BuildKind::Forge n'est jamais tiré");
     }
 
     /// Toutes les technologies doivent être tirables — sinon la campagne ne

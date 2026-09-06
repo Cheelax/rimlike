@@ -421,10 +421,17 @@ fn a_tech_costs_what_it_says() {
         // À vitesse nominale, une technologie demande dix à quinze mille ticks
         // de chercheur (une journée de jeu en fait 12 480) : de quoi peser
         // sans bloquer une partie.
+        //
+        // La métallurgie a droit à une tranche de plus (jusqu'à 18 000, soit
+        // une journée et demie) : c'est la seule qui **verrouille** quelque
+        // chose — sans elle, ni forge, ni lingot, ni épée. Un palier de
+        // matériau se paie plus cher qu'un quart de pousse.
         let ticks = tech.cost() * PROGRESS_SCALE / RESEARCH_STEP;
-        assert!(
-            (10_000..=15_000).contains(&ticks),
-            "{tech:?} : {ticks} ticks"
-        );
+        let window = if tech == Tech::Metallurgy {
+            10_000..=18_000
+        } else {
+            10_000..=15_000
+        };
+        assert!(window.contains(&ticks), "{tech:?} : {ticks} ticks");
     }
 }

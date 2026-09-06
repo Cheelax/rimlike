@@ -1612,7 +1612,10 @@ mod tests {
         assert_eq!(s.skills_len(), colonists * SKILL_STRIDE);
 
         let state = s.research_state();
+        // Six technologies depuis la métallurgie : le tampon fait 19 entiers.
+        assert_eq!(sim::Tech::COUNT, 6, "contrat client : six technologies");
         assert_eq!(state.len(), 1 + 3 * sim::Tech::COUNT);
+        assert_eq!(state.len(), 19);
         assert_eq!(state[0], 255, "on ne cherche rien au départ");
         for (k, tech) in sim::Tech::ALL.iter().enumerate() {
             assert_eq!(state[1 + 3 * k], 0, "avancement de départ");
@@ -1644,6 +1647,10 @@ mod tests {
             ItemKind::COUNT,
             "un objectif par genre"
         );
+        // Minerai, lingot et épée compris : tout tampon indexé par `ItemKind`
+        // fait dix-neuf entrées.
+        assert_eq!(ItemKind::COUNT, 19, "contrat client : dix-neuf genres");
+        assert_eq!(s.stored_totals().len(), ItemKind::COUNT);
         assert!(s.craft_targets().iter().all(|&t| t == 0), "0 au départ");
 
         s.set_craft_target(ItemKind::Club as u8, 3);

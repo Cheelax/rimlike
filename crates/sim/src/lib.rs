@@ -798,6 +798,12 @@ impl Sim {
                 x1,
                 y1,
             } => {
+                // La forge est la seule construction verrouillée derrière une
+                // technologie : sans métallurgie, l'ordre est ignoré, sans
+                // événement ni message — comme un `Hunt` sur un id inconnu.
+                if kind == BuildKind::Forge && !self.research.is_done(Tech::Metallurgy) {
+                    return;
+                }
                 let Some(rect) = self.map.clamp_rect(x0, y0, x1, y1) else {
                     return;
                 };

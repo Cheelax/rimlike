@@ -34,6 +34,16 @@ pub enum ItemKind {
     Tunic = 14,
     /// Manteau de cuir : deux fois plus de cuir, deux fois et demie plus chaud.
     Coat = 15,
+    /// Minerai brut, tiré d'un rocher veiné (`map::Feature::OreRock`). Ne sert
+    /// à rien tel quel : il se fond en lingot à la forge (voir `craft`).
+    Ore = 16,
+    /// Lingot de métal : `craft::ORE_PER_INGOT` minerais fondus à la forge.
+    /// Matière première de l'épée, et marchandise de valeur.
+    Metal = 17,
+    /// Épée : la meilleure arme de mêlée, quatre lingots au poste de
+    /// fabrication. Elle demande la métallurgie (`research::Tech::Metallurgy`),
+    /// donc une forge, donc du minerai : c'est le bout de la chaîne.
+    Sword = 18,
 }
 
 /// Isolation d'une tunique, en dixièmes de degré : +6 °C sur la température
@@ -43,8 +53,14 @@ pub const TUNIC_INSULATION: i32 = 60;
 /// tunique seule ne suffit pas à traverser (`climate::HYPOTHERMIA_TEMP`).
 pub const COAT_INSULATION: i32 = 150;
 
+/// Dégâts de mêlée d'une épée, en pourcentage de ceux des poings nus. Un quart
+/// de plus que l'épieu (160), ce qui, sur les tirages de `combat`, met le colon
+/// à l'épée entre l'épieu et la flèche tirée à bout portant. **Mesuré** :
+/// `sword_beats_spear_but_is_not_a_win_button`.
+pub const SWORD_MELEE_PERCENT: u32 = 200;
+
 impl ItemKind {
-    pub const COUNT: usize = 16;
+    pub const COUNT: usize = 19;
 
     pub fn from_u8(v: u8) -> ItemKind {
         match v {
@@ -63,6 +79,9 @@ impl ItemKind {
             13 => ItemKind::Leather,
             14 => ItemKind::Tunic,
             15 => ItemKind::Coat,
+            16 => ItemKind::Ore,
+            17 => ItemKind::Metal,
+            18 => ItemKind::Sword,
             _ => ItemKind::Corpse,
         }
     }
@@ -85,7 +104,10 @@ impl ItemKind {
             | ItemKind::BoarCorpse
             | ItemKind::Leather
             | ItemKind::Tunic
-            | ItemKind::Coat => None,
+            | ItemKind::Coat
+            | ItemKind::Ore
+            | ItemKind::Metal
+            | ItemKind::Sword => None,
         }
     }
 
@@ -134,23 +156,32 @@ impl ItemKind {
             | ItemKind::BoarCorpse
             | ItemKind::Leather
             | ItemKind::Tunic
-            | ItemKind::Coat => u32::MAX,
+            | ItemKind::Coat
+            | ItemKind::Ore
+            | ItemKind::Metal
+            | ItemKind::Sword => u32::MAX,
         }
     }
 
     /// Une arme se fabrique, se range, s'équipe — et se porte à l'unité, même
     /// si une pile posée au sol en empile plusieurs comme n'importe quoi d'autre.
     pub fn is_weapon(self) -> bool {
-        matches!(self, ItemKind::Club | ItemKind::Spear | ItemKind::Bow)
+        matches!(
+            self,
+            ItemKind::Club | ItemKind::Spear | ItemKind::Bow | ItemKind::Sword
+        )
     }
 
     /// Qualité d'une arme : plus grand = meilleur. C'est l'ordre dans lequel un
-    /// colon s'équipe (`Bow > Spear > Club`) ; 0 pour ce qui n'est pas une arme.
+    /// colon s'équipe (`Sword > Bow > Spear > Club`) ; 0 pour ce qui n'est pas
+    /// une arme. L'épée passe devant l'arc : elle coûte une technologie, une
+    /// forge et douze minerais, elle doit se voir sur le champ de bataille.
     pub fn weapon_rank(self) -> u32 {
         match self {
             ItemKind::Club => 1,
             ItemKind::Spear => 2,
             ItemKind::Bow => 3,
+            ItemKind::Sword => 4,
             _ => 0,
         }
     }
@@ -186,11 +217,17 @@ impl ItemKind {
 
     /// Dégâts de mêlée en pourcentage de ceux des poings nus. L'arc est une
     /// mauvaise massue : on ne se bat pas au corps à corps avec un arc.
+    ///
+    /// L'épée à `SWORD_MELEE_PERCENT` est **mesurée**, pas choisie : voir
+    /// `crates/sim/tests/metal.rs`, où un colon à l'épée bat un pillard à
+    /// l'épieu plus souvent qu'un colon à l'épieu — sans gagner à tous les
+    /// coups.
     pub fn melee_percent(self) -> u32 {
         match self {
             ItemKind::Club => 130,
             ItemKind::Spear => 160,
             ItemKind::Bow => 80,
+            ItemKind::Sword => SWORD_MELEE_PERCENT,
             _ => 100,
         }
     }
@@ -221,13 +258,20 @@ impl ItemKind {
         match self {
             ItemKind::Wood | ItemKind::Stone => 1,
             ItemKind::Berries | ItemKind::Vegetables => 2,
-            ItemKind::Meat => 3,
+            // Un caillou veiné vaut trois cailloux : c'est modeste, et c'est
+            // voulu — extraire du minerai ne doit pas suffire à faire grossir
+            // les bandes (`storyteller::compute_wealth`).
+            ItemKind::Meat | ItemKind::Ore => 3,
             ItemKind::Leather => 4,
+            // Le lingot vaut ses trois minerais et le travail de la forge.
+            ItemKind::Metal => 12,
             ItemKind::DeerCorpse | ItemKind::RabbitCorpse | ItemKind::BoarCorpse => 5,
             ItemKind::Meal => 6,
             ItemKind::Club => 30,
             ItemKind::Spear => 45,
             ItemKind::Bow => 60,
+            // Quatre lingots (48) et une longue séance au poste.
+            ItemKind::Sword => 90,
             ItemKind::Tunic => 25,
             ItemKind::Coat => 50,
             ItemKind::Corpse => 0,
@@ -254,9 +298,13 @@ impl ItemKind {
             | ItemKind::Bow
             | ItemKind::Leather
             // Un vêtement s'use, un jour, à l'usage : pas au fond d'un
-            // entrepôt. Rien ne se gâte ici.
+            // entrepôt. Rien ne se gâte ici — pas plus la pierre que le
+            // minerai, le lingot ou l'épée.
             | ItemKind::Tunic
-            | ItemKind::Coat => None,
+            | ItemKind::Coat
+            | ItemKind::Ore
+            | ItemKind::Metal
+            | ItemKind::Sword => None,
         }
     }
 }

@@ -67,10 +67,20 @@ impl Slot {
     }
 }
 
-/// Production d'un travail terminé.
-fn yield_of(kind: Designation) -> Option<(ItemKind, u32)> {
+/// Minerai tiré d'un rocher veiné : `ORE_YIELD_MIN` à
+/// `ORE_YIELD_MIN + ORE_YIELD_SPAN - 1` unités, soit deux ou trois. Un rocher
+/// ordinaire rend quinze pierres : la veine paie en rareté, pas en volume.
+pub const ORE_YIELD_MIN: u32 = 2;
+pub const ORE_YIELD_SPAN: u32 = 2;
+
+/// Production d'un travail terminé, **sur l'élément qui vient d'être abattu** :
+/// un rocher veiné rend du minerai là où un rocher ordinaire rend de la pierre.
+/// `None` pour ce qui ne produit rien. Le compte annoncé est le **minimum** :
+/// seul le minerai y ajoute un tirage (voir `Sim::do_work`).
+fn yield_of(kind: Designation, feature: Feature) -> Option<(ItemKind, u32)> {
     match kind {
         Designation::Chop => Some((ItemKind::Wood, 20)),
+        Designation::Mine if feature == Feature::OreRock => Some((ItemKind::Ore, ORE_YIELD_MIN)),
         Designation::Mine => Some((ItemKind::Stone, 15)),
         Designation::Harvest => Some((ItemKind::Berries, 8)),
         Designation::None => None,
@@ -1348,6 +1358,9 @@ impl Sim {
             };
             return;
         }
+        // L'élément est lu **avant** d'être abattu : c'est lui qui dit ce que
+        // le travail rend (pierre ou minerai).
+        let felled = self.map.feature(x, y);
         match kind {
             Designation::Chop | Designation::Mine => self.map.set_feature(x, y, Feature::None),
             Designation::Harvest => {
@@ -1360,7 +1373,14 @@ impl Sim {
             }
             Designation::None => {}
         }
-        if let Some((item, count)) = yield_of(kind) {
+        if let Some((item, count)) = yield_of(kind, felled) {
+            // Le minerai est le seul rendement qui ne soit pas fixe : deux ou
+            // trois unités par veine.
+            let count = if item == ItemKind::Ore {
+                count + self.rng.below(ORE_YIELD_SPAN)
+            } else {
+                count
+            };
             self.spawn_item(item, count, x, y);
         }
         self.map.set_designation(x, y, Designation::None);
@@ -1855,41 +1875,14 @@ impl Sim {
         total
     }
 
-    /// Première recette dont l'objectif n'est pas atteint, dans l'ordre de
-    /// `craft::RECIPES`.
-    fn wanted_recipe(&self) -> Option<&'static craft::Recipe> {
-        craft::RECIPES
-            .iter()
-            .find(|r| self.colony_total(r.output) < self.craft_targets[r.output as usize])
-    }
-
-    /// Fabrique s'il y a un poste libre, un objectif non atteint et de quoi
-    /// tenir la recette. Les piles nécessaires sont réservées d'un coup : un
-    /// colon ne part pas chercher du bois pour un épieu sans pierre.
-    fn try_start_craft(&mut self, i: usize) -> bool {
-        // Trois court-circuits avant tout balayage : pas de poste, aucun
-        // objectif posé, ou tous atteints.
-        if self.map.crafting_spot_count() == 0 || self.craft_targets.iter().all(|&t| t == 0) {
-            return false;
-        }
-        let Some(recipe) = self.wanted_recipe() else {
-            return false;
-        };
-        let from = self.pawns[i].tile();
-        let mut spots: Vec<(u32, u32, u32)> = Vec::new();
-        for y in 0..self.map.height() {
-            for x in 0..self.map.width() {
-                if self.map.feature(x, y) == Feature::CraftingSpot && !self.is_reserved(x, y) {
-                    spots.push((chebyshev(from, (x, y)), x, y));
-                }
-            }
-        }
-        spots.sort_unstable();
-        let Some(&(_, fx, fy)) = spots.first() else {
-            return false;
-        };
-        // Une pile par ingrédient, la plus proche du colon, assez fournie pour
-        // couvrir la recette d'un seul voyage.
+    /// Une pile par ingrédient de la recette : la plus proche du colon, non
+    /// réservée, et assez fournie pour couvrir le besoin d'un seul voyage.
+    /// `None` si la colonie n'a pas de quoi.
+    ///
+    /// **Ne regarde jamais la carte** : c'est ce qui permet à
+    /// `try_start_craft` de trancher « faisable ou non » en O(piles), avant
+    /// tout balayage.
+    fn craft_picks(&self, recipe: &craft::Recipe, from: (u32, u32)) -> Option<Vec<usize>> {
         let mut picks: Vec<usize> = Vec::with_capacity(recipe.inputs.len());
         for &(kind, need) in recipe.inputs {
             let mut stacks: Vec<(u32, u32, u32, usize)> = self
@@ -1905,11 +1898,62 @@ impl Sim {
                 .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
                 .collect();
             stacks.sort_unstable();
-            let Some(&(_, _, _, k)) = stacks.first() else {
-                return false;
-            };
-            picks.push(k);
+            picks.push(stacks.first()?.3);
         }
+        Some(picks)
+    }
+
+    /// Première recette **faisable** dans l'ordre de `craft::RECIPES` : objectif
+    /// non atteint, atelier bâti, et de quoi la tenir en réserve. Renvoie aussi
+    /// les piles retenues, pour ne pas les rechercher deux fois.
+    ///
+    /// Les trois conditions se testent sans toucher à la carte, et c'est le
+    /// point : une recette dont l'atelier manque (des lingots sans forge) ou
+    /// dont les ingrédients manquent (du minerai qu'on n'a pas) est **sautée**,
+    /// pas attendue. Sans cela, un objectif inatteignable bloquait la file — la
+    /// colonie ne taillait plus ses arcs — et surtout faisait balayer les
+    /// 4 096 cases de la carte à chaque colon désœuvré, à chaque tick (mesuré :
+    /// une campagne de 30 jours passait de 0,3 s à 108 s dès l'objectif de
+    /// lingots posé).
+    fn wanted_craft(&self, from: (u32, u32)) -> Option<(&'static craft::Recipe, Vec<usize>)> {
+        craft::RECIPES.iter().find_map(|r| {
+            if self.colony_total(r.output) >= self.craft_targets[r.output as usize]
+                || self.map.station_count(r.station) == 0
+            {
+                return None;
+            }
+            self.craft_picks(r, from).map(|picks| (r, picks))
+        })
+    }
+
+    /// Fabrique s'il y a un atelier libre, un objectif non atteint et de quoi
+    /// tenir la recette. Les piles nécessaires sont réservées d'un coup : un
+    /// colon ne part pas chercher du bois pour un épieu sans pierre.
+    fn try_start_craft(&mut self, i: usize) -> bool {
+        // Deux court-circuits avant tout le reste : aucun atelier, ou aucun
+        // objectif posé.
+        if (self.map.crafting_spot_count() == 0 && self.map.forge_count() == 0)
+            || self.craft_targets.iter().all(|&t| t == 0)
+        {
+            return false;
+        }
+        let from = self.pawns[i].tile();
+        let Some((recipe, picks)) = self.wanted_craft(from) else {
+            return false;
+        };
+        let station = recipe.station;
+        let mut spots: Vec<(u32, u32, u32)> = Vec::new();
+        for y in 0..self.map.height() {
+            for x in 0..self.map.width() {
+                if self.map.feature(x, y) == station && !self.is_reserved(x, y) {
+                    spots.push((chebyshev(from, (x, y)), x, y));
+                }
+            }
+        }
+        spots.sort_unstable();
+        let Some(&(_, fx, fy)) = spots.first() else {
+            return false;
+        };
         let first = picks[0];
         let target = (self.items[first].x, self.items[first].y);
         let Some(p) = self.colonist_path(from, target) else {
@@ -1939,7 +1983,8 @@ impl Sim {
             self.abandon_job(i);
             return;
         };
-        if self.map.feature(spot.0, spot.1) != Feature::CraftingSpot {
+        // L'atelier de la recette, pas « le poste » : la fonte veut une forge.
+        if self.map.feature(spot.0, spot.1) != r.station {
             self.abandon_job(i);
             return;
         }

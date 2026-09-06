@@ -304,13 +304,12 @@ pub fn terrain_burns(t: Terrain, temperature: i32, wet: bool) -> bool {
     }
 }
 
-/// La pile brûle-t-elle ? **Tout sauf la pierre** : le bois, les vivres, le
-/// cuir, les habits, les armes (un arc et un gourdin sont en bois, un épieu
-/// aussi pour l'essentiel) et jusqu'aux dépouilles. Une règle d'un mot est
-/// plus facile à retenir qu'une liste, et il n'existe aucun objet
-/// incombustible en dehors du tas de cailloux.
+/// La pile brûle-t-elle ? **Tout sauf le minéral** : la pierre, le minerai et
+/// le lingot ne prennent pas ; le bois, les vivres, le cuir, les habits, les
+/// armes (un arc et un gourdin sont en bois, un épieu aussi pour l'essentiel,
+/// et une épée a un manche) et jusqu'aux dépouilles, oui.
 pub fn item_burns(kind: ItemKind) -> bool {
-    kind != ItemKind::Stone
+    !matches!(kind, ItemKind::Stone | ItemKind::Ore | ItemKind::Metal)
 }
 
 /// Chance qu'une case en feu s'éteigne d'elle-même à chaque évaluation, en

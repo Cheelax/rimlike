@@ -193,6 +193,18 @@ pub const CLUB_COST: u32 = 10;
 pub const SPEAR_COST: u32 = 20;
 pub const BOW_COST: u32 = 30;
 pub const TUNIC_COST: u32 = 10;
+/// Ce que coûte une épée à une bande. La plus chère des armes, et la seule
+/// qu'un raid ne puisse pas s'offrir tant qu'il n'a pas atteint
+/// `SWORD_THREAT_POINTS`.
+pub const SWORD_COST: u32 = 45;
+
+/// Points de menace à partir desquels une bande peut acheter des épées. Quatre
+/// têtes (`POINTS_PER_RAIDER`) : la première bande d'une colonie
+/// (`FIRST_RAID_POINTS`, deux têtes) n'en verra jamais, et la calibration du
+/// premier raid (`first_raid_is_dangerous_but_survivable`) reste
+/// **bit-à-bit** celle d'avant — sous ce seuil, la table d'armes tirée est
+/// exactement l'ancienne.
+pub const SWORD_THREAT_POINTS: u32 = 4 * POINTS_PER_RAIDER;
 
 /// Points qu'il faut dépenser pour **une tête**, équipement moyen compris.
 ///
@@ -316,11 +328,14 @@ struct RaiderKit {
 
 /// Armes achetables, **par coût croissant** : les options abordables forment
 /// alors un préfixe de la table, et un seul comptage suffit à les compter.
-const WEAPON_OPTIONS: [(Option<ItemKind>, u32); 4] = [
+/// L'épée est en queue, et n'entre dans le tirage qu'au-delà de
+/// `SWORD_THREAT_POINTS` (voir `Sim::draw_weapon`).
+const WEAPON_OPTIONS: [(Option<ItemKind>, u32); 5] = [
     (None, 0),
     (Some(ItemKind::Club), CLUB_COST),
     (Some(ItemKind::Spear), SPEAR_COST),
     (Some(ItemKind::Bow), BOW_COST),
+    (Some(ItemKind::Sword), SWORD_COST),
 ];
 
 /// Ce qui tombe d'un largage : genre, quantité minimale, amplitude du tirage.
@@ -345,6 +360,9 @@ fn feature_wealth(f: Feature) -> u32 {
         Feature::Campfire => 10,
         Feature::CraftingSpot => 15,
         Feature::ResearchBench => 20,
+        // La forge coûte vingt pierres et une technologie : elle se voit de
+        // loin, et elle se paie en convoitises.
+        Feature::Forge => 25,
         // Une défense passive compte, comme dans RimWorld : elle attire les
         // convoitises. Modeste — un piège vaut deux murs — et seulement tant
         // qu'il est armé : un piège déclenché ne défend plus rien.
@@ -783,12 +801,17 @@ impl Sim {
                 }
             })
             .collect();
+        // L'épée n'est pas une arme de maraudeur : il faut une bande sérieuse
+        // pour qu'un forgeron ait équipé quelqu'un. Le seuil porte sur les
+        // points **de la bande**, pas sur le budget restant — sinon deux
+        // pillards très riches en auraient une chacun.
+        let swords = points >= SWORD_THREAT_POINTS;
         let mut roster: Vec<RaiderKit> = Vec::with_capacity(apparels.len());
         for (rank, apparel) in apparels.into_iter().enumerate() {
             // Un raid d'archers arme la première moitié de la bande à l'arc ;
             // le reste se débrouille avec ce qu'il reste de points.
             let archer = kind == RaidKind::Archers && 2 * (rank as u32) < count;
-            let weapon = self.draw_weapon(&mut budget, archer);
+            let weapon = self.draw_weapon(&mut budget, archer, swords);
             roster.push(RaiderKit { weapon, apparel });
         }
         roster
@@ -798,20 +821,24 @@ impl Sim {
     /// **meilleur de deux** parmi les options abordables : un pillard qui peut
     /// s'armer s'arme presque toujours, mais une bande fauchée reste à mains
     /// nues.
-    fn draw_weapon(&mut self, budget: &mut u32, archer: bool) -> Option<ItemKind> {
+    fn draw_weapon(&mut self, budget: &mut u32, archer: bool, swords: bool) -> Option<ItemKind> {
         if archer && *budget >= BOW_COST {
             *budget -= BOW_COST;
             return Some(ItemKind::Bow);
         }
         // Les options sont triées par coût : les abordables sont un préfixe.
-        let affordable = WEAPON_OPTIONS
-            .iter()
-            .filter(|&&(_, c)| c <= *budget)
-            .count() as u32;
+        // Sans épée au catalogue, la table est **exactement** celle d'avant la
+        // métallurgie, tirage compris.
+        let catalog = if swords {
+            &WEAPON_OPTIONS[..]
+        } else {
+            &WEAPON_OPTIONS[..WEAPON_OPTIONS.len() - 1]
+        };
+        let affordable = catalog.iter().filter(|&&(_, c)| c <= *budget).count() as u32;
         // Toujours au moins « mains nues », qui ne coûte rien.
         let n = affordable.max(1);
         let k = self.rng.below(n).max(self.rng.below(n)) as usize;
-        let (weapon, cost) = WEAPON_OPTIONS[k];
+        let (weapon, cost) = catalog[k];
         *budget -= cost;
         weapon
     }

@@ -30,6 +30,12 @@ pub enum BuildKind {
     /// tenant dedans. **Ajouté en fin d'énumération** : postcard encode
     /// l'indice.
     SpikeTrap = 8,
+    /// Forge : une case en pierre imposée, infranchissable, où l'on fond le
+    /// minerai en lingots (voir `craft`). **La première construction
+    /// verrouillée derrière une technologie** : `Command::Build` la refuse tant
+    /// que `research::Tech::Metallurgy` n'est pas acquise (voir `Sim::apply`).
+    /// **Ajoutée en fin d'énumération** : postcard encode l'indice.
+    Forge = 9,
 }
 
 impl BuildKind {
@@ -43,6 +49,7 @@ impl BuildKind {
             6 => BuildKind::Grave,
             7 => BuildKind::ResearchBench,
             8 => BuildKind::SpikeTrap,
+            9 => BuildKind::Forge,
             _ => BuildKind::Campfire,
         }
     }
@@ -58,6 +65,7 @@ impl BuildKind {
             BuildKind::Grave => 200,
             BuildKind::ResearchBench => 400,
             BuildKind::SpikeTrap => 150,
+            BuildKind::Forge => 400,
         }
     }
 
@@ -87,6 +95,7 @@ impl BuildKind {
             BuildKind::Grave => 5,
             BuildKind::ResearchBench => 15,
             BuildKind::SpikeTrap => 5,
+            BuildKind::Forge => 20,
         }
     }
 
@@ -104,6 +113,7 @@ impl BuildKind {
                 | BuildKind::CraftingSpot
                 | BuildKind::ResearchBench
                 | BuildKind::SpikeTrap
+                | BuildKind::Forge
         )
     }
 
@@ -115,7 +125,9 @@ impl BuildKind {
             | BuildKind::CraftingSpot
             | BuildKind::ResearchBench
             | BuildKind::SpikeTrap => Some(Material::Wood),
-            BuildKind::Grave => Some(Material::Stone),
+            // La tombe et la forge sont en pierre : on ne fond pas du métal
+            // dans un caisson de bois.
+            BuildKind::Grave | BuildKind::Forge => Some(Material::Stone),
             _ => None,
         }
     }
@@ -199,6 +211,7 @@ pub fn result_feature(kind: BuildKind, material: Material) -> Option<Feature> {
         (BuildKind::Grave, _) => Some(Feature::Grave),
         (BuildKind::ResearchBench, _) => Some(Feature::ResearchBench),
         (BuildKind::SpikeTrap, _) => Some(Feature::SpikeTrap),
+        (BuildKind::Forge, _) => Some(Feature::Forge),
         (BuildKind::Floor, _) => None,
     }
 }
