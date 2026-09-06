@@ -12,7 +12,11 @@ gardés à côté sous « avant réglages ». Les §3 à §7 ne sont **pas** ret
 ils portent l'historique de chaque correction, écrit au moment où elle a été
 faite. Le détail graine par graine des campagnes du 2026-09-06 est au §9, et
 la suite du même jour — les trois graines lentes élucidées, la chaîne du métal
-et la diplomatie enfin mesurées — au **§10**.
+et la diplomatie enfin mesurées — au **§10**. Le **§11**, écrit dans la foulée,
+corrige le **joueur scripté** lui-même sur trois points (forge et minage,
+tuniques d'automne, apprivoisement) et donne l'effet mesuré de chacun ; le
+tableau d'arrivée des cinq campagnes est au §2, sous « Joueur scripté corrigé
+le 2026-09-06 ».
 
 **Ce document mesure, il ne règle rien.** Aucune constante du sim n'a été
 touchée pour l'écrire. Chaque constat porte une proposition chiffrée, à
@@ -76,9 +80,12 @@ constante ou un mécanisme précis, avec une proposition **non appliquée**.
 Trois d'entre eux ont été repris le **2026-09-06 dans la journée** (§10) : le
 n°2 est corrigé, les n°3 et n°5 sont mesurés — leur texte d'origine est gardé
 tel quel, suivi de ce que la mesure a donné, y compris quand elle contredit
-l'hypothèse écrite.
+l'hypothèse écrite. Les n°1, n°3 et n°4 ont ensuite été traités **dans le
+joueur scripté**, le même jour : voir le **§11**, qui donne le détail de
+chaque correction et son effet mesuré, et le §2 pour le tableau d'arrivée.
 
-1. **La campagne automne-hiver s'est effondrée depuis le 2026-09-05.**
+1. ~~**La campagne automne-hiver s'est effondrée depuis le 2026-09-05.**~~
+   **Corrigé pour moitié le 2026-09-06, voir §11.2.** Le texte d'origine :
    28/30 colonies éteintes contre 12/30 alors, et surtout **0 colon armé sur
    74 vivants au total, sur les 30 graines** (19/55 le 2026-09-05) : aucune
    graine ne finit avec un arc ou une épée en main. C'est la seule des cinq
@@ -87,10 +94,21 @@ l'hypothèse écrite.
    posé **dès le tick 0** et le reste toute la partie de trente jours ; il se
    dispute le même `WorkType::Build` — et la même réserve de bois — que
    l'enceinte, la forge et les arcs (`craft::RECIPES`, `crates/sim/src/craft.rs`).
-   Proposition : un banc isolé qui suit le stock de bois et le nombre d'arcs
-   produits tick après tick sur une graine d'automne-hiver, pour trancher
-   entre « le bois manque structurellement en hiver » et « l'ordre des
-   recettes bloque les arcs ».
+
+   **L'hypothèse était la bonne, et le correctif tient.** La tunique ne part
+   plus qu'après un arc par colon **et** l'enceinte payée : les colons armés
+   passent de **0 sur 4** à **5 sur 16**, le stock de vivres de **0,0** à
+   **8,1 jours**, les colons au jour 20 de 0,7 à 1,1, et l'extinction de
+   **28/30 à 24/30**. Ce qui reste ouvert est le rapport à la campagne
+   normale : 24/30 contre 11,8/30 de moyenne en normale (§2), soit **2,0 fois**
+   — la cible du jour était « au plus le double », elle est atteinte de
+   justesse et pas avec de la marge. L'automne-hiver reste la campagne la plus
+   dure des cinq, et c'est probablement dans l'ordre des choses : rien n'y
+   pousse. Reste à trancher : les morts de froid **montent** légèrement (6 → 8
+   sur 182), ce qui est la contrepartie assumée de la tunique retardée. À
+   mesurer avant de régler : une variante où la tunique redevient prioritaire
+   **en hiver seulement** (saison 3), l'arc étant déjà en main à ce
+   moment-là.
 2. ~~**Des graines retombent sous le seuil de perf promis par l'index de
    régions.**~~ **Corrigé le 2026-09-06, voir §10.1.** Le §3 visait « aucune
    graine sous 100 000 ticks/s » ; trois graines n'y étaient plus :
@@ -118,6 +136,25 @@ l'hypothèse écrite.
    `forges_built` et `swords_equipped` aux champs JSON de `Run`
    (`crates/sim-cli/src/campaign.rs`).
 
+   **Corrigé le 2026-09-06, voir §11.1 — la chaîne démarre enfin, mais elle
+   s'arrête au lingot.** Les deux blocages du joueur scripté sont levés : la
+   forge se plante hors entrepôt, le rayon de minage s'élargit jusqu'au
+   premier rocher atteignable, et l'entrepôt s'agrandit pour que le minerai
+   ait une case à lui. Campagne normale, sur les **14** colonies qui paient la
+   métallurgie : **11 bâtissent leur forge** (contre 1 sur 15), **6 fondent au
+   moins un lingot** (contre 0), **1 forge une épée** (contre 0). Sur les cinq
+   campagnes : 36 forges, 49 lingots, 2 épées, contre 4 forges, 0 lingot,
+   0 épée. La moitié qu'on visait est tenue pour la forge (11/14), tenue de
+   justesse pour le lingot (6/14), **manquée pour l'épée** (1/14, on visait
+   un quart). Le pourquoi est chiffré au §11.1 : une épée demande quatre
+   lingots, donc douze minerais, donc cinq veines minées **et** ramenées, dans
+   une colonie qui reçoit 6,6 bandes en trente jours. Un contrôle en
+   **soixante** jours ne règle rien — 27 colonies sur 30 sont éteintes au
+   jour 60 —, ce qui répond à la question laissée ouverte ci-dessous : ce
+   n'est pas la durée qui manque, c'est la survie.
+
+   Le texte de la mesure du 2026-09-06 (§10.2) reste ci-dessous tel quel.
+
    **Mesuré le 2026-09-06 (§10.2), et la réponse est franche : la recherche
    est un investissement perdu.** `campaign` exporte désormais forges,
    lingots, épées produites, épées portées et jour d'acquisition de la
@@ -130,14 +167,27 @@ l'hypothèse écrite.
    une pile, et il n'y a aucun rocher dans `MINE_RADIUS` sur quatorze des
    quinze graines. Le constat reste ouvert sur ces deux réglages, qui ne sont
    pas appliqués (ils déplaceraient le tableau du §9).
-4. **L'apprivoisement n'aboutit que dans un quart des colonies.** Le joueur
-   scripté le tente dès le jour 8 si les baies dépassent 30
-   (`TAME_DAY`, `TAME_BERRIES`) ; le taux de réussite reste bas et stable sur
-   les cinq campagnes : 7/30, 5/30, 7/30, 8/30, et 1/30 en automne-hiver
-   (§9) — jamais la majorité, même en trente jours. Proposition : compter,
-   dans le harnais, les `Command::Tame` envoyés face aux marquages qui
-   aboutissent réellement (`livestock_count() > 0`), pour savoir si c'est le
-   seuil de baies ou l'échec de la traque qui borne le chiffre.
+4. ~~**L'apprivoisement n'aboutit que dans un quart des colonies.**~~
+   **Mesuré et corrigé le 2026-09-06, voir §11.3 — et ce n'était ni le seuil
+   de baies ni la traque.** Le texte d'origine : le joueur scripté le tente
+   dès le jour 8 si les baies dépassent 30 (`TAME_DAY`, `TAME_BERRIES`) ; le
+   taux de réussite reste bas et stable sur les cinq campagnes : 7/30, 5/30,
+   7/30, 8/30, et 1/30 en automne-hiver (§9) — jamais la majorité, même en
+   trente jours. Proposition : compter, dans le harnais, les `Command::Tame`
+   envoyés face aux marquages qui aboutissent réellement.
+
+   **Le comptage a été ajouté** (`Run::tame_orders` et `Run::tamed`, au
+   résumé et au JSON), et il dit autre chose que ce qu'on cherchait :
+   l'apprivoisement **marche**. Campagne normale, joueur corrigé : **78
+   marquages, 50 bêtes effectivement apprivoisées** — et pourtant seulement
+   **10 colonies sur 30** finissent avec du bétail. Cinquante bêtes prises,
+   dix qui restent : **quarante meurent**. La contre-épreuve est nette et
+   tient en une commande — la même campagne en `--difficulty 0`, où le
+   storyteller n'envoie aucune bande : **26 marquages, 24 bêtes prises, 24
+   colonies vivantes sur 29 avec du bétail**, c'est-à-dire *toutes* celles qui
+   ont apprivoisé. Ce n'est donc pas le marquage qui borne le bétail, c'est le
+   **raid** (voir §11.3 pour ce que ça dit du sim et la proposition qui va
+   avec).
 5. ~~**La réputation et le tribut ne sont mesurés nulle part.**~~ **Mesurés le
    2026-09-06, voir §10.2.** `plan` envoie un tribut dès qu'une tribu déteste
    la colonie (`GIFT_GOODWILL` = −40, §1), et le rapport exporte maintenant la
@@ -162,6 +212,9 @@ Elle n'a aucune mémoire : « le feu de camp est-il déjà bâti ? » se relit d
 carte, ce qui la rend idempotente, testable et déterministe. Ce qu'elle fait,
 dans cet ordre :
 
+Les lignes marquées **(2026-09-06)** ont changé ce jour-là : voir le **§11**,
+qui dit ce qui a été corrigé et ce que la mesure a donné.
+
 | Étape | Déclencheur | Ce qui part |
 |---|---|---|
 | Zones | une seule fois | stockage 4×4, culture 5×5 |
@@ -170,10 +223,13 @@ dans cet ordre :
 | Priorités | une seule fois | un cultivateur, un bâtisseur (priorité 1) |
 | Confort | `bois ≥ 40` | feu de camp, un lit par colon, poste de fabrication |
 | Enceinte | `bois ≥ 100` | porte **puis** l'enceinte de bois (48 cases de pourtour), puis 3 pièges devant la porte |
-| Recherche | jour 5, `bois ≥ 40` | établi, puis agriculture puis médecine |
-| Fabrication | permanent | un arc par colon ; une tunique par colon en automne |
+| Recherche | jour 5, `bois ≥ 40` | établi, puis agriculture, médecine, métallurgie |
+| Entrepôt **(2026-09-06)** | métallurgie acquise | l'entrepôt passe de 4×4 à 6×6 : le minerai a besoin d'une case à lui |
+| Minage **(2026-09-06)** | métallurgie acquise | veines d'abord, rochers ordinaires tant que la pierre manque ; rayon **élargi** de 12 cases jusqu'à la carte entière, quatre marques à la fois |
+| Forge **(2026-09-06)** | métallurgie et `pierre ≥ 25` | une case libre **hors entrepôt et hors culture**, sans pile ni élément, atteignable ; une autre au passage suivant si le plan n'est pas sorti |
+| Fabrication **(2026-09-06)** | permanent | un arc par colon (objectif qui ne redescend jamais) ; la tunique **seulement après** un arc par colon **et** l'enceinte payée ; lingots et épée dès que la forge est debout |
 | Chasse | `viande + repas < 10 × colons` | une bête à la fois, la plus proche **atteignable** |
-| Élevage | jour 8, `baies ≥ 30` | un lapin à apprivoiser |
+| Élevage **(2026-09-06)** | `baies ≥ 30` (plus de jour fixe) | un lapin, à défaut un cerf ; marque relevée dès qu'elle ne peut plus rien donner, changement de bête tous les deux jours tant que rien n'est pris |
 | Troc | marchand présent et `vivres < 3 jours` | achat du comestible le plus nourrissant, payé en bois ou en cuir |
 | Tribut | `réputation < −40` et `bois ≥ 80` | 40 bois à la tribu fâchée |
 
@@ -258,6 +314,77 @@ et les mêmes commandes (§9 pour le détail graine par graine et les JSON bruts
 | cases brûlées (total) | 8 877 | 309 | 13 818 | 1 021 | 39 | 31 | 9 835 | 966 | 33 | 28 |
 | colons armés / vivants | 23/49 | 43/74 | 0/0 | 12/18 | 25/49 | 14/34 | 16/28 | 25/43 | 19/55 | **0/4** |
 | humeur finale (vivantes) | 52 % | 53 % | — | 40 % | 35 % | 31 % | 49 % | 52 % | 51 % | 40 % |
+
+### Joueur scripté corrigé le 2026-09-06
+
+Le tableau ci-dessus est celui du joueur scripté **d'avant** les trois
+corrections du §11 (forge et minage, tuniques, apprivoisement). Voici les mêmes
+cinq campagnes, mêmes graines, mêmes commandes, avec le joueur corrigé — c'est
+la colonne à lire aujourd'hui. Les chiffres du 2026-09-06 « après » ci-dessus
+restent le point de comparaison.
+
+| | normale | difficile | froide | chaude | automne-hiver |
+|---|---|---|---|---|---|
+| colonies éteintes | 12/30 | 17/30 | 20/30 | 13/30 | **24/30** |
+| colonies à ≥ 3 colons | 10/30 | 6/30 | 5/30 | 13/30 | 3/30 |
+| colons vivants (moy. fin) | 1,7 | 1,1 | 0,9 | 1,7 | 0,5 |
+| colons au jour 10 / 20 | 2,9 / 2,5 | 2,4 / 1,6 | 2,1 / 1,0 | 2,9 / 2,1 | 2,0 / 1,1 |
+| morts au total | 209 | 216 | 182 | 191 | 182 |
+| dont raid / blessures | 83 % / 14 % | 82 % / 15 % | 81 % / 16 % | 84 % / 12 % | 79 % / 12 % |
+| dont froid | 0 % | 0 % | 0 % | 0 % | 4 % |
+| raids reçus / colonie | 6,6 | 6,5 | 4,7 | 6,4 | 4,5 |
+| raids repoussés (part) | 97 % | 94 % | 93 % | 97 % | 92 % |
+| pillards par bande | 2,2 | 2,3 | 2,2 | 2,2 | 2,4 |
+| richesse finale (moy.) | 1 842 | 1 611 | 2 175 | 1 696 | 1 791 |
+| vivres en stock (jours) | 11,3 | 4,4 | 19,5 | 11,6 | **8,1** |
+| technologies acquises (moy.) | 1,47 | 1,23 | 0,90 | 1,30 | 0,47 |
+| bétail (colonies à ≥ 1) | **10/30** | 8/30 | 9/30 | **11/30** | **9/30** |
+| bétail (colonies **vivantes**) | **8/18** | 4/13 | 7/10 | **10/17** | 3/6 |
+| marquages → bêtes prises | 78 → 50 | 67 → 41 | 68 → 45 | 80 → 58 | 70 → 43 |
+| feux (départs) | 72 | 72 | 40 | 102 | 32 |
+| cases brûlées (total) | 1 446 | 218 | 40 | 1 065 | 32 |
+| colons armés / vivants | 32/52 | 20/32 | 17/27 | 33/52 | **5/16** |
+| **forges / lingots / épées** | **11 / 16 / 1** | 5 / 6 / 0 | 7 / 13 / 1 | 10 / 9 / 0 | 3 / 5 / 0 |
+| **colonies à la métallurgie : forge / lingot / épée** | **11 / 6 / 1 sur 14** | 5 / 3 / 0 sur 9 | 7 / 6 / 1 sur 7 | 10 / 4 / 0 sur 12 | 3 / 2 / 0 sur 3 |
+| humeur finale (vivantes) | 46 % | 45 % | 37 % | 48 % | 38 % |
+| durée totale, 30 graines | 34,7 s | 30,9 s | 24,5 s | 32,5 s | 31,6 s |
+| ticks/s moyen | 373 487 | 419 879 | 529 217 | 399 334 | 410 048 |
+| graine la plus lente | 15 : 101 360 | 15 : 111 225 | 11 : 162 040 | 6 : 126 463 | 6 : 105 597 |
+
+Le critère de perf du §3 tient toujours : **aucune graine sous 100 000
+ticks/s**, la pire à 101 360. Le joueur corrigé mine, ce qui promène les colons
+plus loin, et il perd donc environ 15 % de débit sur la campagne normale
+(449 938 → 373 487 ticks/s) : c'est du travail utile en plus, pas une
+régression de code.
+
+Deux garde-fous de bonne foi tiennent toujours sur les cinq campagnes du
+joueur corrigé : la colonne « morts inexpliquées » est restée à **0**, et le
+total des morts déduites égale exactement celui annoncé par le sim
+(209 = 209, 216 = 216, 182 = 182, 191 = 191, 182 = 182), `lost_events` = 0
+partout.
+
+**Comment lire les écarts d'extinction.** Ils sont, pour l'essentiel, du bruit
+de graine, et il faut le dire avant de commenter quoi que ce soit. Mesuré
+exprès (quatre blocs de trente graines, `--seed 1 / 31 / 61 / 91`, campagne
+normale, même binaire des deux côtés) :
+
+| bloc de graines | éteintes, joueur d'avant | éteintes, joueur corrigé |
+|---|---|---|
+| 1 → 30 | **6/30** | 12/30 |
+| 31 → 60 | **15/30** | 14/30 |
+| 61 → 90 | 13/30 | **9/30** |
+| 91 → 120 | 11/30 | 12/30 |
+| **moyenne** | **11,3/30** | **11,8/30** |
+
+Le joueur d'avant va de 6 à 15 colonies éteintes selon le bloc de graines : un
+écart de neuf colonies sur trente, **sur le même code**. Les deux joueurs sont
+à un demi-point l'un de l'autre en moyenne, ce qui veut dire qu'aucune des
+trois corrections ne change la survie — ni en bien ni en mal — et que le
+« 6/30 → 12/30 » du bloc 1 ne dit rien d'autre que « le bloc 1 était clément
+pour l'ancien joueur ». Les colonnes qui, elles, sortent franchement du bruit
+sont le bétail (7/30 partout avant, 8 à 12/30 après) et la chaîne du métal
+(1 à 2 forges par bloc avant, 6 à 11 après ; **zéro** lingot avant, 6 à 18
+après).
 
 Perf (mesurée sans contention cette fois, une campagne à la fois, contre les
 cinq en même temps le 2026-09-05 — §1) :
@@ -1986,9 +2113,288 @@ des bandes.
 - n°2 (graines lentes) : **traité**, §10.1.
 - n°3 (forge, minerai, épée invisibles) : **mesuré**, §10.2 — et la réponse est
   que la chaîne ne démarre pas. Deux blocages du joueur scripté restent à
-  corriger, avec la mesure qui va avec.
+  corriger, avec la mesure qui va avec. → **corrigés le même jour, §11.1.**
 - n°5 (réputation et tribut) : **mesurés**, §10.2.
 - n°1 (effondrement de l'automne-hiver) et n°4 (apprivoisement) : inchangés,
   toujours ouverts. Le n°4 gagne toutefois une piste solide : le défaut de
   §10.1 montre qu'un fourrage enseveli condamne **toutes** les tentatives
-  d'apprivoisement d'une partie, sans rien annoncer.
+  d'apprivoisement d'une partie, sans rien annoncer. → **traités le même jour,
+  §11.2 et §11.3.**
+
+---
+
+## 11. Joueur scripté du 2026-09-06
+
+Cette tranche corrige **l'instrument, pas le jeu** : tout tient dans
+`crates/sim-cli/src/campaign.rs`, aucune constante de `crates/sim` n'est
+touchée. Les trois constats visés (n°1 automne-hiver, n°3 chaîne du métal,
+n°4 apprivoisement) décrivaient tous, à la relecture, un défaut du **joueur**
+que le rapport prenait pour un défaut du jeu. Le tableau d'arrivée est au §2,
+« Joueur scripté corrigé le 2026-09-06 ».
+
+Une précaution avant tout chiffre : **les écarts de survie entre les deux
+joueurs sont du bruit de graine**, et la mesure de bruit du §2 (quatre blocs
+de trente graines, même code) le montre — l'ancien joueur va de 6 à 15
+colonies éteintes selon le bloc. Ce qui suit ne commente donc que ce qui sort
+de ce bruit.
+
+### 11.1 La chaîne du métal : trois blocages, pas deux
+
+Le §10.2 en avait trouvé deux (la forge dans l'entrepôt, le rayon de minage).
+Il y en avait un troisième, que seule la correction des deux premiers a rendu
+visible.
+
+**a) La forge tombait dans l'entrepôt.** `plan` proposait trois cases fixes,
+`(ax+3, ay+3)`, `(ax+4, ay+3)`, `(ax+3, ay+4)`, toutes dans le stockage 4×4.
+`Command::Build` refuse **en silence** une case qui porte une pile
+(`crates/sim/src/lib.rs`), et `build::can_place` — que le joueur interrogeait —
+ne regarde ni les piles ni les zones. Deux gestes :
+
+- `build_free` teste désormais la pile lui-même (`has_pile`) et **saute** la
+  case au lieu de réémettre un ordre voué au refus. Ce garde-fou vaut pour
+  tout ce que le joueur bâtit, pas seulement la forge ;
+- `forge_spots` construit la liste des candidates au lieu de la coder en dur :
+  dans l'enceinte, **hors `Zone::Stockpile` et hors `Zone::Growing`**,
+  franchissable, sans élément, sans pile, atteignable par un colon, et
+  triée par distance au poste de fabrication. La liste est longue : si le plan
+  n'apparaît pas, le passage suivant prend la case d'après, sans mémoire.
+
+**b) Le rayon de minage était fixe.** `MINE_RADIUS` = 12 autour du repère, et
+quatorze des quinze graines qui payaient la métallurgie n'avaient pas un
+rocher dedans. Le rayon **double** maintenant tant qu'il ne voit ni rocher
+libre ni marque déjà posée, jusqu'à couvrir la carte ; il s'arrête au premier
+rayon qui donne. Les marques restent bornées à `ROCKS_PER_PASS` = 4 en attente,
+et l'atteignabilité passe par l'**index de régions** (`Map::same_region_for`,
+marcheur `COLONIST`) au lieu d'un A\* — même réponse, 10 ns au lieu de 0,29 ms
+(§3), avec repli sur l'A\* si l'index est périmé. Les **veines d'abord** : le
+minerai ne se gâte pas et il attend la forge, la pierre ne sert qu'aux vingt
+unités de la forge.
+
+**c) L'entrepôt n'avait plus une case pour le minerai** — c'est le troisième,
+et il n'a été visible qu'une fois les deux autres levés. Une case d'entrepôt ne
+tient qu'**un seul genre** (`Sim::dest_accepts`) ; à seize cases, un entrepôt
+qui porte déjà bois, pierre, baies, légumes, repas, viande, cuir, dépouilles,
+cadavres, arcs et tuniques n'en a plus une pour le minerai. Les piles restent
+alors au pied des rochers, où **rien ne fusionne** (`Sim::spawn_item` ne
+fusionne que sur la même case) — et comme `craft::ORE_PER_INGOT` exige trois
+minerais **dans une seule pile** alors qu'un rocher veiné en rend deux ou
+trois, un rocher sur deux était perdu. Le joueur agrandit donc son entrepôt à
+6×6 quand la métallurgie tombe, et **seulement** à ce moment (c'est la seule
+entorse au biais n°4 du §8). Mesuré sur la campagne normale, colonies qui
+fondent au moins un lingot : **4 sur 14** à seize cases, **6 sur 14** à
+trente-six ; forges bâties, 9 sur 14 puis 11 sur 14.
+
+Un détail d'ordre, trouvé par le test : l'agrandissement et le plan de forge ne
+peuvent pas partir dans le **même** passage. `forge_spots` lit les zones telles
+qu'elles sont, et la commande d'agrandissement n'est pas encore appliquée : la
+forge se planterait dans l'entrepôt de demain. Le plan attend donc que
+l'entrepôt soit peint.
+
+#### Ce que ça donne
+
+| campagne normale, 30 graines | joueur d'avant | joueur corrigé |
+|---|---|---|
+| colonies à la métallurgie | 15 | 14 |
+| **forges bâties** | **1** | **11** |
+| **lingots fondus** | **0** | **16** |
+| **épées forgées** | **0** | **1** |
+| colonies qui fondent ≥ 1 lingot | 0 sur 15 | **6 sur 14** |
+| colonies qui forgent ≥ 1 épée | 0 sur 15 | 1 sur 14 |
+
+Sur les cinq campagnes : **36 forges, 49 lingots, 2 épées**, contre 4 forges,
+0 lingot, 0 épée. La chaîne démarre, et elle démarre partout : la campagne
+froide, qui n'a que sept colonies à la métallurgie, en a **sept** avec une
+forge et **six** avec un lingot.
+
+#### Ce qui ne suit pas : l'épée
+
+L'objectif qu'on s'était fixé — un quart des colonies à la métallurgie avec une
+épée — n'est **pas** atteint : 1 sur 14 en normale, 2 sur 45 toutes campagnes
+confondues. Le compte est implacable : une épée demande
+`craft::METAL_PER_SWORD` = 4 lingots, donc `4 × ORE_PER_INGOT` = **12
+minerais**, donc **cinq veines** minées à 360 ticks pièce, ramenées et
+fusionnées, dans une colonie qui reçoit 6,6 bandes de pillards en trente jours
+et qui compte 1,7 colon vivant à la fin. Les seize lingots de la campagne
+normale sont répartis sur six colonies : moins de trois chacune, pour quatre
+qu'il faudrait.
+
+Deux fausses pistes éliminées par la mesure, et elles valent d'être écrites :
+
+- **marquer plus de rochers ne sert à rien.** `ROCKS_PER_PASS` porté de 4 à 8 :
+  bloc de graines 1, 6 colonies à un lingot au lieu de 6 ; bloc 61, 2 au lieu
+  de 4. Le goulot n'est pas la file de marques, c'est le colon ;
+- **miner plus tôt fait pire.** Creuser dès que la métallurgie est *à l'étude*
+  plutôt qu'une fois acquise paraissait gratuit ; le minage est du
+  `WorkType::Designated`, qui passe **avant** `WorkType::Research` dans
+  `work::ORDER`, et la recherche s'en trouve retardée : bloc 61, colonies à la
+  métallurgie 11 → 7, forges 8 → 3, lingots 18 → 0. Écarté.
+
+Et la question que le §10.2 laissait ouverte — « la chaîne tient-elle en trente
+jours, ou faut-il une campagne de soixante ? » — a maintenant sa réponse :
+**ce n'est pas la durée qui manque.** Campagne normale en `--days 60`,
+30 graines, joueur corrigé : 13 forges, 21 lingots, **1 épée**, et surtout
+**27 colonies éteintes sur 30** au jour 60, 6 colons vivants en tout. Doubler
+la partie ne double pas la production, elle laisse simplement le temps aux
+raids de finir le travail. Si l'on veut voir une colonie s'armer d'acier, c'est
+la survie qu'il faut regarder, pas le calendrier.
+
+### 11.2 La tunique passe après l'arc et après l'enceinte
+
+L'objectif « une tunique par colon » était posé dès le premier passage en
+automne, et il ne bougeait plus. La tunique se taille au **même poste**, par le
+**même `WorkType::Build`** et par le **même bâtisseur** que l'arc et que
+l'enceinte. `craft::RECIPES` met bien l'arc avant la tunique, donc la tunique
+ne double jamais l'arc **quand l'arc est faisable** — mais un arc coûte douze
+bois en une seule pile, et pendant que l'enceinte en réclame 48 × 5, il ne
+l'est pas. La tunique, elle, ne coûte que du cuir, que rien d'autre ne dispute :
+c'était donc toujours elle qui partait. Deux conditions ajoutées :
+
+1. `sim.colony_total(ItemKind::Bow) >= n` — un arc par colon **déjà dans la
+   colonie**, portés compris ;
+2. `bois > dette de l'enceinte`, la dette étant la somme des `missing()` des
+   plans de mur, de porte et de piège.
+
+**Sur l'ordre d'arme annulé par un ordre d'habit** — la piste était à vérifier,
+et la vérification est négative, ce qui mérite d'être écrit : `Command::SetCraftTarget`
+range l'objectif dans `craft_targets[kind]`, un emplacement par genre
+(`crates/sim/src/lib.rs`) ; il n'abandonne aucun travail en cours et le tunique
+n'écrase pas l'arc. Il restait un vrai risque d'annulation, mais il venait
+d'ailleurs : le joueur réémettait `SetCraftTarget { Bow, n }` avec `n` = colons
+**vivants**, donc un colon tué **abaissait** la demande d'arcs — et la colonie
+qui perd du monde est précisément celle qui en a besoin. L'objectif d'armes ne
+redescend donc plus (`.max(n)`), et un test le vérifie.
+
+#### Ce que ça donne
+
+| campagne automne-hiver, 30 graines | joueur d'avant | joueur corrigé |
+|---|---|---|
+| **colons armés / vivants** | **0 / 4** | **5 / 16** |
+| colonies éteintes | 28/30 | **24/30** |
+| colons au jour 10 / 20 | 1,6 / 0,7 | **2,0 / 1,1** |
+| vivres en stock (jours) | **0,0** | **8,1** |
+| colonies à ≥ 3 colons | 1/30 | 3/30 |
+| morts de froid | 6 sur 169 | 8 sur 182 |
+
+L'objectif du jour — « un taux d'extinction du même ordre que la normale, au
+plus le double » — est atteint de justesse : 24/30 contre 11,8/30 en moyenne en
+normale (§2), soit **2,0 fois**. Les morts de froid montent de deux : c'est la
+contrepartie assumée d'une tunique retardée, et elle est petite devant les
+douze colons vivants gagnés.
+
+### 11.3 L'apprivoisement : ce n'était pas le marquage
+
+Trois changements, tous dans `plan` :
+
+1. **plus de jour fixe** (`TAME_DAY` supprimé) : c'est le fourrage qui commande,
+   `baies ≥ 30` ;
+2. **un lapin, puis un cerf** : le lapin est la bête du débutant
+   (`livestock::TAME_BASE_NUM`), mais toutes les cartes n'en portent pas à
+   portée ;
+3. **la marque se relève** dès qu'elle ne peut plus rien donner (bête morte,
+   partie, ou devenue inatteignable), et on **change de bête** tous les deux
+   jours tant que rien n'est pris — la bête démarquée redevient candidate au
+   passage suivant, celle qu'on marque à la place est forcément une autre
+   (`nearest_wild` écarte ce qui est déjà marqué).
+
+Un quatrième geste, découvert en route et qui n'a rien d'un détail : la chasse
+et l'apprivoisement se décidaient **sur le même état**, dans le même lot de
+commandes, et `nearest_wild` pouvait rendre la **même bête** aux deux. Or les
+deux marquages sont exclusifs (`animals::set_hunted`) et `Command::Tame`
+s'applique après : la colonie se volait son propre gibier. La bête marquée à la
+chasse dans le passage courant est maintenant exclue des candidates à
+l'apprivoisement.
+
+**Le comptage demandé par le constat n°4 a été ajouté** : `Run::tame_orders`
+(les `Command::Tame { on: true }` émis) et `Run::tamed` (les
+`EventKind::Tamed` du journal), au résumé et au JSON.
+
+#### Ce que ça donne, et ce que ça révèle
+
+| campagne normale, 30 graines | joueur d'avant | joueur corrigé |
+|---|---|---|
+| colonies avec du bétail | 7/30 | **10/30** |
+| colonies **vivantes** avec du bétail | — | **8/18** |
+| marquages envoyés | — | 78 |
+| **bêtes effectivement apprivoisées** | — | **50** |
+
+Les quatre blocs de graines du §2 donnent 8, 10, 12 et 10 colonies vivantes sur
+18, 16, 21 et 18 : autour de la moitié, contre 7/30 partout pour le joueur
+d'avant. L'objectif « la majorité des colonies vivantes » est donc **frôlé sans
+être tenu** — et le comptage dit pourquoi, ce qui est plus intéressant que le
+chiffre.
+
+**Cinquante bêtes apprivoisées pour dix qui restent : quarante meurent.**
+L'apprivoisement, lui, marche très bien. La contre-épreuve tient en une
+commande — la même campagne en `--difficulty 0`, où le storyteller n'envoie
+aucune bande :
+
+| | normale (difficulté 2) | paisible (difficulté 0) |
+|---|---|---|
+| marquages | 78 | **26** |
+| bêtes prises | 50 | 24 |
+| colonies vivantes | 18 | 29 |
+| **colonies vivantes avec du bétail** | 8 | **24** |
+
+Sans raid, **toutes** les colonies qui apprivoisent gardent leur bête, et il
+suffit de 26 marquages pour 24 prises (1,08 marquage par bête) contre 78 pour
+50 (1,56) : les marquages en trop de la campagne normale sont exactement les
+remises de marque après la mort d'une bête.
+
+#### Ce que ça dit du sim (non corrigé, proposition seulement)
+
+Le bétail meurt parce qu'il est **dehors**. Une bête de la colonie tient
+`livestock::LIVESTOCK_RANGE` = 12 cases autour du barycentre des colons, quand
+l'enceinte du joueur scripté a un demi-côté de 6 : elle paît donc, par
+construction, **hors des murs**, sur le chemin des pillards, et elle porte la
+faction `Colony`, donc elle est une cible. Aucune conduite du joueur ne peut
+l'éviter : il n'a pas d'ordre pour rappeler une bête, pas d'enclos, et
+`Command::Slaughter` ne fait que la tuer plus tôt.
+
+Proposition, **non appliquée** (elle déplacerait le tableau du §2) : donner à
+la bête de la colonie une raison de rentrer. Le moins invasif serait de borner
+son errance à la **pièce** de la colonie quand il y en a une — la couche
+`indoor` existe déjà et `LIVESTOCK_RANGE` est la seule constante en cause —, ou
+à défaut de la faire fuir vers le barycentre des colons quand un pillard entre
+sur la carte, comme les colons se replient. À mesurer d'abord, comme toujours :
+compter les bêtes tuées **par un pillard** face à celles qui meurent de faim,
+en ajoutant une cause au harnais comme il en existe une pour les colons. Tant
+que ce chiffre n'existe pas, « le raid tue le bétail » reste une déduction, pas
+une mesure.
+
+### 11.4 Ce qui a changé dans le code, et ce qui le vérifie
+
+Tout est dans `crates/sim-cli/src/campaign.rs` :
+
+- `build_free` refuse une case qui porte une pile (le refus silencieux de
+  `Command::Build`) ; `has_pile` ;
+- `colonist_can_reach` : l'atteignabilité par l'index de régions, repli A\* ;
+- `designate_rocks` prend une `Feature` au lieu d'un booléen, élargit son rayon
+  et compte ses marques par espèce de rocher (`scan_rocks`) ;
+- `forge_spots` : les candidates de la forge, hors zones et hors piles ;
+- `STOCKPILE_SIDE_METAL` : l'entrepôt à 6×6 quand la métallurgie tombe ;
+- `nearest_wild` prend une portée et une liste d'exclusion ;
+- `TAME_DAY` disparaît, `TAME_RETRY_DAYS` apparaît ;
+- l'objectif d'arcs ne redescend plus, la tunique attend l'arc et l'enceinte ;
+- `Run::tame_orders` / `Run::tamed`, au tableau, au résumé et au JSON.
+
+Cinq tests, un par correction, dans le module de tests du même fichier :
+`la_forge_evite_l_entrepot_la_culture_et_les_piles` (la forge n'est ni en zone
+ni sur une pile, le plan **apparaît**, et une pile posée dessus fait choisir
+une autre case au passage suivant), `le_minage_elargit_son_rayon_jusqu_au_rocher`,
+`les_tuniques_attendent_l_arc_et_l_enceinte` (y compris : l'objectif d'arcs
+n'est pas abaissé par une mort), `l_apprivoisement_repose_sa_marque_sur_une_autre_bete`
+(marque reposée après la mort de la bête, cerf à défaut de lapin) et
+`la_chasse_et_l_apprivoisement_ne_visent_pas_la_meme_bete`.
+
+### 11.5 État des constats ouverts au soir du 2026-09-06
+
+- n°1 (automne-hiver) : **corrigé**, §11.2. Reste à trancher la tunique en
+  hiver.
+- n°2 (graines lentes) : corrigé, §10.1. Tient toujours : aucune graine des
+  cinq campagnes sous 100 000 ticks/s (pire : 101 360).
+- n°3 (chaîne du métal) : **corrigé jusqu'au lingot**, §11.1. L'épée reste
+  hors d'atteinte, et la cause mesurée est la survie de la colonie, pas la
+  durée de la partie.
+- n°4 (apprivoisement) : **corrigé**, §11.3 — et il ouvre un constat neuf, sur
+  le sim cette fois : le bétail paît hors des murs et se fait tuer.
+- n°5 (réputation et tribut) : mesurés, §10.2. Inchangé.

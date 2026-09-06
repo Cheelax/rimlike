@@ -542,6 +542,18 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-06 : l'instrument avant le jeu. Le joueur scripté ne forgeait jamais (forge proposée
+  sur des cases d'entrepôt occupées, refus silencieux de `Build`), ne minait pas (rayon fixe),
+  désarmait sa colonie en automne (tuniques avant les arcs, objectif d'arcs abaissé à chaque
+  mort) et n'apprivoisait qu'une fois. Corrigé dans `campaign.rs` seul : 36 forges, 49 lingots
+  et 2 épées sur cinq campagnes contre 4 / 0 / 0, colons armés en automne. Le bruit de graine
+  a été mesuré (4 blocs de 30 graines : 6 à 15 colonies éteintes pour le même code) : la
+  survie ne bouge pas, la chaîne du métal et le bétail sortent du bruit. Deux vrais problèmes
+  du sim révélés, à mesurer puis régler : le bétail paît hors des murs (`LIVESTOCK_RANGE` 12
+  contre une enceinte de demi-côté 6) et meurt sous les raids (24/29 colonies gardent leurs
+  bêtes en paisible, 10/30 en normal) ; l'épée est hors d'atteinte en 30 jours (4 lingots = 12
+  minerais dans une même pile, 1 épée sur 30 colonies, 1 sur 30 encore à 60 jours).
+
 - 2026-09-06 : l'ordre des questions compte. Les trois graines encore lentes ne devaient rien au
   minage : 98 % des A* venaient du dépeçage et de l'apprivoisement, et presque tous
   **réussissaient** — un colon payait l'aller vers la dépouille à chaque tick pour redécouvrir

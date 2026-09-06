@@ -32,7 +32,7 @@ use sim::map::chebyshev;
 use sim::pawn::{NEED_MAX, STARVING};
 use sim::{
     BuildKind, Command, Designation, Difficulty, EventKind, Faction, Feature, ItemKind, Material,
-    Sim, Species, TICKS_PER_DAY, Tech, WorkType, Zone, build,
+    Sim, Species, TICKS_PER_DAY, Tech, WorkType, Zone, build, path,
 };
 
 use crate::cli::{CliError, Options, wants_help};
@@ -57,6 +57,18 @@ const HARVEST_RADIUS: i32 = 25;
 const HARVEST_EVERY: u64 = 10;
 /// Côté de la zone de stockage.
 const STOCKPILE_SIDE: i32 = 4;
+/// Côté de l'entrepôt **une fois la métallurgie acquise**. Une case d'entrepôt
+/// ne tient qu'**un seul genre** (`Sim::dest_accepts`) : à seize cases, un
+/// entrepôt qui porte déjà bois, pierre, baies, légumes, repas, viande, cuir,
+/// dépouilles, cadavres, arcs et tuniques n'a plus de place pour le minerai.
+/// Les piles restent alors au pied des rochers, où **rien ne fusionne** —
+/// `Sim::spawn_item` ne fusionne que sur la même case — et un rocher qui rend
+/// deux minerais est perdu, puisque `craft::ORE_PER_INGOT` en exige trois
+/// **dans une seule pile**. Mesuré sur la campagne normale, colonies qui
+/// fondent au moins un lingot : **4 sur 14** à seize cases, **7 sur 12** à
+/// trente-six. C'est le seul endroit où ce joueur agrandit son entrepôt, et il
+/// ne le fait que quand un genre nouveau arrive (biais n°4 du §8).
+const STOCKPILE_SIDE_METAL: i32 = 6;
 /// Côté de la zone de culture.
 const GROWING_SIDE: i32 = 5;
 /// Demi-côté de l'enceinte : 13 cases de côté, angles compris.
@@ -77,8 +89,11 @@ const WOOD_RESERVE: u32 = 40;
 const LEATHER_RESERVE: u32 = 6;
 /// Jour où l'on pose l'établi de recherche.
 const RESEARCH_DAY: u64 = 5;
-/// Demi-côté du carré où l'on cherche des rochers à miner : un joueur ne va
-/// pas creuser au bout de la carte.
+/// Demi-côté du **premier** carré où l'on cherche des rochers à miner : un
+/// joueur commence par regarder autour de lui. Le rayon double tant que rien
+/// n'apparaît, jusqu'à couvrir la carte (voir `designate_rocks`) — sans quoi
+/// quatorze graines sur quinze n'ont pas un rocher à portée et la chaîne du
+/// métal ne démarre jamais (`CAMPAIGN-FINDINGS.md` §10.2).
 const MINE_RADIUS: i32 = 12;
 /// Rochers marqués d'un coup. Chaque case marquée est une commande, et un
 /// joueur ne désigne pas une montagne entière : deux rochers ordinaires
@@ -87,10 +102,24 @@ const ROCKS_PER_PASS: usize = 4;
 /// Pierre qu'il faut en stock avant de bâtir la forge (20, plus la marge du
 /// transport en cours).
 const STONE_FOR_FORGE: u32 = 25;
-/// Jour où l'on tente un apprivoisement.
-const TAME_DAY: u64 = 8;
-/// Baies qu'il faut en stock pour se permettre d'apprivoiser.
+/// Baies qu'il faut en stock pour se permettre d'apprivoiser. C'est la seule
+/// condition : une tentative coûte `livestock::TAME_FOOD` unités, et c'est le
+/// fourrage qui commande, pas le calendrier.
 const TAME_BERRIES: u32 = 30;
+/// Distance au repère au-delà de laquelle on ne marque plus une bête à
+/// apprivoiser. **Mesuré, et le résultat est contre-intuitif** : borner la
+/// traque à 16 ou 24 cases ne protège pas l'éleveur, elle le fait tourner en
+/// rond. Une bête paît, donc elle dérive ; passée la borne, le joueur lève sa
+/// marque et en pose une autre, qui dérive à son tour. Campagne normale,
+/// 30 graines : borne 16 → **169 marquages pour 35 bêtes prises**, borne 24 →
+/// 128 pour 39, **sans borne → 75 pour 52**. Le joueur voit la carte entière
+/// et ne change de bête que quand celle-ci ne peut plus rien donner.
+const TAME_RANGE: u32 = u32::MAX;
+/// Jours au bout desquels on change de bête si la marque n'a rien donné. Le
+/// sim, lui, retente tout seul sur la même bête toutes les
+/// `livestock::TAME_RETRY` (trois heures de jeu) : ce délai-ci est celui du
+/// joueur qui se lasse d'un cerf qui fuit et va en marquer un autre.
+const TAME_RETRY_DAYS: u64 = 2;
 /// Viande et repas visés par colon : en dessous, on marque du gibier.
 const MEAT_PER_COLONIST: u32 = 10;
 /// Jours de vivres en dessous desquels on achète au marchand.
@@ -147,6 +176,15 @@ fn food_days_tenths(stored: &[u32; ItemKind::COUNT], colonists: u32) -> u32 {
 ///
 /// C'est ce qui rend `plan` idempotent sans mémoire : une fois la chose bâtie,
 /// plus rien n'est émis.
+///
+/// **La pile au sol compte comme un occupant** (corrigé le 2026-09-06).
+/// `build::can_place` ne regarde que le terrain et l'élément, mais
+/// `Command::Build` refuse en plus, et **en silence**, une case qui porte une
+/// pile (`crates/sim/src/lib.rs`). Sans ce test, le joueur reproposait
+/// indéfiniment la même case occupée et le plan n'apparaissait jamais : c'est
+/// ce qui a empêché toutes les forges de sortir de terre (§10.2), leurs trois
+/// cases candidates étant **dans** l'entrepôt. Le sauter ici fait passer à la
+/// case suivante de la liste, ce qui est exactement ce qu'un joueur ferait.
 fn build_free(
     sim: &Sim,
     cmds: &mut Vec<Command>,
@@ -167,7 +205,7 @@ fn build_free(
             left -= 1;
             continue;
         }
-        if !build::can_place(sim.map(), kind, ux, uy) {
+        if !build::can_place(sim.map(), kind, ux, uy) || has_pile(sim, ux, uy) {
             continue;
         }
         cmds.push(Command::Build {
@@ -182,50 +220,71 @@ fn build_free(
     }
 }
 
-/// Marque au minage les rochers les plus proches du repère — veinés
-/// (`want_ore`) ou ordinaires. Les candidats sont triés par `(distance, x, y)`,
+/// Une pile au sol sur cette case ? C'est le seul refus de `Command::Build`
+/// qu'aucune fonction publique du sim ne sait dire.
+fn has_pile(sim: &Sim, x: u32, y: u32) -> bool {
+    sim.items().iter().any(|s| (s.x, s.y) == (x, y))
+}
+
+/// Un colon peut-il rejoindre cette case ? La question passe par l'index de
+/// régions de la carte (`map::same_region_for`, marcheur `COLONIST` : il
+/// contourne ses propres pièges), qui répond en O(1) et **exactement** comme
+/// l'A\* — voir `CAMPAIGN-FINDINGS.md` §3. Index périmé (la carte vient de
+/// changer dans le tick) : on retombe sur l'A\*, comme le sim lui-même.
+fn colonist_can_reach(sim: &Sim, from: (u32, u32), to: (u32, u32)) -> bool {
+    if from == to {
+        return true;
+    }
+    match sim.map().same_region_for(from, to, path::Walker::COLONIST) {
+        Some(same) => same,
+        None => path::find_path_for(sim.map(), from, to, path::Walker::COLONIST).is_some(),
+    }
+}
+
+/// Marque au minage les rochers de l'espèce `wanted` (veinés ou ordinaires)
+/// les plus proches du repère. Les candidats sont triés par `(distance, x, y)`,
 /// jamais « le premier trouvé », et une case déjà désignée n'est pas remarquée :
 /// `plan` reste idempotent sans mémoire.
 ///
-/// Deux garde-fous, et ce sont eux qui comptent (le premier constat du rapport
+/// Trois garde-fous, et ce sont eux qui comptent (le premier constat du rapport
 /// de campagne, celui du gibier inatteignable, se rejouait ici mot pour mot) :
 ///
 /// 1. **la file est bornée à `max`** : tant qu'il reste des rochers marqués
-///    dans le rayon, on n'en marque pas d'autres. Sans cela, un joueur qui
+///    de cette espèce, on n'en marque pas d'autres. Sans cela, un joueur qui
 ///    repasse toutes les `PLAN_INTERVAL` marquait quatre rochers de plus par
 ///    passage, indéfiniment ;
 /// 2. **on ne marque que ce qu'un colon peut atteindre** : un rocher au cœur
 ///    d'une montagne ou de l'autre côté d'un lac ne sera jamais miné, et chaque
-///    colon désœuvré recalculerait son chemin vers lui à chaque tick.
+///    colon désœuvré recalculerait son chemin vers lui à chaque tick. La
+///    question passe par l'index de régions, pas par un A\* ;
+/// 3. **le rayon s'élargit, il ne s'invente pas.** On part de `MINE_RADIUS` et
+///    on double tant qu'on n'a rien vu, jusqu'à couvrir la carte. C'est le
+///    second blocage du §10.2 : à rayon fixe, quatorze des quinze graines qui
+///    payaient la métallurgie n'avaient **aucun** rocher à portée, donc ni
+///    pierre pour la forge ni minerai pour le lingot. Le balayage ne coûte que
+///    lorsqu'il ne trouve rien, et il s'arrête au premier rayon qui donne.
 ///
-/// Mesuré : sans eux, la campagne de six graines × 30 jours passait de 63 s à
-/// 246 s, une graine à elle seule prenant 213 s.
-fn designate_rocks(sim: &Sim, cmds: &mut Vec<Command>, at: (i32, i32), want_ore: bool, max: usize) {
+/// Mesuré : sans les deux premiers, la campagne de six graines × 30 jours
+/// passait de 63 s à 246 s, une graine à elle seule prenant 213 s.
+fn designate_rocks(
+    sim: &Sim,
+    cmds: &mut Vec<Command>,
+    at: (i32, i32),
+    wanted: Feature,
+    max: usize,
+) {
     let from = (at.0.max(0) as u32, at.1.max(0) as u32);
-    let wanted = if want_ore {
-        Feature::OreRock
-    } else {
-        Feature::Rock
-    };
-    let mut found: Vec<(u32, u32, u32)> = Vec::new();
-    let mut pending = 0usize;
-    for y in at.1 - MINE_RADIUS..=at.1 + MINE_RADIUS {
-        for x in at.0 - MINE_RADIUS..=at.0 + MINE_RADIUS {
-            if !sim.map().in_bounds(x, y) {
-                continue;
-            }
-            let (ux, uy) = (x as u32, y as u32);
-            if sim.map().designation(ux, uy) == Designation::Mine {
-                pending += 1;
-                continue;
-            }
-            if sim.map().feature(ux, uy) != wanted
-                || sim.map().designation(ux, uy) != Designation::None
-            {
-                continue;
-            }
-            found.push((chebyshev((ux, uy), from), ux, uy));
-        }
+    let full = sim.map().width().max(sim.map().height()) as i32;
+    let mut radius = MINE_RADIUS;
+    // On s'arrête au premier rayon qui donne de quoi travailler — un rocher
+    // libre ou une marque déjà posée. Sinon on regarde plus loin, jusqu'à la
+    // carte entière ; au-delà, il n'y a rien à trouver.
+    let (mut found, mut pending) = scan_rocks(sim, at, wanted, radius, from);
+    while found.is_empty() && pending == 0 && radius < full {
+        radius = radius.saturating_mul(2);
+        let next = scan_rocks(sim, at, wanted, radius, from);
+        found = next.0;
+        pending = next.1;
     }
     if pending >= max {
         return;
@@ -250,8 +309,39 @@ fn designate_rocks(sim: &Sim, cmds: &mut Vec<Command>, at: (i32, i32), want_ore:
     }
 }
 
-/// Rochers éprouvés avant de renoncer : chaque essai coûte un A\*, comme pour
-/// le gibier (`WILD_CANDIDATES`).
+/// Rochers de l'espèce voulue dans le carré de demi-côté `radius` autour de
+/// `at` : ceux qui sont libres, triables par `(distance, x, y)`, et le nombre
+/// de ceux déjà marqués. Aucune décision ici, seulement un relevé.
+fn scan_rocks(
+    sim: &Sim,
+    at: (i32, i32),
+    wanted: Feature,
+    radius: i32,
+    from: (u32, u32),
+) -> (Vec<(u32, u32, u32)>, usize) {
+    let mut found: Vec<(u32, u32, u32)> = Vec::new();
+    let mut pending = 0usize;
+    for y in at.1 - radius..=at.1 + radius {
+        for x in at.0 - radius..=at.0 + radius {
+            if !sim.map().in_bounds(x, y) {
+                continue;
+            }
+            let (ux, uy) = (x as u32, y as u32);
+            if sim.map().feature(ux, uy) != wanted {
+                continue;
+            }
+            match sim.map().designation(ux, uy) {
+                Designation::Mine => pending += 1,
+                Designation::None => found.push((chebyshev((ux, uy), from), ux, uy)),
+                _ => {}
+            }
+        }
+    }
+    (found, pending)
+}
+
+/// Rochers éprouvés avant de renoncer : chaque essai coûte huit questions à
+/// l'index de régions, comme pour le gibier (`WILD_CANDIDATES`).
 const MINE_CANDIDATES: usize = 8;
 
 /// Un colon peut-il venir taper sur ce rocher ? Le rocher lui-même est
@@ -272,11 +362,66 @@ fn minable(sim: &Sim, from: (u32, u32), rock: (u32, u32)) -> bool {
             continue;
         }
         let (nx, ny) = (nx as u32, ny as u32);
-        if sim.map().passable(nx, ny) && reachable(sim, from, (nx, ny)) {
+        if sim.map().passable(nx, ny) && colonist_can_reach(sim, from, (nx, ny)) {
             return true;
         }
     }
     false
+}
+
+/// Cases candidates pour la forge, dans l'ordre où un joueur les essaierait :
+/// **hors entrepôt et hors zone de culture** (les piles y refusent le plan,
+/// §10.2), dans l'enceinte, libres de tout élément, franchissables et
+/// atteignables, les plus proches du poste de fabrication d'abord — c'est là
+/// que le colon fera l'aller-retour minerai → lingot → épée.
+///
+/// La liste est **longue** exprès : `build_free` prend la première case qui
+/// tient et passe à la suivante au passage d'après si le plan n'est pas
+/// apparu. Une case libérée par un rangeur redevient candidate d'elle-même,
+/// sans mémoire.
+fn forge_spots(sim: &Sim, ax: i32, ay: i32) -> Vec<(i32, i32)> {
+    let from = (ax.max(0) as u32, ay.max(0) as u32);
+    // Le poste de fabrication du plan (§2) : la forge lui fait face.
+    let near = (ax + 3, ay - 3);
+    let mut spots: Vec<(u32, i32, i32)> = Vec::new();
+    for y in ay - WALL_RADIUS + 1..=ay + WALL_RADIUS - 1 {
+        for x in ax - WALL_RADIUS + 1..=ax + WALL_RADIUS - 1 {
+            if !sim.map().in_bounds(x, y) {
+                continue;
+            }
+            let (ux, uy) = (x as u32, y as u32);
+            // Une zone posée par le joueur est un endroit où les piles
+            // tombent : l'entrepôt s'en remplit, la culture aussi à la
+            // récolte. On n'y plante rien d'infranchissable.
+            if sim.map().zone(ux, uy) != Zone::None {
+                continue;
+            }
+            if !sim.map().passable(ux, uy)
+                || !build::can_place(sim.map(), BuildKind::Forge, ux, uy)
+                || has_pile(sim, ux, uy)
+            {
+                continue;
+            }
+            // Le chemin de la porte à l'entrepôt ne doit pas se refermer sur
+            // un mur de forge : on garde les cases qui touchent l'enceinte ou
+            // qui bordent le poste, jamais le plein milieu.
+            let ring = chebyshev((ux, uy), from) >= (WALL_RADIUS - 2) as u32;
+            let beside = chebyshev((ux, uy), (near.0.max(0) as u32, near.1.max(0) as u32)) <= 2;
+            if !ring && !beside {
+                continue;
+            }
+            if !colonist_can_reach(sim, from, (ux, uy)) {
+                continue;
+            }
+            spots.push((
+                chebyshev((ux, uy), (near.0.max(0) as u32, near.1.max(0) as u32)),
+                x,
+                y,
+            ));
+        }
+    }
+    spots.sort_unstable();
+    spots.into_iter().map(|(_, x, y)| (x, y)).collect()
 }
 
 /// Bêtes candidates qu'on regarde avant de renoncer : au-delà, la bête est
@@ -290,16 +435,29 @@ fn reachable(sim: &Sim, from: (u32, u32), to: (u32, u32)) -> bool {
 }
 
 /// La bête sauvage **atteignable** la plus proche du repère, parmi les espèces
-/// voulues. Les candidates sont triées par `(distance, id)` — jamais « la
-/// première trouvée » — et les `WILD_CANDIDATES` premières sont éprouvées dans
-/// cet ordre.
-fn nearest_wild(sim: &Sim, at: (i32, i32), species: &[Species]) -> Option<u32> {
+/// voulues, à `range` cases au plus et hors des ids `exclude`. Les candidates
+/// sont triées par `(distance, id)` — jamais « la première trouvée » — et les
+/// `WILD_CANDIDATES` premières sont éprouvées dans cet ordre.
+///
+/// `exclude` sert à ne pas viser deux fois la même bête dans un seul passage :
+/// la chasse et l'apprivoisement se décident à la suite sur le **même** état,
+/// et `Command::Tame` annule un `Command::Hunt` posé au même tick (les deux
+/// marquages sont exclusifs, `animals::set_hunted`). La colonie se volait ainsi
+/// son propre gibier.
+fn nearest_wild(
+    sim: &Sim,
+    at: (i32, i32),
+    species: &[Species],
+    range: u32,
+    exclude: &[u32],
+) -> Option<u32> {
     let from = (at.0.max(0) as u32, at.1.max(0) as u32);
     let mut candidates: Vec<(u32, u32, (u32, u32))> = sim
         .pawns()
         .iter()
         .filter(|p| p.faction == Faction::Animal && p.is_alive() && !p.hunted && !p.tame_marked)
         .filter(|p| p.species.is_some_and(|s| species.contains(&s)))
+        .filter(|p| !exclude.contains(&p.id) && chebyshev(p.tile(), from) <= range)
         .map(|p| (chebyshev(p.tile(), from), p.id, p.tile()))
         .collect();
     candidates.sort_unstable();
@@ -517,22 +675,49 @@ pub fn plan(sim: &Sim) -> Vec<Command> {
     // aussi le seul moment où ce joueur mine — jusque-là il ne touche pas un
     // rocher (voir l'en-tête de `plan`).
     if sim.research().is_done(Tech::Metallurgy) {
+        // L'entrepôt s'agrandit avec le minerai : voir `STOCKPILE_SIDE_METAL`.
+        // Le coin `(ax, ay)` sert de témoin — il est franchissable par
+        // construction (`anchor`), donc l'ordre ne repart pas au passage
+        // suivant.
+        let stock_ready = sim.map().zone(ax.max(0) as u32, ay.max(0) as u32) == Zone::Stockpile;
+        if !stock_ready {
+            cmds.push(Command::SetZone {
+                zone: Zone::Stockpile,
+                x0: ax,
+                y0: ay,
+                x1: ax + STOCKPILE_SIDE_METAL - 1,
+                y1: ay + STOCKPILE_SIDE_METAL - 1,
+            });
+        }
+        // **Les veines d'abord.** Le minerai est ce qui manque partout — un
+        // rocher sur `map::ORE_IN_ROCKS` est veiné —, il ne se gâte pas et il
+        // attendra la forge sans rien coûter. La pierre, elle, ne sert qu'aux
+        // vingt unités de la forge : on ne la creuse que tant qu'elle manque.
+        designate_rocks(sim, &mut cmds, (ax, ay), Feature::OreRock, ROCKS_PER_PASS);
         if sim.map().forge_count() == 0 {
             if stored[ItemKind::Stone as usize] < STONE_FOR_FORGE {
-                designate_rocks(sim, &mut cmds, (ax, ay), false, ROCKS_PER_PASS);
-            } else {
+                designate_rocks(sim, &mut cmds, (ax, ay), Feature::Rock, ROCKS_PER_PASS);
+            } else if stock_ready {
+                // Hors entrepôt et hors culture : c'est tout le correctif
+                // du §10.2. La liste est longue, `build_free` prend la
+                // première case tenable et le passage suivant réessaie sur
+                // une autre si le plan n'est pas apparu.
+                //
+                // **Après** l'agrandissement de l'entrepôt, jamais dans le
+                // même passage : `forge_spots` lit les zones telles qu'elles
+                // sont, et l'agrandissement n'a pas encore été appliqué —
+                // la forge tomberait dans l'entrepôt de demain.
                 build_free(
                     sim,
                     &mut cmds,
                     BuildKind::Forge,
-                    &[(ax + 3, ay + 3), (ax + 4, ay + 3), (ax + 3, ay + 4)],
+                    &forge_spots(sim, ax, ay),
                     1,
                 );
             }
         } else {
-            // Forge debout : on ne creuse plus que les veines, et on demande
-            // de quoi armer la colonie — les lingots d'abord, l'épée suit.
-            designate_rocks(sim, &mut cmds, (ax, ay), true, ROCKS_PER_PASS);
+            // Forge debout : on demande de quoi armer la colonie — les
+            // lingots d'abord, l'épée suit.
             let ingots = METAL_PER_SWORD * n;
             if sim.craft_targets()[ItemKind::Metal as usize] != ingots {
                 cmds.push(Command::SetCraftTarget {
@@ -552,13 +737,45 @@ pub fn plan(sim: &Sim) -> Vec<Command> {
     // ------------------------------------------------------------------
     // 4. Fabrication : un arc par colon, une tunique par colon en automne
     // ------------------------------------------------------------------
-    if sim.craft_targets()[ItemKind::Bow as usize] != n {
+    // **L'objectif d'armes ne redescend jamais.** Il valait `n` au sens strict :
+    // un colon tué faisait retomber la demande, et l'arc que le bâtisseur
+    // taillait pour un autre devenait sans objet — la colonie qui perd du monde
+    // est précisément celle qui a besoin d'armes. On ne l'abaisse plus.
+    let bows_wanted = sim.craft_targets()[ItemKind::Bow as usize].max(n);
+    if sim.craft_targets()[ItemKind::Bow as usize] != bows_wanted {
         cmds.push(Command::SetCraftTarget {
             kind: ItemKind::Bow,
-            target: n,
+            target: bows_wanted,
         });
     }
-    if sim.season() == Season::Autumn && sim.craft_targets()[ItemKind::Tunic as usize] != n {
+    // **La tunique passe après l'arc et après l'enceinte** (corrigé le
+    // 2026-09-06). Elle se taille au même poste, par le même `WorkType::Build`
+    // et par le même bâtisseur que les arcs et les murs : posée dès le tick 0
+    // dans la campagne d'automne, elle prenait leur tour (§ constat n°1 —
+    // 0 colon armé sur 74). Deux conditions, donc :
+    //
+    // 1. un arc par colon **déjà dans la colonie** (`colony_total` compte les
+    //    arcs portés comme ceux rangés) ;
+    // 2. de quoi finir l'enceinte : tant que les plans de mur, de porte et de
+    //    piège réclament plus de bois qu'il n'y en a en caisse, le bâtisseur a
+    //    mieux à faire qu'un vêtement.
+    let wall_debt: u32 = sim
+        .blueprints()
+        .iter()
+        .filter(|b| {
+            matches!(
+                b.kind,
+                BuildKind::Wall | BuildKind::Door | BuildKind::SpikeTrap
+            )
+        })
+        .map(|b| b.missing())
+        .sum();
+    let armed_enough = sim.colony_total(ItemKind::Bow) >= n;
+    if sim.season() == Season::Autumn
+        && armed_enough
+        && wood > wall_debt
+        && sim.craft_targets()[ItemKind::Tunic as usize] != n
+    {
         cmds.push(Command::SetCraftTarget {
             kind: ItemKind::Tunic,
             target: n,
@@ -592,17 +809,65 @@ pub fn plan(sim: &Sim) -> Vec<Command> {
     if meat < MEAT_PER_COLONIST * n && !hunting {
         // Une bête à la fois : marquer toute la harde enverrait la colonie
         // entière courir après les cerfs.
-        if let Some(animal) = nearest_wild(sim, (ax, ay), &[Species::Rabbit, Species::Deer]) {
+        if let Some(animal) = nearest_wild(
+            sim,
+            (ax, ay),
+            &[Species::Rabbit, Species::Deer],
+            u32::MAX,
+            &[],
+        ) {
             cmds.push(Command::Hunt { animal, on: true });
         }
     }
-    if day >= TAME_DAY
-        && stored[ItemKind::Berries as usize] >= TAME_BERRIES
-        && sim.livestock_count() == 0
-        && !sim.pawns().iter().any(|p| p.tame_marked && p.is_alive())
-        && let Some(animal) = nearest_wild(sim, (ax, ay), &[Species::Rabbit])
-    {
-        cmds.push(Command::Tame { animal, on: true });
+    // **L'apprivoisement se relance** (corrigé le 2026-09-06). Il ne partait
+    // qu'une fois, au jour `TAME_DAY`, sur un lapin, et la marque restait
+    // posée jusqu'à la fin de la partie même si la bête mourait de vieillesse
+    // dans un coin de carte inatteignable : 7 colonies sur 30 finissaient avec
+    // du bétail (constat ouvert n°4). Trois changements :
+    //
+    // 1. **dès que les baies suffisent**, sans attendre un jour fixe — c'est le
+    //    fourrage qui commande, pas le calendrier ;
+    // 2. **un lapin, puis un cerf** : le lapin est la bête du débutant
+    //    (`livestock::TAME_BASE_NUM`), mais toutes les cartes n'en portent pas ;
+    // 3. **on relève la marque** dès qu'elle ne peut plus rien donner (bête
+    //    morte, partie, ou de l'autre côté de l'eau), et on **change de bête**
+    //    tous les `TAME_RETRY_DAYS` jours tant qu'aucune n'est apprivoisée : la
+    //    bête démarquée redevient candidate au passage suivant, celle qu'on
+    //    marque à la place est forcément une autre (`nearest_wild` écarte ce
+    //    qui est déjà marqué).
+    if sim.livestock_count() == 0 && stored[ItemKind::Berries as usize] >= TAME_BERRIES {
+        let switch = day % TAME_RETRY_DAYS == 0 && tick % u64::from(TICKS_PER_DAY) == 0;
+        let mut standing = false;
+        for p in sim.pawns() {
+            if !p.tame_marked || !p.is_alive() {
+                continue;
+            }
+            if !switch && reachable(sim, anchor_tile, p.tile()) {
+                standing = true;
+            } else {
+                cmds.push(Command::Tame {
+                    animal: p.id,
+                    on: false,
+                });
+            }
+        }
+        // Le gibier marqué dans ce même passage n'est pas candidat : un
+        // `Tame` posé sur lui annulerait la chasse qu'on vient d'ordonner.
+        let hunted_now: Vec<u32> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                Command::Hunt { animal, on: true } => Some(*animal),
+                _ => None,
+            })
+            .collect();
+        if !standing
+            && let Some(animal) =
+                nearest_wild(sim, (ax, ay), &[Species::Rabbit], TAME_RANGE, &hunted_now).or_else(
+                    || nearest_wild(sim, (ax, ay), &[Species::Deer], TAME_RANGE, &hunted_now),
+                )
+        {
+            cmds.push(Command::Tame { animal, on: true });
+        }
     }
 
     // ------------------------------------------------------------------
@@ -841,6 +1106,11 @@ struct Run {
     /// envoie un dès qu'une tribu passe sous `GIFT_GOODWILL` : ce compteur, lu
     /// à côté de `goodwill`, dit si le bois offert a acheté quelque chose.
     tributes: u32,
+    /// `Command::Tame { on: true }` envoyés sur toute la partie, et bêtes
+    /// réellement apprivoisées. Le second est un sous-ensemble du premier :
+    /// leur rapport dit où se perd l'élevage.
+    tame_orders: u32,
+    tamed: u32,
     /// Jour où la métallurgie est tombée, `None` si elle n'a jamais été
     /// acquise. À lire avec `forges` : une technologie obtenue au jour 28 ne
     /// laisse pas le temps de miner vingt-cinq pierres.
@@ -879,6 +1149,11 @@ struct Journal {
     ingots: u32,
     swords: u32,
     tributes: u32,
+    /// Bêtes **effectivement** apprivoisées (`EventKind::Tamed`). À lire en
+    /// face de `Run::tame_orders` : c'est ce couple que réclamait le constat
+    /// ouvert n°4 — savoir si le chiffre du bétail est borné par le marquage
+    /// (le joueur ne tente pas) ou par la traque (il tente et échoue).
+    tamed: u32,
     /// Tick où la métallurgie a été acquise (`EventKind::ResearchDone`,
     /// `arg` = `Tech::Metallurgy`). C'est elle qui ouvre la forge : savoir
     /// **quand** elle tombe est la moitié de la réponse à « la colonie
@@ -911,6 +1186,7 @@ impl Journal {
                 EventKind::ItemCrafted if e.arg == ItemKind::Metal as u32 => self.ingots += 1,
                 EventKind::WeaponCrafted if e.arg == ItemKind::Sword as u32 => self.swords += 1,
                 EventKind::Gift => self.tributes += 1,
+                EventKind::Tamed => self.tamed += 1,
                 EventKind::ResearchDone if e.arg == Tech::Metallurgy as u32 => {
                     self.metallurgy_tick.get_or_insert(e.tick);
                 }
@@ -949,6 +1225,7 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
     let mut journal = Journal::default();
     let mut colonists_day10 = None;
     let mut colonists_day20 = None;
+    let mut tame_orders = 0u32;
     let start = Instant::now();
 
     let mut prev: Vec<Watched> = Vec::new();
@@ -978,6 +1255,10 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
         if t % PLAN_INTERVAL == 0 {
             cmds.append(&mut plan(&sim));
         }
+        tame_orders += cmds
+            .iter()
+            .filter(|c| matches!(c, Command::Tame { on: true, .. }))
+            .count() as u32;
         sim.step(&cmds);
 
         observe(&sim, &mut cur);
@@ -1062,6 +1343,8 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
         swordsmen,
         goodwill,
         tributes: journal.tributes,
+        tame_orders,
+        tamed: journal.tamed,
         metallurgy_day: journal
             .metallurgy_tick
             .map(|t| (t / u64::from(TICKS_PER_DAY)) as u32),
@@ -1304,9 +1587,22 @@ fn print_summary(runs: &[Run], ticks: u64, elapsed: std::time::Duration) {
         runs.iter().filter(|r| r.techs == 0).count(),
     );
     println!(
-        "  bétail                 : moyenne {} — au moins une bête : {}/{n}",
+        "  bétail                 : moyenne {} — au moins une bête : {}/{n} (dont vivantes : {})",
         tenths(mean_tenths(runs.iter().map(|r| u64::from(r.livestock)), n)),
         runs.iter().filter(|r| r.livestock > 0).count(),
+        runs.iter()
+            .filter(|r| r.livestock > 0 && r.colonists_end > 0)
+            .count(),
+    );
+    // Le couple que demandait le constat n°4 : ce qu'on a tenté, ce qui a pris.
+    println!(
+        "  apprivoisement         : {} marquages pour {} bêtes prises — colonies vivantes au bétail : {}/{}",
+        runs.iter().map(|r| r.tame_orders).sum::<u32>(),
+        runs.iter().map(|r| r.tamed).sum::<u32>(),
+        runs.iter()
+            .filter(|r| r.livestock > 0 && r.colonists_end > 0)
+            .count(),
+        runs.iter().filter(|r| r.colonists_end > 0).count(),
     );
     println!(
         "  incendies              : {} feux, {} cases brûlées — colonies touchées : {}/{n}",
@@ -1430,7 +1726,7 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
             .collect();
         let goodwill: Vec<String> = r.goodwill.iter().map(i32::to_string).collect();
         println!(
-            "    {{\"seed\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"metallurgy_day\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
+            "    {{\"seed\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"tame_orders\": {}, \"tamed\": {}, \"metallurgy_day\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
             r.seed,
             r.colonists_end,
             json_milestone(r.colonists_day10),
@@ -1454,6 +1750,8 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
             r.swordsmen,
             goodwill.join(", "),
             r.tributes,
+            r.tame_orders,
+            r.tamed,
             json_milestone(r.metallurgy_day),
             r.lost_events,
             r.deaths_announced,
@@ -1492,15 +1790,18 @@ OPTIONS :
 
 Chaque graine est jouée par le même joueur scripté : zone de stockage et de
 culture, coupe et récolte, feu de camp, lits, poste de fabrication, enceinte de
-bois avec porte et pièges, établi de recherche, arcs puis tuniques, chasse
-quand la viande manque, apprivoisement, troc de vivres et tribut aux tribus
-hostiles. Il ne pilote aucun combat et ne soigne personne à la main.
+bois avec porte et pièges, établi de recherche, arcs (puis tuniques une fois
+la colonie armée et l'enceinte payée), minage et forge après la métallurgie,
+chasse quand la viande manque, apprivoisement relancé tant qu'aucune bête n'est
+prise, troc de vivres et tribut aux tribus hostiles. Il ne pilote aucun combat
+et ne soigne personne à la main.
 
 Affiche une ligne par graine (colons vivants en fin et aux jours 10 et 20,
 morts par cause déduite, raids reçus et repoussés, richesse, technologies,
 jours de vivres, bétail, incendies, chaîne du métal — forges debout, lingots
 et épées produits, épées portées —, réputation envers les trois factions et
-tributs offerts) puis un résumé. Sort toujours en 0 : c'est une mesure, pas un
+tributs offerts) puis un résumé, qui donne en plus les marquages
+d'apprivoisement envoyés face aux bêtes réellement prises. Sort toujours en 0 : c'est une mesure, pas un
 test.
 ";
 
@@ -1748,6 +2049,9 @@ mod tests {
             "aucun rocher marqué : {cmds:?}"
         );
         assert!(!has_build(&cmds, BuildKind::Forge), "forge sans pierre");
+        // Ce passage-là agrandit aussi l'entrepôt (voir `STOCKPILE_SIDE_METAL`) :
+        // la forge attend qu'il soit peint pour ne pas tomber dedans.
+        s.step(&cmds);
 
         // La pierre rentrée, la forge se plante et les objectifs suivent.
         let (ax, ay) = anchor(&s).expect("repère");
@@ -1758,13 +2062,9 @@ mod tests {
             (ay + 2) as u32,
         );
         let cmds = plan(&s);
-        assert!(
-            has_build(&cmds, BuildKind::Forge),
-            "pas de forge : {cmds:?}"
-        );
+        let forge = forge_tile(&cmds).expect("pas de forge");
         s.step(&cmds);
-        s.map_mut()
-            .set_feature((ax + 3) as u32, (ay + 3) as u32, Feature::Forge);
+        s.map_mut().set_feature(forge.0, forge.1, Feature::Forge);
         s.map_mut()
             .set_feature((ax + 8) as u32, (ay + 1) as u32, Feature::OreRock);
         let cmds = plan(&s);
@@ -2029,6 +2329,378 @@ mod tests {
         // Les trois factions sont bien lisibles une à une : c'est ce que le
         // rapport exporte désormais.
         assert_eq!(factions::FACTIONS.len(), factions::FACTION_COUNT);
+    }
+
+    /// Vide la carte de sa faune de départ. `Sim::from_map` en pose déjà
+    /// (deux lapins et un cerf sur `clearing`), et le premier passage du
+    /// joueur en marque un au gibier : sans ce coup de balai, un test qui
+    /// croit éprouver « le lapin qu'on vient de poser » éprouve en fait celui
+    /// d'à côté.
+    fn clear_animals(s: &mut Sim) {
+        let ids: Vec<u32> = s
+            .pawns()
+            .iter()
+            .filter(|p| p.faction == Faction::Animal)
+            .map(|p| p.id)
+            .collect();
+        for id in ids {
+            if let Some(p) = s.pawn_mut(id) {
+                p.gone = true;
+            }
+        }
+        s.step(&[]);
+        assert!(
+            !s.pawns().iter().any(|p| p.faction == Faction::Animal),
+            "la faune de départ n'a pas été retirée"
+        );
+    }
+
+    /// Case de la forge demandée par ce lot de commandes, s'il y en a une.
+    fn forge_tile(cmds: &[Command]) -> Option<(u32, u32)> {
+        cmds.iter().find_map(|c| match c {
+            Command::Build {
+                kind: BuildKind::Forge,
+                x0,
+                y0,
+                ..
+            } => Some((*x0 as u32, *y0 as u32)),
+            _ => None,
+        })
+    }
+
+    /// **Correction n°1 du 2026-09-06.** La forge était proposée sur trois
+    /// cases de l'entrepôt ; `Command::Build` refuse en silence une case qui
+    /// porte une pile, et un entrepôt qui sert en porte toujours une. Le plan
+    /// ne sortait jamais (une forge sur trente colonies, §10.2).
+    #[test]
+    fn la_forge_evite_l_entrepot_la_culture_et_les_piles() {
+        let mut s = installed();
+        store_wood(&mut s, 200);
+        s.research_mut().complete(Tech::Metallurgy);
+        let (ax, ay) = anchor(&s).expect("repère");
+        s.spawn_item(
+            ItemKind::Stone,
+            STONE_FOR_FORGE + 5,
+            (ax + 2) as u32,
+            (ay + 2) as u32,
+        );
+        // Le premier passage agrandit l'entrepôt et ne plante rien : les zones
+        // que lit `forge_spots` ne connaissent pas encore l'agrandissement.
+        let first = plan(&s);
+        assert!(
+            forge_tile(&first).is_none(),
+            "forge plantée avant que l'entrepôt ne soit agrandi : {first:?}"
+        );
+        s.step(&first);
+        let cmds = plan(&s);
+        let (fx, fy) = forge_tile(&cmds).expect("aucune forge demandée");
+        assert_ne!(
+            s.map().zone(fx, fy),
+            Zone::Stockpile,
+            "forge plantée dans l'entrepôt ({fx}, {fy})"
+        );
+        assert_ne!(
+            s.map().zone(fx, fy),
+            Zone::Growing,
+            "forge plantée dans la culture ({fx}, {fy})"
+        );
+        assert!(
+            !has_pile(&s, fx, fy),
+            "forge plantée sur une pile ({fx}, {fy})"
+        );
+        // Et l'ordre passe vraiment : c'est tout ce qui manquait.
+        s.step(&cmds);
+        assert!(
+            s.blueprints().iter().any(|b| (b.x, b.y) == (fx, fy)),
+            "le plan de forge n'est pas apparu"
+        );
+
+        // Une pile posée sur la case retenue ne bloque plus rien : le passage
+        // suivant en propose une autre.
+        let mut s = installed();
+        store_wood(&mut s, 200);
+        s.research_mut().complete(Tech::Metallurgy);
+        s.spawn_item(
+            ItemKind::Stone,
+            STONE_FOR_FORGE + 5,
+            (ax + 2) as u32,
+            (ay + 2) as u32,
+        );
+        s.step(&plan(&s));
+        s.spawn_item(ItemKind::Leather, 3, fx, fy);
+        assert!(has_pile(&s, fx, fy));
+        let (gx, gy) = forge_tile(&plan(&s)).expect("aucune forge de repli");
+        assert_ne!((gx, gy), (fx, fy), "la case occupée est reproposée");
+    }
+
+    /// **Correction n°1 bis.** Le rayon de minage s'élargit : à 12 cases fixes,
+    /// quatorze des quinze graines qui payaient la métallurgie n'avaient pas un
+    /// rocher à portée (§10.2).
+    #[test]
+    fn le_minage_elargit_son_rayon_jusqu_au_rocher() {
+        let mut s = installed();
+        store_wood(&mut s, 200);
+        s.research_mut().complete(Tech::Metallurgy);
+        // Rien dans le rayon de départ : le seul rocher est au-delà.
+        assert!(
+            !has_designation(&plan(&s), Designation::Mine),
+            "un rocher marqué là où il n'y en a pas"
+        );
+        let (ax, ay) = anchor(&s).expect("repère");
+        let far = ((ax + MINE_RADIUS - 1).min(s.map().width() as i32 - 2)) as u32;
+        assert!(
+            (far as i32) < ax + MINE_RADIUS,
+            "le rocher de contrôle doit rester sur la carte"
+        );
+        s.map_mut().set_feature(far, ay as u32, Feature::Rock);
+        // Ce rocher-là est dans le rayon de départ : il part tout de suite.
+        assert!(
+            has_designation(&plan(&s), Designation::Mine),
+            "rocher proche ignoré"
+        );
+        // Sur une carte plus grande, un rocher **hors** du rayon de départ est
+        // trouvé quand même : c'est l'élargissement qui est éprouvé ici.
+        let mut wide = Sim::new(1, 64, 64);
+        wide.step(&plan(&wide));
+        wide.research_mut().complete(Tech::Metallurgy);
+        let (wx, wy) = anchor(&wide).expect("repère");
+        // On efface d'abord tout rocher naturel, pour que le seul candidat
+        // soit celui qu'on pose, et qu'il soit hors de portée initiale.
+        for y in 0..wide.map().height() {
+            for x in 0..wide.map().width() {
+                if wide.map().feature(x, y).is_rock() {
+                    wide.map_mut().set_feature(x, y, Feature::None);
+                }
+            }
+        }
+        assert!(
+            !has_designation(&plan(&wide), Designation::Mine),
+            "carte sans rocher, et pourtant une désignation"
+        );
+        let far_x = (wx + MINE_RADIUS + 6) as u32;
+        wide.map_mut().set_feature(far_x, wy as u32, Feature::Rock);
+        let cmds = plan(&wide);
+        assert!(
+            cmds.iter().any(|c| matches!(
+                c,
+                Command::Designate {
+                    kind: Designation::Mine,
+                    x0,
+                    ..
+                } if *x0 == far_x as i32
+            )),
+            "le rocher hors rayon n'est pas marqué : {cmds:?}"
+        );
+    }
+
+    /// **Correction n°2 du 2026-09-06.** La tunique se taille au même poste,
+    /// par le même `WorkType::Build`, que l'arc et l'enceinte. Posée dès le
+    /// tick 0 en automne, elle prenait leur tour : 0 colon armé sur 74 en
+    /// campagne automne-hiver (constat ouvert n°1).
+    #[test]
+    fn les_tuniques_attendent_l_arc_et_l_enceinte() {
+        let mut s = installed();
+        store_wood(&mut s, 200);
+        // On se place en automne, comme la cinquième campagne.
+        s.step(&[Command::SetCalendar {
+            day_of_year: 2 * (YEAR_DAYS / 4),
+        }]);
+        assert_eq!(s.season(), Season::Autumn, "le décor n'est pas l'automne");
+        let n = colonist_ids(&s).len() as u32;
+
+        // Sans un seul arc, aucune tunique — mais l'arc, lui, est bien demandé
+        // (l'objectif a été posé au premier passage, celui d'`installed`).
+        assert_eq!(
+            s.craft_targets()[ItemKind::Bow as usize],
+            n,
+            "l'objectif d'arcs n'est pas posé"
+        );
+        let cmds = plan(&s);
+        assert!(
+            !cmds.iter().any(|c| matches!(
+                c,
+                Command::SetCraftTarget {
+                    kind: ItemKind::Tunic,
+                    ..
+                }
+            )),
+            "tunique demandée sans un arc en main : {cmds:?}"
+        );
+        s.step(&cmds);
+
+        // Les arcs rentrés, mais l'enceinte encore à payer : toujours rien.
+        let (ax, ay) = anchor(&s).expect("repère");
+        s.spawn_item(ItemKind::Bow, n, (ax + 2) as u32, (ay + 3) as u32);
+        assert!(
+            s.blueprints()
+                .iter()
+                .any(|b| b.kind == BuildKind::Wall && b.missing() > 0),
+            "l'enceinte devrait être en chantier"
+        );
+        let wall_debt: u32 = s
+            .blueprints()
+            .iter()
+            .filter(|b| b.kind == BuildKind::Wall)
+            .map(|b| b.missing())
+            .sum();
+        assert!(
+            wall_debt > s.stored_totals()[ItemKind::Wood as usize],
+            "il faut que l'enceinte réclame plus de bois qu'il n'y en a"
+        );
+        assert!(
+            !plan(&s).iter().any(|c| matches!(
+                c,
+                Command::SetCraftTarget {
+                    kind: ItemKind::Tunic,
+                    ..
+                }
+            )),
+            "tunique demandée alors que l'enceinte réclame le bois"
+        );
+
+        // L'enceinte payée : la tunique passe enfin.
+        let ids: Vec<u32> = s.blueprints().iter().map(|b| b.id).collect();
+        for id in ids {
+            let (x, y) = s
+                .blueprints()
+                .iter()
+                .find(|b| b.id == id)
+                .map(|b| (b.x, b.y))
+                .expect("chantier");
+            s.step(&[Command::CancelBuild {
+                x0: x as i32,
+                y0: y as i32,
+                x1: x as i32,
+                y1: y as i32,
+            }]);
+        }
+        // `plan` reposerait l'enceinte : on la lit après coup, sur le lot lui-même.
+        let cmds = plan(&s);
+        assert!(
+            cmds.contains(&Command::SetCraftTarget {
+                kind: ItemKind::Tunic,
+                target: n
+            }),
+            "tunique toujours refusée une fois armé et l'enceinte payée : {cmds:?}"
+        );
+        // Et l'ordre d'arme n'a été annulé par rien : il ne redescend jamais.
+        s.step(&cmds);
+        let before = s.craft_targets()[ItemKind::Bow as usize];
+        let ids: Vec<u32> = colonist_ids(&s);
+        if let Some(p) = s.pawn_mut(ids[0]) {
+            p.gone = true;
+        }
+        s.step(&[]);
+        let after = plan(&s);
+        assert!(
+            !after.iter().any(|c| matches!(
+                c,
+                Command::SetCraftTarget {
+                    kind: ItemKind::Bow,
+                    target
+                } if *target < before
+            )),
+            "l'objectif d'arcs a été abaissé par une mort : {after:?}"
+        );
+    }
+
+    /// **Correction n°3 du 2026-09-06.** La marque d'apprivoisement était posée
+    /// une fois pour toutes : bête morte ou partie, la colonie n'en marquait
+    /// plus jamais d'autre (constat ouvert n°4).
+    #[test]
+    fn l_apprivoisement_repose_sa_marque_sur_une_autre_bete() {
+        let mut s = installed();
+        clear_animals(&mut s);
+        let (ax, ay) = anchor(&s).expect("repère");
+        s.spawn_item(
+            ItemKind::Berries,
+            TAME_BERRIES + 10,
+            (ax + 2) as u32,
+            (ay + 2) as u32,
+        );
+        // De la viande en réserve : sans elle, la chasse marque le lapin avant
+        // l'apprivoisement et le test n'éprouverait plus rien.
+        s.spawn_item(ItemKind::Meat, 200, (ax + 3) as u32, (ay + 2) as u32);
+        let first = s.spawn_animal((ax + 2) as u32, ay as u32, Species::Rabbit);
+        let second = s.spawn_animal((ax + 4) as u32, ay as u32, Species::Rabbit);
+        let cmds = plan(&s);
+        assert!(
+            cmds.contains(&Command::Tame {
+                animal: first,
+                on: true
+            }),
+            "le lapin le plus proche n'est pas marqué : {cmds:?}"
+        );
+        s.step(&cmds);
+        // Marque debout : on n'en pose pas une deuxième.
+        assert!(
+            !plan(&s).iter().any(|c| matches!(c, Command::Tame { .. })),
+            "deuxième marquage alors que le premier tient"
+        );
+        // La bête meurt : la marque repart sur l'autre, sans attendre.
+        if let Some(p) = s.pawn_mut(first) {
+            p.gone = true;
+        }
+        s.step(&[]);
+        let cmds = plan(&s);
+        assert!(
+            cmds.contains(&Command::Tame {
+                animal: second,
+                on: true
+            }),
+            "aucune marque reposée après la mort de la bête : {cmds:?}"
+        );
+
+        // À défaut de lapin, un cerf fait l'affaire.
+        let mut s = installed();
+        clear_animals(&mut s);
+        s.spawn_item(
+            ItemKind::Berries,
+            TAME_BERRIES + 10,
+            (ax + 2) as u32,
+            (ay + 2) as u32,
+        );
+        s.spawn_item(ItemKind::Meat, 200, (ax + 3) as u32, (ay + 2) as u32);
+        let deer = s.spawn_animal((ax + 3) as u32, ay as u32, Species::Deer);
+        assert!(
+            plan(&s).contains(&Command::Tame {
+                animal: deer,
+                on: true
+            }),
+            "le cerf n'est jamais marqué"
+        );
+    }
+
+    /// La chasse et l'apprivoisement se décident sur le **même** état : sans
+    /// précaution, les deux visaient la même bête et le `Tame` annulait le
+    /// `Hunt` posé au tick d'avant dans le même lot.
+    #[test]
+    fn la_chasse_et_l_apprivoisement_ne_visent_pas_la_meme_bete() {
+        let mut s = installed();
+        clear_animals(&mut s);
+        let (ax, ay) = anchor(&s).expect("repère");
+        s.spawn_item(
+            ItemKind::Berries,
+            TAME_BERRIES + 10,
+            (ax + 2) as u32,
+            (ay + 2) as u32,
+        );
+        let only = s.spawn_animal((ax + 2) as u32, ay as u32, Species::Rabbit);
+        let cmds = plan(&s);
+        assert!(
+            cmds.contains(&Command::Hunt {
+                animal: only,
+                on: true
+            }),
+            "sans viande, la bête devrait être marquée au gibier : {cmds:?}"
+        );
+        assert!(
+            !cmds.contains(&Command::Tame {
+                animal: only,
+                on: true
+            }),
+            "la même bête est marquée à la chasse et à l'apprivoisement : {cmds:?}"
+        );
     }
 
     #[test]
