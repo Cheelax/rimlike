@@ -26,9 +26,13 @@ colonies à la métallurgie bâtissent une forge, 6/14 fondent un lingot, **1/14
 pile » (3 minerais par lingot alors qu'un rocher veiné en rend 2 ou 3, piles au pied des
 rochers qui ne fusionnent pas, puis 4 lingots dans une pile pour l'épée).
 
-**État** : un premier essai (agent Claude, 2026-09-06) a laissé du code non commité dans
-`craft.rs`, `items.rs`, `jobs.rs`, `tests/metal.rs` et `tests/balance_metal.rs`, interrompu
-pendant la suite de tests. Repartir de ce code ou le jeter, au choix, mais mesurer.
+**État au 2026-09-07** : première tranche intégrée dans `08c68cd`, après reprise
+et correction des essais du 6 septembre. Les tests ciblés, snapshots, builds et fuzz
+passent ; voir `CAMPAIGN-FINDINGS.md` §11.6. Ne pas refaire la collecte fractionnée ni
+le repli déjà livrés. La campagne combinée laisse 20 colonies vivantes, dix avec du
+bétail, et une productrice d’épées sur neuf ayant acquis la métallurgie (deux épées).
+L’objectif statistique ci-dessous reste à démontrer par comparaison contrôlée ; cette
+fiche demeure ouverte pour ce travail restant.
 
 **Mesurer d'abord** : scénario ciblé (forge, poste, entrepôt 6×6, métallurgie acquise, 5
 veines à 10 cases, 3 colons, paisible, 15 jours) : lingots, épées, et **où bloque la chaîne**.

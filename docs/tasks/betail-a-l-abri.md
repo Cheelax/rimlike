@@ -23,10 +23,13 @@ qui en gardent une au jour 30 en normal ; en paisible, 24 colonies sur 29 garden
 bétail. `LIVESTOCK_RANGE` = 12 contre une enceinte de demi-côté 6 : la bête est dehors par
 construction, de faction colonie, donc cible des pillards.
 
-**État** : un premier essai (agent Claude, 2026-09-06) a laissé du code non commité dans
-`livestock.rs`, `combat.rs` et `tests/balance_livestock.rs` ; son dernier constat : « ancrer
-la bête à la pièce la plus proche vise une case près de la porte, pire (10 tuées contre 6) ;
-essayer barycentre + hystérésis ». Repartir de ce code ou le jeter, au choix, mais mesurer.
+**État au 2026-09-07** : première tranche intégrée dans `08c68cd`, après reprise
+et correction des essais du 6 septembre. Les tests ciblés, snapshots, builds et fuzz
+passent ; voir `CAMPAIGN-FINDINGS.md` §11.6. Ne pas refaire la collecte fractionnée ni
+le repli déjà livrés. La campagne combinée laisse 20 colonies vivantes, dix avec du
+bétail, et une productrice d’épées sur neuf ayant acquis la métallurgie (deux épées).
+L’objectif statistique ci-dessous reste à démontrer par comparaison contrôlée ; cette
+fiche demeure ouverte pour ce travail restant.
 
 **Mesurer d'abord** : scénario ciblé (colonie murée avec porte, 2 bêtes apprivoisées, raid de
 2 pillards, 30 graines), compter les bêtes tuées par un pillard et les autres morts, avant
