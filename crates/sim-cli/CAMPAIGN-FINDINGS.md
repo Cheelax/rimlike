@@ -2723,3 +2723,211 @@ l'intégration, l'orchestrateur devra actualiser la phrase de `docs/GUIDE.md`
 le réglage dans `docs/PLAN.md`. Le coût de l'épée affiché dans le client
 reste exact : trois lingots. Aucun contrat, enum, stride ou état sérialisé
 ne change.
+
+### 11.8 Bétail à l'abri : comparaison contrôlée du 2026-09-07
+
+**Objectif atteint : 9/21 → 16/21 colonies vivantes avec du bétail au jour 30
+sur les trente graines de référence (43 % → 76 %), et 20/36 → 26/34 sur
+soixante (56 % → 76 %).** Le seul réglage du sim est le **choix de cible d'un
+assaillant** : `combat::LIVESTOCK_TARGET_PENALTY` (un malus additif de trois
+cases) devient `combat::LIVESTOCK_TARGET_REACH` (le contact), et
+`nearest_reachable_enemy` trie sur un **rang** avant la distance. Le repli et
+l'errance bornée livrés par la PR #1 ne sont pas retouchés ; `livestock.rs` ne
+change pas d'une ligne.
+
+#### Protocole
+
+Trois binaires natifs, construits chacun dans son propre worktree pour que rien
+ne se mélange, et la **même** campagne pour tous :
+
+```sh
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --json
+```
+
+- **témoin d'avant la PR #1** : `8d66506` ;
+- **référence** : `0045406` pour le diagnostic, puis `43e91f2` (métal réglé,
+  §11.7) pour les chiffres définitifs — les deux donnent le même total de morts
+  de colons sur soixante graines (363 et 362), la comparaison n'en souffre pas ;
+- **candidats** : la référence plus une piste à la fois.
+
+Graines 1 à 30 (et 1 à 60 pour départager les candidats), difficulté normale,
+climat tempéré, calendrier au jour 0, 432 000 ticks par graine. Le joueur de
+`campaign.rs` est inchangé. Les durées murales ne sont pas un benchmark :
+d'autres contrôles tournaient en parallèle.
+
+**Une comparaison graine à graine n'a pas de sens ici.** La PR #1 touchait
+aussi la fabrication : dès le premier jour les trajectoires divergent, et la
+graine 1 passe de deux colons survivants à zéro quand la graine 5 fait
+l'inverse. Seuls les agrégats se comparent, et c'est aussi pourquoi les
+candidats ont été départagés sur soixante graines plutôt que trente.
+
+| 30 graines, normale, carte 64 | avant la PR #1 (`8d66506`) | après la PR #1 (`0045406`) |
+|---|---:|---:|
+| colonies vivantes | 18 | 20 |
+| dont avec du bétail | 8 | 10 |
+| marquages envoyés | 78 | 55 |
+| bêtes apprivoisées | 50 | 41 |
+| bêtes vivantes au jour 30 | 10 | 14 |
+| morts de colons | 209 | 189 |
+| colons vivants | 52 | 62 |
+
+La PR #1 fait donc bien quelque chose — une bête apprivoisée sur cinq
+survivait, elle passe à une sur trois — mais elle laisse l'objectif à
+mi-chemin. Le diagnostic dit pourquoi.
+
+#### Diagnostic : où meurent les bêtes, et pourquoi le repli ne les sauve pas
+
+Un harnais jetable (compteurs de cause par bête, sur le modèle de ceux des
+colons, dans un worktree isolé) a instrumenté la campagne de référence :
+
+- 41 bêtes apprivoisées, 14 vivantes au jour 30 : **27 perdues** ;
+- **27 sur 27 tuées par un pillard**. Zéro de faim, zéro par le feu, zéro
+  autrement. « Le raid tue le bétail » cesse d'être une déduction ;
+- **27 sur 27 mortes dehors**, aucune dans une pièce ;
+- distance moyenne au barycentre des colons à l'instant de la mort : **1,7
+  case**. Les bêtes avaient donc bien rejoint leur point de repli — elles y
+  sont mortes ;
+- à chaque entrée de bande : 131 présences de bêtes, **10 à l'abri** (8 %) ;
+- le barycentre des colons est sous un toit **23 jours-colonie sur 900**.
+
+Le dernier chiffre a mené au vrai constat, qui n'est pas dans `livestock.rs` :
+`map::indoor_count()` reste à **zéro pour 25 graines sur 30**. Ces colonies
+n'ont **aucune pièce**, nulle part. Un recensement du périmètre au dernier jour
+le confirme : l'enceinte 13 × 13 du joueur scripté n'est refermée que **cinq
+fois sur trente**, et les brèches sont soit de l'eau peu profonde (on n'y bâtit
+pas), soit des segments jamais planifiés. L'enclos de la PR #1
+(`livestock::pasture_room`) est donc **dormant** en campagne : seul le repli de
+secours — se serrer à trois cases du barycentre — s'exécute jamais.
+
+Or ce repli de secours n'abrite rien. Le barycentre de colons dispersés au
+travail est un point où il n'y a **personne** ; la bête y attend seule, et
+comme le troupeau paît jusqu'à `livestock::LIVESTOCK_RANGE` = 12 cases de là
+quand la bande entre par un bord de carte, elle est régulièrement dix cases plus
+près qu'un colon. **Trois cases de malus n'effacent pas dix cases d'avance.**
+Un pillard verrouille sa cible à l'entrée (`Job::Attack` ne se rejoue qu'à la
+mort de la cible) et poursuit la bête jusqu'au point de repli.
+
+Dernier découpage, celui qui borne ce que le sim peut gagner : des 20 colonies
+vivantes de la référence, 10 gardent une bête, **5 en ont apprivoisé puis tout
+perdu**, et 5 n'ont **jamais** apprivoisé (pas de gibier à portée, pas assez de
+baies). Le plafond atteignable par une règle d'abri était donc 15/20 ; le reste
+est un sujet de joueur scripté, pas de simulation.
+
+#### Les candidats, une piste à la fois
+
+Soixante graines pour chaque ligne, mêmes conditions. La colonne des morts de
+colons se lit **en face du témoin sans bétail** : c'est la seule comparaison
+honnête, puisqu'un troupeau qui meurt fait baisser ce chiffre sans rien
+améliorer.
+
+| candidat (60 graines) | colonies vivantes | dont avec bétail | bêtes tuées par un pillard | morts de colons | colons vivants |
+|---|---:|---:|---:|---:|---:|
+| référence, malus de 3 cases | 35 | 21 | 54 | 363 | 116 |
+| malus de 6 cases | 38 | 24 | 33 | 373 | 114 |
+| malus de 12 cases | 34 | 23 | 21 | 374 | 108 |
+| **ciblage par rang** | 33 | **25** | **18** | 371 | 106 |
+| errance bornée à 6 cases | 36 | 23 | 47 | 388 | 112 |
+| repli contre le colon le plus proche | 39 | 19 | 60 | 397 | 121 |
+| témoin sans bétail | 35 | — | — | 397 | 101 |
+
+**Gardé : le ciblage par rang.** Une bête de la colonie passe après *tous* les
+colons atteignables, aussi loin soient-ils ; au contact
+(`LIVESTOCK_TARGET_REACH` = 1) elle redevient une cible ordinaire. C'est la
+seule formulation qui dise ce qu'on veut dire — « un pillard vient pour la
+colonie, pas pour son troupeau » — sans dépendre d'une avance en cases qu'on ne
+maîtrise pas. Elle donne le meilleur résultat sur le troupeau *et*, des trois
+variantes de ciblage, la plus faible hausse des morts de colons. Le troupeau
+n'en devient pas invisible : une bête qui bouche une porte se fait encorner, et
+une colonie réduite à son bétail le perd — plus aucun colon atteignable, tous
+les candidats sont des bêtes et elles se trient entre elles.
+
+**Écartés, avec leurs chiffres :**
+
+- *malus porté à 6 puis à 12 cases* (la piste de la fiche) : monotone et
+  utile — 24/38 puis 23/34 — mais toujours en dessous du rang, pour la même
+  hausse de morts. Un malus additif ne peut pas exprimer « en dernier » ;
+- *errance bornée à 6 cases en présence d'une enceinte* : 23/36 pour 47 bêtes
+  tuées et **25 morts de colons de plus** (388 contre 363), plus quatre bêtes
+  mortes hors combat. Une bête plus près de la maison est une bête plus près de
+  la mêlée ;
+- *repli contre le colon le plus proche* (« la bête suit son gardien ») :
+  **pire pour le troupeau** — 19/39 et 60 bêtes tuées. Collée à un colon, la
+  bête redevient exactement le bouclier qu'on voulait lui éviter ;
+- *repli derrière les colons*, à trois cases du barycentre du côté opposé au
+  pillard le plus proche : mesuré sur trente graines, 7 colonies avec bétail sur
+  15 vivantes et 202 morts de colons contre 189. Franchement mauvais ;
+- *repli à l'annonce du raid plutôt qu'à l'arrivée* (la piste de la fiche) :
+  **impossible sans toucher au storyteller**, donc hors périmètre.
+  `EventKind::RaidIncoming` est poussé dans `spawn_raid` **après** que les
+  pillards sont sur la carte : il n'existe aucun préavis auquel réagir.
+
+#### Résultat de la version retenue
+
+| | référence `43e91f2` | + ciblage par rang |
+|---|---:|---:|
+| **30 graines** — colonies vivantes | 21 | 21 |
+| dont avec du bétail | **9** | **16** |
+| marquages / apprivoisements | 56 / 42 | 31 / 27 |
+| bêtes vivantes au jour 30 | 13 | 21 |
+| morts de colons | 187 | 191 |
+| colons vivants | 69 | 65 |
+| **60 graines** — colonies vivantes | 36 | 34 |
+| dont avec du bétail | **20** | **26** |
+| bêtes vivantes au jour 30 | 27 | 38 |
+| morts de colons | 362 | 368 |
+| colons vivants | 122 | 112 |
+
+Les marquages tombent de 56 à 31 parce que le joueur scripté n'apprivoise que
+tant qu'il n'a **aucune** bête (`campaign.rs`) : une bête qui survit lui
+épargne les remises de marque. Le rapport marquages/prises passe de 1,33 à
+1,15, ce qui va dans le même sens que la contre-épreuve en paisible du §11.3.
+
+**Ce qu'il faut dire honnêtement** : les morts de colons montent un peu (+4 sur
+187, +6 sur 362, soit moins de 2 %) et les colons vivants baissent (69 → 65,
+122 → 112). C'est le prix assumé du réglage : le troupeau ne meurt plus à la
+place des colons. Le témoin qui l'autorise est celui sans bétail du tout, joué
+au même commit : **37 colonies vivantes, 394 morts, 108 colons vivants** sur
+soixante graines. Une colonie qui élève reste donc largement gagnante — 368
+morts contre 394, 112 colons contre 108 — elle n'achète simplement plus cette
+avance avec ses bêtes.
+
+#### Régression et validation
+
+Trois assertions neuves dans `crates/sim/tests/balance_livestock.rs`, qui
+**échouent avec l'ancien ciblage et passent avec le nouveau** (vérifié en
+rétablissant le malus de trois cases sans toucher aux tests) :
+
+- `a_raider_walks_past_the_herd_to_reach_a_colonist` : les trois cas de la
+  règle. Une bête douze cases plus près que le premier colon ne détourne pas la
+  bande et vit encore une demi-journée plus tard ; une bête au contact est
+  visée ; plus un colon en vie, et le troupeau y passe ;
+- `raiders_no_longer_pick_off_a_herd_in_the_open` : le décor **à ciel ouvert**,
+  celui de 25 colonies de campagne sur 30 — aucune pièce, donc c'est bien le
+  choix de cible qu'on mesure et pas le repli. Bêtes tuées par un pillard sur
+  60 : **5 → 1**, vivantes 55 → 59, colons perdus 16 → 17 contre 24 sans
+  troupeau ;
+- dans `raids_kill_fewer_livestock_after_the_change`, le décor muré passe de 7
+  bêtes tuées sur 60 à **0**, et le garde-fou est resserré en conséquence.
+
+`livestock_is_only_a_target_at_arms_length` fige la constante.
+`first_raid_is_dangerous_but_survivable`, `colonist_deaths_do_not_rise`, les
+quatre tests de mécanisme du repli et `boars_still_defend` restent verts sans
+modification. `cargo test --workspace`, `cargo clippy --workspace --all-targets
+-- -D warnings` et `cargo fmt --all` passent ; fuzz de trois graines × 20 000
+ticks × six commandes par tick sans panique ni divergence.
+
+Le scénario `demo` de `verify` garde **exactement le même hash**
+(`5fdc5754c55cc434` au tick 10 000, graine 1, carte 64) : il ne contient aucune
+bête apprivoisée, la règle ne s'y déclenche jamais. Aucun contrat, enum, stride
+ou état sérialisé ne change, et le client n'a rien à mettre à jour.
+
+#### Le constat qui reste ouvert, et qui n'est pas du sim
+
+L'enclos de la PR #1 est du code juste qui ne sert presque jamais : le joueur
+scripté ne referme son enceinte que cinq fois sur trente, à cause de l'eau peu
+profonde et de segments jamais planifiés. Tant que `campaign.rs` bâtira une
+enceinte trouée, la campagne mesurera le repli de secours et jamais l'enclos.
+C'est une tâche de joueur scripté — choisir l'emplacement de l'enceinte hors de
+l'eau, ou replier son tracé — et elle vaut la peine : les cinq graines qui
+referment leur mur sont aussi celles où des bêtes sont à l'abri quand la bande
+entre.
