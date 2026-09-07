@@ -839,8 +839,9 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
   au-dessus ne voit que « nouveau transport prêt » (`onReconnect`) ou « abandon » (`onClose`).
   Les commandes émises pendant la coupure ne sont jamais rejouées (le lockstep leur aurait donné
   un autre tick, voir protocole §5) : elles sont comptées et le joueur est prévenu une fois.
-  Un serveur relancé perd ses salles : les clients reviennent alors dans un lobby neuf, ce qui
-  est le comportement attendu tant que les salles ne sont pas persistées.
+  Un serveur relancé perdait ses salles (lobby neuf) jusqu'au 2026-09-07 : depuis, les salles
+  nommées sont persistées et reviennent gelées (vérifié : salle retrouvée en jeu au tick 5 687
+  après un redémarrage, snapshot sauvé au tick 3 600).
 
 - 2026-09-05 : props naturalistes modulaires (client). Catalogue procédural fusionné
   et instancié : tous les éléments et les seize genres d'objets, sols joints,
