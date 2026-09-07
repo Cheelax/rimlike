@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::biome::{Biome, ORE_DIE};
+use crate::biome::{Biome, BiomeTable, ORE_DIE};
 use crate::noise;
 use crate::regions::Regions;
 
@@ -442,6 +442,34 @@ pub const MIN_ROCKS: u32 = 10;
 /// Cases d'eau garanties sur la carte (la mare de l'oasis). Décor pour
 /// l'instant : rien ne se boit ni ne se pêche.
 pub const MIN_WATER: u32 = 8;
+/// Cases de **sol libre** (semables tout de suite) atteignables garanties : le
+/// potager de l'oasis.
+///
+/// **Mesuré avant d'être réglé** (20 graines × 64×64, relevé
+/// `crates/sim/tests/balance_biomes.rs::measure_larder`) : une carte de désert
+/// en offrait **zéro** — `BiomeTable::sand_share` y prend toute la bande de
+/// sol, et les seules cases d'herbe étaient les vingt du bosquet forcé, toutes
+/// occupées par un arbre. Une colonie sans un carré de terre ne peut rien
+/// semer : 30 campagnes sur 30 s'éteignaient par famine (voir
+/// `crates/sim-cli/CAMPAIGN-FINDINGS.md` §13).
+///
+/// **Le chiffre ne vient pas de la ration**, et c'est la surprise de la
+/// mesure. La ration donnerait vingt-cinq : un colon mange à peu près un repas
+/// par jour (`pawn::HUNGER_DECAY`), un repas vaut `farm::RAW_PER_MEAL` unités
+/// crues, une case de culture rend `farm::CROP_YIELD` légumes par
+/// `farm::GROW_TICKS` — quatre légumes par jour à plein régime, donc un peu
+/// moins d'un colon nourri par case. Vingt-cinq cases nourrissent largement une
+/// colonie de trois qui grandit.
+///
+/// Vingt-cinq cases ne l'ont pas sauvée : **1 colonie sur 20**, contre 0 sans
+/// rien. Parce qu'un joueur ne sème pas des cases, il pose un **rectangle**, à
+/// côté de sa colonie — et un potager de vingt-cinq cases déposé en spirale
+/// depuis le centre n'en met que quatre dans ce rectangle. Ce qu'il faut
+/// garantir n'est donc pas une ration mais la **largeur d'une tache** : 49
+/// cases, soit le disque de rayon 3 autour du centre, mettent neuf plants en
+/// terre et font passer la survie à 8/20 (relevé complet et paliers dans
+/// `CAMPAIGN-FINDINGS.md` §13.4 — au-delà de 36 le chiffre plafonne).
+pub const MIN_SOIL: u32 = 49;
 /// En dessous de tant de cases de **terre atteignable** (l'eau ne compte pas :
 /// on ne plante rien dans un lac), la carte ne promet **rien** : la colonie
 /// tient sur un îlot ou dans une poche de roche, et il n'y a matériellement pas
@@ -459,6 +487,10 @@ const MIN_OPEN: u32 = 64;
 const OPEN_PER_TREE: u32 = 48;
 /// Cases de terre atteignable par rocher garanti, même raisonnement.
 const OPEN_PER_ROCK: u32 = 96;
+/// Cases de terre atteignable par case de sol garantie, même raisonnement : la
+/// promesse du potager est bornée par la place, comme celle du bosquet. 392
+/// cases de terre ouvrent droit aux 49, 64 à huit.
+const OPEN_PER_SOIL: u32 = 8;
 /// Rayon (Tchebychev) laissé libre autour du centre : c'est la place des trois
 /// colons du départ (`Sim::spawn_starting_pawns`). Rien de forcé n'y tombe, et
 /// le bosquet posé plus loin est un **disque**, jamais un anneau : le
@@ -480,7 +512,7 @@ impl Map {
     /// (`Map::ensure_resources`). C'est par là que passe le jeu.
     pub fn generate(seed: u64, width: u32, height: u32, biome: Biome) -> Map {
         let mut map = Map::generate_bare(seed, width, height, biome);
-        map.ensure_resources();
+        map.ensure_resources(biome.table());
         map
     }
 
@@ -1210,20 +1242,29 @@ impl Map {
 
     /// Complète la carte pour qu'une colonie y soit jouable, quelle que soit la
     /// table du biome et quelle que soit la graine : au moins `MIN_TREES`
-    /// arbres et `MIN_ROCKS` rochers **atteignables depuis le centre**, et
-    /// `MIN_WATER` cases d'eau sur la carte.
+    /// arbres et `MIN_ROCKS` rochers **atteignables depuis le centre**,
+    /// `MIN_WATER` cases d'eau sur la carte, et `MIN_SOIL` cases de sol libre
+    /// atteignables — le potager.
     ///
     /// Entièrement déterministe et sans hasard : un remplissage depuis le
     /// centre, puis des spirales d'ordre fixe. La génération n'a pas de `Rng`
     /// et n'en prend pas ici.
     ///
-    /// **Sur une carte tempérée, ce complément ne fait rien** : le bruit y
-    /// donne des centaines d'arbres, des dizaines de rochers et plusieurs
-    /// centaines de cases d'eau dès 16×16. Il n'entre en jeu que sur les biomes
-    /// extrêmes (le désert n'a pas un arbre naturel, la calotte pas un seul) et
-    /// sur les cartes minuscules, où la garantie est de toute façon bornée par
-    /// la place disponible.
-    fn ensure_resources(&mut self) {
+    /// **Sur une carte tempérée, ce complément ne fait presque rien** : le
+    /// bruit y donne des centaines d'arbres, des dizaines de rochers et
+    /// plusieurs centaines de cases d'eau dès 16×16. Il n'entre en jeu que sur
+    /// les biomes extrêmes (le désert n'a pas un arbre naturel, la calotte pas
+    /// un seul) et sur les cartes minuscules, où la garantie est de toute façon
+    /// bornée par la place disponible.
+    ///
+    /// Le potager, lui, ne touche **jamais** une carte tempérée : il ne se
+    /// déclenche pas sur le compte du sol trouvé mais sur la **table** du biome
+    /// (`BiomeTable::has_no_soil`), donc seulement là où la composition
+    /// interdit par règle toute case cultivable. Une carte tempérée que le
+    /// bruit aurait laissée sans un carré de terre est un autre problème, et
+    /// celui-là reste ouvert (mesuré : une carte sur quarante en 24×24). Voir
+    /// `tests/balance_biomes.rs::the_soil_floor_never_greens_a_temperate_map`.
+    fn ensure_resources(&mut self, t: BiomeTable) {
         let (cx, cy) = (self.width / 2, self.height / 2);
         let Some(center) = self.nearest_passable(cx, cy) else {
             return;
@@ -1245,6 +1286,64 @@ impl Map {
         let water = self.water_count();
         if water < MIN_WATER {
             self.force_water(center, &seen, MIN_WATER - water);
+        }
+        // En dernier, et **seulement là où la table du biome n'autorise aucune
+        // case cultivable** (`BiomeTable::has_no_soil`) : le potager de
+        // l'oasis. Le compte porte sur le sol **libre**, et le bosquet vient
+        // d'en occuper une partie (un arbre forcé sur du sable laisse de
+        // l'herbe sous lui, mais on n'y sème pas avant de l'avoir coupé).
+        if t.has_no_soil() {
+            let want_soil = MIN_SOIL.min(open / OPEN_PER_SOIL);
+            let soil = self.free_soil_count(&seen);
+            if soil < want_soil {
+                self.force_soil(center, &seen, want_soil - soil);
+            }
+        }
+    }
+
+    /// Cases de sol semables tout de suite et atteignables : du sol
+    /// (`Map::is_soil`), sans élément dessus. C'est la mesure de ce qu'une
+    /// colonie peut mettre en culture le premier jour, donc le déclencheur du
+    /// potager garanti (`MIN_SOIL`).
+    fn free_soil_count(&self, seen: &[bool]) -> u32 {
+        (0..seen.len())
+            .filter(|&i| {
+                seen[i]
+                    && Feature::from_u8(self.features[i]) == Feature::None
+                    && matches!(
+                        Terrain::from_u8(self.tiles[i]),
+                        Terrain::Grass | Terrain::Dirt
+                    )
+            })
+            .count() as u32
+    }
+
+    /// Fait verdir `count` cases de **sable** autour du centre : la source de
+    /// l'oasis.
+    ///
+    /// Seul le sable verdit. Ce n'est pas une commodité, c'est ce qui borne la
+    /// règle à ce qu'elle prétend corriger : une oasis est une source dans le
+    /// sable, et rien ne doit pouvoir dégeler une calotte ni changer le gravier
+    /// d'un piémont de montagne en champ. Une carte sans sable près du centre
+    /// ne reçoit donc rien — la carte ne mentira pas plus qu'elle ne promet.
+    ///
+    /// Le sol change, jamais la franchissabilité : contrairement au bosquet
+    /// (`Map::force_blockers`), rien ici ne peut enfermer une colonie, et
+    /// l'ordre de la spirale suffit à rendre le résultat déterministe.
+    fn force_soil(&mut self, center: (u32, u32), seen: &[bool], count: u32) {
+        let mut left = count;
+        for (x, y) in spiral(self.width, self.height, center.0, center.1) {
+            if left == 0 {
+                break;
+            }
+            if self.get(x, y) != Terrain::Sand
+                || self.feature(x, y) != Feature::None
+                || !seen[self.index(x, y)]
+            {
+                continue;
+            }
+            self.set_terrain(x, y, Terrain::Grass);
+            left -= 1;
         }
     }
 

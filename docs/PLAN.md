@@ -533,8 +533,9 @@ d'alice arrivé chez bob).
   case, `snapshot.biome` informatif, tous les clients construisent par `new_in_biome`, biome au
   HUD ; vérifié : colonie fondée sur un désert du globe, 90 % de sable, 20 arbres du plancher.
   Sélecteur de biome en solo livré le 2026-09-07 (Codex) : neuf biomes fondables à l'accueil,
-  mémorisé, sauvegarde qui garde son biome. Reste : le désert n'est pas survivable (fiche
-  `desert-survivable`, en cours).
+  mémorisé, sauvegarde qui garde son biome. Désert rendu survivable le 2026-09-07 (potager
+  garanti de 49 cases, 0/30 → 14/30 colonies à 30 jours). Reste : banquise et toundra
+  injouables (rien à verdir), plancher de ressources à corriger (fiche `plancher-de-ressources`).
 
 **Reste**
 
@@ -561,6 +562,18 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-07 : le désert a un potager garanti. Le goulot n'était pas « pas assez de terre »
+  mais « aucune » : la bande de sol entièrement sableuse est refusée par `is_soil`, et les vingt
+  cases d'herbe du bosquet forcé portaient toutes un arbre : zéro case semable au tick 0 sur 20
+  graines. Réglage gardé : `MIN_SOIL` = 49 cases de sol libre atteignables, du sable verdi en
+  herbe par la même spirale déterministe, déclenché par la **table du biome** (`has_no_soil`) et
+  non par le sol trouvé, donc aucune carte tempérée touchée (hashes tempérés épinglés inchangés).
+  25 cases ne suffisaient pas (1/20) : c'est la largeur de la tache dans le rectangle semé qui
+  compte, pas la ration. Rejetés, mesurés : buissons du désert (rien de garanti), sable cultivable
+  au ralenti (la première récolte arrive après la faim de départ). Désert : 0/30 → 14/30 colonies
+  vivantes à 30 jours, tempéré 20/30 identique. Reste : banquise et toundra (rien à verdir),
+  une graine de désert sur vingt (centre dans une cuvette de gravier).
 
 - 2026-09-07 : la relecture indépendante paie. `codex exec review` sur le commit des salles
   persistantes a trouvé un défaut réel : un snapshot d'hôte au tick hors des entiers sûrs

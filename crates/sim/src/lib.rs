@@ -63,7 +63,8 @@ pub use items::{ItemKind, ItemStack};
 pub use jobs::{Regrow, Reservation};
 pub use livestock::{MAX_LIVESTOCK, TAME_TICKS};
 pub use map::{
-    Designation, Feature, MIN_ROCKS, MIN_TREES, MIN_WATER, Map, ROOM_MAX_TILES, Rect, Terrain, Zone,
+    Designation, Feature, MIN_ROCKS, MIN_SOIL, MIN_TREES, MIN_WATER, Map, ROOM_MAX_TILES, Rect,
+    Terrain, Zone,
 };
 pub use pawn::{Faction, Job, Pawn};
 pub use research::{ResearchState, Tech};
