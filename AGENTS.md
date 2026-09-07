@@ -65,6 +65,14 @@ de fuzz courte. Référence mesurée le
 2026-09-05 sur carte 128×128 en release : ~2,2 M ticks/s à vide, ~0,6 M en pleine
 activité, ~0,2 M avec 15 colons. Toute régression nette sur ces chiffres se justifie.
 
+## Tableau des tâches
+
+`docs/tasks/` : une fiche par tâche ouverte, réservable par n'importe quel agent (Claude,
+Codex, humain) par un commit qui passe `status: open` à `claimed`, travail sur une branche
+`task/<slug>`, livraison par PR, fusion et journal par l'orchestrateur. Règles et format dans
+`docs/tasks/README.md`. Un écrivain par fichier : deux fiches ouvertes ont des périmètres
+disjoints.
+
 ## Ordre de travail attendu
 
 1. Modifier le Rust → `cargo test --workspace` → `cargo clippy --workspace --all-targets -- -D warnings`.
