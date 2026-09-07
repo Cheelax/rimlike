@@ -13,6 +13,8 @@
  * - JSON illisible, forme inattendue, ou `WorldState.fromJSON` qui échoue
  *   (colonie sur une case qui n'existe plus, snapshot en base64 invalide) →
  *   même traitement, prudence : on ne devine pas un état à moitié lisible ;
+ * - entrée incohérente dans `rooms` → seule cette salle est ignorée et
+ *   journalisée, le monde et les autres salles sont chargés normalement ;
  * - `version: 1` (identité v1 = le nom, `docs/protocol.md` §11.8) → accepté et
  *   **migré** par `WorldState.fromJSON` : chaque nom de propriétaire devient
  *   un joueur avec un jeton neuf. La prochaine sauvegarde réécrit le fichier
@@ -264,7 +266,7 @@ export class WorldStore {
 
     try {
       const state = WorldState.fromJSON(parsed.state, { ...options, world });
-      const rooms = readSavedRooms(parsed.rooms);
+      const rooms = readSavedRooms(parsed.rooms, this.log);
       this.loadedRooms = rooms;
       if (parsed.version === 1) {
         // Migration v1 → identité par jeton (docs/protocol.md §11.8) : chaque

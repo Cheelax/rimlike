@@ -470,6 +470,11 @@ Détails de la vie d'une salle :
   disparaît ; les commandes postérieures au snapshot sauvé ne sont pas reprises.
   `WORLD_PERSIST=0` désactive aussi cette conservation. Les salles « case »
   gardent leur cycle et leur horloge monde (§11), sans ce TTL.
+  La conservation ignore silencieusement les snapshots aux métadonnées invalides
+  (tick et graine entiers sûrs ≥ 0, dimensions entières de 1 à 4096, octets conservés
+  plafonnés à 8 388 608, en plus de la limite réseau `MAX_SNAPSHOT_BYTES`) et, à la
+  lecture, chaque entrée de salle incohérente est ignorée et journalisée sans
+  mettre le fichier commun en quarantaine.
 - `start` par un non-host → `not_host`. `start` sur une salle démarrée →
   `already_running`. `command`, `hash`, `snapshot` ou `resync` avant `start` →
   `not_running`.
