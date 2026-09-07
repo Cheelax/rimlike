@@ -255,6 +255,25 @@ impl BiomeTable {
         share(NOISE_SPAN, 1000 - self.grass_share)
     }
 
+    /// Cette table peut-elle rendre **une seule case cultivable** (herbe ou
+    /// terre nue, voir `Map::is_soil`) ?
+    ///
+    /// Trois tables en sont incapables, pour deux raisons : le désert, dont le
+    /// sable prend toute la bande de sol (`sand_noise` rejoint `gravel_noise`,
+    /// quelle que soit l'humidité) ; la banquise et la toundra, dont le sol est
+    /// blanchi (`snow`) — et « on ne cultive pas la neige »
+    /// (`tests/biomes.rs::snow_is_a_ground_not_a_weather`).
+    ///
+    /// Cette question ne dépend **que de la table**, pas de la graine : c'est
+    /// ce qui permet à `Map::ensure_resources` de garantir un potager
+    /// (`map::MIN_SOIL`) là où le biome n'en promet aucun, sans jamais toucher
+    /// une carte tempérée — même une carte tempérée que le bruit a laissée
+    /// pauvre. Le désert n'est pas une carte malchanceuse, c'est une carte dont
+    /// la **règle** interdit de semer : seule celle-là reçoit une oasis.
+    pub fn has_no_soil(self) -> bool {
+        self.snow || self.sand_noise() >= self.gravel_noise()
+    }
+
     /// Au-dessus de cette humidité, l'herbe est luxuriante.
     pub fn lush_moisture(self) -> i32 {
         let grass = self.grass_moisture();
@@ -366,6 +385,17 @@ pub const GRASSLAND: BiomeTable = BiomeTable {
 /// ceux du bosquet forcé** près du centre — l'oasis (voir
 /// `Map::ensure_resources`). La densité reste écrite pour qu'un désert moins
 /// sableux, un jour, en porte quelques-uns.
+///
+/// Cette table est aussi la seule, avec la banquise et la toundra, à ne pouvoir
+/// rendre **aucune case cultivable** (`BiomeTable::has_no_soil`) : le sable
+/// ferme la bande de sol, et `Map::is_soil` le refuse. C'est pourquoi
+/// `Map::ensure_resources` y garantit un potager (`map::MIN_SOIL`) en plus du
+/// bosquet et de la mare — sans lui, la campagne éteignait 30 colonies sur 30
+/// par famine (`crates/sim-cli/CAMPAIGN-FINDINGS.md` §13). **Ce n'est pas
+/// `bush_density` qui a été relevé**, et le rejet est chiffré là aussi : rouvrir
+/// la bande de sol pour qu'un buisson ait de l'herbe fait tomber le sable sous
+/// sa borne et ne garantit toujours rien — la survie devient une loterie de
+/// graine.
 pub const DESERT: BiomeTable = BiomeTable {
     tree_density: 20,
     bush_density: 0,
@@ -454,6 +484,30 @@ mod tests {
             assert_eq!(*b as usize, i);
             assert_eq!(Biome::from_u8(i as u8), *b);
         }
+    }
+
+    /// Trois biomes seulement interdisent par règle toute case cultivable, et
+    /// ce sont eux — et eux seuls — qui reçoivent le potager garanti de
+    /// `Map::ensure_resources`. La liste est figée ici exprès : si une table
+    /// retouchée y entre ou en sort, ce test le dit, parce que ça change ce que
+    /// la génération complète.
+    #[test]
+    fn only_the_sand_and_the_snow_forbid_farming() {
+        for b in Biome::ALL {
+            let t = b.table();
+            let expected = matches!(b.for_colony(), Biome::Desert | Biome::Ice | Biome::Tundra);
+            assert_eq!(
+                t.has_no_soil(),
+                expected,
+                "{} : has_no_soil() = {}",
+                b.name(),
+                t.has_no_soil()
+            );
+        }
+        // Le désert, c'est le sable qui ferme la bande de sol ; la toundra et
+        // la banquise, c'est la neige.
+        assert!(DESERT.sand_noise() >= DESERT.gravel_noise() && !DESERT.snow);
+        assert!(TUNDRA.snow && TUNDRA.sand_noise() < TUNDRA.gravel_noise());
     }
 
     /// Aucune table ne peut demander plus de plantes que le dé n'a de faces,

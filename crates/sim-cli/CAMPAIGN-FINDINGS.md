@@ -3104,3 +3104,195 @@ Les tests du CLI vérifient aussi les sorties texte et JSON. Les durées de camp
 Relevés bruts disponibles dans ce worktree hôte : `/tmp/enceinte-before.json` et
 `/tmp/enceinte-after.json` ; les chiffres par graine ci-dessus restent dans le dépôt.
 Aucun fichier de `crates/sim` modifié ; aucun commit ni push depuis cette sandbox.
+
+## 13. Un désert survivable : oasis du 2026-09-07
+
+**14/30 colonies vivantes au jour 30 en désert, contre 0/30 avant, pour 20/30
+en forêt tempérée sur les mêmes graines : objectif « au moins la moitié du
+tempéré » (≥ 10/30) atteint.** La forêt tempérée, elle, ne bouge pas d'un
+colon. Fiche : `docs/tasks/desert-survivable.md`.
+
+### 13.1 Protocole
+
+Arbre de la session, base **`347d8ec`**. Mêmes commandes avant et après, le
+seul écart étant `map::MIN_SOIL` (0 = plancher inerte, 49 = oasis) :
+
+```sh
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 6 --json
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 4 --json
+```
+
+Graines 1 à 30, 30 jours, carte 64×64, difficulté normale, calendrier au jour 0,
+climat tempéré par défaut (120 dixièmes de °C) : **le désert de cette mesure est
+sableux, pas brûlant** — la température vient de `--climate`, pas du biome
+(`crates/sim/src/biome.rs`). `campaign.rs` n'a pas été touché : un autre agent y
+travaillait, la mesure passe donc par le binaire tel quel.
+
+Le relevé fin est doublé d'un banc à part, `crates/sim/tests/balance_biomes.rs`,
+avec un **joueur scripté maigre** (zones, coupe, récolte, feu de camp, chasse ;
+ni enceinte, ni lit, ni arc, ni troc). Il ne remplace pas la campagne : il isole
+la question de la nourriture, et il tient dans un test.
+
+### 13.2 Le goulot : zéro case cultivable, pas « pas assez »
+
+`measure_larder` (20 graines, 64×64, au tick 0) — c'est la mesure qui a tranché :
+
+| biome | cases semables au jour 1 | buissons | dans le potager du joueur |
+|---|---|---|---|
+| forêt tempérée | 0 à 2 981 (moy. 1 942) | 0 à 66 (moy. 35) | 0 à 25 (moy. 13) |
+| désert **avant** | **0 partout** | **0 partout** | **0 partout** |
+| désert **après** | 49 partout | 0 partout | 8 à 14 (moy. 9) |
+
+Le désert n'avait pas « peu » de terre : il n'en avait **aucune**.
+`BiomeTable::sand_share` y vaut 1 000, donc `sand_noise()` rejoint
+`gravel_noise()` et toute la bande de sol est du sable — que `Map::is_soil`
+refuse. Les vingt seules cases d'herbe étaient celles du bosquet forcé, et un
+arbre était posé dessus : `Sim::can_sow` exige une case libre. Les colons
+n'avaient donc que la chasse (2 à 4 bêtes sur la carte) et mouraient de faim :
+**90 morts de famine sur 30 graines, aucune colonie ne voyait le jour 10**, donc
+aucun raid.
+
+`measure_trajectories` le montre jour par jour : une colonie tempérée met
+**20 plants** en terre et garde 100 à 400 unités de vivres ; le désert d'avant
+n'en met aucun.
+
+### 13.3 La piste gardée : le potager garanti (`MIN_SOIL`)
+
+`Map::ensure_resources` promettait déjà des arbres, des rochers et de l'eau
+atteignables. Elle promet maintenant aussi **49 cases de sol libre**, posées par
+la même spirale déterministe depuis le centre : `Map::force_soil` change du
+**sable** en herbe, et rien d'autre — pas la neige d'une calotte, pas le gravier
+d'un piémont. Le sol change, jamais la franchissabilité : contrairement au
+bosquet, l'oasis ne peut enfermer personne.
+
+Le déclencheur est le point délicat. Il ne regarde **pas** le sol trouvé sur la
+carte, mais la **table du biome** (`BiomeTable::has_no_soil`) : seul un biome dont
+la règle interdit toute case cultivable reçoit une oasis. Une carte tempérée
+malchanceuse est un autre problème, et cette tranche ne l'ouvre pas.
+
+### 13.4 Les rejets, chiffrés
+
+Survie mesurée sur le banc de `balance_biomes.rs`, alors réglé sur **20 graines
+× 30 jours en 64×64** — le format de la campagne, gardé le temps de comparer les
+pistes entre elles. Le témoin tempéré y sort à **9/20** dans tous les cas
+(joueur maigre), et il n'a jamais bougé d'une piste à l'autre sauf là où c'est
+noté. Le fichier livré tourne depuis à 24×24 sur dix jours, pour tenir dans
+`cargo test` en `debug` (voir §13.6) : ses chiffres ne se comparent pas
+directement à cette colonne.
+
+| piste | survie désert | pourquoi rejetée |
+|---|---|---|
+| rien (référence) | 0/20 | — |
+| `MIN_SOIL` = 25 | **1/20** | 25 cases dispersées ne mettent que **4 plants** dans le rectangle 5×5 que le joueur sème : la colonie vit au jour le jour (0 à 50 de vivres) et s'éteint quand même. **Le nombre qui compte n'est pas la ration, c'est la largeur de la tache.** |
+| `MIN_SOIL` = 36 / **49** / 64 / 81 / 121 | 7 / **8** / 5 / 9 / 7 sur 20 | plateau : au-delà de 36 le potager tombe dans le rectangle et le chiffre ne bouge plus (±2 est le bruit d'un tirage à 20 graines). **49 gardé** : le plus petit disque franc (rayon 3) au-dessus de la falaise. |
+| buissons du désert (`bush_density` 0 → 60, `sand_share` 1 000 → 500, `grass_share` 150 → 400) | 7/20 | il faut **rouvrir la bande de sol** pour qu'un buisson ait de l'herbe où pousser : le sable tombe de 700-950 à **615-923 pour mille** (la borne de `biomes.rs` devrait suivre), et surtout ça ne **garantit rien** — les cases semables vont de **0** à 1 734 selon la graine. Un désert jouable une fois sur deux reste un désert injouable. |
+| sable cultivable **au ralenti** (`is_soil` accepte `Sand`, pousse divisée par deux) | **1/20** | tout le désert devient un champ (2 402 à 3 996 cases semables, 18 sur 25 dans le potager) et la colonie meurt quand même : la pousse divisée par deux repousse la **première récolte au jour 3**, quand la faim des colons de départ s'épuise vers le jour 1 et que rien — aucun buisson — ne fait le pont. |
+| le même, **à pleine vitesse** | 8/20 | marche, mais ce n'est plus un désert : il devient meilleure terre que la forêt tempérée (dont le minimum de cases semables est 0), et il **déplace le témoin** — le tempéré passe à 10/20 avec une autre liste de graines, parce que toutes les plages de tous les biomes deviennent cultivables. |
+| plancher déclenché sur le **sol trouvé** plutôt que sur la table | (idem 49) | il verdissait **1 carte tempérée sur 40 en 24×24** (graine 26, six cases). Remplacé par `BiomeTable::has_no_soil` : zéro carte tempérée touchée, à **toutes** les tailles (mesuré 7 tailles × 40 graines). |
+
+### 13.5 Avant → après, campagne 30 graines × 30 jours
+
+| | désert avant | désert après | tempéré avant | tempéré après |
+|---|---|---|---|---|
+| colonies vivantes | **0/30** | **14/30** | 20/30 | 20/30 |
+| colons vivants au total | 0 | 45 | 61 | 61 |
+| colons au jour 10 | 0 | 63 | 90 | 90 |
+| morts de famine | **90** | **29** | 7 | 7 |
+| morts au raid | 0 | 123 | 165 | 165 |
+| morts de blessures | 0 | 25 | 28 | 28 |
+| jours de vivres (moy.) | 0,0 | 2,0 | 13,9 | 13,9 |
+
+Le tempéré est **identique chiffre pour chiffre**, liste des graines survivantes
+comprise : la génération tempérée n'a pas bougé. Côté désert, la famine ne
+disparaît pas (29 morts) mais elle cesse d'être fatale à la colonie ; ce qui tue
+désormais, c'est le raid — comme en tempéré. Les vivres restent maigres (2,0
+jours contre 13,9) : **le désert reste dur, il n'est plus impossible.**
+
+### 13.6 Ce que la mesure laisse ouvert
+
+- **Une graine sur vingt reste condamnée** : sur la 18 en 64×64, le centre tombe
+  dans une cuvette de gravier, le sable le plus proche est à cinq cases, et
+  l'oasis se pose de côté — le potager promis existe, mais pas là où le joueur
+  sème. Piste non essayée : verdir aussi le gravier du piémont en terre nue.
+- **La banquise et la toundra ne gagnent rien** : `has_no_soil` les vise aussi,
+  mais elles n'ont pas une case de sable à verdir (leur sol est blanchi), et le
+  banc les laisse à **0/20** et **4/20**. Hors périmètre de cette tranche.
+- **Une carte tempérée sans terre reste possible** (1 sur 40 en 24×24) : le
+  plancher ne la regarde plus. C'est un constat, pas une régression.
+- **Le banc livré tourne à 24×24 sur dix jours**, et c'est un compromis de coût
+  mesuré : quarante colonies en 64×64 sur 30 jours coûtent 40 s en `release`
+  mais **sept minutes en `debug`**, quand le reste de la suite du sim tient en
+  190 s au total et que son fichier le plus lourd (`balance_livestock`) en
+  demande 53. À 24×24 sur dix jours le signal est intact — la famine tombe avant
+  le jour 10 : **0/20 sans le potager, 20/20 avec**, témoin tempéré 18/20 — et le
+  fichier coûte 90 s. Le chiffre de référence de la tranche, celui qui dit de
+  combien le désert reste plus dur que la forêt, reste celui de la campagne en
+  64×64 sur 30 jours. Le test évite aussi de jouer le témoin quand il n'en a pas
+  besoin : dès que le désert passe la moitié des graines en absolu, il a passé la
+  moitié du tempéré quel qu'il soit.
+
+### 13.7 Par graine, désert avant → après
+
+| graine | colons fin | famine | raid | jours de vivres |
+|---|---|---|---|---|
+| 1 | 0 → 0 | 3 → 0 | 0 → 2 | 0,0 → 0,0 |
+| 2 | 0 → 4 | 3 → 0 | 0 → 6 | 0,0 → 3,8 |
+| 3 | 0 → 0 | 3 → 3 | 0 → 0 | 0,0 → 0,0 |
+| 4 | 0 → 4 | 3 → 1 | 0 → 5 | 0,0 → 0,3 |
+| 5 | 0 → 0 | 3 → 0 | 0 → 6 | 0,0 → 0,0 |
+| 6 | 0 → 0 | 3 → 3 | 0 → 0 | 0,0 → 0,0 |
+| 7 | 0 → 5 | 3 → 0 | 0 → 5 | 0,0 → 1,5 |
+| 8 | 0 → 0 | 3 → 0 | 0 → 3 | 0,0 → 0,0 |
+| 9 | 0 → 3 | 3 → 0 | 0 → 5 | 0,0 → 8,1 |
+| 10 | 0 → 0 | 3 → 3 | 0 → 0 | 0,0 → 0,0 |
+| 11 | 0 → 0 | 3 → 1 | 0 → 4 | 0,0 → 0,0 |
+| 12 | 0 → 0 | 3 → 2 | 0 → 1 | 0,0 → 0,0 |
+| 13 | 0 → 4 | 3 → 0 | 0 → 4 | 0,0 → 3,7 |
+| 14 | 0 → 1 | 3 → 0 | 0 → 7 | 0,0 → 1,5 |
+| 15 | 0 → 0 | 3 → 4 | 0 → 2 | 0,0 → 0,0 |
+| 16 | 0 → 0 | 3 → 0 | 0 → 6 | 0,0 → 0,0 |
+| 17 | 0 → 0 | 3 → 3 | 0 → 2 | 0,0 → 0,0 |
+| 18 | 0 → 2 | 3 → 0 | 0 → 8 | 0,0 → 0,5 |
+| 19 | 0 → 0 | 3 → 0 | 0 → 2 | 0,0 → 0,0 |
+| 20 | 0 → 0 | 3 → 0 | 0 → 7 | 0,0 → 0,0 |
+| 21 | 0 → 2 | 3 → 2 | 0 → 5 | 0,0 → 11,8 |
+| 22 | 0 → 3 | 3 → 1 | 0 → 4 | 0,0 → 0,9 |
+| 23 | 0 → 0 | 3 → 0 | 0 → 6 | 0,0 → 0,0 |
+| 24 | 0 → 4 | 3 → 0 | 0 → 6 | 0,0 → 2,4 |
+| 25 | 0 → 0 | 3 → 3 | 0 → 0 | 0,0 → 0,0 |
+| 26 | 0 → 3 | 3 → 0 | 0 → 7 | 0,0 → 10,0 |
+| 27 | 0 → 0 | 3 → 0 | 0 → 5 | 0,0 → 0,0 |
+| 28 | 0 → 3 | 3 → 0 | 0 → 7 | 0,0 → 8,6 |
+| 29 | 0 → 5 | 3 → 0 | 0 → 4 | 0,0 → 3,8 |
+| 30 | 0 → 2 | 3 → 3 | 0 → 4 | 0,0 → 1,8 |
+
+Les trois colons de départ mouraient **tous** de faim sur les trente graines
+d'avant, d'où les 3 partout dans la colonne « famine ». Après, quatorze graines
+finissent avec des colons debout, et les morts se déplacent vers la colonne
+« raid » — la colonie vit désormais assez longtemps pour être attaquée. Six
+graines (3, 6, 10, 15, 25) restent des famines sèches sans un seul raid : la
+colonie s'éteint encore avant que le storyteller ne l'ait remarquée.
+
+### 13.8 Vérification
+
+`cargo fmt --all -- --check`, `cargo test --workspace` (**364 tests réussis**,
+33 cibles, 0 échec — 359 avant la tranche, plus les cinq tests ajoutés ici),
+`cargo clippy --workspace
+--all-targets -- -D warnings`, `verify --seed 1 --size 64 --ticks 10000
+--scenario demo` (OK), `fuzz --seed 1 --size 24 --ticks 20000 --runs 3
+--commands-per-tick 6` (3 runs OK) plus 10 runs supplémentaires en graine 7 et,
+parce que le fuzz tire son biome par run (`fuzzgen::biome_for_run`), deux runs
+**explicitement en désert** (graines 21 et 25, en 24×24 et 64×64) : OK.
+
+Tests ajoutés : `desert_colonies_survive_often_enough` (échoue avant, 0/20 contre
+un témoin à 18/20 ; passe après, 20/20), `a_desert_always_has_a_plot_to_sow`,
+`the_soil_floor_never_greens_a_temperate_map` (7 tailles × 40 graines),
+`the_oasis_keeps_the_desert_a_desert`, et
+`biome::tests::only_the_sand_and_the_snow_forbid_farming`. Six relevés
+`#[ignore]` gardés pour recalibrer : `measure_larder`, `measure_trajectories`,
+`measure_desert_vs_temperate`, `measure_survival`, `measure_desert_signature`,
+`measure_greening`.
+
+Aucune borne de `tests/biomes.rs` n'a bougé : `each_biome_has_its_signature`
+mesure la composition nue (`Map::generate_bare`), que cette tranche ne touche
+pas. `campaign.rs`, `farm.rs`, `climate.rs` et `jobs.rs` sont inchangés.
