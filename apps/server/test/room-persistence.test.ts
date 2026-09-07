@@ -153,14 +153,18 @@ describe("salles nommées après redémarrage", () => {
     await start(alice);
     await snapshot(alice);
     const room = first.server.room("démo partagée")!;
-    // L'événement de fermeture du client suit celui qui retire le joueur côté serveur.
+    const origin = time.at;
+    // Les deux sockets émettent « close » indépendamment : celui du client ne
+    // garantit pas encore le retrait du joueur ni le gel côté serveur.
     alice.close();
     await alice.waitUntil("fermeture", () => alice.closed);
-    expect(room.isEmpty).toBe(true);
+    // waitUntil n'est réveillé que par le client, désormais fermé. Sonder l'état
+    // serveur avant d'avancer l'horloge ; aucun délai fixe ne prouve le départ.
+    await expect.poll(() => room.isEmpty, { timeout: 4000 }).toBe(true);
     expect(first.clocks.size).toBe(0);
     time.advance(1000);
     await first.server.close();
-    const origin = (await disk()).rooms![0]!.frozenAt;
+    expect((await disk()).rooms![0]!.frozenAt).toBe(origin);
     const second = await boot();
     time.advance(1000);
     await second.server.close();
