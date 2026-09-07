@@ -12,6 +12,8 @@ import { eventTarget, type EventFocusCtx, type EventTarget } from "./eventFocus"
 import { factionDefinite } from "./factions";
 import { FactionsPanel } from "./FactionsPanel";
 import { HelpPanel } from "./HelpPanel";
+import { FirstStepsPanel } from "./FirstStepsPanel";
+import { FIRST_STEPS, loadFirstSteps, nextStep, saveFirstSteps, type FirstStepId } from "./firstSteps";
 import { JournalPanel, type JournalEntry, type JournalFilter } from "./JournalPanel";
 import { Minimap, type MinimapHandle } from "./Minimap";
 import { decodeResearch, researchPercent, TECH_METALLURGY, TECHS } from "./research";
@@ -699,6 +701,26 @@ export function App() {
     igniteArmedRef.current = v;
     setIgniteArmedState(v);
   };
+  const [firstStepsVisible, setFirstStepsVisible] = useState(() => loadFirstSteps() === null);
+  const firstStepsActiveRef = useRef(firstStepsVisible);
+  const [firstStepsCompleted, setFirstStepsCompleted] = useState<readonly FirstStepId[]>([]);
+  const firstStepsCompletedRef = useRef<readonly FirstStepId[]>([]);
+  const refreshFirstStepsRef = useRef<(() => void) | null>(null);
+  const hideFirstSteps = () => {
+    firstStepsActiveRef.current = false;
+    setFirstStepsVisible(false);
+    saveFirstSteps(firstStepsCompletedRef.current.length === FIRST_STEPS.length ? "terminé" : "masqué");
+  };
+  const reviewFirstSteps = () => {
+    saveFirstSteps(null);
+    firstStepsActiveRef.current = true;
+    firstStepsCompletedRef.current = [];
+    setFirstStepsCompleted([]);
+    setFirstStepsVisible(true);
+    closePanel();
+    // Relire aussi en pause, sans attendre un nouveau tick du Worker.
+    refreshFirstStepsRef.current?.();
+  };
   const [notice, setNotice] = useState<string | null>(null);
   /** Mode d'affichage des températures (touche I, bouton « Chaleur »). */
   const [heatMode, setHeatMode] = useState(false);
@@ -1053,6 +1075,27 @@ export function App() {
     let selected: number | null = null;
     /** Dernier `frame` reçu : seule source de l'état affiché. */
     let lastFrame: FrameMessage | null = null;
+    let firstStepsFeatures: Uint8Array | null = null;
+    let firstStepsOverlays: { zones: Uint8Array; designations: Uint8Array } | null = null;
+    firstStepsCompletedRef.current = [];
+    setFirstStepsCompleted([]);
+    const refreshFirstSteps = () => {
+      if (isMulti || worldSession !== null || !firstStepsActiveRef.current || !lastFrame || !firstStepsFeatures || !firstStepsOverlays) return;
+      const step = nextStep(lastFrame, { features: firstStepsFeatures, ...firstStepsOverlays }, firstStepsCompletedRef.current);
+      const count = step === null ? FIRST_STEPS.length : FIRST_STEPS.indexOf(step);
+      if (count !== firstStepsCompletedRef.current.length) {
+        const completed = FIRST_STEPS.slice(0, count).map((entry) => entry.id);
+        firstStepsCompletedRef.current = completed;
+        setFirstStepsCompleted(completed);
+      }
+      if (step === null) {
+        saveFirstSteps("terminé");
+        firstStepsActiveRef.current = false;
+        // Garder la dernière coche visible jusqu'à « Masquer » ; au prochain
+        // lancement, la préférence mémorisée suffit à ne plus ouvrir le guide.
+      }
+    };
+    refreshFirstStepsRef.current = refreshFirstSteps;
     let prevPawns: Int32Array | null = null;
     let curPawns: Int32Array = new Int32Array(0);
     /** Instant de réception du dernier `frame`, pour l'interpolation. */
@@ -1295,6 +1338,7 @@ export function App() {
     // --- Le Worker de simulation ---
     const bridge = new SimBridge({
       onMap: (m) => {
+        firstStepsFeatures = m.features;
         renderer.setMap(m.width, m.height, m.tiles, m.features);
         // Même rappel que le fond 3D : le fond de la mini-carte ne se
         // recalcule, lui aussi, qu'au changement de `mapVersion` (mission
@@ -1315,7 +1359,10 @@ export function App() {
         researchBenchCount = benches;
         forgeCount = forges;
       },
-      onOverlays: (m) => renderer.setOverlays(m.zones, m.designations),
+      onOverlays: (m) => {
+        firstStepsOverlays = m;
+        renderer.setOverlays(m.zones, m.designations);
+      },
       onIndoor: (m) => renderer.setIndoor(m.indoor),
       onFire: (m) => {
         renderer.setFire(m.fire);
@@ -1343,6 +1390,7 @@ export function App() {
         lastFrameAt = now;
         curPawns = f.pawns;
         lastFrame = f;
+        refreshFirstSteps();
         if (f.hash !== null) lastHash = f.hash;
         renderer.syncItems(f.items);
         renderer.syncBlueprints(f.blueprints);
@@ -2390,6 +2438,7 @@ export function App() {
       // `map` : la mini-carte ne doit pas repeindre celle de la partie d'avant
       // (voir l'effet `[running]` juste avant le `return` du composant).
       lastMapRef.current = null;
+      refreshFirstStepsRef.current = null;
     };
   }, [session]);
 
@@ -2835,6 +2884,10 @@ export function App() {
           </div>
           {activePanel === "stock" && <StockPanel stored={stats.stored} freshness={stats.foodFreshness} onClose={closePanel} />}
 
+          {session?.mode === "solo" && worldSession === null && firstStepsVisible && (
+            <FirstStepsPanel completed={firstStepsCompleted} onHide={hideFirstSteps} onTool={setTool} onCraft={() => setShowCraft(true)} />
+          )}
+
           <ColonistBar
             colonists={stats.colonistBadges}
             selection={stats.selection}
@@ -3159,6 +3212,9 @@ export function App() {
               )}
               {stats.difficulty === DIFFICULTY.Peaceful && (
                 <div className="help">paisible : plus aucun raid, le reste de la vie de la colonie continue</div>
+              )}
+              {session?.mode === "solo" && worldSession === null && (
+                <button className="wide" onClick={reviewFirstSteps}>Revoir les premiers pas</button>
               )}
               <div className="panel-section">Pause automatique</div>
               {multi ? (

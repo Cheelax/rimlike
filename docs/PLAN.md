@@ -520,6 +520,11 @@ d'alice arrivé chez bob).
   incendie mettent la partie en pause (marchand désactivé par défaut), une seule pause par salve,
   toast « · pause » cliquable, réglable dans Options et mémorisé ; module `autoPause.ts` pur.
 
+- **Premiers pas** (2026-09-07, client, solo seulement, Codex) : panneau discret qui suit sept
+  étapes lues dans le frame (stockage, coupe, feu, un lit par colon, culture, poste et arcs,
+  enceinte avec porte), touches et boutons tirés des mêmes constantes que la barre, masquable
+  et mémorisé, « Revoir les premiers pas » dans Options ; module `firstSteps.ts` pur, 26 tests.
+
 **Reste**
 
 - Mods de contenu : pas commencés.

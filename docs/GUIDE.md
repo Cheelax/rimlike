@@ -56,6 +56,9 @@ dose de menace du storyteller pour la partie qui commence (voir §4). Une carte
 de 128×128 se génère aussitôt, sans réseau : pause et vitesses de jeu
 disponibles.
 
+À la première partie solo, le panneau « Premiers pas » guide vos premiers aménagements et coche chaque étape franchie.
+« Masquer » mémorise votre choix ; Options → « Revoir les premiers pas » le réaffiche à tout moment en solo.
+
 Le même écran d'accueil propose aussi le multijoueur (salle nommée) et le
 monde partagé ; voir §6 pour la suite (rejoindre une salle, désynchronisation,
 le globe, colonies gelées).
