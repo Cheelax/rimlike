@@ -442,8 +442,8 @@ fn smelting_has_its_own_job_code() {
 // L'épée
 // ----------------------------------------------------------------------
 
-/// Quatre lingots font une épée, au poste de fabrication (pas à la forge), et
-/// un colon la préfère à tout ce qu'il connaît.
+/// `craft::METAL_PER_SWORD` lingots font une épée, au poste de fabrication (pas
+/// à la forge), et un colon la préfère à tout ce qu'il connaît.
 #[test]
 fn swords_are_crafted_and_equipped() {
     let mut s = clearing();
@@ -472,7 +472,7 @@ fn swords_are_crafted_and_equipped() {
     assert_eq!(
         s.colony_total(ItemKind::Metal),
         6 - METAL_PER_SWORD,
-        "l'épée coûte quatre lingots"
+        "l'épée coûte son compte de lingots"
     );
     assert!(
         s.events()

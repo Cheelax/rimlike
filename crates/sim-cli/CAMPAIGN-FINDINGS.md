@@ -2108,6 +2108,16 @@ la détestation. Proposition : compter, en face, la réputation **perdue** par
 raid, pour savoir si +goodwill par tribut peut seulement compenser le rythme
 des bandes.
 
+**La chaîne du métal est réglée jusqu'au bout, le 2026-09-06.** Le §11.1 a
+d'abord corrigé le joueur scripté (forge hors entrepôt, rayon de minage,
+entrepôt 6×6) : la colonne « lingots » est passée de 0 à 16, mais la colonne
+« épées » est restée à 1 sur quatorze colonies à la métallurgie. Le reste était
+un défaut du **sim**, pas du joueur, et il est décrit au §11.4 : une recette
+exigeait ses ingrédients **dans une seule pile**. Sur les mêmes trente graines,
+la colonne se lit maintenant **10 forges, 24 lingots, 5 épées**, dont
+**6 portées** par les survivants au lieu d'une. Le tableau ci-dessus reste tel
+quel : c'est la mesure d'avant, elle sert de point de comparaison.
+
 ### 10.3 État des constats ouverts
 
 - n°2 (graines lentes) : **traité**, §10.1.
@@ -2127,7 +2137,9 @@ des bandes.
 
 Cette tranche corrige **l'instrument, pas le jeu** : tout tient dans
 `crates/sim-cli/src/campaign.rs`, aucune constante de `crates/sim` n'est
-touchée. Les trois constats visés (n°1 automne-hiver, n°3 chaîne du métal,
+touchée. (Une exception, ajoutée en fin de §11.4 le même jour : l'épée
+demandait une correction du **sim**, et elle a coûté une constante.)
+Les trois constats visés (n°1 automne-hiver, n°3 chaîne du métal,
 n°4 apprivoisement) décrivaient tous, à la relecture, un défaut du **joueur**
 que le rapport prenait pour un défaut du jeu. Le tableau d'arrivée est au §2,
 « Joueur scripté corrigé le 2026-09-06 ».
@@ -2386,15 +2398,161 @@ n'est pas abaissé par une mort), `l_apprivoisement_repose_sa_marque_sur_une_aut
 (marque reposée après la mort de la bête, cerf à défaut de lapin) et
 `la_chasse_et_l_apprivoisement_ne_visent_pas_la_meme_bete`.
 
+#### Et, le même jour, une correction du sim : l'épée (réglé le 2026-09-06)
+
+Le §11.1 s'arrêtait sur un constat : « l'épée reste hors d'atteinte », une sur
+quatorze colonies à la métallurgie, et l'explication avancée était la survie de
+la colonie. **Elle était fausse.** Le blocage était dans `crates/sim`, à trois
+lignes de `Sim::craft_picks` : une recette exigeait ses ingrédients **dans une
+seule pile**, la plus proche et assez fournie.
+
+Le scénario ciblé le montre sans le bruit des raids — vingt graines, une
+colonie à la métallurgie avec forge, poste, entrepôt 6×6, cinq veines à dix
+cases, trois colons, aucune bande, quinze jours :
+
+| scénario ciblé, 20 graines | avant | prélèvement sur le stock | + `METAL_PER_SWORD` = 3 |
+|---|---|---|---|
+| lingots fondus | 60 | 77 | 77 |
+| **colonies qui forgent une épée** | **0/20** | **17/20** | **20/20** |
+| minerai qui reste en fin de partie | des piles de **2**, partout | 0 à 2 unités | — |
+| lingots qui restent en fin de partie | `[2, 1]`, `[2, 2]`, `[3, 1]` — **jamais 4** | 0 | — |
+
+Le relevé des piles est la preuve, et il tenait en une ligne de diagnostic :
+**aucune colonie n'avait jamais quatre lingots sur la même case.** Une case
+d'entrepôt ne tient qu'un genre, un lingot fini tombe au pied de la forge et
+part vers la case libre la plus proche de **là où il est tombé** : quatre
+fontes donnent quatre piles de un. Le minerai souffrait du même mal en amont —
+une veine rend deux ou trois unités (`jobs::ORE_YIELD_MIN`), rangées par piles
+de deux qui ne fusionnent pas, quand la fonte en réclamait trois d'un coup.
+
+**Ce qui a changé, dans `crates/sim` :**
+
+- `craft_picks` réserve, pour chaque ingrédient, **autant de piles qu'il en
+  faut** — les plus proches d'abord, triées par `(distance, x, y, id)` — au lieu
+  d'une seule assez fournie ; elle rend `None` seulement si la colonie n'a pas
+  le compte, **tout compté**. Elle ne regarde toujours pas la carte : le
+  court-circuit O(piles) du §11.1 tient ;
+- `CraftStage::FetchPartial` porte un champ `got`, ce qui est **déjà déposé** au poste
+  pour l'ingrédient en cours ; le colon fait un voyage par pile, comme un
+  rangeur, au lieu d'un voyage par ingrédient. `pick_ingredient` prend
+  `min(reste, pile)` au lieu d'abandonner devant une pile trop petite ;
+- au passage au travail, les piles réservées **en trop** sont rendues : réserver
+  « autant qu'il en faut » peut en garder une de côté qu'un dernier voyage plus
+  fourni rend inutile, et elle resterait verrouillée jusqu'à la fin de la
+  partie ;
+- **une seule constante bouge** : `craft::METAL_PER_SWORD`, de 4 à 3. Elle a été
+  choisie par la mesure, pas à l'intuition — trois candidats comparés sur les
+  mêmes trente graines, chacun seul :
+
+| campagne normale, 30 graines, mêmes graines | veines à 3-4 (`ORE_YIELD_MIN` 3) | lingot à 2 minerais (`ORE_PER_INGOT` 2) | **épée à 3 lingots (`METAL_PER_SWORD` 3)** |
+|---|---|---|---|
+| lingots fondus | 34 | 34 | **24** |
+| épées forgées | 5 | 5 | **5** |
+| **épées portées en fin** | 2 | 2 | **6** |
+| colonies éteintes | 12/30 | 10/30 | **10/30** |
+| colons vivants (moy.) | 1,8 | 1,8 | **2,0** |
+
+Les trois donnent le même nombre d'épées. Le troisième les donne pour **dix
+lingots de moins** — il ne gonfle ni le minage ni la fonte, il convertit ce que
+la colonie produisait déjà — et il en met **six** entre les mains des colons au
+lieu de deux, parce qu'une épée forgée tôt sert plus longtemps qu'une épée
+forgée le dernier jour. C'est lui qui est gardé. `ItemKind::Sword.wealth_value()`
+reste à 90 : l'épée vaut ce qu'elle change au combat, pas ce qu'elle a coûté à
+fondre, et y toucher aurait déplacé la taille des raids.
+
+**Ce que ça donne en campagne**, trente graines, trente jours, 64×64, joueur
+scripté corrigé, mêmes graines des deux côtés :
+
+| | avant | prélèvement sur le stock seul | + `METAL_PER_SWORD` = 3 |
+|---|---|---|---|
+| colonies à la métallurgie | 14 | 13 | 13 |
+| forges bâties | 11 | 10 | 10 |
+| **lingots fondus** | **16** | 24 | **24** |
+| **épées forgées** | **1** | 3 | **5** |
+| colonies qui fondent ≥ 1 lingot | 6/14 | 7/13 | **7/13** |
+| **colonies qui forgent ≥ 1 épée** | **1/14** | 2/13 | **3/13** |
+| épées portées en fin | 1 sur 52 | 1 sur 52 | **6 sur 60** |
+| colonies éteintes | 12/30 | 12/30 | 10/30 |
+| colons vivants (moy. fin) | 1,7 | 1,7 | 2,0 |
+| morts au total | 209 | 213 | 211 |
+
+**La survie ne bouge pas**, et c'était la condition : 12/30 puis 10/30 colonies
+éteintes, quand le même code va de 6 à 15 selon le bloc de graines (§2). Les
+quatre morts d'écart sont du bruit.
+
+**L'objectif « un quart des colonies à la métallurgie » est atteint, mais il
+tient à une colonie près**, et il faut le dire ainsi : 3 sur 13 (23 %) sur le
+bloc de graines 1, 2 sur 6 (33 %) sur le bloc 31 — **5 sur 19, soit 26 %** —
+contre 1 sur 14 (7 %) avant. Sur un dénominateur aussi petit, une colonie de
+plus ou de moins fait basculer le pourcentage de huit points : le chiffre à
+retenir est « trois à quatre fois mieux qu'avant », pas « 26 % ».
+
+| bloc de graines, campagne normale | colonies à la métallurgie | forge | ≥ 1 lingot | **≥ 1 épée** |
+|---|---|---|---|---|
+| 1 → 30, avant | 14 | 11 | 6 | **1 (7 %)** |
+| 1 → 30, après | 13 | 10 | 7 | **3 (23 %)** |
+| 31 → 60, après | 6 | 4 | 2 | **2 (33 %)** |
+
+Et le compte dit où est le plafond suivant, qui n'est plus la règle de
+fabrication : sur les treize colonies du bloc 1 qui paient la métallurgie, dix
+bâtissent leur forge et **sept seulement** fondent un lingot. Trois épées sur
+ces sept, c'est **43 %** de celles qui peuvent réellement en forger une. Ce qui
+manque désormais, ce sont des colonies qui vivent assez longtemps pour miner.
+
+Quatre tests, dans `crates/sim/tests/balance_metal.rs` :
+`crafting_draws_ingredients_from_several_stockpile_piles` (une épée sur des
+piles de un lingot), `smelting_does_not_wait_for_a_single_pile_of_three` (un
+lingot sur des piles d'un minerai), `a_metallurgy_colony_forges_a_sword_in_fifteen_days`
+(le scénario ciblé, vingt graines, seuil à la majorité) et
+`survival_is_unchanged` (douze graines en difficulté normale avec un objectif
+d'armes posé : les voyages en plus ne se paient pas en colons).
+
 ### 11.5 État des constats ouverts au soir du 2026-09-06
 
 - n°1 (automne-hiver) : **corrigé**, §11.2. Reste à trancher la tunique en
   hiver.
 - n°2 (graines lentes) : corrigé, §10.1. Tient toujours : aucune graine des
   cinq campagnes sous 100 000 ticks/s (pire : 101 360).
-- n°3 (chaîne du métal) : **corrigé jusqu'au lingot**, §11.1. L'épée reste
+- n°3 (chaîne du métal) : **corrigé jusqu'au lingot**, §11.1. ~~L'épée reste
   hors d'atteinte, et la cause mesurée est la survie de la colonie, pas la
-  durée de la partie.
+  durée de la partie.~~ **Corrigé jusqu'à l'épée le même jour, §11.4** — et
+  l'explication écrite ici était fausse : la cause n'était pas la survie mais
+  une règle de `Sim::craft_picks` (les ingrédients dans une seule pile).
+  1 colonie sur 14 → 5 sur 19 sur deux blocs de graines, et 0/20 → **20/20**
+  sur le scénario ciblé. Ce qui reste vrai de la phrase barrée : le plafond
+  suivant, lui, est bien la survie — seules 7 des 13 colonies à la métallurgie
+  du bloc 1 fondent un lingot.
 - n°4 (apprivoisement) : **corrigé**, §11.3 — et il ouvre un constat neuf, sur
   le sim cette fois : le bétail paît hors des murs et se fait tuer.
 - n°5 (réputation et tribut) : mesurés, §10.2. Inchangé.
+
+
+### 11.6 Validation d’intégration du 2026-09-07
+
+La fabrication fractionnée et le repli du bétail ont été repris dans un worktree isolé.
+Les scénarios ciblés du métal incluent maintenant la reprise d’une collecte partielle
+après snapshot et la continuation d’un ancien trajet chargé. La compatibilité postcard
+est préservée en ajoutant `FetchPartial` à la fin de `CraftStage` : les champs et indices
+de `Fetch` et `Work` ne bougent pas. L’interface de fabrication affiche **3 lingots**.
+
+Quatre assertions initiales du nouveau banc d’élevage échouaient. Trois dépendaient
+d’un numéro de pièce lu avant le recalcul du cache ; une autre observait la position
+après le départ du pillard, alors que la pâture devait déjà reprendre. Le banc recalcule
+les pièces après avoir dessiné l’enceinte et observe l’arrivée au refuge pendant la
+menace. Il n’exige plus qu’une bête évite toute pièce nue pendant l’errance au calme.
+Les huit tests d’élevage et les six tests du métal passent ainsi sans nouvelle modification
+des constantes de combat ou de fabrication issues des mesures du 6 septembre.
+
+Validation complète : 336 tests Rust et 409 tests client passent ; Clippy, formatage,
+compilation WASM, typecheck et build client passent. Partie solo vérifiée dans le
+navigateur avec le nouveau WASM : objectif d’épée modifiable, coût de trois lingots,
+aucune erreur console. Fuzz court : cinq graines × 4 000 ticks, six commandes par tick.
+
+La campagne combinée (graines 1–30, 30 jours, taille 64, normale) termine en 90,8 s :
+20 colonies vivantes, dont 10 avec du bétail ; neuf colonies atteignent la métallurgie,
+une produit des épées (deux au total). Ces résultats ne démontrent **pas** les objectifs
+des fiches `docs/tasks/betail-a-l-abri.md` et `docs/tasks/epee-a-portee.md` : elles restent
+ouvertes pour une comparaison contrôlée graine à graine et la suite de l’équilibrage.
+Les mesures métal seul du §11.4 ne doivent pas être présentées comme le résultat de
+cette version combinée. Le temps de campagne n’est pas une comparaison de performance
+contrôlée avec les campagnes précédentes.

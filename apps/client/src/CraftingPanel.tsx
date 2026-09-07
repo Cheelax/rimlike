@@ -34,7 +34,7 @@ const CRAFT_NAMES: Readonly<Record<number, string>> = { 17: "lingots", 18: "ép�
 /** Rappel de recette pour les deux genres du métal, à la suite du stock en cours. */
 const CRAFT_RECIPE_HINT: Readonly<Record<number, string>> = {
   17: "à la forge, 3 minerais",
-  18: "4 lingots",
+  18: "3 lingots",
 };
 
 export interface CraftingPanelProps {

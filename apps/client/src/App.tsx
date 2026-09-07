@@ -2871,6 +2871,7 @@ export function App() {
               >
                 {sel.slaughterMarked ? "Sera abattu" : "Abattre"}
               </button>
+              <div className="help">Pendant un raid, les bêtes rejoignent un abri ou se rapprochent des colons. Les sangliers continuent de défendre.</div>
             </div>
           )}
           {activePanel === null && !multiSelection && sel && !sel.animal && !sel.livestock && (

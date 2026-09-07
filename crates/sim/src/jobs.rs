@@ -2194,9 +2194,17 @@ impl Sim {
         total
     }
 
-    /// Une pile par ingrédient de la recette : la plus proche du colon, non
-    /// réservée, et assez fournie pour couvrir le besoin d'un seul voyage.
-    /// `None` si la colonie n'a pas de quoi.
+    /// Les piles à réserver pour tenir la recette : pour chaque ingrédient, les
+    /// plus proches du colon d'abord, **autant qu'il en faut** pour couvrir le
+    /// besoin. `None` si la colonie n'a pas de quoi, tout compté.
+    ///
+    /// C'est ici que se joue la différence entre « une pile » et « le stock » :
+    /// une veine rend deux ou trois minerais (`ORE_YIELD_MIN`), un lingot en
+    /// coûte `craft::ORE_PER_INGOT` et une épée `craft::METAL_PER_SWORD`
+    /// lingots posés **un par un** au pied de la forge — exiger le compte
+    /// **dans une seule pile** condamnait la chaîne du métal, mesuré à zéro
+    /// épée sur vingt colonies outillées. Le colon fait donc un voyage par
+    /// pile, comme un rangeur.
     ///
     /// **Ne regarde jamais la carte** : c'est ce qui permet à
     /// `try_start_craft` de trancher « faisable ou non » en O(piles), avant
@@ -2204,20 +2212,29 @@ impl Sim {
     fn craft_picks(&self, recipe: &craft::Recipe, from: (u32, u32)) -> Option<Vec<usize>> {
         let mut picks: Vec<usize> = Vec::with_capacity(recipe.inputs.len());
         for &(kind, need) in recipe.inputs {
-            let mut stacks: Vec<(u32, u32, u32, usize)> = self
+            // Trié par (distance, x, y, id) : ordre total, donc déterministe.
+            let mut stacks: Vec<(u32, u32, u32, u32, usize)> = self
                 .items
                 .iter()
                 .enumerate()
-                .filter(|(k, s)| {
-                    s.kind == kind
-                        && s.reserved_by.is_none()
-                        && s.count >= need
-                        && !picks.contains(k)
-                })
-                .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, k))
+                // Une pile n'a qu'un genre et une recette ne demande jamais le
+                // même deux fois (vérifié par `craft::tests::les_recettes_sont_coherentes`) :
+                // deux ingrédients ne peuvent pas se disputer la même pile.
+                .filter(|(_, s)| s.kind == kind && s.reserved_by.is_none())
+                .map(|(k, s)| (chebyshev(from, (s.x, s.y)), s.x, s.y, s.id, k))
                 .collect();
             stacks.sort_unstable();
-            picks.push(stacks.first()?.3);
+            let mut got = 0;
+            for &(.., k) in &stacks {
+                if got >= need {
+                    break;
+                }
+                got += self.items[k].count;
+                picks.push(k);
+            }
+            if got < need {
+                return None;
+            }
         }
         Some(picks)
     }
@@ -2247,8 +2264,9 @@ impl Sim {
 
     /// Fabrique s'il y a un atelier libre **atteignable**, un objectif non
     /// atteint et de quoi tenir la recette. Les piles nécessaires sont
-    /// réservées d'un coup : un colon ne part pas chercher du bois pour un
-    /// épieu sans pierre.
+    /// réservées d'un coup — toutes, y compris celles des voyages suivants :
+    /// un colon ne part pas chercher du bois pour un épieu sans pierre, et deux
+    /// colons ne se disputent pas le même minerai.
     ///
     /// Comme le dépeçage : trois court-circuits avant le premier A\* (aucun
     /// atelier, aucun objectif posé, ce n'est pas le tour du colon), puis un
@@ -2298,10 +2316,11 @@ impl Sim {
         self.pawns[i].job = Job::Craft {
             spot: (fx, fy),
             recipe: recipe.output,
-            stage: CraftStage::Fetch {
+            stage: CraftStage::FetchPartial {
                 index: 0,
                 item,
                 carried: false,
+                got: 0,
             },
         };
         true
@@ -2323,27 +2342,57 @@ impl Sim {
         }
         let here = self.pawns[i].tile();
         match stage {
+            // Une sauvegarde historique n'avait qu'un voyage par ingrédient.
+            // Aucun dépôt partiel n'a donc encore eu lieu pour son étape Fetch.
             CraftStage::Fetch {
                 index,
                 item,
                 carried,
+            } => {
+                self.do_craft(
+                    i,
+                    spot,
+                    recipe,
+                    CraftStage::FetchPartial {
+                        index,
+                        item,
+                        carried,
+                        got: 0,
+                    },
+                );
+            }
+            CraftStage::FetchPartial {
+                index,
+                item,
+                carried,
+                got,
             } => {
                 let Some(&(kind, need)) = r.inputs.get(usize::from(index)) else {
                     self.abandon_job(i);
                     return;
                 };
                 if !carried {
-                    self.pick_ingredient(i, spot, recipe, index, item, kind, need);
+                    self.pick_ingredient(i, spot, recipe, index, item, kind, need, got);
                     return;
                 }
                 // Arrivé au poste, la charge y reste : elle est consommée par
                 // la fabrication, qu'on la termine ou non.
-                if chebyshev(here, spot) > 1 || self.pawns[i].carrying.is_none() {
+                if chebyshev(here, spot) > 1 {
                     self.abandon_job(i);
                     return;
                 }
-                self.pawns[i].carrying = None;
-                self.next_ingredient(i, spot, recipe, usize::from(index) + 1);
+                let Some((_, carried_count)) = self.pawns[i].carrying.take() else {
+                    self.abandon_job(i);
+                    return;
+                };
+                let got = got + carried_count;
+                if got < need {
+                    // L'ingrédient n'est pas complet : la pile suivante, déjà
+                    // réservée, attend au stock.
+                    self.goto_pile(i, spot, recipe, index, got, kind);
+                } else {
+                    self.next_ingredient(i, spot, recipe, usize::from(index) + 1);
+                }
             }
             CraftStage::Work { progress } => {
                 if chebyshev(here, spot) > 1 {
@@ -2378,8 +2427,10 @@ impl Sim {
         }
     }
 
-    /// Ramasse la part de la pile réservée qu'exige la recette, puis met le cap
-    /// sur le poste.
+    /// Ramasse sur la pile réservée ce qui manque encore à l'ingrédient — au
+    /// plus ce qu'elle contient —, puis met le cap sur le poste. Une pile qui
+    /// ne suffit pas n'est plus un échec : elle vide ce qu'elle a et le voyage
+    /// suivant complète.
     #[allow(clippy::too_many_arguments)]
     fn pick_ingredient(
         &mut self,
@@ -2390,32 +2441,37 @@ impl Sim {
         item: u32,
         kind: ItemKind,
         need: u32,
+        got: u32,
     ) {
         let here = self.pawns[i].tile();
         let Some(j) = self.items.iter().position(|s| s.id == item) else {
             self.abandon_job(i);
             return;
         };
-        if (self.items[j].x, self.items[j].y) != here || self.items[j].count < need {
+        if (self.items[j].x, self.items[j].y) != here || self.items[j].count == 0 {
             self.abandon_job(i);
             return;
         }
-        self.items[j].count -= need;
+        let take = (need - got).min(self.items[j].count);
+        self.items[j].count -= take;
+        // La pile est rendue au reste de la colonie : ce qu'on en voulait est
+        // en main, et un voyage ne revient jamais sur la même pile.
         self.items[j].reserved_by = None;
         if self.items[j].count == 0 {
             self.items.remove(j);
         }
-        self.pawns[i].carrying = Some((kind, need));
+        self.pawns[i].carrying = Some((kind, take));
         match self.colonist_adjacent(here, spot) {
             Some(p) => {
                 self.pawns[i].set_path(p);
                 self.pawns[i].job = Job::Craft {
                     spot,
                     recipe,
-                    stage: CraftStage::Fetch {
+                    stage: CraftStage::FetchPartial {
                         index,
                         item,
                         carried: true,
+                        got,
                     },
                 };
             }
@@ -2423,14 +2479,25 @@ impl Sim {
         }
     }
 
-    /// Enchaîne sur l'ingrédient suivant (sa pile est déjà réservée) ou passe
-    /// au travail quand la recette est complète.
+    /// Enchaîne sur l'ingrédient suivant (ses piles sont déjà réservées) ou
+    /// passe au travail quand la recette est complète.
     fn next_ingredient(&mut self, i: usize, spot: (u32, u32), recipe: ItemKind, index: usize) {
         let Some(r) = craft::recipe_for(recipe) else {
             self.abandon_job(i);
             return;
         };
-        let Some(&(kind, need)) = r.inputs.get(index) else {
+        let Some(&(kind, _)) = r.inputs.get(index) else {
+            // Tout est au poste : les piles réservées en trop repartent au
+            // stock. Réserver « autant qu'il en faut » peut en garder une de
+            // côté qu'un dernier voyage plus fourni a rendue inutile (deux
+            // piles de un et une de trois pour un besoin de quatre) ; sans ce
+            // geste, elle resterait verrouillée jusqu'à la fin de la partie.
+            let id = self.pawns[i].id;
+            for s in &mut self.items {
+                if s.reserved_by == Some(id) {
+                    s.reserved_by = None;
+                }
+            }
             self.pawns[i].job = Job::Craft {
                 spot,
                 recipe,
@@ -2438,13 +2505,33 @@ impl Sim {
             };
             return;
         };
+        self.goto_pile(i, spot, recipe, index as u8, 0, kind);
+    }
+
+    /// Met le cap sur la pile réservée la plus proche du genre demandé : le
+    /// premier voyage d'un ingrédient comme les suivants. `got` suit le colon,
+    /// c'est ce qu'il a déjà déposé au poste pour cet ingrédient.
+    fn goto_pile(
+        &mut self,
+        i: usize,
+        spot: (u32, u32),
+        recipe: ItemKind,
+        index: u8,
+        got: u32,
+        kind: ItemKind,
+    ) {
         let id = self.pawns[i].id;
         let here = self.pawns[i].tile();
-        let found = self
+        // Trié par (distance, x, y, id) : ordre total, donc déterministe.
+        let mut mine: Vec<(u32, u32, u32, u32, usize)> = self
             .items
             .iter()
-            .position(|s| s.kind == kind && s.reserved_by == Some(id) && s.count >= need);
-        let Some(j) = found else {
+            .enumerate()
+            .filter(|(_, s)| s.kind == kind && s.reserved_by == Some(id) && s.count > 0)
+            .map(|(k, s)| (chebyshev(here, (s.x, s.y)), s.x, s.y, s.id, k))
+            .collect();
+        mine.sort_unstable();
+        let Some(&(.., j)) = mine.first() else {
             self.abandon_job(i);
             return;
         };
@@ -2456,10 +2543,11 @@ impl Sim {
                 self.pawns[i].job = Job::Craft {
                     spot,
                     recipe,
-                    stage: CraftStage::Fetch {
-                        index: index as u8,
+                    stage: CraftStage::FetchPartial {
+                        index,
                         item,
                         carried: false,
+                        got,
                     },
                 };
             }

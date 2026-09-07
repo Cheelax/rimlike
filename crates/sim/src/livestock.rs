@@ -20,7 +20,10 @@
 //! - elle ne fuit plus les colons et ne quitte plus la carte ;
 //! - elle a **faim** (`LIVESTOCK_HUNGER_DECAY`) et se nourrit d'herbe, de
 //!   buissons, ou à défaut du stock de la colonie ;
-//! - elle tient le rayon `LIVESTOCK_RANGE` autour du barycentre des colons ;
+//! - elle ne s'éloigne pas de la maison : la **pièce** de la colonie quand
+//!   celle-ci en a une où l'on peut brouter, le rayon `LIVESTOCK_RANGE` autour
+//!   du barycentre des colons sinon — et elle rentre dès qu'une bande entre
+//!   sur la carte (`Sim::livestock_shelter`) ;
 //! - apprivoisée et agressive (le sanglier), elle rejoint la défense
 //!   automatique ;
 //! - elle ne déclenche plus les pièges (son chemin est celui d'un colon) et
@@ -40,6 +43,7 @@ use crate::health::{BodyPart, SEVERITY_MAX};
 use crate::items::ItemKind;
 use crate::jobs::{PATH_ATTEMPTS, Reach};
 use crate::map::{Zone, chebyshev};
+use crate::path::Walker;
 use crate::pawn::{Faction, Job, NEED_MAX};
 use crate::work::WorkType;
 use crate::{EventKind, Sim, TICKS_PER_DAY};
@@ -94,8 +98,22 @@ pub const BOAR_BACKLASH_CHANCE: u32 = 4;
 pub const MAX_LIVESTOCK: u32 = 12;
 
 /// Rayon, en cases, que les bêtes de la colonie tiennent autour du barycentre
-/// des colons — et dans lequel elles cherchent leur pâture.
+/// des colons — et dans lequel elles cherchent leur pâture. Il ne sert plus
+/// que **faute de mieux** : une colonie qui a une pièce nourricière y garde
+/// son troupeau (voir `Sim::pasture_room`).
 pub const LIVESTOCK_RANGE: u32 = 12;
+
+/// Distance à laquelle une bête se serre contre les colons quand une bande est
+/// sur la carte et que la colonie n'a **aucune** pièce où la mettre. Trois
+/// cases : assez près pour que le pillard qui la vise entre dans le rayon de
+/// défense des colons (`combat::DEFEND_RADIUS`), assez loin pour ne pas se
+/// coincer dans leurs jambes.
+pub const LIVESTOCK_HUDDLE: u32 = 3;
+
+/// Cadence de repli sous le raid : une bête réévalue son abri trois fois plus
+/// souvent qu'elle ne fait un pas de pâture (`animals::GRAZE_MIN`). Elle
+/// partage le même compteur (`Pawn::graze_at`) : rien n'est ajouté à l'état.
+pub const RETREAT_INTERVAL: u32 = 30;
 
 /// Faim d'une bête de la colonie : comblée à vide en deux jours. C'est le
 /// « deux jours » du cahier des charges — passé ce délai sans herbe ni stock,
@@ -209,7 +227,7 @@ impl Sim {
     // ------------------------------------------------------------------
 
     /// Boucle d'une bête apprivoisée : la faim, la défense pour les
-    /// agressives, la pâture autour de la maison.
+    /// agressives, le repli quand une bande est là, la pâture sinon.
     pub(crate) fn livestock_ai(&mut self, i: usize) {
         self.livestock_needs(i);
         // La faim vient peut-être de l'achever : elle sera retirée en fin de tick.
@@ -218,11 +236,162 @@ impl Sim {
         }
         // Un sanglier de la colonie se bat comme un colon armé de mêlée : même
         // recherche de cible, même rayon (`combat::DEFEND_RADIUS`). Les autres
-        // espèces ne défendent rien — un lapin de garde n'existe pas.
+        // espèces ne défendent rien — un lapin de garde n'existe pas. Et il
+        // défend **avant** de se replier : une bête agressive ne rentre pas.
         if self.pawns[i].species.is_some_and(|s| s.aggressive()) && self.defend_if_threatened(i) {
             return;
         }
+        // Un pillard sur la carte, et la bête cesse de brouter pour rentrer.
+        if self.raider_alive() {
+            self.livestock_shelter(i);
+            return;
+        }
         self.livestock_graze(i);
+    }
+
+    /// Se mettre à l'abri le temps d'une bande.
+    ///
+    /// **Mesuré avant d'être réglé** (voir `CAMPAIGN-FINDINGS.md` §11.3) : une
+    /// bête tenue au seul `LIVESTOCK_RANGE` paît, par construction, hors d'une
+    /// enceinte de demi-côté 6 — et elle porte la faction `Colony`, donc elle
+    /// est une cible. Le troupeau rentre donc dans la **pièce** de la colonie
+    /// (couche `map::indoor`) quand il y en a une, et se serre contre les
+    /// colons sinon.
+    ///
+    /// Une bête déjà à l'abri ne fait plus rien du tout : c'est le cas le plus
+    /// courant d'un raid, et il ne coûte que deux lectures.
+    fn livestock_shelter(&mut self, i: usize) {
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        if self.tick < self.pawns[i].graze_at {
+            return;
+        }
+        self.pawns[i].graze_at = self.tick + u64::from(RETREAT_INTERVAL);
+        // Sans colon vivant, il n'y a plus de maison où rentrer.
+        let Some(home) = self.colony_center() else {
+            return;
+        };
+        let me = self.pawns[i].tile();
+        match self.colony_room(me, home) {
+            // Une pièce : on y entre, et on n'en bouge plus. Le refuge ne
+            // demande **pas** d'herbe — sous les coups, on ne broute pas.
+            Some((room, door)) => {
+                if self.map.room(me.0, me.1) != room {
+                    self.livestock_path_to(i, me, door);
+                }
+            }
+            // Pas de pièce : à trois cases des colons, sous leur garde.
+            None => {
+                if chebyshev(me, home) > LIVESTOCK_HUDDLE {
+                    self.livestock_path_to(i, me, home);
+                }
+            }
+        }
+    }
+
+    /// La pièce de la colonie du point de vue d'une bête, et la case par
+    /// laquelle y entrer. Deux façons d'en avoir une :
+    ///
+    /// 1. le barycentre des colons est sous un toit — la colonie est chez
+    ///    elle, et le troupeau y a sa place ;
+    /// 2. la bête est **déjà** sous un toit, à portée de la colonie : elle y
+    ///    reste.
+    ///
+    /// La seconde règle n'est pas un raffinement, c'est ce qui fait tenir la
+    /// première : le barycentre suit les colons au travail, et une colonie qui
+    /// bûcheronne devant sa porte l'a dehors la moitié de la journée. Sans
+    /// cette rémanence, le troupeau ressortait avec elle — le défaut même
+    /// qu'on corrige. Elle ne coûte aucun état : la position de la bête est la
+    /// mémoire.
+    fn colony_room(&self, me: (u32, u32), home: (u32, u32)) -> Option<(u8, (u32, u32))> {
+        if let room @ 1.. = self.map.room(home.0, home.1) {
+            return Some((room, home));
+        }
+        if chebyshev(home, me) > LIVESTOCK_RANGE {
+            return None;
+        }
+        match self.map.room(me.0, me.1) {
+            0 => None,
+            room => Some((room, me)),
+        }
+    }
+
+    /// La pièce où le troupeau peut **vivre** : celle de la colonie, à
+    /// condition qu'elle porte de quoi manger — de l'herbe, un buisson, ou du
+    /// fourrage rangé. Une bête n'a pas à mourir de faim enfermée : sans cela,
+    /// on rend `None` et l'errance reprend son rayon d'autrefois.
+    fn pasture_room(&self, me: (u32, u32), home: (u32, u32)) -> Option<(u8, (u32, u32))> {
+        let (room, door) = self.colony_room(me, home)?;
+        if self.room_has_pasture(door, room) || self.room_has_fodder(room) {
+            return Some((room, door));
+        }
+        None
+    }
+
+    /// De l'herbe ou un buisson dans la pièce ? Même balayage borné que
+    /// `pasture_near`, et pour la même raison : une pièce tient en
+    /// `map::ROOM_MAX_TILES` cases mais rien n'en donne la liste, et le carré
+    /// de `LIVESTOCK_RANGE` autour de la porte couvre toute pièce d'aplomb
+    /// autour de ses habitants. Court-circuité à la première touffe.
+    fn room_has_pasture(&self, door: (u32, u32), room: u8) -> bool {
+        let r = LIVESTOCK_RANGE as i32;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let x = door.0 as i32 + dx;
+                let y = door.1 as i32 + dy;
+                if !self.map.in_bounds(x, y) {
+                    continue;
+                }
+                let (x, y) = (x as u32, y as u32);
+                if self.map.room(x, y) != room {
+                    continue;
+                }
+                if self.map.get(x, y) == crate::map::Terrain::Grass
+                    || matches!(
+                        self.map.feature(x, y),
+                        crate::map::Feature::Bush | crate::map::Feature::BushUnripe
+                    )
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Du fourrage rangé dans la pièce ? Une bergerie sans un brin d'herbe
+    /// reste vivable si le silo y est.
+    fn room_has_fodder(&self, room: u8) -> bool {
+        self.items.iter().any(|s| {
+            is_fodder(s.kind)
+                && self.map.zone(s.x, s.y) == Zone::Stockpile
+                && self.map.room(s.x, s.y) == room
+        })
+    }
+
+    /// Un vrai chemin vers `target`, murs contournés et porte franchie — ce
+    /// que `straight_walk` ne sait pas faire. Renvoie faux si la cible est
+    /// hors d'atteinte, auquel cas l'appelant reprend le comportement d'avant.
+    ///
+    /// Un seul essai de budget : l'index de régions tranche la plupart des cas
+    /// sans lancer d'A\* (`Sim::reach_tile`, `crate::regions`), et une bête
+    /// n'y revient qu'une fois par `RETREAT_INTERVAL` — c'est la leçon du §10
+    /// de `CAMPAIGN-FINDINGS.md`, où un chemin impossible relancé à chaque
+    /// tick coûtait 157 434 A\* sur une graine.
+    fn livestock_path_to(&mut self, i: usize, me: (u32, u32), target: (u32, u32)) -> bool {
+        let mut budget = 1;
+        let reach = if self.map.passable_for(target.0, target.1, Walker::COLONIST) {
+            self.reach_tile(me, target, &mut budget)
+        } else {
+            self.reach_adjacent(me, target, &mut budget)
+        };
+        if let Reach::Path(p) = reach {
+            self.pawns[i].set_path(p);
+            return true;
+        }
+        false
     }
 
     /// Un combat de bête apprivoisée. Même cœur que la charge d'un sanglier
@@ -340,8 +509,13 @@ impl Sim {
     /// Paître autour de la maison. Même cadence et même « tout droit » que la
     /// pâture sauvage (`Sim::animal_graze`, voir la note de perf de
     /// `animals::straight_walk` : jamais d'A* pour un pas de quatre cases),
-    /// avec deux règles en plus : la case visée reste dans `LIVESTOCK_RANGE`
-    /// du barycentre des colons, et une bête qui s'est éloignée rentre.
+    /// avec deux règles en plus : l'errance est bornée, et une bête qui s'en
+    /// est écartée rentre.
+    ///
+    /// **L'enclos, c'est la pièce quand il y en a une.** Une colonie qui vit
+    /// dans une pièce nourricière y garde son troupeau (`pasture_room`) ;
+    /// faute de pièce — ou faute d'herbe dedans, ou si la pièce est hors
+    /// d'atteinte — on retombe sur le rayon `LIVESTOCK_RANGE` d'autrefois.
     fn livestock_graze(&mut self, i: usize) {
         if self.pawns[i].is_moving() {
             self.pawns[i].advance(&self.map);
@@ -358,7 +532,19 @@ impl Sim {
         let Some(home) = self.colony_center() else {
             return;
         };
-        if chebyshev(home, me) > LIVESTOCK_RANGE {
+        let mut pen = self.pasture_room(me, home);
+        if let Some((room, door)) = pen {
+            if self.map.room(me.0, me.1) != room {
+                // Dehors : on rentre. Si la pièce est hors d'atteinte (un mur
+                // refermé, une porte murée), l'errance ordinaire reprend —
+                // sans quoi la bête resterait plantée devant le mur à jeun.
+                if self.livestock_path_to(i, me, door) {
+                    return;
+                }
+                pen = None;
+            }
+        }
+        if pen.is_none() && chebyshev(home, me) > LIVESTOCK_RANGE {
             self.livestock_walk_home(i, me, home);
             return;
         }
@@ -369,8 +555,13 @@ impl Sim {
             return;
         }
         let target = (tx as u32, ty as u32);
-        // Pas question de brouter chez les pillards : la bête reste au rayon.
-        if chebyshev(home, target) > LIVESTOCK_RANGE {
+        // Pas question de brouter chez les pillards : la bête reste dans son
+        // enclos, la pièce ou le rayon.
+        let inside = match pen {
+            Some((room, _)) => self.map.room(target.0, target.1) == room,
+            None => chebyshev(home, target) <= LIVESTOCK_RANGE,
+        };
+        if !inside {
             return;
         }
         if let Some(p) = straight_walk(&self.map, me, target) {
