@@ -127,7 +127,7 @@ function fireMessage(): FireMessage {
 }
 
 const fromMain: MainToWorker[] = [
-  { type: "init", mode: "solo", seed: 42, width: 128, height: 128, difficulty: 2 },
+  { type: "init", mode: "solo", seed: 42, width: 128, height: 128, difficulty: 2, biome: 6 },
   { type: "init", mode: "multi", server: "ws://localhost:8787", room: "demo", name: "alice" },
   { type: "issue", bytes: new Uint8Array([1, 2]) },
   { type: "setPaused", paused: true },

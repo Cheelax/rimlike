@@ -40,6 +40,8 @@ export type SimSession =
       readonly height: number;
       /** Dose de menace choisie à l'accueil (`render/terrain.ts::DIFFICULTY`). */
       readonly difficulty: number;
+      /** Biome fondable choisi à l'accueil, fixé à la création de la carte. */
+      readonly biome: number;
     }
   | {
       readonly mode: "multi";
@@ -75,6 +77,7 @@ export class SimBridge {
             width: session.width,
             height: session.height,
             difficulty: session.difficulty,
+            biome: session.biome,
           }
         : { type: "init", mode: "multi", server: session.server, room: session.room, name: session.name };
     this.post(message);

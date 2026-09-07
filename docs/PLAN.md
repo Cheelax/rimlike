@@ -532,7 +532,9 @@ d'alice arrivé chez bob).
   fuzz par biome. Câblage livré le 2026-09-07 (serveur, protocole, client) : `start.biome` depuis la
   case, `snapshot.biome` informatif, tous les clients construisent par `new_in_biome`, biome au
   HUD ; vérifié : colonie fondée sur un désert du globe, 90 % de sable, 20 arbres du plancher.
-  Reste : le désert n'est pas survivable (fiche `desert-survivable`, en cours).
+  Sélecteur de biome en solo livré le 2026-09-07 (Codex) : neuf biomes fondables à l'accueil,
+  mémorisé, sauvegarde qui garde son biome. Reste : le désert n'est pas survivable (fiche
+  `desert-survivable`, en cours).
 
 **Reste**
 
