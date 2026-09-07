@@ -595,7 +595,8 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
   est dormant parce que le joueur scripté ne referme son enceinte que 5 fois sur 30 (eau peu
   profonde sur le tracé). Réglage gardé : un pillard cible une bête de la colonie **après** tous
   les colons atteignables (rang avant distance), sauf au contact ou quand plus aucun colon n'est
-  debout ; 9/21 → 16/21 colonies vivantes avec bétail, 54 → 18 bêtes tuées sur 60 graines, +6
+  atteignable (seconde recherche bornée sur le bétail, ajoutée le 2026-09-07 après une relecture
+  indépendante : devant une enceinte fermée le pillard fuyait au lieu d'attaquer le bétail dehors) ; 9/21 → 16/21 colonies vivantes avec bétail, 54 → 18 bêtes tuées sur 60 graines, +6
   morts de colons sur 362 (le témoin sans bétail en compte 394). Rejetés, mesurés : malus de 6 ou
   12 cases, errance bornée, repli contre le colon le plus proche (la bête redevient bouclier),
   repli à l'annonce du raid (aucun préavis dans le storyteller : l'annonce suit l'arrivée).

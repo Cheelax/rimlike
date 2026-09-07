@@ -89,6 +89,17 @@ fn enclose(s: &mut Sim) {
     s.map_mut().refresh_indoor();
 }
 
+/// La même enceinte, **sans porte** : rien n'entre, rien ne sort. C'est le
+/// décor du pillard qui fuyait devant un mur au lieu de s'en prendre au
+/// troupeau resté dehors
+/// (`a_raider_facing_a_closed_wall_attacks_the_herd_outside`).
+fn seal(s: &mut Sim) {
+    enclose(s);
+    let (cx, cy) = center();
+    s.map_mut().set_feature(cx, cy - WALL, Feature::WallWood);
+    s.map_mut().refresh_indoor();
+}
+
 /// Retourne l'intérieur de l'enceinte en terre battue : une pièce où il n'y a
 /// rien à brouter, donc pas un enclos (`livestock::pasture_room`).
 fn strip_the_room(s: &mut Sim) {
@@ -620,6 +631,88 @@ fn is_colonist(s: &Sim, id: u32) -> bool {
 #[test]
 fn livestock_is_only_a_target_at_arms_length() {
     assert_eq!(LIVESTOCK_TARGET_REACH, 1);
+}
+
+/// Une enceinte **fermée** ne met pas le troupeau à l'abri : le rang dit « les
+/// colons d'abord *quand ils sont atteignables* », pas « jamais le bétail ».
+///
+/// C'est la régression qu'un tri unique par `(rang, distance)` avait
+/// introduite (relecture indépendante du 2026-09-07, corrigée le même jour,
+/// `crates/sim-cli/CAMPAIGN-FINDINGS.md` §11.8) : les trois colons murés
+/// passaient devant la bête, remplissaient à eux seuls le budget de
+/// `combat::MELEE_TARGETS` chemins, la recherche ne rendait rien et
+/// `combat::raider_ai` faisait **fuir** le pillard sans avoir jamais regardé
+/// le lapin à trois cases de lui. Le code d'avant le rang attaquait ce lapin.
+#[test]
+fn a_raider_facing_a_closed_wall_attacks_the_herd_outside() {
+    let (cx, cy) = center();
+    for seed in 1..=5u64 {
+        let mut s = pasture(seed);
+        seal(&mut s);
+        // Le lapin dehors, le pillard trois cases derrière lui. Les colons
+        // sont plus loin, mais surtout aucun chemin ne mène jusqu'à eux.
+        let rabbit = tamed_at(&mut s, cx + WALL + 4, cy, Species::Rabbit);
+        let raider = s.spawn_pawn(cx + WALL + 7, cy, Faction::Raider);
+        feed_colonists(&mut s);
+        let room = enclosure_room(&s);
+        assert_ne!(room, 0, "graine {seed} : l'enceinte devrait être une pièce");
+        assert_eq!(
+            living_colonists(&s),
+            3,
+            "graine {seed} : les trois colons de départ"
+        );
+        assert!(
+            s.pawns()
+                .iter()
+                .filter(|p| p.is_colonist())
+                .all(|p| s.map().room(p.tile().0, p.tile().1) == room),
+            "graine {seed} : le décor devrait murer les trois colons"
+        );
+        assert_eq!(
+            room_of(&s, rabbit),
+            0,
+            "graine {seed} : le lapin devrait être dehors"
+        );
+
+        s.step(&[]);
+        assert!(
+            !s.pawns()
+                .iter()
+                .any(|p| p.id == raider && matches!(p.job, Job::Flee)),
+            "graine {seed} : le pillard fuit alors qu'une bête paît à trois cases"
+        );
+        assert_eq!(
+            target_of(&s, raider),
+            Some(rabbit),
+            "graine {seed} : le pillard devrait viser la bête, faute de colon \
+             atteignable"
+        );
+
+        // Et il ne se contente pas de la viser : il la rejoint et la frappe.
+        let mut closed = false;
+        for _ in 0..DAY / 4 {
+            feed_colonists(&mut s);
+            s.step(&[]);
+            let Some(r) = s.pawns().iter().find(|p| p.id == raider) else {
+                break;
+            };
+            match s.pawns().iter().find(|p| p.id == rabbit) {
+                Some(b) => closed |= chebyshev(r.tile(), b.tile()) <= 1,
+                // Plus de lapin : le pillard l'a eu.
+                None => {
+                    closed = true;
+                    break;
+                }
+            }
+            if closed {
+                break;
+            }
+        }
+        assert!(
+            closed,
+            "graine {seed} : le pillard n'a jamais rejoint la bête qu'il visait"
+        );
+    }
 }
 
 // ----------------------------------------------------------------------
