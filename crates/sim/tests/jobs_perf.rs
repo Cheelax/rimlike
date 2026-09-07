@@ -22,16 +22,29 @@
 //! sinon la cadence ferait tomber les travaux de fin de liste (recherche,
 //! rangement) au profit des premiers (voir `Sim::job_retry_due`).
 //!
+//! Le patron se retrouve enfin là où l'on ne cherchait pas de travail du
+//! tout : le **cri dans la nuit** (`do_sleep`, second lot de ce fichier).
+//! Une hémorragie que personne ne panse tire les dormeurs du lit, et un blessé
+//! hors d'atteinte relançait donc le triage — parcours des colons, tri des
+//! candidats, recherche de chemin — soixante fois par seconde et pour chaque
+//! dormeur. Relevé par une relecture indépendante à 0,8 s pour trois cents
+//! ticks sur 128×128. Trois pièces là aussi : l'index de régions, qui raye le
+//! réduit muré sans un A\*, la **cadence** de `do_sleep` (un dormeur ne perd
+//! rien à répondre une demi-seconde plus tard), et la recherche passée par
+//! `reach_work` — donc **comptée**, ce qu'elle n'était pas : c'est ainsi que le
+//! défaut avait pu échapper à ce fichier.
+//!
 //! Ces tests mesurent du **travail** (`Sim::job_paths`, A\* lancés par la
 //! recherche de travail), jamais du temps : un chronomètre ne veut rien dire
 //! en intégration continue. Ce qu'ils vérifient tient en une phrase — le coût
 //! de la recherche par tick ne dépend ni du nombre de cibles au sol, ni de la
 //! surface de la carte, et le travail se fait quand même dès qu'un poste est
-//! à portée.
+//! à portée (ou qu'un blessé est joignable, ce que garde
+//! `balance_tending::une_hemorragie_reveille_la_colonie`).
 
 use sim::jobs::RETRY_TICKS;
 use sim::testmap::map_from;
-use sim::{Command, Feature, ItemKind, Job, Sim};
+use sim::{BodyPart, Command, Faction, Feature, ItemKind, Job, Sim};
 
 /// Cinq secondes de jeu : assez pour que les trois colons relancent leur
 /// recherche des centaines de fois.
@@ -229,5 +242,126 @@ fn un_poste_atteignable_est_bien_utilise() {
             .iter()
             .any(|i| i.kind == ItemKind::Meat && i.count > 0),
         "le dépeçage n'a rien produit"
+    );
+}
+
+// ----------------------------------------------------------------------
+// Le cri dans la nuit
+// ----------------------------------------------------------------------
+
+/// Sévérité de la plaie du blessé enfermé. Elle saigne `health::BLEED_TICKS`
+/// (un sixième de jour, 2 400 ticks) et lui coûte un quart de sa sévérité tous
+/// les cent ticks : il saigne donc encore, et il est encore vivant, au bout des
+/// `TICKS` mesurés — sans quoi la scène cesserait de mesurer ce qu'elle croit.
+const WOUND: u32 = 300;
+
+/// Un blessé qui saigne, **enfermé** dans un réduit de roche, et la colonie
+/// endormie autour.
+///
+/// C'est la scène du défaut : `do_sleep` interroge `try_start_tend` pour savoir
+/// s'il y a un geste à faire, et un blessé hors d'atteinte fait toujours dire
+/// « oui, quelqu'un saigne » au court-circuit d'entrée. Le triage repartait
+/// donc en entier — parcours des pawns, tri des candidats, recherche de
+/// chemin — pour chaque dormeur et à chaque tick, pour la même réponse.
+fn bleeder(size: u32) -> Sim {
+    let rows: Vec<String> = (0..size).map(|_| ",".repeat(size as usize)).collect();
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let mut s = Sim::from_map(1, map_from(&refs));
+    let (cx, cy) = (size / 2, size / 2);
+    let (x0, y0) = (cx + GAP, cy - ROOM / 2);
+    for y in y0 - 1..y0 + ROOM + 1 {
+        for x in x0 - 1..x0 + ROOM + 1 {
+            let inside = (x0..x0 + ROOM).contains(&x) && (y0..y0 + ROOM).contains(&y);
+            if !inside {
+                s.map_mut().set_feature(x, y, Feature::Rock);
+            }
+        }
+    }
+    // Le blessé naît dans le réduit : aucune case ne le relie aux autres.
+    let patient = s.spawn_pawn(x0 + ROOM / 2, y0 + ROOM / 2, Faction::Colony);
+    let ids: Vec<u32> = s.pawns().iter().map(|p| p.id).collect();
+    for id in ids {
+        if id != patient {
+            // Tombés de sommeil : ils se couchent au premier tick, sur place
+            // (aucun lit sur la carte) et pour bien plus que les `TICKS`
+            // mesurés — `pawn::REST_RECOVERY` remonte de zéro à `RESTED` en
+            // 4 500 ticks.
+            s.pawn_mut(id).expect("le colon existe").rest = 0;
+        }
+    }
+    s.inflict_injury(patient, BodyPart::Torso, WOUND);
+    s
+}
+
+/// A\* lancés par la recherche de travail pendant `ticks` ticks, et nombre de
+/// dormeurs à l'arrivée : la mesure ne vaut que si la colonie dormait bien.
+fn bleeder_paths(size: u32, ticks: u64) -> (u64, usize) {
+    let mut s = bleeder(size);
+    let before = s.job_paths();
+    for _ in 0..ticks {
+        s.step(&[]);
+    }
+    let asleep = s
+        .pawns()
+        .iter()
+        .filter(|p| matches!(p.job, Job::Sleep { .. }))
+        .count();
+    assert!(
+        s.pawns().iter().any(|p| p.is_bleeding()),
+        "le blessé a cessé de saigner : la scène ne mesure plus rien"
+    );
+    (s.job_paths() - before, asleep)
+}
+
+/// Plafond : une salve par dormeur et par `RETRY_TICKS`, et par salve le
+/// budget de la recherche — `PATH_ATTEMPTS` candidats — plus un, pour le colon
+/// qui n'était pas encore couché au premier tick.
+///
+/// **Le compte réel est zéro**, et c'est l'index de régions qui le donne : le
+/// réduit est une composante à lui seul, `path::find_path_for` le voit en une
+/// lecture et rend `None` sans explorer quoi que ce soit (voir `sim::regions`
+/// et `tests/regions.rs`). Il en va ainsi tant que l'index parle — il se tait
+/// pendant tout tick où la carte a changé sous les pieds des colons —, et
+/// c'est alors la cadence de `do_sleep` qui tient ce plafond. Les deux ont été
+/// mesurés séparément, index rendu muet à la main, six cents ticks, trois
+/// dormeurs :
+///
+/// | | 128×128 | 192×192 |
+/// |---|---|---|
+/// | index muet, sans cadence | **1 797** A\*, 3 396 ms | 1 797 A\*, 7 366 ms |
+/// | index muet, avec cadence | **60** A\*, 76 ms | 60 A\*, 183 ms |
+/// | index en service (l'état du code) | **0** A\*, 0 ms | 0 A\*, 0 ms |
+///
+/// La première ligne est le défaut tel qu'il a été relevé (0,8 s pour trois
+/// cents ticks avec deux dormeurs) : il datait d'avant l'index. Le compte
+/// était en outre **invisible** — le triage cherchait par `path_to_work`, que
+/// `Sim::job_paths` ne comptait pas, et c'est ainsi qu'il avait échappé à ce
+/// fichier. Il passe maintenant par `reach_work`, comme toutes les recherches
+/// bornées.
+const BLEEDER_CEILING: u64 = TICKS * COLONISTS * (PATH_ATTEMPTS + 1) / RETRY_TICKS;
+
+#[test]
+fn un_blesse_hors_d_atteinte_ne_reveille_pas_les_dormeurs_a_chaque_tick() {
+    let (paths, asleep) = bleeder_paths(96, TICKS);
+    assert!(
+        asleep >= 2,
+        "la colonie ne dormait pas : {asleep} dormeurs seulement"
+    );
+    assert!(
+        paths <= BLEEDER_CEILING,
+        "blessé muré, {asleep} dormeurs : {paths} A* lancés, plafond {BLEEDER_CEILING}"
+    );
+}
+
+#[test]
+fn le_cout_du_cri_dans_la_nuit_ne_depend_pas_de_la_surface() {
+    // Quatre fois la surface (96×96 → 192×192). Un A\* qui échoue explore
+    // toute la région du dormeur : si le compte suivait la surface, c'est que
+    // l'index s'est tu et que la cadence ne borne plus rien.
+    let (petite, _) = bleeder_paths(96, SHORT);
+    let (grande, _) = bleeder_paths(192, SHORT);
+    assert!(
+        grande <= petite.max(1) * 3 / 2,
+        "quadrupler la surface a multiplié la recherche : {petite} → {grande}"
     );
 }

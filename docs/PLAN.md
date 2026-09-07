@@ -563,6 +563,17 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-07 : trois défauts de relecture indépendante corrigés dans le sim. Le plancher de
+  ressources posait des obstacles sur des passages critiques (forêt boréale graine 77 : terre
+  atteignable 1 547 → 10) : un test d'articulation locale (les voisines franchissables forment un
+  seul arc) remplace « deux voisines libres », preuve de suffisance écrite ; les veines ne
+  comptent plus comme pierre. L'atelier libre entre dans le choix de la recette (une recette
+  dont tous les postes sont pris passe son tour ; première fonte au tick 1 915 → 89). Le
+  dormeur qui tend l'oreille vers un saigneur inatteignable ne réessaie qu'un tick sur trente,
+  et la recherche de soin est enfin comptée par `job_paths` (c'est son invisibilité qui l'avait
+  laissée passer) ; l'index de régions avait déjà ramené le coût à zéro A*. `demo` inchangé.
+  À vérifier à froid : un bench `demo+12` à 139 k ticks/s relevé pendant des travaux concurrents.
+
 - 2026-09-07 : le désert a un potager garanti. Le goulot n'était pas « pas assez de terre »
   mais « aucune » : la bande de sol entièrement sableuse est refusée par `is_soil`, et les vingt
   cases d'herbe du bosquet forcé portaient toutes un arbre : zéro case semable au tick 0 sur 20

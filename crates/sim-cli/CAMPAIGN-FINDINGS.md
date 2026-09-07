@@ -1582,6 +1582,42 @@ la menace qui n'escalade pas (§5) et l'armement qui ne suit pas (§8, biais n°
 aucun `WorkType` de plus — en ajouter un changerait `WORK_TYPES` et les tampons
 de priorités du client. `TEND_STEP` reste neutre.
 
+**Le cri dans la nuit est cadencé, corrigé le 2026-09-07.** Le point 4
+ci-dessus relançait le triage à **chaque tick et pour chaque dormeur** : un
+blessé hors d'atteinte — enfermé derrière un mur, resté du mauvais côté d'une
+brèche refermée — faisait payer le parcours des colons, le tri des candidats et
+une recherche de chemin, soixante fois par seconde, pour la même réponse.
+Relevé par une relecture indépendante à 0,8 s pour trois cents ticks sur une
+carte 128×128 avec deux dormeurs, contre moins de 0,01 s sans blessé.
+
+Mesure d'abord, et elle change la conclusion : **l'index de régions du §3
+avait déjà emporté l'essentiel**. Le réduit muré est une composante à lui seul,
+`path::find_path_for` le voit en une lecture et rend `None` sans explorer quoi
+que ce soit. Les deux garde-fous mesurés séparément, index rendu muet à la
+main, six cents ticks, trois dormeurs :
+
+| | 128×128 | 192×192 |
+|---|---|---|
+| index muet, sans cadence | **1 797** A\*, 3 396 ms | 1 797 A\*, 7 366 ms |
+| index muet, avec cadence | **60** A\*, 76 ms | 60 A\*, 183 ms |
+| index en service (état du code) | **0** A\*, 0 ms | 0 A\*, 0 ms |
+
+La première ligne est le défaut tel qu'il a été relevé : il datait d'avant
+l'index. La cadence reste utile pour la seule raison qui vaille — l'index **se
+tait** pendant tout tick où la carte a changé sous les pieds des colons, et une
+colonie qui mine, bâtit et coupe en change souvent.
+
+Ce qui restait par ailleurs est ce qui avait permis au défaut de passer : le
+triage cherchait par `path_to_work`, que `Sim::job_paths` **ne comptait pas**.
+Il passe maintenant par `reach_work`, comme toutes les recherches bornées —
+mêmes `PATH_ATTEMPTS` candidats, même blessé retenu, aucune décision changée —
+et `do_sleep` ne tend l'oreille qu'une fois par `jobs::RETRY_TICKS`, phase
+décalée par identité, sans un champ de plus au snapshot. Le réveil reste
+immédiat à une demi-seconde près pour qui **peut** soigner
+(`balance_tending::une_hemorragie_reveille_la_colonie`), et le plafond est tenu
+par `jobs_perf::un_blesse_hors_d_atteinte_ne_reveille_pas_les_dormeurs_a_chaque_tick`.
+Hash du scénario `demo` inchangé : `402c950b5ca15d90`.
+
 ---
 
 ## 8. Les biais du joueur scripté
@@ -2117,6 +2153,37 @@ exigeait ses ingrédients **dans une seule pile**. Sur les mêmes trente graines
 la colonne se lit maintenant **10 forges, 24 lingots, 5 épées**, dont
 **6 portées** par les survivants au lieu d'une. Le tableau ci-dessus reste tel
 quel : c'est la mesure d'avant, elle sert de point de comparaison.
+
+**Un atelier pris ne bloque plus la forge, corrigé le 2026-09-07.** Troisième
+blocage de la même chaîne, relevé par une relecture indépendante et invisible
+aux colonnes ci-dessus parce qu'il ne coûte pas un lingot, il coûte du
+**temps** : `Sim::try_start_craft` retenait la première recette *faisable* —
+objectif non atteint, atelier bâti, ingrédients en réserve — puis cherchait un
+atelier libre **pour elle seule**, et rendait « rien à faire » s'il n'y en avait
+pas. Un objectif de gourdins encore ouvert, du bois en réserve et le seul poste
+de fabrication déjà réservé par un camarade, et la forge d'à côté restait froide
+avec son minerai et deux colons pour la tenir : la colonie fabriquait en file
+indienne alors qu'elle avait deux ateliers. L'atelier **libre et atteignable**
+entre désormais dans le choix de la recette, et une recette dont tous les
+ateliers sont pris passe son tour — la réservation se lit sans un A\*
+(`free_stations`, un seul balayage pour les deux genres d'atelier),
+l'atteignabilité aussi la plupart du temps (l'index de régions du §3), et le
+budget de `PATH_ATTEMPTS` est partagé par toute la salve. L'ordre de
+`craft::RECIPES` ne bouge pas : à ateliers libres, la colonie s'arme toujours
+d'abord. Mesuré sur la scène de `crates/sim/tests/crafting_choice.rs` (un poste,
+une forge, cinq gourdins demandés) : la première fonte commençait au tick
+**1 915**, les cinq gourdins finis un par un sur le seul poste ; elle commence
+au tick **89**. Hash du scénario `demo` inchangé (`402c950b5ca15d90`) : il ne
+pose aucun objectif de fabrication.
+
+Campagne témoin (12 graines × 15 jours, 64×64, difficulté 2, la même révision
+avec et sans la correction) : **tableau identique** — 3,1 colons vivants,
+1,2 technologie, 34 colons armés sur 38, 2 forges / 8 lingots / 1 épée de part
+et d'autre. C'est attendu, et c'est aussi la limite du joueur scripté relevée
+au §8 : il ne pose ses objectifs de fabrication qu'un par un et n'a presque
+jamais deux ateliers demandés en même temps. Le défaut se paie chez un
+**joueur humain**, qui pose ses objectifs ensemble et bâtit ses ateliers au
+pluriel — d'où un test ciblé plutôt qu'une colonne de campagne.
 
 ### 10.3 État des constats ouverts
 
@@ -3296,3 +3363,50 @@ un témoin à 18/20 ; passe après, 20/20), `a_desert_always_has_a_plot_to_sow`,
 Aucune borne de `tests/biomes.rs` n'a bougé : `each_biome_has_its_signature`
 mesure la composition nue (`Map::generate_bare`), que cette tranche ne touche
 pas. `campaign.rs`, `farm.rs`, `climate.rs` et `jobs.rs` sont inchangés.
+
+### 13.9 Suite du 2026-09-07 : le plancher n'enferme plus, et ne prend plus le minerai pour de la pierre
+
+Deux défauts du plancher posé en §13, trouvés par une relecture indépendante
+(fiche `docs/tasks/plancher-de-ressources.md`), tous deux avec une reproduction
+déterministe. Ils ne changent aucun chiffre de campagne du désert : ils portent
+sur ce que le plancher **ajoute**, et le désert n'en souffrait pas.
+
+- **Un obstacle forcé pouvait murer la colonie.** `Map::force_blockers` ne
+  demandait à une case que deux voisines orthogonales libres — or un couloir
+  d'une case de large en a deux. Sur `Sim::new_in_biome(77, 48, 48,
+  Biome::BorealForest)`, l'affleurement forcé tombait dans les couloirs d'une
+  clairière et faisait passer la terre atteignable depuis le centre de **1 547
+  cases à 10** : trois colons murés, sans un arbre à couper. La condition est
+  désormais un test d'articulation **locale** (`Map::cuts_a_passage`) : les
+  voisines franchissables doivent former un seul arc autour de la case, ce qui
+  suffit à démontrer que tout chemin qui la traversait se recoud. Mesuré sur 540
+  cartes (20 graines × 3 tailles × 9 biomes) : la perte d'atteignabilité est
+  désormais **exactement** le nombre d'obstacles posés, jamais un morceau de
+  carte. Sur la reproduction : 1 547 → 1 537 pour dix obstacles.
+- **Les veines passaient pour de la pierre.** `MIN_ROCKS` comptait
+  `Feature::is_rock()`, veines comprises, alors que `jobs::yield_of` ne fait
+  rendre à `Feature::OreRock` que du minerai. Sur
+  `Sim::new_in_biome(439, 16, 16, Biome::Mountain)` : 245 cases de terre, quatre
+  veines, **aucun rocher ordinaire**, et le plancher se croyait quitte — la
+  colonie n'avait de quoi bâtir ni forge (20 pierre) ni tombe (5). Le compte ne
+  retient plus que `Feature::Rock`. Ce n'était pas propre à la montagne : la
+  banquise en graine 15 (48×48) n'offrait que 7 rochers ordinaires pour 10
+  promis, trois veines suffisant à la faire passer pour servie.
+
+Le hash de `demo` **ne bouge pas** (`402c950b5ca15d90`) : sa carte (graine de
+partie 1, 64×64, tempéré) est de celles que le plancher ne touche pas — zéro
+obstacle posé, et déjà exactement dix rochers ordinaires atteignables, donc la
+correction du compte n'y déclenche rien non plus. Les trois empreintes gelées de
+`tests/biomes.rs` (`temperate_generation_is_bit_identical_to_before`,
+`untouched_temperate_maps_keep_their_fingerprint`,
+`only_the_biome_byte_was_added_to_the_state`) tiennent pour la même raison.
+
+Vérification : `cargo fmt --all -- --check`, `cargo test --workspace` (0 échec),
+`cargo clippy --workspace --all-targets -- -D warnings`, `verify --seed 1
+--size 64 --ticks 10000 --scenario demo` (OK), `fuzz --seed 1 --size 24
+--ticks 20000 --runs 3 --commands-per-tick 6` (3 runs OK, jungle / montagne /
+forêt boréale). Tests ajoutés dans `crates/sim/tests/playability.rs` :
+`the_boreal_clearing_is_not_walled_in`, `ore_veins_do_not_pass_for_stone`,
+`the_resource_floor_never_seals_a_map` et
+`every_settleable_map_has_stone_within_reach` (les quatre échouent sur le code
+d'avant), plus le relevé `#[ignore] measure`.

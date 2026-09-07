@@ -428,8 +428,11 @@ const ORE_SEED_SALT: u64 = 0x0FE5_1CA1_0FE5_1CA1;
 /// case), un poste de fabrication (10), un établi de recherche (15) et des
 /// lits. C'est le seul plancher que la génération impose au bruit.
 pub const MIN_TREES: u32 = 20;
-/// Rochers atteignables garantis, même raisonnement : un rocher rend 15 pierre,
-/// donc 10 rochers font 150 pierre — la forge en coûte 20, une tombe 5.
+/// Rochers **ordinaires** atteignables garantis, même raisonnement : un rocher
+/// rend 15 pierre, donc 10 rochers font 150 pierre — la forge en coûte 20, une
+/// tombe 5. Les veines (`Feature::OreRock`) ne comptent pas : elles ne rendent
+/// que du minerai (`jobs::yield_of`), et une colonie assise sur quatre veines
+/// sans un rocher ordinaire n'a toujours pas de quoi bâtir sa forge.
 ///
 /// **Mesuré avant d'être réglé** (40 graines × 7 tailles, cartes tempérées) :
 /// le bruit seul laisse *zéro* rocher atteignable au pire cas à **toutes** les
@@ -492,10 +495,13 @@ const OPEN_PER_ROCK: u32 = 96;
 /// cases de terre ouvrent droit aux 49, 64 à huit.
 const OPEN_PER_SOIL: u32 = 8;
 /// Rayon (Tchebychev) laissé libre autour du centre : c'est la place des trois
-/// colons du départ (`Sim::spawn_starting_pawns`). Rien de forcé n'y tombe, et
-/// le bosquet posé plus loin est un **disque**, jamais un anneau : le
-/// complémentaire d'un disque est connexe, la colonie n'est donc jamais
-/// enfermée par ce que la génération ajoute.
+/// colons du départ (`Sim::spawn_starting_pawns`). Rien de forcé n'y tombe.
+///
+/// Ce dégagement ne prouve **rien** sur l'enfermement, contrairement à ce qui
+/// était écrit ici : le bosquet forcé n'est pas un disque, c'est une poignée de
+/// cases prises en spirale là où elles sont libres, et une seule d'entre elles
+/// posée dans un couloir suffit à couper la carte. Ce qui le garantit est le
+/// test d'articulation locale de `Map::cuts_a_passage`.
 const CENTER_KEEPOUT: u32 = 2;
 /// Distance à laquelle le bosquet, l'affleurement et la mare sont ancrés.
 const FORCED_ANCHOR: i32 = 5;
@@ -1242,9 +1248,15 @@ impl Map {
 
     /// Complète la carte pour qu'une colonie y soit jouable, quelle que soit la
     /// table du biome et quelle que soit la graine : au moins `MIN_TREES`
-    /// arbres et `MIN_ROCKS` rochers **atteignables depuis le centre**,
-    /// `MIN_WATER` cases d'eau sur la carte, et `MIN_SOIL` cases de sol libre
-    /// atteignables — le potager.
+    /// arbres et `MIN_ROCKS` rochers **ordinaires atteignables depuis le
+    /// centre**, `MIN_WATER` cases d'eau sur la carte, et `MIN_SOIL` cases de
+    /// sol libre atteignables — le potager.
+    ///
+    /// **Ce qu'il ajoute n'enferme jamais personne** : chaque obstacle est posé
+    /// sur une case dont `Map::cuts_a_passage` démontre qu'elle n'est pas un
+    /// passage, donc l'atteignable final est exactement l'atteignable de départ
+    /// moins les cases posées. La mare et le potager, eux, ne touchent pas à la
+    /// franchissabilité. Voir `tests/playability.rs`.
     ///
     /// Entièrement déterministe et sans hasard : un remplissage depuis le
     /// centre, puis des spirales d'ordre fixe. La génération n'a pas de `Rng`
@@ -1269,6 +1281,11 @@ impl Map {
         let Some(center) = self.nearest_passable(cx, cy) else {
             return;
         };
+        // `seen` est calculé une fois et reste exact jusqu'au bout : chaque
+        // pose ne retire de l'atteignable que sa propre case
+        // (`Map::cuts_a_passage`), et une case posée porte un élément, donc les
+        // spirales qui suivent l'écartent déjà. Ce qui reste marqué est encore
+        // atteignable.
         let seen = self.reachable_from(center);
         let open = self.open_land(&seen);
         if open < MIN_OPEN {
@@ -1388,14 +1405,21 @@ impl Map {
             .count() as u32
     }
 
-    /// Arbres et rochers bordés par au moins une case atteignable : c'est là
-    /// qu'un colon se poste pour couper ou miner.
+    /// Arbres et rochers **ordinaires** bordés par au moins une case
+    /// atteignable : c'est là qu'un colon se poste pour couper ou miner.
+    ///
+    /// Les veines (`Feature::OreRock`) ne comptent pas, et c'est tout l'objet
+    /// du plancher : `jobs::yield_of` ne leur fait rendre que du minerai. Une
+    /// carte de montagne peut donc avoir quatre rochers autour de la colonie et
+    /// pas un gramme de pierre — ni forge (20 pierre) ni tombe (5). Ce que
+    /// `MIN_ROCKS` promet est de la pierre ; les veines gardent leur propre
+    /// part (`BiomeTable::ore_share`), qui ne se substitue pas à elle.
     fn reachable_resources(&self, seen: &[bool]) -> (u32, u32) {
         let mut trees = 0;
         let mut rocks = 0;
         for i in 0..self.features.len() {
             let f = Feature::from_u8(self.features[i]);
-            if f != Feature::Tree && !f.is_rock() {
+            if f != Feature::Tree && f != Feature::Rock {
                 continue;
             }
             let (x, y) = (i as u32 % self.width, i as u32 / self.width);
@@ -1431,11 +1455,16 @@ impl Map {
     /// l'autre, pour ne pas mêler le bosquet à l'affleurement.
     ///
     /// **Jamais côte à côte** : deux éléments forcés gardent au moins une case
-    /// d'écart. C'est ce qui rend la garantie démontrable —
-    /// chaque élément posé garde ses voisins orthogonaux libres et atteignables,
-    /// donc il est lui-même atteignable, et un obstacle isolé ne peut couper
-    /// aucune carte en deux. Un bosquet compact, lui, aurait un cœur
-    /// inaccessible et pourrait enfermer une clairière.
+    /// d'écart, pour que le bosquet reste aéré — un bosquet compact aurait un
+    /// cœur inaccessible.
+    ///
+    /// **Et jamais dans un passage** : `Map::cuts_a_passage` refuse toute case
+    /// dont le blocage pourrait séparer la carte. C'était le défaut : deux
+    /// voisins libres ne disent rien, un couloir d'une case de large en a
+    /// deux — et avec `Sim::new_in_biome(77, 48, 48, Biome::BorealForest)`
+    /// l'affleurement forcé faisait tomber la terre atteignable depuis le
+    /// centre de 1 547 cases à 10. Les colons étaient murés dans leur
+    /// clairière. Voir `tests/playability.rs`.
     fn force_blockers(&mut self, center: (u32, u32), seen: &[bool], f: Feature, count: u32) {
         let toward: i32 = if f == Feature::Tree { 1 } else { -1 };
         let ax = (center.0 as i32 + toward * FORCED_ANCHOR).clamp(0, self.width as i32 - 1) as u32;
@@ -1450,7 +1479,7 @@ impl Map {
                 || self.get(x, y).is_water()
                 || !seen[self.index(x, y)]
                 || placed.iter().any(|&p| chebyshev(p, (x, y)) < 2)
-                || self.free_neighbours(seen, x, y) < 2
+                || self.cuts_a_passage(x, y)
             {
                 continue;
             }
@@ -1471,16 +1500,40 @@ impl Map {
         }
     }
 
-    /// Voisins **orthogonaux** franchissables et atteignables d'une case.
-    fn free_neighbours(&self, seen: &[bool], x: u32, y: u32) -> u32 {
-        let mut n = 0;
-        for (dx, dy) in [(0i32, -1i32), (0, 1), (-1, 0), (1, 0)] {
+    /// Boucher cette case risquerait-il de séparer la carte ?
+    ///
+    /// **Test local, et démontré suffisant** — c'est pour cela qu'il vaut mieux
+    /// qu'un remplissage complet par obstacle posé. On regarde le tour de la
+    /// case (`RING`, deux voisines consécutives sont orthogonales) : si les
+    /// voisines franchissables y forment **un seul arc**, tout chemin qui
+    /// passait par la case se recoud le long de cet arc, et boucher la case ne
+    /// retire qu'elle.
+    ///
+    /// La preuve tient en deux points. D'abord, rendre `(x, y)` infranchissable
+    /// ne supprime que des liens dont les **deux** bouts sont dans son
+    /// voisinage : ceux qui la touchent, et les diagonales entre deux voisines
+    /// orthogonales perpendiculaires (nord↔est, par exemple), dont elle est
+    /// l'une des deux cases de coin que `path::find_path` exige. Un pas entre
+    /// une voisine et le dehors ne peut pas l'avoir pour coin : il faudrait
+    /// qu'elle touche les deux bouts. Ensuite, un chemin qui empruntait un de
+    /// ces liens entre et ressort du voisinage par des voisines
+    /// franchissables ; un seul arc les relie donc toutes par des pas
+    /// **orthogonaux** entre voisines consécutives, qui n'exigent aucun coin et
+    /// survivent au blocage.
+    ///
+    /// Le test se trompe donc toujours du côté sûr : il peut refuser une case
+    /// inoffensive (deux arcs qui communiquent en réalité par un grand détour),
+    /// jamais accepter une case qui coupe. Zéro voisine franchissable rend
+    /// `false` : la case est déjà isolée, personne ne la traverse.
+    fn cuts_a_passage(&self, x: u32, y: u32) -> bool {
+        let mut open = [false; 8];
+        for (i, &(dx, dy)) in RING.iter().enumerate() {
             let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-            if self.in_bounds(nx, ny) && seen[self.index(nx as u32, ny as u32)] {
-                n += 1;
-            }
+            // Le dehors de la carte est infranchissable : rien n'en sort.
+            open[i] = self.in_bounds(nx, ny) && self.passable(nx as u32, ny as u32);
         }
-        n
+        let arcs = (0..8).filter(|&i| open[i] && !open[(i + 7) % 8]).count();
+        arcs > 1
     }
 
     /// Creuse une mare d'eau basse (franchissable, donc elle ne coupe rien)
@@ -1536,6 +1589,22 @@ const NEIGHBORS: [(i32, i32); 8] = [
     (1, 1),
     (1, -1),
     (-1, 1),
+    (-1, -1),
+];
+
+/// Les huit voisines d'une case **dans l'ordre du tour** : deux voisines
+/// consécutives (la dernière et la première comprises) sont orthogonales l'une
+/// à l'autre. C'est cette propriété qui rend `Map::cuts_a_passage` valide, et
+/// c'est pourquoi cet ordre ne se confond pas avec `NEIGHBORS` : celui-là est
+/// l'ordre de l'A\*, il saute d'un côté à l'autre.
+const RING: [(i32, i32); 8] = [
+    (0, -1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+    (0, 1),
+    (-1, 1),
+    (-1, 0),
     (-1, -1),
 ];
 

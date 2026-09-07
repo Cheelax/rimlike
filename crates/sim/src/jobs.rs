@@ -784,14 +784,26 @@ impl Sim {
             ));
         }
         candidates.sort_unstable();
-        for &(.., x, y, target) in candidates.iter().take(PATH_ATTEMPTS) {
-            if let Some(p) = self.path_to_work(from, (x, y)) {
-                self.pawns[i].set_path(p);
-                self.pawns[i].job = Job::Tend {
-                    target,
-                    progress: 0,
-                };
-                return true;
+        // Recherche **bornée et comptée** (`reach_work`), comme les autres
+        // recherches corrigées : le budget dit les mêmes `PATH_ATTEMPTS`
+        // candidats que le `take` d'avant, donc le blessé retenu ne change
+        // pas, mais l'index de régions peut désormais rayer un blessé
+        // enfermé sans A\* et `Sim::job_paths` compte ce que le triage coûte.
+        // Il ne comptait rien : c'est ainsi que le cri dans la nuit — un A\*
+        // par dormeur et par tick — a pu passer inaperçu du garde-fou.
+        let mut budget = PATH_ATTEMPTS;
+        for &(.., x, y, target) in &candidates {
+            match self.reach_work(from, (x, y), &mut budget) {
+                Reach::Path(p) => {
+                    self.pawns[i].set_path(p);
+                    self.pawns[i].job = Job::Tend {
+                        target,
+                        progress: 0,
+                    };
+                    return true;
+                }
+                Reach::Unreachable => continue,
+                Reach::OutOfBudget => return false,
             }
         }
         false
@@ -1156,6 +1168,21 @@ impl Sim {
     fn job_retry_due(&self, i: usize) -> bool {
         self.pawns[i].idle_ticks == 0
             || (self.tick + u64::from(self.pawns[i].id)) % RETRY_TICKS == 0
+    }
+
+    /// Le dormeur tend-il l'oreille à ce tick (voir `do_sleep`) ?
+    ///
+    /// Même pas et même phase décalée que `job_retry_due`, mais **sans son
+    /// échappatoire** : `Pawn::idle_ticks` reste à zéro pendant le sommeil, la
+    /// cadence ne s'armerait donc jamais. Or un dormeur n'a rien d'un colon
+    /// occupé — il ne perd aucun travail à répondre une demi-seconde plus
+    /// tard, et c'est le seul endroit du module où une recherche tourne pour
+    /// quelqu'un qui ne cherche pas de travail.
+    ///
+    /// Sans état ajouté, comme partout ici : le tick et l'identité sont déjà
+    /// sérialisés, rien de plus au snapshot ni au hash.
+    fn sleep_tend_due(&self, i: usize) -> bool {
+        (self.tick + u64::from(self.pawns[i].id)) % RETRY_TICKS == 0
     }
 
     /// Chemin d'un colon vers une case, pour un essai du budget.
@@ -1597,7 +1624,12 @@ impl Sim {
         // pris en charge ou hors d'atteinte, et on se rendort sans y penser.
         // Sans cela, le blessé se vidait pendant que la colonie dormait :
         // trois des neuf morts d'après-raid de la mesure ciblée.
-        if self.try_start_tend(i, true) {
+        //
+        // Le dormeur ne tend l'oreille qu'une fois par `RETRY_TICKS` : un
+        // blessé hors d'atteinte relançait sinon le triage — parcours des
+        // pawns, tri des candidats, recherche de chemin — soixante fois par
+        // seconde et pour chaque dormeur, pour la même réponse.
+        if self.sleep_tend_due(i) && self.try_start_tend(i, true) {
             return;
         }
         if self.pawns[i].is_moving() {
@@ -2239,40 +2271,77 @@ impl Sim {
         Some(picks)
     }
 
-    /// Première recette **faisable** dans l'ordre de `craft::RECIPES` : objectif
-    /// non atteint, atelier bâti, et de quoi la tenir en réserve. Renvoie aussi
-    /// les piles retenues, pour ne pas les rechercher deux fois.
+    /// Cette recette est-elle **demandée**, et son atelier bâti ? Les deux
+    /// questions les moins chères de la fabrication : deux lectures de
+    /// compteur, sans une pile parcourue ni une case de carte lue.
     ///
-    /// Les trois conditions se testent sans toucher à la carte, et c'est le
-    /// point : une recette dont l'atelier manque (des lingots sans forge) ou
-    /// dont les ingrédients manquent (du minerai qu'on n'a pas) est **sautée**,
-    /// pas attendue. Sans cela, un objectif inatteignable bloquait la file — la
-    /// colonie ne taillait plus ses arcs — et surtout faisait balayer les
-    /// 4 096 cases de la carte à chaque colon désœuvré, à chaque tick (mesuré :
-    /// une campagne de 30 jours passait de 0,3 s à 108 s dès l'objectif de
-    /// lingots posé).
-    fn wanted_craft(&self, from: (u32, u32)) -> Option<(&'static craft::Recipe, Vec<usize>)> {
-        craft::RECIPES.iter().find_map(|r| {
-            if self.colony_total(r.output) >= self.craft_targets[r.output as usize]
-                || self.map.station_count(r.station) == 0
-            {
-                return None;
-            }
-            self.craft_picks(r, from).map(|picks| (r, picks))
-        })
+    /// C'est le premier des tris qui font sauter une recette au lieu de
+    /// l'attendre : une recette dont l'atelier manque (des lingots sans forge)
+    /// est ignorée, pas mise en file. Sans cela, un objectif inatteignable
+    /// bloquait la suite — la colonie ne taillait plus ses arcs — et surtout
+    /// faisait balayer les 4 096 cases de la carte à chaque colon désœuvré, à
+    /// chaque tick (mesuré : une campagne de 30 jours passait de 0,3 s à 108 s
+    /// dès l'objectif de lingots posé).
+    fn craft_wanted(&self, r: &craft::Recipe) -> bool {
+        self.colony_total(r.output) < self.craft_targets[r.output as usize]
+            && self.map.station_count(r.station) != 0
     }
 
-    /// Fabrique s'il y a un atelier libre **atteignable**, un objectif non
-    /// atteint et de quoi tenir la recette. Les piles nécessaires sont
-    /// réservées d'un coup — toutes, y compris celles des voyages suivants :
-    /// un colon ne part pas chercher du bois pour un épieu sans pierre, et deux
-    /// colons ne se disputent pas le même minerai.
+    /// Les ateliers **libres** de la carte, postes de fabrication d'un côté et
+    /// forges de l'autre, relevés en un seul passage.
+    ///
+    /// Un seul, parce qu'une salve essaie maintenant plusieurs recettes : le
+    /// balayage se paierait autant de fois qu'il y a de recettes demandées, et
+    /// les deux genres d'atelier se lisent dans la même case. L'appelant ne le
+    /// déclenche qu'une fois, et seulement quand une recette est faisable
+    /// (voir `try_start_craft`) — la règle « pas de balayage sans
+    /// court-circuit » tient donc plus serré qu'avant, pas moins.
+    fn free_stations(&self, spots: &mut Vec<(u32, u32)>, forges: &mut Vec<(u32, u32)>) {
+        for y in 0..self.map.height() {
+            for x in 0..self.map.width() {
+                let feature = self.map.feature(x, y);
+                if feature != Feature::CraftingSpot && feature != Feature::Forge {
+                    continue;
+                }
+                if self.is_reserved(x, y) {
+                    continue;
+                }
+                if feature == Feature::Forge {
+                    forges.push((x, y));
+                } else {
+                    spots.push((x, y));
+                }
+            }
+        }
+    }
+
+    /// Fabrique la première recette **entièrement servable** dans l'ordre de
+    /// `craft::RECIPES` : objectif non atteint, atelier bâti, de quoi la tenir
+    /// en réserve, et un atelier **libre et atteignable** pour la travailler.
+    /// Les piles nécessaires sont réservées d'un coup — toutes, y compris
+    /// celles des voyages suivants : un colon ne part pas chercher du bois pour
+    /// un épieu sans pierre, et deux colons ne se disputent pas le même minerai.
+    ///
+    /// **L'atelier fait partie du choix de la recette**, et c'est le sens de la
+    /// boucle. La recette était retenue avant qu'on regarde les ateliers : un
+    /// objectif de gourdins non atteint, du bois en réserve et le seul poste de
+    /// fabrication déjà réservé par un camarade, et la recherche s'arrêtait là.
+    /// Une forge libre, du minerai et un second colon restaient inutilisés
+    /// jusqu'à ce que le premier lâche son poste — la colonie fabriquait en
+    /// file indienne quand elle avait deux ateliers. La réservation se lit sans
+    /// un A\* (`free_stations`), l'atteignabilité aussi la plupart du temps
+    /// (l'index de régions, voir `reach_adjacent`) : sauter à la recette
+    /// suivante ne coûte donc rien de ce qui coûtait cher.
     ///
     /// Comme le dépeçage : trois court-circuits avant le premier A\* (aucun
     /// atelier, aucun objectif posé, ce n'est pas le tour du colon), puis un
-    /// budget partagé par l'atelier et la première pile. L'atelier est vérifié
+    /// budget de `PATH_ATTEMPTS` **partagé par toute la salve** — ateliers de
+    /// toutes les recettes et première pile confondus. L'atelier est vérifié
     /// **ici** — un atelier muré retenu au démarrage se payait autrement dans
-    /// `pick_ingredient`, à chaque tick, huit A\* ratés à la fois.
+    /// `pick_ingredient`, à chaque tick, huit A\* ratés à la fois — et le
+    /// tableau des inatteignables (`blocked`) court d'une recette à l'autre :
+    /// un poste démontré hors d'atteinte pour le gourdin ne se retente pas
+    /// pour l'épée.
     fn try_start_craft(&mut self, i: usize) -> bool {
         if (self.map.crafting_spot_count() == 0 && self.map.forge_count() == 0)
             || self.craft_targets.iter().all(|&t| t == 0)
@@ -2281,49 +2350,71 @@ impl Sim {
             return false;
         }
         let from = self.pawns[i].tile();
-        let Some((recipe, picks)) = self.wanted_craft(from) else {
-            return false;
-        };
-        let station = recipe.station;
-        let mut spots: Vec<(u32, u32)> = Vec::new();
-        for y in 0..self.map.height() {
-            for x in 0..self.map.width() {
-                if self.map.feature(x, y) == station && !self.is_reserved(x, y) {
-                    spots.push((x, y));
-                }
-            }
-        }
         let mut budget = PATH_ATTEMPTS;
         let mut blocked: Vec<(u32, u32)> = Vec::new();
-        // L'atelier le plus proche du colon : c'est lui qui va y retourner
-        // autant de fois que la recette a d'ingrédients.
-        let Some(((fx, fy), _)) = self.reach_station(from, &spots, from, &mut budget, &mut blocked)
-        else {
-            return false;
-        };
-        let first = picks[0];
-        let target = (self.items[first].x, self.items[first].y);
-        let Reach::Path(p) = self.reach_tile(from, target, &mut budget) else {
-            return false;
-        };
-        let pawn = self.pawns[i].id;
-        for &k in &picks {
-            self.items[k].reserved_by = Some(pawn);
+        let mut spots: Vec<(u32, u32)> = Vec::new();
+        let mut forges: Vec<(u32, u32)> = Vec::new();
+        let mut scanned = false;
+        for recipe in craft::RECIPES.iter() {
+            // Budget épuisé : plus une recherche ne peut aboutir, et la
+            // recette suivante coûterait son `craft_picks` pour rien.
+            if budget == 0 {
+                break;
+            }
+            if !self.craft_wanted(recipe) {
+                continue;
+            }
+            // O(piles), sans une case de carte lue : c'est le tri qui précède
+            // le balayage, jamais l'inverse.
+            let Some(picks) = self.craft_picks(recipe, from) else {
+                continue;
+            };
+            if !scanned {
+                scanned = true;
+                self.free_stations(&mut spots, &mut forges);
+            }
+            let free = if recipe.station == Feature::Forge {
+                &forges
+            } else {
+                &spots
+            };
+            // Tous les ateliers de cette recette sont pris : la suivante a
+            // peut-être le sien de libre. Aucun A\*, aucune pile relue.
+            if free.is_empty() {
+                continue;
+            }
+            // L'atelier le plus proche du colon : c'est lui qui va y retourner
+            // autant de fois que la recette a d'ingrédients.
+            let Some(((fx, fy), _)) =
+                self.reach_station(from, free, from, &mut budget, &mut blocked)
+            else {
+                continue;
+            };
+            let first = picks[0];
+            let target = (self.items[first].x, self.items[first].y);
+            let Reach::Path(p) = self.reach_tile(from, target, &mut budget) else {
+                continue;
+            };
+            let pawn = self.pawns[i].id;
+            for &k in &picks {
+                self.items[k].reserved_by = Some(pawn);
+            }
+            self.reservations.push(Reservation { x: fx, y: fy, pawn });
+            let item = self.items[first].id;
+            self.pawns[i].set_path(p);
+            self.pawns[i].job = Job::Craft {
+                spot: (fx, fy),
+                recipe: recipe.output,
+                stage: CraftStage::FetchPartial {
+                    index: 0,
+                    item,
+                    carried: false,
+                    got: 0,
+                },
+            };
+            return true;
         }
-        self.reservations.push(Reservation { x: fx, y: fy, pawn });
-        let item = self.items[first].id;
-        self.pawns[i].set_path(p);
-        self.pawns[i].job = Job::Craft {
-            spot: (fx, fy),
-            recipe: recipe.output,
-            stage: CraftStage::FetchPartial {
-                index: 0,
-                item,
-                carried: false,
-                got: 0,
-            },
-        };
-        true
+        false
     }
 
     fn do_craft(&mut self, i: usize, spot: (u32, u32), recipe: ItemKind, stage: CraftStage) {
