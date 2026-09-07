@@ -551,6 +551,19 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-07 : les pillards ne chassent plus le troupeau. Comparaison contrôlée (binaires de
+  quatre révisions, 30 puis 60 graines) : les 27 bêtes perdues de la campagne de référence
+  étaient toutes tuées par un pillard, dehors, à 1,7 case du point de repli ; l'enclos nourricier
+  est dormant parce que le joueur scripté ne referme son enceinte que 5 fois sur 30 (eau peu
+  profonde sur le tracé). Réglage gardé : un pillard cible une bête de la colonie **après** tous
+  les colons atteignables (rang avant distance), sauf au contact ou quand plus aucun colon n'est
+  debout ; 9/21 → 16/21 colonies vivantes avec bétail, 54 → 18 bêtes tuées sur 60 graines, +6
+  morts de colons sur 362 (le témoin sans bétail en compte 394). Rejetés, mesurés : malus de 6 ou
+  12 cases, errance bornée, repli contre le colon le plus proche (la bête redevient bouclier),
+  repli à l'annonce du raid (aucun préavis dans le storyteller : l'annonce suit l'arrivée).
+  Le repli de la PR #1 reste en place ; `demo` inchangé. Fiche suivante : une enceinte sans
+  trous pour le joueur scripté.
+
 - 2026-09-07 : les salles nommées survivent au relais. Le dernier snapshot de l'hôte (celui des
   rejoignants) et son tick sont conservés dans le fichier de persistance (schéma v5, v1-v4
   relues), écrits au plus toutes les 30 s et à l'arrêt propre ; au redémarrage la salle revient

@@ -14,22 +14,35 @@
 //! feu). Sans cette colonne, « le raid tue le bétail » resterait une
 //! déduction, pas une mesure.
 //!
-//! Les trois témoins du scénario, sur les mêmes 30 graines :
+//! Le scénario se joue en **deux décors**, et c'est le second qui compte le
+//! plus : murée (`run_seeds`) et **à ciel ouvert** (`run_seeds_open`, ajouté le
+//! 2026-09-07). Le diagnostic de campagne du §11.8 a montré que l'enceinte du
+//! joueur scripté n'est refermée que cinq fois sur trente : dans les
+//! vingt-cinq autres colonies il n'y a aucune pièce, donc aucun enclos, et le
+//! repli ne peut rien faire de mieux que serrer le troupeau contre ses maîtres.
+//! Un banc qui ne mesurerait que le décor muré parlerait d'une situation rare.
+//!
+//! Les témoins, sur les mêmes 30 graines :
 //!
 //! | | bêtes tuées par un pillard | colons perdus sur 90 |
 //! |---|---|---|
-//! | avant le repli (`KILLED_BEFORE`) | 17 / 60 | 12 |
-//! | après | 6 / 60 | 19 |
-//! | **sans aucun bétail** | — | **25** |
+//! | muré, avant le repli (`KILLED_BEFORE`) | 17 / 60 | 12 |
+//! | muré, repli seul et malus de trois cases | 7 / 60 | 18 |
+//! | **muré, ciblage par rang** | **0 / 60** | 22 |
+//! | muré, sans aucun bétail | — | 25 |
+//! | ciel ouvert, malus de trois cases (`KILLED_OPEN_BEFORE`) | 5 / 60 | 16 |
+//! | **ciel ouvert, ciblage par rang** | **1 / 60** | 17 |
+//! | ciel ouvert, sans aucun bétail | — | 24 |
 //!
-//! La troisième ligne est celle qui donne son sens aux deux autres : les 12
-//! colons perdus d'avant n'étaient pas une colonie mieux défendue, c'était un
-//! troupeau qui mourait à sa place. Avec le repli, la colonie perd toujours
-//! **moins** de colons qu'une colonie sans bétail (19 contre 25) — c'est ce
-//! que vérifie `colonist_deaths_do_not_rise` — mais elle ne les échange plus
-//! contre ses bêtes.
+//! Les lignes « sans aucun bétail » sont celles qui donnent son sens à tout le
+//! reste : les 12 colons perdus d'avant n'étaient pas une colonie mieux
+//! défendue, c'était un troupeau qui mourait à sa place. Dans les deux décors,
+//! la colonie qui élève perd toujours **moins** de colons que celle qui
+//! n'élève pas — c'est ce que vérifie `colonist_deaths_do_not_rise` — mais
+//! elle ne les échange plus contre ses bêtes.
 
-use sim::combat::LIVESTOCK_TARGET_PENALTY;
+use sim::combat::LIVESTOCK_TARGET_REACH;
+use sim::health::{BodyPart, SEVERITY_MAX};
 use sim::livestock::{LIVESTOCK_HUDDLE, LIVESTOCK_RANGE};
 use sim::map::chebyshev;
 use sim::pawn::NEED_MAX;
@@ -243,9 +256,17 @@ impl Tally {
 /// place, la bande, puis deux jours pour que tout se décante. `species` à
 /// `None` donne le **témoin sans bétail**, qui dit ce que la colonie perd
 /// quand elle n'a rien à faire tuer à sa place.
-fn run_seed(seed: u64, species: Option<Species>) -> Tally {
+///
+/// `enclosed` à faux donne le scénario **à ciel ouvert** : pas un mur, donc
+/// pas de pièce, donc aucun enclos où rentrer. C'est la configuration de
+/// vingt-cinq colonies de campagne sur trente (voir
+/// `CAMPAIGN-FINDINGS.md` §11.8) et celle où le repli ne peut rien faire de
+/// mieux que serrer le troupeau contre ses maîtres.
+fn run_seed_in(seed: u64, species: Option<Species>, enclosed: bool) -> Tally {
     let mut s = pasture(seed);
-    enclose(&mut s);
+    if enclosed {
+        enclose(&mut s);
+    }
     if let Some(species) = species {
         two_tamed(&mut s, species);
     }
@@ -286,10 +307,23 @@ fn run_seed(seed: u64, species: Option<Species>) -> Tally {
     tally
 }
 
+fn run_seed(seed: u64, species: Option<Species>) -> Tally {
+    run_seed_in(seed, species, true)
+}
+
 fn run_seeds(species: Option<Species>) -> Tally {
     let mut total = Tally::default();
     for seed in 1..=30u64 {
         total.add(&run_seed(seed, species));
+    }
+    total
+}
+
+/// Les mêmes trente graines, mais à ciel ouvert.
+fn run_seeds_open(species: Option<Species>) -> Tally {
+    let mut total = Tally::default();
+    for seed in 1..=30u64 {
+        total.add(&run_seed_in(seed, species, false));
     }
     total
 }
@@ -481,12 +515,111 @@ fn boars_still_defend() {
     }
 }
 
-/// La pénalité de ciblage est bien ce qu'elle dit : trois cases, et rien de
-/// plus. Un chiffre plus haut rend le troupeau invisible, ce qui n'est pas le
-/// but ; un chiffre plus bas ne détourne plus personne.
+/// Le ciblage par rang, dans ses trois cas. Un pillard vient pour la colonie :
+///
+/// 1. une bête douze cases plus près que le premier colon **ne le détourne
+///    pas** — c'est le cas que la pénalité de trois cases ne savait pas
+///    traiter (`combat::LIVESTOCK_TARGET_REACH`) ;
+/// 2. une bête **au contact** reste une cible, sinon celle qui bouche une
+///    porte serait intouchable ;
+/// 3. plus un colon debout, et le troupeau y passe : la règle est un ordre de
+///    préférence, pas une immunité.
 #[test]
-fn the_targeting_penalty_is_three_tiles() {
-    assert_eq!(LIVESTOCK_TARGET_PENALTY, 3);
+fn a_raider_walks_past_the_herd_to_reach_a_colonist() {
+    let (cx, cy) = center();
+    for seed in 1..=5u64 {
+        // 1. La bête entre le pillard et la colonie, bien plus près de lui.
+        let mut s = pasture(seed);
+        let rabbit = tamed_at(&mut s, cx + LIVESTOCK_RANGE, cy, Species::Rabbit);
+        let raider = s.spawn_pawn(cx + LIVESTOCK_RANGE + 6, cy, Faction::Raider);
+        feed_colonists(&mut s);
+        s.step(&[]);
+        assert_eq!(
+            target_of(&s, raider),
+            None,
+            "graine {seed} : le pillard s'est détourné sur la bête"
+        );
+        assert!(
+            matches!(target_of_any(&s, raider), Some(id) if is_colonist(&s, id)),
+            "graine {seed} : le pillard n'a pris aucun colon pour cible"
+        );
+        // Et la bête vit encore une demi-journée plus tard.
+        run_fed(&mut s, DAY / 2);
+        assert!(
+            s.pawns().iter().any(|p| p.id == rabbit && p.is_alive()),
+            "graine {seed} : la bête est morte alors que le pillard visait un colon"
+        );
+
+        // 2. Au contact, elle est une cible comme une autre.
+        let mut s = pasture(seed);
+        let rabbit = tamed_at(&mut s, cx + LIVESTOCK_RANGE, cy, Species::Rabbit);
+        let raider = s.spawn_pawn(cx + LIVESTOCK_RANGE + 1, cy, Faction::Raider);
+        feed_colonists(&mut s);
+        s.step(&[]);
+        assert_eq!(
+            target_of(&s, raider),
+            Some(rabbit),
+            "graine {seed} : une bête au contact devrait être visée"
+        );
+
+        // 3. Plus un colon du tout : le troupeau devient la cible. La règle
+        //    est un ordre de préférence, pas une immunité.
+        let mut s = pasture(seed);
+        let rabbit = tamed_at(&mut s, cx + LIVESTOCK_RANGE, cy, Species::Rabbit);
+        let raider = s.spawn_pawn(cx + LIVESTOCK_RANGE + 6, cy, Faction::Raider);
+        let ids: Vec<u32> = s
+            .pawns()
+            .iter()
+            .filter(|p| p.is_colonist())
+            .map(|p| p.id)
+            .collect();
+        for id in ids {
+            if let Some(p) = s.pawn_mut(id) {
+                p.add_injury(BodyPart::Head, SEVERITY_MAX, 0);
+            }
+        }
+        // Deux ticks : les colons meurent au bout du premier (`remove_dead`),
+        // le pillard se choisit une nouvelle cible au second.
+        s.step(&[]);
+        s.step(&[]);
+        assert_eq!(living_colonists(&s), 0, "graine {seed} : colonie éteinte");
+        assert_eq!(
+            target_of(&s, raider),
+            Some(rabbit),
+            "graine {seed} : sans colon, le pillard devrait viser la bête"
+        );
+    }
+}
+
+/// La cible d'un pawn, si c'est bien celle du bétail attendu.
+fn target_of(s: &Sim, raider: u32) -> Option<u32> {
+    match target_of_any(s, raider) {
+        Some(id) if !is_colonist(s, id) => Some(id),
+        _ => None,
+    }
+}
+
+fn target_of_any(s: &Sim, raider: u32) -> Option<u32> {
+    s.pawns().iter().find(|p| p.id == raider).and_then(|p| {
+        if let Job::Attack { target } = p.job {
+            Some(target)
+        } else {
+            None
+        }
+    })
+}
+
+fn is_colonist(s: &Sim, id: u32) -> bool {
+    s.pawns()
+        .iter()
+        .any(|p| p.id == id && p.is_colonist() && p.species.is_none())
+}
+
+/// `LIVESTOCK_TARGET_REACH` est bien le contact, et rien de plus : une case de
+/// plus et un pillard se détournerait déjà sur ce qui passe à côté de lui.
+#[test]
+fn livestock_is_only_a_target_at_arms_length() {
+    assert_eq!(LIVESTOCK_TARGET_REACH, 1);
 }
 
 // ----------------------------------------------------------------------
@@ -524,6 +657,14 @@ fn raids_kill_fewer_livestock_after_the_change() {
         t.died_otherwise,
         t.livestock_left
     );
+    // Et depuis le ciblage par rang (2026-09-07), plus une seule : la borne
+    // de moitié ci-dessus est de l'histoire, celle-ci est le garde-fou.
+    assert!(
+        t.killed_by_raiders <= 1,
+        "{} bêtes tuées par un pillard dans l'enceinte : le ciblage par rang \
+         devrait les épargner toutes (mesuré : 0 sur 60)",
+        t.killed_by_raiders
+    );
     // Et le troupeau ne meurt pas d'autre chose pour autant : rentrer ne doit
     // pas être affamer.
     assert!(
@@ -559,6 +700,52 @@ fn colonist_deaths_do_not_rise() {
         boars.colonists_lost <= none.colonists_lost,
         "{} colons perdus avec des sangliers contre {} sans troupeau",
         boars.colonists_lost,
+        none.colonists_lost
+    );
+}
+
+/// Le scénario **à ciel ouvert** : pas un mur, donc pas de pièce, donc aucun
+/// enclos où rentrer. C'est la configuration de vingt-cinq colonies de
+/// campagne sur trente (`CAMPAIGN-FINDINGS.md` §11.8, où l'enceinte du joueur
+/// scripté n'est refermée que cinq fois sur trente) : le repli n'y peut rien
+/// faire de mieux que serrer le troupeau contre ses maîtres, et c'est là que le
+/// malus de trois cases lâchait — le troupeau paît à `LIVESTOCK_RANGE` du
+/// barycentre, la bande entre par un bord de carte, et la bête est la première
+/// chose qu'un pillard croise.
+///
+/// Bêtes tuées par un pillard sur 60, les mêmes 30 graines :
+///
+/// | ciblage | tuées | vivantes | colons perdus sur 90 |
+/// |---|---|---|---|
+/// | malus de trois cases (`KILLED_OPEN_BEFORE`) | 5 | 55 | 16 |
+/// | **par rang** | **1** | **59** | 17 |
+/// | sans aucun bétail | — | — | 24 |
+const KILLED_OPEN_BEFORE: u32 = 5;
+
+#[test]
+fn raiders_no_longer_pick_off_a_herd_in_the_open() {
+    let herd = run_seeds_open(Some(Species::Rabbit));
+    assert!(
+        herd.killed_by_raiders * 2 <= KILLED_OPEN_BEFORE,
+        "{} bêtes tuées par un pillard à ciel ouvert sur 60, contre \
+         {KILLED_OPEN_BEFORE} avec le malus de trois cases (vivantes : {} sur \
+         60, mortes autrement : {})",
+        herd.killed_by_raiders,
+        herd.livestock_left,
+        herd.died_otherwise
+    );
+    // Aucune bête n'est à l'abri : il n'y a pas de pièce. Ce n'est donc pas le
+    // repli qui sauve le troupeau ici, c'est bien le choix de cible.
+    assert_eq!(
+        herd.indoors_at_raid, 0,
+        "le scénario à ciel ouvert ne devrait porter aucune pièce"
+    );
+    // Et pas aux frais des colons : le témoin sans troupeau reste au-dessus.
+    let none = run_seeds_open(None);
+    assert!(
+        herd.colonists_lost <= none.colonists_lost,
+        "{} colons perdus avec un troupeau à ciel ouvert contre {} sans",
+        herd.colonists_lost,
         none.colonists_lost
     );
 }

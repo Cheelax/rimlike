@@ -93,18 +93,37 @@ pub fn line_of_sight(map: &Map, from: (u32, u32), to: (u32, u32)) -> bool {
 /// Un colon attaque de lui-même un ennemi jusqu'à cette distance.
 pub const DEFEND_RADIUS: u32 = 8;
 
-/// Cases dont une bête de la colonie « compte » plus loin qu'elle n'est, au
-/// moment où un assaillant choisit sa cible (`nearest_reachable_enemy`). Un
-/// pillard vient pour la colonie, pas pour son troupeau : il ne se détourne
-/// sur une bête que si elle lui coupe franchement la route — trois cases de
-/// moins qu'un colon, ou plus.
+/// Distance à laquelle une bête de la colonie coupe vraiment la route d'un
+/// assaillant. Au contact, elle est une cible comme une autre ; au-delà, elle
+/// passe **après tous les colons atteignables** dans le choix de cible
+/// (`nearest_reachable_enemy`), aussi loin soient-ils : un pillard vient pour
+/// la colonie, pas pour son troupeau.
 ///
-/// **Mesurée, pas devinée** (`CAMPAIGN-FINDINGS.md` §11.3, et
-/// `tests/balance_livestock.rs`) : sans elle, un pillard entré dans l'enceinte
-/// frappait ce qui se trouvait devant lui, et la bête réfugiée auprès des
-/// colons mourait à leur place. Le repli seul ne faisait passer les bêtes
-/// tuées que de 17 à 15 sur 60 ; avec la pénalité, elles tombent à 2.
-pub const LIVESTOCK_TARGET_PENALTY: u32 = 3;
+/// **Mesuré, pas deviné** (`CAMPAIGN-FINDINGS.md` §11.8, campagnes de 60
+/// graines × 30 jours en normale, carte 64). La règle d'avant handicapait la
+/// bête de trois cases, et le diagnostic a dit pourquoi ça ne pouvait pas
+/// suffire : le troupeau paît jusqu'à `livestock::LIVESTOCK_RANGE` du
+/// barycentre, la bande entre par un bord de carte, et la bête est
+/// régulièrement dix cases plus près qu'un colon. Trois cases de malus
+/// n'effacent pas dix cases d'avance — les vingt-sept bêtes perdues de la
+/// campagne l'ont toutes été sous les coups d'un pillard, aucune de faim ni
+/// de feu.
+///
+/// | ciblage du bétail | colonies vivantes avec bétail | bêtes tuées par un pillard | morts de colons |
+/// |---|---|---|---|
+/// | malus de 3 cases | 21 / 35 | 54 | 363 |
+/// | malus de 6 cases | 24 / 38 | 33 | 373 |
+/// | malus de 12 cases | 23 / 34 | 21 | 374 |
+/// | **par rang** | **25 / 33** | **18** | **371** |
+/// | témoin sans bétail | — | — | 397 |
+///
+/// La dernière ligne est celle qui autorise les autres : quel que soit le
+/// ciblage, une colonie qui élève perd **moins** de colons qu'une colonie qui
+/// n'élève pas. Le troupeau ne devient pas invisible pour autant : une bête au
+/// contact reste une cible (c'est ce qui arrive à celle qui bouche une porte),
+/// et une colonie réduite à son bétail le perd — plus aucun colon atteignable,
+/// tous les candidats sont des bêtes et elles se trient entre elles.
+pub const LIVESTOCK_TARGET_REACH: u32 = 1;
 /// En dessous de ces PV, un pillard décroche et quitte la carte. Assez haut
 /// pour qu'un pillard lâche prise après une bonne raclée (environ 40 % de
 /// sévérité cumulée) plutôt que de s'acharner jusqu'à l'agonie : un colon
@@ -557,9 +576,9 @@ impl Sim {
     ///
     /// Une bête **apprivoisée** est de `Faction::Colony` : elle ne passe donc
     /// pas par ce test côté colons (même camp), mais les pillards la visent
-    /// comme n'importe qui de la colonie — de loin moins volontiers qu'un
-    /// colon, cependant : voir `LIVESTOCK_TARGET_PENALTY`. Un troupeau se
-    /// garde (voir `livestock`), il ne s'offre pas.
+    /// comme n'importe qui de la colonie — en dernier, cependant, et seulement
+    /// faute de colon atteignable : voir `LIVESTOCK_TARGET_REACH`. Un troupeau
+    /// se garde (voir `livestock`), il ne s'offre pas.
     fn is_auto_target(&self, p: &Pawn, seeker: Faction) -> bool {
         // Un marchand furieux ne s'en prend qu'à la colonie : il est venu
         // commercer, pas prendre parti dans un raid (voir `trade`).
@@ -593,10 +612,11 @@ impl Sim {
         let me = self.pawns[i].tile();
         let faction = self.pawns[i].faction;
         let walker = self.walker(i);
-        // Le tri se fait sur une distance **majorée** pour le bétail : c'est
-        // le seul endroit où la pénalité joue. La distance vraie, elle, reste
-        // celle qui décide du rayon et de la mêlée au contact.
-        let mut enemies: Vec<(u32, u32, u32, u32)> = self
+        // Le tri se fait sur un **rang** avant la distance : une bête de la
+        // colonie passe derrière tous les colons atteignables, sauf au contact
+        // (`LIVESTOCK_TARGET_REACH`). C'est le seul endroit où le rang joue ;
+        // la distance vraie reste celle qui décide du rayon et de la mêlée.
+        let mut enemies: Vec<(u32, u32, u32, u32, u32)> = self
             .pawns
             .iter()
             .filter(|p| {
@@ -611,19 +631,15 @@ impl Sim {
                 if d > radius {
                     return None;
                 }
-                let penalty = if p.is_livestock() {
-                    LIVESTOCK_TARGET_PENALTY
-                } else {
-                    0
-                };
-                Some((d.saturating_add(penalty), x, y, p.id))
+                let rank = u32::from(p.is_livestock() && d > LIVESTOCK_TARGET_REACH);
+                Some((rank, d, x, y, p.id))
             })
             .collect();
         enemies.sort_unstable();
         enemies
             .iter()
             .take(MELEE_TARGETS)
-            .find(|&&(_, x, y, _)| {
+            .find(|&&(_, _, x, y, _)| {
                 chebyshev(me, (x, y)) <= 1 || self.path_adjacent_for(me, (x, y), walker).is_some()
             })
             .map(|&(.., id)| id)
