@@ -92,6 +92,19 @@ pub fn line_of_sight(map: &Map, from: (u32, u32), to: (u32, u32)) -> bool {
 }
 /// Un colon attaque de lui-même un ennemi jusqu'à cette distance.
 pub const DEFEND_RADIUS: u32 = 8;
+
+/// Cases dont une bête de la colonie « compte » plus loin qu'elle n'est, au
+/// moment où un assaillant choisit sa cible (`nearest_reachable_enemy`). Un
+/// pillard vient pour la colonie, pas pour son troupeau : il ne se détourne
+/// sur une bête que si elle lui coupe franchement la route — trois cases de
+/// moins qu'un colon, ou plus.
+///
+/// **Mesurée, pas devinée** (`CAMPAIGN-FINDINGS.md` §11.3, et
+/// `tests/balance_livestock.rs`) : sans elle, un pillard entré dans l'enceinte
+/// frappait ce qui se trouvait devant lui, et la bête réfugiée auprès des
+/// colons mourait à leur place. Le repli seul ne faisait passer les bêtes
+/// tuées que de 17 à 15 sur 60 ; avec la pénalité, elles tombent à 2.
+pub const LIVESTOCK_TARGET_PENALTY: u32 = 3;
 /// En dessous de ces PV, un pillard décroche et quitte la carte. Assez haut
 /// pour qu'un pillard lâche prise après une bonne raclée (environ 40 % de
 /// sévérité cumulée) plutôt que de s'acharner jusqu'à l'agonie : un colon
@@ -544,9 +557,9 @@ impl Sim {
     ///
     /// Une bête **apprivoisée** est de `Faction::Colony` : elle ne passe donc
     /// pas par ce test côté colons (même camp), mais les pillards la visent
-    /// comme n'importe qui de la colonie — et comme `nearest_reachable_enemy`
-    /// trie par distance, ils s'en prennent à elle quand elle est plus près
-    /// qu'un colon. C'est voulu : un troupeau se garde (voir `livestock`).
+    /// comme n'importe qui de la colonie — de loin moins volontiers qu'un
+    /// colon, cependant : voir `LIVESTOCK_TARGET_PENALTY`. Un troupeau se
+    /// garde (voir `livestock`), il ne s'offre pas.
     fn is_auto_target(&self, p: &Pawn, seeker: Faction) -> bool {
         // Un marchand furieux ne s'en prend qu'à la colonie : il est venu
         // commercer, pas prendre parti dans un raid (voir `trade`).
@@ -580,6 +593,9 @@ impl Sim {
         let me = self.pawns[i].tile();
         let faction = self.pawns[i].faction;
         let walker = self.walker(i);
+        // Le tri se fait sur une distance **majorée** pour le bétail : c'est
+        // le seul endroit où la pénalité joue. La distance vraie, elle, reste
+        // celle qui décide du rayon et de la mêlée au contact.
         let mut enemies: Vec<(u32, u32, u32, u32)> = self
             .pawns
             .iter()
@@ -589,17 +605,27 @@ impl Sim {
                     && !p.is_downed()
                     && self.is_auto_target(p, faction)
             })
-            .map(|p| {
+            .filter_map(|p| {
                 let (x, y) = p.tile();
-                (chebyshev(me, (x, y)), x, y, p.id)
+                let d = chebyshev(me, (x, y));
+                if d > radius {
+                    return None;
+                }
+                let penalty = if p.is_livestock() {
+                    LIVESTOCK_TARGET_PENALTY
+                } else {
+                    0
+                };
+                Some((d.saturating_add(penalty), x, y, p.id))
             })
-            .filter(|&(d, ..)| d <= radius)
             .collect();
         enemies.sort_unstable();
         enemies
             .iter()
             .take(MELEE_TARGETS)
-            .find(|&&(d, x, y, _)| d <= 1 || self.path_adjacent_for(me, (x, y), walker).is_some())
+            .find(|&&(_, x, y, _)| {
+                chebyshev(me, (x, y)) <= 1 || self.path_adjacent_for(me, (x, y), walker).is_some()
+            })
             .map(|&(.., id)| id)
     }
 

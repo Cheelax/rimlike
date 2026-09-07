@@ -40,9 +40,10 @@ pub enum ItemKind {
     /// Lingot de métal : `craft::ORE_PER_INGOT` minerais fondus à la forge.
     /// Matière première de l'épée, et marchandise de valeur.
     Metal = 17,
-    /// Épée : la meilleure arme de mêlée, quatre lingots au poste de
-    /// fabrication. Elle demande la métallurgie (`research::Tech::Metallurgy`),
-    /// donc une forge, donc du minerai : c'est le bout de la chaîne.
+    /// Épée : la meilleure arme de mêlée, `craft::METAL_PER_SWORD` lingots au
+    /// poste de fabrication. Elle demande la métallurgie
+    /// (`research::Tech::Metallurgy`), donc une forge, donc du minerai : c'est
+    /// le bout de la chaîne.
     Sword = 18,
 }
 
@@ -175,7 +176,7 @@ impl ItemKind {
     /// Qualité d'une arme : plus grand = meilleur. C'est l'ordre dans lequel un
     /// colon s'équipe (`Sword > Bow > Spear > Club`) ; 0 pour ce qui n'est pas
     /// une arme. L'épée passe devant l'arc : elle coûte une technologie, une
-    /// forge et douze minerais, elle doit se voir sur le champ de bataille.
+    /// forge et neuf minerais, elle doit se voir sur le champ de bataille.
     pub fn weapon_rank(self) -> u32 {
         match self {
             ItemKind::Club => 1,
@@ -270,7 +271,12 @@ impl ItemKind {
             ItemKind::Club => 30,
             ItemKind::Spear => 45,
             ItemKind::Bow => 60,
-            // Quatre lingots (48) et une longue séance au poste.
+            // Trois lingots (36) et une longue séance au poste. Le compte ne
+            // suit volontairement pas la matière : l'épée vaut ce qu'elle
+            // change au combat, pas ce qu'elle a coûté à fondre — et cette
+            // valeur-là n'a pas bougé quand `METAL_PER_SWORD` est passé de
+            // quatre à trois, pour ne pas déplacer la taille des raids
+            // (`storyteller::compute_wealth`) au passage.
             ItemKind::Sword => 90,
             ItemKind::Tunic => 25,
             ItemKind::Coat => 50,

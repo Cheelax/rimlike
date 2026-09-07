@@ -343,7 +343,7 @@ grisée, infobulle à l'appui, tant que la technologie Métallurgie n'est pas
 acquise (voir « Recherche » ci-dessus) : y poser un plan échoue sinon en
 silence. Une fois bâtie, un colon y fond trois minerais en un lingot, sur
 objectif réglé au panneau Fabrication (« Lingots », comme une arme). Au
-poste de fabrication, quatre lingots donnent ensuite une épée — la meilleure
+poste de fabrication, trois lingots donnent ensuite une épée — la meilleure
 arme de mêlée du jeu, devant l'épieu et l'arc, mais la plus chère à produire.
 
 ## 4. Dangers

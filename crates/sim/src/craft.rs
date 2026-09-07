@@ -23,16 +23,25 @@ use serde::{Deserialize, Serialize};
 use crate::items::ItemKind;
 use crate::map::Feature;
 
-/// Ingrédients au plus dans une recette. Un colon ne portant qu'une pile à la
-/// fois, c'est aussi le nombre d'allers-retours d'une fabrication.
+/// Ingrédients au plus dans une recette. Ce n'est **pas** le nombre
+/// d'allers-retours : un ingrédient se ramasse sur **plusieurs piles** du stock
+/// quand une seule ne suffit pas (voir `Sim::craft_picks`), et le colon fait un
+/// voyage par pile.
 pub const MAX_INGREDIENTS: usize = 2;
 
 /// Minerais fondus pour un lingot.
 pub const ORE_PER_INGOT: u32 = 3;
 /// Durée d'une fonte, en ticks à vitesse nominale.
 pub const SMELT_TICKS: u32 = 300;
-/// Lingots dans une épée.
-pub const METAL_PER_SWORD: u32 = 4;
+/// Lingots dans une épée. **Quatre jusqu'au 2026-09-06, trois depuis**, et le
+/// chiffre est mesuré, pas choisi : à quatre, une colonie qui paie la
+/// métallurgie finissait la partie avec trois lingots et pas d'épée — une épée
+/// sur quatorze colonies outillées en campagne normale. Trois candidats ont été
+/// comparés sur les mêmes trente graines (veines plus riches, lingot moins
+/// cher, épée moins chère) : les trois donnent **cinq épées**, et c'est
+/// celui-ci qui les donne pour dix lingots de moins et six épées **portées**
+/// au lieu de deux (`CAMPAIGN-FINDINGS.md` §11.4).
+pub const METAL_PER_SWORD: u32 = 3;
 
 /// De quoi fabriquer un objet : ce qu'il consomme, où, et le temps qu'il prend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,18 +133,38 @@ pub const BUTCHER_TICKS: u32 = 120;
 /// cuisine : avec deux ingrédients, il faut savoir lequel on va chercher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CraftStage {
-    /// Va chercher l'ingrédient d'indice `index` de la recette. `item` est la
-    /// pile réservée, `carried` dit si elle est déjà en main (le colon
-    /// rapporte alors la charge au poste).
+    /// Collecte historique : garder les champs et l'indice postcard pour les
+    /// sauvegardes où une fabrication était en cours avant la collecte fractionnée.
     Fetch { index: u8, item: u32, carried: bool },
-    /// Au poste, en train de tailler. `progress` en centièmes de tick, comme
-    /// tous les avancements de travail.
+    /// Au poste, en train de tailler. Avancement en centièmes de tick.
     Work { progress: u32 },
+    /// Collecte sur plusieurs piles. `got` compte les unités déjà déposées
+    /// pour cet ingrédient ; la charge en main ne s'y ajoute qu'à l'atelier.
+    /// Variante ajoutée en fin d'enum : les anciennes étapes restent lisibles.
+    FetchPartial {
+        index: u8,
+        item: u32,
+        carried: bool,
+        got: u32,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn les_etapes_historiques_gardent_leur_format_snapshot() {
+        // Octets postcard de Fetch { index: 1, item: 42, carried: true }
+        // avant la collecte sur plusieurs piles ; puis Work { progress: 300 }.
+        let fetch = postcard::from_bytes::<CraftStage>(&[0, 1, 42, 1]);
+        assert!(
+            fetch.is_ok(),
+            "l'étape de collecte historique doit rester lisible"
+        );
+        let work = postcard::from_bytes::<CraftStage>(&[1, 172, 2]).unwrap();
+        assert_eq!(work, CraftStage::Work { progress: 300 });
+    }
 
     #[test]
     fn les_recettes_sont_coherentes() {

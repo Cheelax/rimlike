@@ -509,7 +509,7 @@ d'alice arrivé chez bob).
 
 - **Métal** (2026-09-06, sim) : rochers veinés (un sur huit) qui donnent du minerai, technologie
   Métallurgie (3 500 points, premier verrou) qui débloque la forge (20 pierre), fonte de 3
-  minerais en un lingot, épée (4 lingots, 200 % de dégâts de mêlée, mesurée en duel sur 30
+  minerais en un lingot, épée (3 lingots depuis le 2026-09-06, 200 % de dégâts de mêlée, mesurée en duel sur 30
   graines), épées chez l'armurier et chez les pillards à forte menace ; objectif intenable
   sauté au lieu de bloquer la file. Interface livrée le 2026-09-06 : contrat des tailles porté à
   19 genres et 6 technologies, outil Forge grisé sans métallurgie, props du rocher veiné et de la
@@ -541,6 +541,26 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-07 : intégration validée par 336 tests Rust, 409 tests client, Clippy,
+  build WASM/client, fuzz et navigateur. La campagne combinée de 30 graines sur 30 jours
+  laisse 20 colonies vivantes, dix avec bétail et une productrice d’épées sur neuf ayant
+  acquis la métallurgie (deux épées). Les objectifs statistiques des deux fiches du
+  tableau restent ouverts ; distinguer ces résultats des mesures métal seul du 6 septembre.
+- 2026-09-07 : validation de l’élevage et de la chaîne du métal, depuis la copie
+  isolée du travail du 6 septembre (`codex/validation-equilibrage`). Les trois correctifs
+  `c1ac571`, `f73ba17` et `f00b2b3` sont déjà dans `main` et ne sont pas refaits.
+  Le troupeau préfère une pièce nourricière ; sous un raid, il cherche un abri ou se serre
+  contre les colons. Les sangliers défendent toujours. Les pillards privilégient les colons
+  à distance comparable (pénalité de trois cases pour le bétail). La fabrication réserve
+  plusieurs piles par ingrédient et les collecte en plusieurs voyages ; l’épée coûte trois
+  lingots, avec le même coût affiché dans le client. Aucun indice de commande ne change.
+  Revue : les tests d’enclos doivent recalculer le cache des pièces après leur construction
+  et observer le repli pendant le raid, pas après son départ. Au calme, traverser une pièce
+  nue reste permis : elle ne retient pas le troupeau. Pour les sauvegardes, `Fetch` et
+  `Work` gardent leurs indices et champs ; `FetchPartial` est ajoutée en fin d’enum au lieu
+  de modifier l’ancien format. Vérifications spécifiques : octets historiques postcard,
+  reprise d’un ancien trajet chargé et déterminisme après chargement en collecte partielle.
 
 - 2026-09-06 : repasse de l’interface de colonie depuis l’état courant (base `6e8e5d0`).
   La barre unique débordait et les panneaux indépendants se superposaient. Elle devient
