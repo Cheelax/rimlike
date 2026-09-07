@@ -29,8 +29,10 @@ use crate::map::Feature;
 /// voyage par pile.
 pub const MAX_INGREDIENTS: usize = 2;
 
-/// Minerais fondus pour un lingot.
-pub const ORE_PER_INGOT: u32 = 3;
+/// Minerais fondus pour un lingot. Un depuis le 2026-09-07 : le coût de deux
+/// ne suffit pas en campagne normale (2/9 colonies productrices, cible 1/4).
+/// Comparaison contrôlée et campagne normale : CAMPAIGN-FINDINGS.md §11.7.
+pub const ORE_PER_INGOT: u32 = 1;
 /// Durée d'une fonte, en ticks à vitesse nominale.
 pub const SMELT_TICKS: u32 = 300;
 /// Lingots dans une épée. **Quatre jusqu'au 2026-09-06, trois depuis**, et le
