@@ -45,6 +45,7 @@ import {
 import { acquireGl, type SharedGl } from "./render/gl";
 import { AUTO_PAUSE_EVENTS, loadAutoPause, saveAutoPause, shouldAutoPause, type AutoPauseSettings } from "./autoPause";
 import { DEFAULT_GRAPHICS, effectivePixelRatio, loadGraphics, saveGraphics, type GraphicsSettings } from "./settings";
+import { isSoloBiome, loadSoloBiome, saveSoloBiome, SOLO_BIOMES, type SoloBiome } from "./soloBiome";
 import {
   ANIMAL_FLAG,
   ANIMAL_STRIDE,
@@ -431,8 +432,7 @@ const INITIAL: Stats = {
   paused: false,
   weather: 0,
   season: 0,
-  // Forêt tempérée : le biome du constructeur ordinaire du sim, donc celui du
-  // solo (`DEFAULT_BIOME` de `@rimlike/protocol`).
+  // Valeur d'attente, remplacée par le biome du premier frame du sim.
   biome: DEFAULT_BIOME,
   dayOfYear: 0,
   yearDays: 60,
@@ -525,12 +525,12 @@ interface Toast {
 
 /**
  * Mode de jeu choisi à l'accueil. Rien ne démarre avant ce choix. La
- * difficulté solo est choisie avant même de créer la session (accueil), donc
- * elle y voyage plutôt que d'être relue d'un état qui pourrait changer entre
+ * difficulté et le biome solo sont choisis avant de créer la session, donc
+ * ils y voyagent plutôt que d'être relus d'un état qui pourrait changer entre
  * le clic et l'effet qui démarre le Worker (voir `HomeScreen`).
  */
 type Session =
-  | { mode: "solo"; difficulty: number }
+  | { mode: "solo"; difficulty: number; biome: SoloBiome }
   | { mode: "multi"; server: string; room: string; name: string };
 
 /**
@@ -753,6 +753,7 @@ export function App() {
   const [seed, setSeed] = useState<number>(DEFAULT_SEED);
   /** Dose de menace choisie à l'accueil, pour la prochaine partie solo. */
   const [homeDifficulty, setHomeDifficulty] = useState<number>(DIFFICULTY.Normal);
+  const [homeBiome, setHomeBiome] = useState(loadSoloBiome);
   /** Dose de menace choisie par l'hôte dans le lobby, pour la prochaine partie multi. */
   const [multiDifficulty, setMultiDifficulty] = useState<number>(DIFFICULTY.Normal);
   // --- Salles ouvertes : sondage de `GET /rooms`, tant que l'accueil est affiché ---
@@ -1490,7 +1491,10 @@ export function App() {
     eventLogRef.current = [];
     bridge.start(
       session.mode === "solo"
-        ? { mode: "solo", seed: DEFAULT_SEED, width: MAP_SIZE, height: MAP_SIZE, difficulty: session.difficulty }
+        ? {
+            mode: "solo", seed: DEFAULT_SEED, width: MAP_SIZE, height: MAP_SIZE,
+            difficulty: session.difficulty, biome: session.biome,
+          }
         : { mode: "multi", server: session.server, room: session.room, name: session.name },
     );
     // Les `encode*` sont des fonctions du WASM : le thread principal en garde
@@ -2831,7 +2835,12 @@ export function App() {
           onChange={setForm}
           difficulty={homeDifficulty}
           onDifficultyChange={setHomeDifficulty}
-          onSolo={() => setSession({ mode: "solo", difficulty: homeDifficulty })}
+          biome={homeBiome}
+          onBiomeChange={(biome) => {
+            setHomeBiome(biome);
+            saveSoloBiome(biome);
+          }}
+          onSolo={() => setSession({ mode: "solo", difficulty: homeDifficulty, biome: homeBiome })}
           onJoin={() => setSession({ mode: "multi", ...form })}
           onWorld={() => {
             setInitialWorldTile(null);
@@ -2873,8 +2882,7 @@ export function App() {
         <>
           <header className="colony-header">
             <div className="colony-heading"><span className="colony-emblem"><Icon name="colony" size={26} /></span><div><span className="eyebrow">{multi ? `Salle ${net?.room ?? ""}` : "Partie solo"}</span><h1>La colonie</h1></div></div>
-            {/* Le biome ferme la ligne : hérité de la case du globe à la
-                fondation (`start.biome`), il ne change jamais ensuite. */}
+            {/* Le biome vient du sim courant, y compris après « Charger ». */}
             <div className="colony-calendar"><strong>Jour {stats.day}<span>{stats.hour}</span></strong><span>{SEASON_LABELS[stats.season] ?? "?"} · {dayInSeason}/{seasonDays} · {formatTemperature(stats.temperature)} · {WEATHER_LABELS[stats.weather] ?? "?"} · {BIOME_NAMES[stats.biome as keyof typeof BIOME_NAMES] ?? "?"}</span></div>
             <div className="time-controls" aria-label="Vitesse de la partie">
               <button className={stats.paused ? "active" : ""} aria-label={stats.paused ? "Reprendre la partie" : "Mettre en pause"} title={multi ? "Le temps est partagé en multijoueur" : "Pause / reprise · Espace"} disabled={multi} onClick={() => actionsRef.current?.togglePause()}><Icon name={stats.paused ? "play" : "pause"} size={17} /></button>
@@ -3403,6 +3411,8 @@ function HomeScreen({
   onChange,
   difficulty,
   onDifficultyChange,
+  biome,
+  onBiomeChange,
   onSolo,
   onJoin,
   onWorld,
@@ -3420,6 +3430,8 @@ function HomeScreen({
   /** Dose de menace de la prochaine partie solo (`render/terrain.ts::DIFFICULTY`), défaut Normal. */
   difficulty: number;
   onDifficultyChange: (v: number) => void;
+  biome: SoloBiome;
+  onBiomeChange: (v: SoloBiome) => void;
   onSolo: () => void;
   onJoin: () => void;
   onWorld: () => void;
@@ -3446,16 +3458,32 @@ function HomeScreen({
     <div className="overlay">
       <div className="card">
         <div className="card-title">rimlike</div>
-        <label>
-          Difficulté
-          <select value={difficulty} onChange={(e) => onDifficultyChange(Number(e.target.value))}>
-            {DIFFICULTY_LABELS.map((label, level) => (
-              <option key={level} value={level}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="solo-settings">
+          <label>
+            Difficulté
+            <select value={difficulty} onChange={(e) => onDifficultyChange(Number(e.target.value))}>
+              {DIFFICULTY_LABELS.map((label, level) => (
+                <option key={level} value={level}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Biome
+            <select
+              value={biome}
+              onChange={(e) => {
+                const value = Number(e.target.value);
+                if (isSoloBiome(value)) onBiomeChange(value);
+              }}
+            >
+              {SOLO_BIOMES.map((value) => (
+                <option key={value} value={value}>{BIOME_NAMES[value]}</option>
+              ))}
+            </select>
+          </label>
+        </div>
         <button className="wide primary" onClick={onSolo}>
           Partie solo
         </button>

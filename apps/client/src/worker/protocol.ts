@@ -35,6 +35,8 @@ export type InitMessage =
       readonly height: number;
       /** Dose de menace choisie à l'accueil (`render/terrain.ts::DIFFICULTY`). */
       readonly difficulty: number;
+      /** Biome choisi à l'accueil solo ; en multi, il vient du serveur. */
+      readonly biome: number;
     }
   | {
       readonly type: "init";

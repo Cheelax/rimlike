@@ -56,6 +56,9 @@ dose de menace du storyteller pour la partie qui commence (voir §4). Une carte
 de 128×128 se génère aussitôt, sans réseau : pause et vitesses de jeu
 disponibles.
 
+Le sélecteur « Biome », à côté de la difficulté, propose neuf biomes (sans l'océan), avec la forêt tempérée par défaut ; votre choix est mémorisé.
+Le HUD nomme le biome de la carte ; « Charger » retrouve celui de la sauvegarde, quel que soit votre dernier choix à l'accueil.
+
 À la première partie solo, le panneau « Premiers pas » guide vos premiers aménagements et coche chaque étape franchie.
 « Masquer » mémorise votre choix ; Options → « Revoir les premiers pas » le réaffiche à tout moment en solo.
 
@@ -550,8 +553,8 @@ case exactement comme une salle nommée, avec une graine imposée par le
 serveur. La carte engendrée suit le **biome de la case** : un désert n'a
 presque pas d'arbres et beaucoup de sable, une toundra reste enneigée, une
 jungle est dense — le nom du biome s'affiche dans la ligne du calendrier du
-HUD, à côté de la saison et de la température. Une partie solo, elle, se joue
-toujours en forêt tempérée. Voir §5 pour les caravanes ; ci-dessous pour les
+HUD, à côté de la saison et de la température. En solo, le biome se choisit
+à l'accueil (§1). Voir §5 pour les caravanes ; ci-dessous pour les
 colonies gelées.
 Votre réputation envers les factions PNJ (§4) suit le joueur, pas la case :
 fonder ou rouvrir une autre colonie du même globe la retrouve telle quelle.

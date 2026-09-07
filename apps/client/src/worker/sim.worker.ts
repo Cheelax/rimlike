@@ -143,7 +143,7 @@ const SIM_API: ReadonlySet<string> = new Set([
   "pawnApparel",
   "apparel",
   // Biome de la carte (`crates/sim/src/biome.rs`) : fixé à la construction
-  // depuis la case du globe, donc constant. Exposé ici pour le crochet de
+  // depuis l'accueil solo ou la case du globe. Exposé ici pour le crochet de
   // debug (`rpc("biome")`) ; il voyage aussi dans le `frame` (voir `SimRunner`).
   "biome",
   // Climat, saisons et température (`crates/sim/src/climate.rs`).
@@ -266,7 +266,12 @@ function beat(): void {
 async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<void> {
   if (message.mode === "solo") {
     runner = new SimRunner();
-    const sim = await SimHandle.create({ seed: BigInt(message.seed), width: message.width, height: message.height });
+    const sim = await SimHandle.create({
+      seed: BigInt(message.seed),
+      width: message.width,
+      height: message.height,
+      biome: message.biome,
+    });
     // Choisie à l'accueil (voir `App.tsx`) : Normal est déjà le défaut du sim,
     // inutile de pousser une commande de plus pour ne rien y changer.
     if (message.difficulty !== DIFFICULTY.Normal) sim.setDifficulty(message.difficulty);

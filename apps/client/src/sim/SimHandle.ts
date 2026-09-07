@@ -44,10 +44,11 @@ export class SimHandle implements SimLike {
   /**
    * Sim neuf. `biome` (`sim::Biome`, mêmes valeurs que
    * `packages/world/src/biomes.ts`) vient de la case du globe où la colonie est
-   * fondée (`start.biome`, `docs/protocol.md` §3.2) : sols, arbres, buissons,
+   * fondée (`start.biome`, `docs/protocol.md` §3.2), ou du choix solo à
+   * l'accueil : sols, arbres, buissons,
    * rochers, veines et eau en suivent. C'est le **seul** moment où il se règle
    * — il n'y a pas de `Command::SetBiome`, la composition d'une carte ne change
-   * pas après le premier tick. Omis (solo, salle simple), le constructeur
+   * pas après le premier tick. Omis (salle simple), le constructeur
    * ordinaire du sim s'applique : la forêt tempérée.
    */
   static async create(opts: {
