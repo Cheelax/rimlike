@@ -37,7 +37,8 @@ import { WORLD_WIRE_VERSION, climateForTile, serializeWorld } from "@rimlike/wor
 import { WebSocketServer, type WebSocket } from "ws";
 
 import type { MerchantArrival } from "./merchants.js";
-import { WorldStore } from "./persistence.js";
+import { WorldStore, type ScheduleTimeout } from "./persistence.js";
+import { ROOM_PERSIST_MS, ROOM_TTL_HOURS, RoomPersistence } from "./room-persistence.js";
 import { Room, type RoomOptions } from "./room.js";
 import {
   DEFAULT_WORLD_SEED,
@@ -58,7 +59,7 @@ export interface ServerOptions {
   /** Options passées à chaque salle créée (horloge injectable, tailles). */
   readonly roomOptions?: Omit<
     RoomOptions,
-    "name" | "log" | "tile" | "restore" | "onSnapshot" | "onHostReady"
+    "name" | "log" | "tile" | "restore" | "onSnapshot" | "onHostReady" | "createdAt" | "frozenTicks"
   >;
   /**
    * Durée réelle d'une heure de jeu du monde, en millisecondes. Défaut :
@@ -101,7 +102,7 @@ export interface ServerOptions {
   /** Subdivisions du globe. Défaut : `DEFAULT_WORLD_SUBDIVISIONS`. */
   readonly worldSubdivisions?: number;
   /**
-   * Fichier où persister `WorldState` (colonies, snapshots de conservation).
+   * Fichier commun du monde et des salles nommées (snapshots de conservation).
    * Omis, `null` ou vide : mode mémoire, sans aucune écriture disque — c'est
    * le défaut, y compris pour tous les tests qui ne précisent pas ce champ.
    * `index.ts` le résout depuis `WORLD_STATE_FILE`/`WORLD_PERSIST` avant
@@ -110,6 +111,12 @@ export interface ServerOptions {
   readonly worldStateFile?: string | null;
   /** Délai de débounce des sauvegardes, injectable pour les tests. Défaut : `SAVE_DEBOUNCE_MS`. */
   readonly saveDebounceMs?: number;
+  /** Intervalle minimal des checkpoints des salles nommées. Défaut : 30 s. */
+  readonly roomPersistMs?: number;
+  /** Expiration après cette durée sans présence, en heures réelles. Défaut : 72 h. */
+  readonly roomTtlHours?: number;
+  /** Planificateur de sauvegarde injectable, sans attente réelle dans les tests. */
+  readonly saveSchedule?: ScheduleTimeout;
 
   /**
    * Salles renvoyées au plus par `GET /rooms` (les plus récemment créées),
@@ -425,6 +432,15 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   // distincte de `worldNow` (horloge de jeu du monde). Injectable pour un
   // test déterministe du limiteur de débit, sans attendre de vraies secondes.
   const wallNow = options.now ?? Date.now;
+  const roomPersistMs = options.roomPersistMs ?? ROOM_PERSIST_MS;
+  const roomTtlHours = options.roomTtlHours ?? ROOM_TTL_HOURS;
+  if (!Number.isSafeInteger(roomPersistMs) || roomPersistMs < 1 || roomPersistMs > 2_147_483_647) {
+    throw new RangeError("roomPersistMs doit être un entier entre 1 et 2147483647");
+  }
+  if (!Number.isFinite(roomTtlHours) || roomTtlHours <= 0) {
+    throw new RangeError("roomTtlHours doit être strictement positif");
+  }
+  const savedRooms = new RoomPersistence(wallNow, roomTtlHours);
 
   const worldSeed = options.worldSeed ?? DEFAULT_WORLD_SEED;
   const worldSubdivisions = options.worldSubdivisions ?? DEFAULT_WORLD_SUBDIVISIONS;
@@ -440,6 +456,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
         worldSeed,
         subdivisions: worldSubdivisions,
         debounceMs: options.saveDebounceMs,
+        now: wallNow,
+        schedule: options.saveSchedule,
+        rooms: () => savedRooms.toJSON(),
+        minIntervalMs: () => savedRooms.size > 0 ? roomPersistMs : 0,
       })
     : null;
 
@@ -463,6 +483,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     const loaded = await store.load(globe, clockOptions);
     if (loaded.kind === "loaded") {
       worldState = loaded.state;
+      savedRooms.load(loaded.rooms);
       log(
         `[monde] état rechargé depuis ${worldStateFile} — ${worldState.settlementCount} colonie(s), ` +
           `${worldState.snapshotCount} snapshot(s) conservé(s), ${worldState.caravans.count} caravane(s), ` +
@@ -477,6 +498,16 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   } else {
     worldState = new WorldState({ world: globe, ...clockOptions });
   }
+  const pruneRooms = (): void => {
+    for (const name of savedRooms.prune()) {
+      const room = rooms.get(name);
+      if (room?.isEmpty) {
+        room.stop();
+        rooms.delete(name);
+      }
+      store?.scheduleSave(worldState);
+    }
+  };
   const generatedAt = Date.now();
 
   /**
@@ -598,6 +629,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   };
 
   const serveRooms = (request: IncomingMessage, response: ServerResponse): void => {
+    pruneRooms();
     const url = new URL(request.url ?? "/", "http://rimlike.invalid");
     const stateFilter = url.searchParams.get("state");
     const rawQuery = url.searchParams.get("q");
@@ -651,6 +683,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const httpServer = createHttpServer((request: IncomingMessage, response: ServerResponse) => {
     const path = (request.url ?? "/").split("?")[0];
     if (request.method === "GET" && path === "/health") {
+      pruneRooms();
       // Résumé par état, sans le détail (voir `GET /rooms` pour la liste,
       // `docs/protocol.md` §2 « Découverte des salles »).
       const roomsByState = { lobby: 0, running: 0, desynced: 0 };
@@ -741,6 +774,12 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const dropRoomIfEmpty = (room: Room): void => {
     if (room.isEmpty) {
       room.stop();
+      savedRooms.freeze(room.name);
+      if (store !== null && savedRooms.get(room.name) !== undefined) {
+        rooms.set(room.name, createRoom(room.name)!);
+        store.scheduleSave(worldState);
+        return;
+      }
       rooms.delete(room.name);
       // La salle disparaît, son compteur anti-spam avec elle : la prochaine
       // ouverture accepte tout de suite un premier rapport de réputation.
@@ -1007,6 +1046,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
    * chose bouge.
    */
   const worldTick = (): void => {
+    pruneRooms();
     const { arrived, changed } = worldState.caravans.advance();
     for (const caravan of arrived) {
       handleArrival(caravan);
@@ -1329,7 +1369,22 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const createRoom = (name: string): Room | null => {
     const tileId = tileFromRoomName(name);
     if (tileId === null) {
-      return new Room({ name, log, ...options.roomOptions });
+      const saved = savedRooms.get(name);
+      const restore = savedRooms.restore(name, worldState.clock.hourMs);
+      const room = new Room({
+        name, log, now: wallNow, ...options.roomOptions,
+        ...(restore === undefined ? {} : {
+          restore, createdAt: saved!.createdAt,
+          frozenTicks: () => savedRooms.frozenTicksFor(name, worldState.clock.hourMs),
+        }),
+        ...(store === null ? {} : {
+          onSnapshot: (report) => {
+            savedRooms.snapshot(name, room.seed!, room.createdAt, report);
+            store.scheduleSave(worldState);
+          },
+        }),
+      });
+      return room;
     }
     const settlement = worldState.settlementAt(tileId);
     if (settlement === undefined) {
@@ -1399,6 +1454,11 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       onHostReady: () => deliverArrivals(name),
     });
   };
+
+  // Recréées sans horloge ni hôte : le premier join les dégèle.
+  for (const saved of savedRooms.toJSON()) {
+    rooms.set(saved.name, createRoom(saved.name)!);
+  }
 
   wss.on("connection", (socket: WebSocket, request: IncomingMessage) => {
     const ip = resolveClientIp(request, trustProxy);
@@ -1503,6 +1563,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
           fail(socket, "bad_name", `nom invalide (${MAX_DISPLAY_NAME_LENGTH} caractères maximum, sans caractère de contrôle)`);
           return;
         }
+        pruneRooms();
         let room = rooms.get(message.room);
         if (room === undefined) {
           if (rooms.size >= maxRooms) {
@@ -1525,6 +1586,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
           dropRoomIfEmpty(room);
           socket.close();
           return;
+        }
+        if (store !== null && room.tileId === null) {
+          savedRooms.visit(room.name);
+          if (savedRooms.get(room.name) !== undefined) store.scheduleSave(worldState);
         }
         connection.room = room;
         connection.playerId = playerId;
@@ -1589,6 +1654,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       `${worldState.merchants.target} marchand(s) itinérant(s)`,
   );
 
+  let closing: Promise<void> | undefined;
   return {
     port,
     url: `ws://127.0.0.1:${port}`,
@@ -1606,25 +1672,30 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     room(name: string): Room | undefined {
       return rooms.get(name);
     },
-    async close(): Promise<void> {
-      clearInterval(heartbeat);
-      stopWorldClock();
-      for (const room of rooms.values()) {
-        room.stop();
-      }
-      rooms.clear();
-      worldMembers.clear();
-      for (const connection of connections) {
-        connection.socket.terminate();
-      }
-      connections.clear();
-      await new Promise<void>((resolve) => wss.close(() => resolve()));
-      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
-      // Dernière sauvegarde avant de quitter : un arrêt propre (SIGINT/SIGTERM,
-      // voir index.ts) ne doit pas perdre les changements les plus récents.
-      if (store !== null) {
-        await store.save(worldState);
-      }
+    close(): Promise<void> {
+      closing ??= (async () => {
+        pruneRooms();
+        clearInterval(heartbeat);
+        stopWorldClock();
+        for (const room of rooms.values()) {
+          room.stop();
+          savedRooms.freeze(room.name);
+        }
+        rooms.clear();
+        worldMembers.clear();
+        for (const connection of connections) {
+          connection.socket.terminate();
+        }
+        connections.clear();
+        await new Promise<void>((resolve) => wss.close(() => resolve()));
+        await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+        // Dernière sauvegarde avant de quitter : un arrêt propre (SIGINT/SIGTERM,
+        // voir index.ts) ne doit pas perdre les changements les plus récents.
+        if (store !== null) {
+          await store.save(worldState);
+        }
+      })();
+      return closing;
     },
   };
 }

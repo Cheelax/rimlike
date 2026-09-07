@@ -9,6 +9,8 @@
  * | `WORLD_SUBDIVISIONS` | 4 | subdivisions (4 = 2 562 cases, 5 = 10 242 en production) |
  * | `WORLD_STATE_FILE` | `apps/server/data/world-state.json` | fichier de persistance du monde ; vide désactive |
  * | `WORLD_PERSIST` | (non défini) | `0` désactive la persistance, quel que soit `WORLD_STATE_FILE` |
+ * | `ROOM_PERSIST_MS` | 30 000 | intervalle minimal des checkpoints des salles nommées |
+ * | `ROOM_TTL_HOURS` | 72 | expiration des salles sans visite, en heures réelles |
  * | `WORLD_HOUR_MS` | 30 000 | durée réelle d'une heure de jeu du monde (30 s = un jour de monde en 12 min) |
  * | `CARAVAN_TICK_MS` | 5 000 | période du tick du monde : avancement des caravanes et des marchands, diffusion |
  * | `WORLD_MERCHANTS` | 2 | marchands itinérants entretenus sur le globe ; `0` n'en fait circuler aucun |
@@ -35,6 +37,7 @@ import {
   WORLD_HOUR_MS,
 } from "@rimlike/protocol";
 
+import { ROOM_PERSIST_MS, ROOM_TTL_HOURS } from "./room-persistence.js";
 import { resolveWorldStateFile } from "./persistence.js";
 import {
   DEFAULT_MAX_CONNECTIONS_PER_IP,
@@ -83,12 +86,16 @@ const maxPlayersPerRoom = readInteger("MAX_PLAYERS_PER_ROOM", MAX_PLAYERS, 1, 64
 const trustProxy = process.env.TRUST_PROXY === "1";
 
 const worldStateFile = resolveWorldStateFile(process.env);
+const roomPersistMs = readInteger("ROOM_PERSIST_MS", ROOM_PERSIST_MS, 1, 2_147_483_647);
+const roomTtlHours = readInteger("ROOM_TTL_HOURS", ROOM_TTL_HOURS, 1, 876_000);
 
 const server = await startServer({
   port,
   worldSeed,
   worldSubdivisions,
   worldStateFile,
+  roomPersistMs,
+  roomTtlHours,
   worldHourMs,
   caravanTickMs,
   merchantCount,

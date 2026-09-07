@@ -546,6 +546,16 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-07 : les salles nommées survivent au relais. Le dernier snapshot de l'hôte (celui des
+  rejoignants) et son tick sont conservés dans le fichier de persistance (schéma v5, v1-v4
+  relues), écrits au plus toutes les 30 s et à l'arrêt propre ; au redémarrage la salle revient
+  gelée, le premier `join` devient hôte et reçoit `welcome` puis `snapshot` avec `frozenTicks`
+  calculé depuis l'arrêt, sans nouveau `start` : aucun message ni changement client, l'hôte
+  émet déjà l'avance rapide. Oubli après 72 h sans présence ; un lobby ou une partie sans
+  snapshot ne se sauve pas ; les commandes postérieures au snapshot sont perdues, assumé.
+  Deuxième travail livré par Codex sur une fiche ; sa sandbox ne peut ni ouvrir de port ni
+  commiter : l'orchestrateur relance les tests réseau et commite.
+
 - 2026-09-07 : un minerai par lingot. Comparaison contrôlée graine à graine (Codex, branche
   `task/epee-a-portee`) : à trois minerais par lingot, une colonie sur neuf à la métallurgie
   forgeait une épée et le banc ciblé réussissait 2 fois sur 20 ; à deux, 2/9 (sous la cible d'un

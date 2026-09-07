@@ -37,6 +37,7 @@ import { fileURLToPath } from "node:url";
 
 import type { World } from "@rimlike/world";
 
+import { readSavedRooms, type SavedRoom } from "./room-persistence.js";
 import { WorldState, type WorldStateJson, type WorldStateOptions } from "./world.js";
 
 /**
@@ -54,6 +55,9 @@ import { WorldState, type WorldStateJson, type WorldStateOptions } from "./world
  *   réputation envers les factions PNJ **par joueur**, qui suit son
  *   propriétaire d'une colonie à l'autre.
  *
+ * - **5**, salles nommées : `rooms`, snapshots et dates de gel/dernière visite.
+ *   Les versions 1 à 4 restent lisibles, sans salles nommées.
+ *
  * `SUPPORTED_WORLD_STATE_FILE_VERSIONS` liste les versions qu'un fichier peut
  * porter en lecture : un v1 est accepté et migré par `WorldState.fromJSON`
  * (nouveaux joueurs, jetons neufs), un v2 est relu tel quel (les marchands
@@ -61,10 +65,10 @@ import { WorldState, type WorldStateJson, type WorldStateOptions } from "./world
  * exactement ce que faisait chaque colonie dans son coin) — aucun n'est
  * rejeté, et la prochaine sauvegarde les réécrit dans la version courante.
  */
-export const WORLD_STATE_FILE_VERSION = 4;
+export const WORLD_STATE_FILE_VERSION = 5;
 
 /** Versions de fichier acceptées en lecture (voir `WORLD_STATE_FILE_VERSION`). */
-const SUPPORTED_WORLD_STATE_FILE_VERSIONS = [1, 2, 3, 4] as const;
+const SUPPORTED_WORLD_STATE_FILE_VERSIONS = [1, 2, 3, 4, 5] as const;
 
 /** Délai de débounce par défaut entre deux écritures, en millisecondes. */
 export const SAVE_DEBOUNCE_MS = 2000;
@@ -104,11 +108,12 @@ export interface WorldStateFile {
   /** Date de cet enregistrement, en millisecondes epoch. */
   readonly savedAt: number;
   readonly state: WorldStateJson;
+  readonly rooms?: readonly SavedRoom[];
 }
 
 export type WorldStoreLoadResult =
   | { readonly kind: "none" }
-  | { readonly kind: "loaded"; readonly state: WorldState; readonly savedAt: number }
+  | { readonly kind: "loaded"; readonly state: WorldState; readonly savedAt: number; readonly rooms: readonly SavedRoom[] }
   | {
       readonly kind: "ignored";
       readonly reason: "mismatch" | "corrupt";
@@ -133,6 +138,10 @@ export interface WorldStoreOptions {
    * déterministes (voir `ScheduleTimeout`). Défaut : `setTimeout`/`clearTimeout` réels.
    */
   readonly schedule?: ScheduleTimeout;
+  /** Salles à joindre à chaque écriture du fichier commun. */
+  readonly rooms?: () => readonly SavedRoom[];
+  /** Borne entre écritures automatiques quand des salles nommées sont conservées. */
+  readonly minIntervalMs?: () => number;
 }
 
 /**
@@ -178,6 +187,12 @@ export class WorldStore {
   private readonly log: (line: string) => void;
   private readonly debounceMs: number;
   private readonly schedule: ScheduleTimeout;
+  private readonly rooms: () => readonly SavedRoom[];
+  private loadedRooms: readonly SavedRoom[] = [];
+  private readonly minIntervalMs: () => number;
+  private timerAt: number | null = null;
+  private lastWriteAt = Number.NEGATIVE_INFINITY;
+  private writing: Promise<void> = Promise.resolve();
 
   private cancelTimer: CancelTimeout | null = null;
   private pendingState: WorldState | null = null;
@@ -191,6 +206,8 @@ export class WorldStore {
     this.log = options.log ?? ((line) => console.error(line));
     this.debounceMs = options.debounceMs ?? SAVE_DEBOUNCE_MS;
     this.schedule = options.schedule ?? defaultScheduleTimeout;
+    this.rooms = options.rooms ?? (() => this.loadedRooms);
+    this.minIntervalMs = options.minIntervalMs ?? (() => 0);
   }
 
   /** Date de la dernière écriture réussie, `null` si aucune n'a encore eu lieu. */
@@ -247,6 +264,8 @@ export class WorldStore {
 
     try {
       const state = WorldState.fromJSON(parsed.state, { ...options, world });
+      const rooms = readSavedRooms(parsed.rooms);
+      this.loadedRooms = rooms;
       if (parsed.version === 1) {
         // Migration v1 → identité par jeton (docs/protocol.md §11.8) : chaque
         // nom de propriétaire est devenu un joueur avec un jeton neuf, personne
@@ -257,7 +276,7 @@ export class WorldStore {
             "joueurs avec un jeton neuf — la prochaine sauvegarde écrira ces jetons dans le fichier",
         );
       }
-      return { kind: "loaded", state, savedAt: parsed.savedAt };
+      return { kind: "loaded", state, savedAt: parsed.savedAt, rooms };
     } catch (error) {
       const quarantineFile = await this.quarantine();
       this.log(
@@ -275,8 +294,20 @@ export class WorldStore {
    * avalée, une écriture ratée n'arrête pas le serveur. Annule aussi toute
    * écriture différée par `scheduleSave` : cette écriture-ci la rend obsolète.
    */
-  async save(state: WorldState): Promise<void> {
+  save(state: WorldState): Promise<void> {
     this.cancelScheduled();
+    // Une seule écriture à la fois, y compris si l'arrêt arrive pendant un rename.
+    this.lastWriteAt = this.now();
+    this.writing = this.writing.then(() => this.write(state));
+    return this.writing;
+  }
+
+  /** Attend seulement les écritures déjà lancées (utile avec un minuteur injecté). */
+  async idle(): Promise<void> {
+    await this.writing;
+  }
+
+  private async write(state: WorldState): Promise<void> {
     try {
       const payload: WorldStateFile = {
         version: WORLD_STATE_FILE_VERSION,
@@ -284,6 +315,7 @@ export class WorldStore {
         subdivisions: this.subdivisions,
         savedAt: this.now(),
         state: state.toJSON(),
+        rooms: this.rooms(),
       };
       await mkdir(dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp`;
@@ -305,21 +337,31 @@ export class WorldStore {
    */
   scheduleSave(state: WorldState): void {
     this.pendingState = state;
+    const now = this.now();
+    const interval = this.minIntervalMs();
+    // Une rafale de snapshots ne repousse pas indéfiniment le checkpoint.
+    const desired = now + (interval > 0 ? interval : this.debounceMs);
+    const due = interval > 0
+      ? Math.max(this.lastWriteAt + interval, Math.min(this.timerAt ?? desired, desired))
+      : desired;
     this.cancelTimer?.();
+    this.timerAt = due;
     this.cancelTimer = this.schedule(() => {
       this.cancelTimer = null;
+      this.timerAt = null;
       const toSave = this.pendingState;
       this.pendingState = null;
       if (toSave !== null) {
         void this.save(toSave);
       }
-    }, this.debounceMs);
+    }, Math.max(0, due - now));
   }
 
   /** Annule une écriture programmée non encore déclenchée, sans rien écrire. */
   private cancelScheduled(): void {
     this.cancelTimer?.();
     this.cancelTimer = null;
+    this.timerAt = null;
     this.pendingState = null;
   }
 
