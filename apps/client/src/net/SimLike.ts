@@ -17,8 +17,17 @@ export interface SimLike {
   snapshot(): Uint8Array;
 }
 
-/** Fabrique un sim neuf quand la partie démarre. */
-export type CreateSim = (seed: number, width: number, height: number) => Promise<SimLike>;
+/**
+ * Fabrique un sim neuf quand la partie démarre.
+ *
+ * `biome` vient de `start.biome` (`docs/protocol.md` §3.2) : le biome de la
+ * case du globe, dont la carte hérite. Il est passé à la **construction** parce
+ * que c'est le seul moment où il compte — il n'existe pas de commande pour le
+ * changer, après le premier tick ce serait une autre carte. `undefined` en solo
+ * et en salle simple : la fabrique prend alors le biome par défaut du sim
+ * (`DEFAULT_BIOME`, la forêt tempérée).
+ */
+export type CreateSim = (seed: number, width: number, height: number, biome?: number) => Promise<SimLike>;
 
 /** Rebâtit un sim depuis le snapshot du host (rejoint en cours). */
 export type RestoreSim = (bytes: Uint8Array) => Promise<SimLike>;

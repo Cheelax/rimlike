@@ -3,7 +3,7 @@ import { Icon } from "./ui/Icon";
 import { StockPanel } from "./ui/StockPanel";
 import { isTextEntry, nextPanel, type DockAction, type PanelId } from "./ui/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { TICKS_PER_DAY, type SettledMessage } from "@rimlike/protocol";
+import { DEFAULT_BIOME, TICKS_PER_DAY, type SettledMessage } from "@rimlike/protocol";
 import { BIOME_NAMES, findRoute, type World } from "@rimlike/world";
 import { CaravanPanel, type CaravanColonist, type CaravanDestination } from "./CaravanPanel";
 import { ColonistBar, type ColonistBadge } from "./ColonistBar";
@@ -316,6 +316,12 @@ interface Stats {
   weather: number;
   /** Saison courante, suivant `sim::climate::Season` (0 printemps … 3 hiver). */
   season: number;
+  /**
+   * Biome de la carte (`sim::Biome`, mêmes valeurs que `@rimlike/world`) :
+   * hérité de la case du globe à la fondation, constant ensuite. Nommé par
+   * `BIOME_NAMES` dans la ligne du calendrier.
+   */
+  biome: number;
   /** Jour de l'année courant, dans `0..yearDays`. */
   dayOfYear: number;
   /** Jours d'une année de jeu (quatre saisons), constant. */
@@ -425,6 +431,9 @@ const INITIAL: Stats = {
   paused: false,
   weather: 0,
   season: 0,
+  // Forêt tempérée : le biome du constructeur ordinaire du sim, donc celui du
+  // solo (`DEFAULT_BIOME` de `@rimlike/protocol`).
+  biome: DEFAULT_BIOME,
   dayOfYear: 0,
   yearDays: 60,
   temperature: 120,
@@ -2378,6 +2387,7 @@ export function App() {
         paused,
         weather: f.weather,
         season: f.season,
+        biome: f.biome,
         dayOfYear: f.dayOfYear,
         yearDays: f.yearDays,
         temperature: f.temperature,
@@ -2863,7 +2873,9 @@ export function App() {
         <>
           <header className="colony-header">
             <div className="colony-heading"><span className="colony-emblem"><Icon name="colony" size={26} /></span><div><span className="eyebrow">{multi ? `Salle ${net?.room ?? ""}` : "Partie solo"}</span><h1>La colonie</h1></div></div>
-            <div className="colony-calendar"><strong>Jour {stats.day}<span>{stats.hour}</span></strong><span>{SEASON_LABELS[stats.season] ?? "?"} · {dayInSeason}/{seasonDays} · {formatTemperature(stats.temperature)} · {WEATHER_LABELS[stats.weather] ?? "?"}</span></div>
+            {/* Le biome ferme la ligne : hérité de la case du globe à la
+                fondation (`start.biome`), il ne change jamais ensuite. */}
+            <div className="colony-calendar"><strong>Jour {stats.day}<span>{stats.hour}</span></strong><span>{SEASON_LABELS[stats.season] ?? "?"} · {dayInSeason}/{seasonDays} · {formatTemperature(stats.temperature)} · {WEATHER_LABELS[stats.weather] ?? "?"} · {BIOME_NAMES[stats.biome as keyof typeof BIOME_NAMES] ?? "?"}</span></div>
             <div className="time-controls" aria-label="Vitesse de la partie">
               <button className={stats.paused ? "active" : ""} aria-label={stats.paused ? "Reprendre la partie" : "Mettre en pause"} title={multi ? "Le temps est partagé en multijoueur" : "Pause / reprise · Espace"} disabled={multi} onClick={() => actionsRef.current?.togglePause()}><Icon name={stats.paused ? "play" : "pause"} size={17} /></button>
               {[1, 2, 3].map((speed) => <button key={speed} aria-label={`Vitesse ×${speed}`} aria-pressed={!stats.paused && stats.speed === speed} disabled={multi} onClick={() => actionsRef.current?.changeSpeed(speed)}>×{speed}</button>)}

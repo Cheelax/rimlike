@@ -12,9 +12,9 @@
  * - **salle simple** (`join { room: "demo" }`) : l'hôte choisit la graine et
  *   la taille de carte, la salle peut être conservée par le relais ;
  * - **salle « case »** (`tile`), adossée à une case du globe : la graine est
- *   imposée par le serveur, le climat et le jour de l'année de la case
- *   partent dans le `start` diffusé au démarrage (`TileRoom.climate`,
- *   `TileRoom.dayOfYear`, `docs/protocol.md` §3.2), l'hôte fournit
+ *   imposée par le serveur, le climat, le jour de l'année et le biome de la
+ *   case partent dans le `start` diffusé au démarrage (`TileRoom.climate`,
+ *   `TileRoom.dayOfYear`, `TileRoom.biome`, `docs/protocol.md` §3.2), l'hôte fournit
  *   périodiquement un snapshot de conservation, et la salle peut être
  *   rouverte depuis ce snapshot (`restore`) au lieu de repartir d'un lobby.
  */
@@ -72,6 +72,16 @@ export interface TileRoom {
    * champ ne sert qu'au chemin lobby → running d'une colonie neuve.
    */
   readonly dayOfYear?: number;
+  /**
+   * Biome de la case (`Biome` de `@rimlike/world`, `0..BIOME_COUNT`), dont la
+   * carte de la colonie hérite (`docs/protocol.md` §3.2, §11.6). Porté par le
+   * même `start` que `climate` et `dayOfYear` — et, contrairement à eux, aussi
+   * par le `snapshot` d'une réouverture, où il n'est qu'informatif : le biome
+   * se fixe à la construction du sim, pas par une commande. Comme le climat,
+   * `Room` ne le calcule pas : c'est l'appelant (le serveur monde) qui le
+   * fournit.
+   */
+  readonly biome?: number;
   /**
    * Réputation du **propriétaire** de la case envers les factions PNJ, relevée
    * par le serveur monde à la création de la salle (`docs/protocol.md` §14).
@@ -386,6 +396,12 @@ export class Room {
           // de valeur « rien à faire » — le défaut lui-même est une consigne
           // (docs/protocol.md §14).
           ...(opening.goodwill !== undefined ? { goodwill: opening.goodwill } : {}),
+          // Le biome de la case, lu sur la salle et non sur la réouverture :
+          // il appartient à la case, pas à l'instant où la colonie se réveille
+          // (docs/protocol.md §11.6). Purement informatif ici — le sim que
+          // `data` restaure porte déjà sa carte — mais il évite au HUD
+          // d'attendre la première frame pour nommer le biome.
+          ...(this.tile?.biome !== undefined ? { biome: this.tile.biome } : {}),
         });
         player.synced = true;
         this.restore = null;
@@ -574,6 +590,9 @@ export class Room {
       tick: 0,
       ...(this.tile?.climate !== undefined ? { climate: this.tile.climate } : {}),
       ...(this.tile?.dayOfYear !== undefined ? { dayOfYear: this.tile.dayOfYear } : {}),
+      // Le biome, lui, n'est pas une consigne à émettre : chaque client
+      // construit son sim avec (docs/protocol.md §3.2), hôte comme invité.
+      ...(this.tile?.biome !== undefined ? { biome: this.tile.biome } : {}),
       ...(pendingTraders > 0 ? { pendingTraders } : {}),
       ...(this.tile?.goodwill !== undefined ? { goodwill: this.tile.goodwill } : {}),
     });

@@ -284,6 +284,17 @@ et son calendrier par défaut (tempéré, printemps) tant que personne n'émet
 l'hôte, et lui seul, d'émettre les commandes correspondantes après ce `start`
 (§11.6).
 
+`biome` est facultatif et n'apparaît, lui aussi, que dans une salle « case » :
+c'est le **biome de la case** du globe (`Biome` de `packages/world`, un entier
+de `0` à `BIOME_COUNT - 1`, soit 0 à 9), dont la carte de la colonie hérite —
+sols, arbres, buissons, rochers, veines et eau. À la différence de `climate` et
+de `dayOfYear`, ce n'est **pas** une information à imposer par une commande : le
+biome se fixe à la **construction** du sim (`WasmSim.new_in_biome`), il n'existe
+pas de `Command::SetBiome` — après le premier tick, ce serait une autre carte.
+Chaque client le lit donc dans ce `start` et construit son sim avec, hôte comme
+invité. Absent en salle simple : le sim y prend le biome de son constructeur
+ordinaire, la forêt tempérée (`DEFAULT_BIOME`, 4).
+
 `pendingTraders` est facultatif lui aussi et compte les **marchands itinérants**
 passés sur la case pendant que la colonie était fermée (§13), au plus
 `MAX_PENDING_TRADERS`. Même règle que ci-dessus : l'hôte, et lui seul, émet
@@ -308,6 +319,7 @@ Même règle que les autres : l'hôte, et lui seul, émet `Command::SetGoodwill`
   "tick": 0,
   "climate": { "baseTemperature": -340, "amplitude": 200 },
   "dayOfYear": 1,
+  "biome": 2,
   "goodwill": [-20, -20, 10]
 }
 ```
@@ -358,11 +370,18 @@ et au calendrier, qu'on se garde bien de réémettre puisque le snapshot les a
 déjà, la réputation a continué de vivre dans les **autres** colonies du joueur
 pendant que celle-ci dormait.
 
+`biome` accompagne les réouvertures de colonie pour une raison plus modeste :
+**l'affichage seul**. Le sim que `data` restaure porte déjà sa carte, donc
+aucun client n'a rien à en faire — mais le HUD peut nommer le biome sans
+attendre la première frame. C'est le seul champ de `snapshot` qui ne déclenche
+aucune commande.
+
 ```json
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=" }
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000 }
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000, "pendingTraders": 1 }
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000, "goodwill": [-45, 12, 55] }
+{ "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000, "biome": 2 }
 ```
 
 **`desync`** — premier écart de hash constaté. Les clés de `hashes` sont des
@@ -1142,6 +1161,18 @@ température et la latitude de la case, et le `start` diffusé porte ce climat
 (`climate`). Ce n'est qu'une **information** : imposer le climat au sim passe
 par une commande, exactement comme l'avance rapide.
 
+**Le biome, hérité à la construction.** La même colonie neuve hérite du biome
+de sa case (`biome` dans le `start`, §3.2) — et celui-là ne passe **pas** par
+une commande, contrairement aux deux autres. Le sim fixe la composition de sa
+carte à la construction (`WasmSim.new_in_biome(seed, w, h, biome)`), et il n'y a
+pas de `Command::SetBiome` : appliquée après le premier tick, elle rendrait une
+autre carte, donc un autre état, donc une désynchronisation. Chaque client lit
+donc le champ et construit son sim avec, hôte comme invité — c'est le seul
+champ de `start` que tout le monde utilise, et pour cette raison il n'y a rien
+à sérialiser en ordre : le déterminisme vient de ce que tous partent de la même
+graine **et** du même biome. Sur une réouverture, le sim restauré porte déjà sa
+carte ; `snapshot.biome` n'existe alors que pour l'affichage (§3.2).
+
 **Le calendrier, hérité une fois.** La même colonie neuve hérite aussi du jour
 de l'année du **monde** : `worldDayOfYear(worldState.clock.hours())`
 (`@rimlike/protocol`, §12.1) le déduit de l'horloge de jeu au moment de la
@@ -1155,9 +1186,9 @@ autre.
 
 ```
    hôte                                              serveur
-     │◀── start { seed, …, climate, dayOfYear } ──────┤  colonie neuve, salle « case »
-     │    (construit son sim, climat et calendrier    │
-     │     par défaut du sim)                         │
+     │◀── start { seed, …, biome, climate, dayOfYear }┤  colonie neuve, salle « case »
+     │    (construit son sim **avec le biome**,       │
+     │     climat et calendrier par défaut du sim)    │
      ├─── encode_set_climate(climate) ────────────────▶│  1ʳᵉ commande, une seule fois
      ├─── encode_set_calendar(dayOfYear) ─────────────▶│  2ᵉ commande, une seule fois
      │        (repartent dans des bundles,             │
@@ -1217,10 +1248,11 @@ autre.
   calendrier devenaient un jour modifiables en cours de partie par un autre
   biais que la fondation).
 - Une salle **hors monde** (`join { room: "demo" }`) n'a pas de case, donc ni
-  `climate` ni `dayOfYear` : le sim y garde son climat par défaut
-  (`Climate::default()`, 12 °C ± 15 °C) et son calendrier par défaut
+  `climate`, ni `dayOfYear`, ni `biome` : le sim y garde son climat par défaut
+  (`Climate::default()`, 12 °C ± 15 °C), son calendrier par défaut
   (printemps, jour 0) tant que personne n'émet `SetClimate`/`SetCalendar`
-  explicitement.
+  explicitement, et la carte de son constructeur ordinaire (forêt tempérée) —
+  celle-là définitivement, faute de commande pour la changer.
 
 ### 11.7 Enchaînement complet, côté client
 
@@ -1252,6 +1284,11 @@ Ce que le client doit gérer en plus du mode salle :
 
 - `request_snapshot { forPlayer: 0 }` → répondre `snapshot { tick, data }`
   **sans** `forPlayer` (un `forPlayer: 0` dans la réponse est refusé) ;
+- `start { biome }` → construire le sim avec (`WasmSim.new_in_biome(seed, w, h,
+  biome)` plutôt que `new WasmSim(seed, w, h)`), **tous les clients**, pas
+  seulement l'hôte : c'est un paramètre de construction, pas une commande
+  (§11.6). Absent en salle simple — le constructeur ordinaire donne la forêt
+  tempérée ;
 - `start { climate }` → si le champ est présent et que le client est l'hôte
   (`welcome.isHost`), émettre `encodeSetClimate(climate.baseTemperature,
   climate.amplitude)` en **première commande** après avoir construit le sim

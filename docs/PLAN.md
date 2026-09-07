@@ -529,9 +529,10 @@ d'alice arrivé chez bob).
   biome (arbres, buissons, rochers, veines, eau, sable, herbe, neige), génération tempérée
   bit-identique à l'ancienne composition, plancher de jouabilité (20 arbres, 10 rochers, 8 cases
   d'eau atteignables, oasis au désert), `Terrain::Snow`, `Sim::new_in_biome`, `campaign --biome`,
-  fuzz par biome. Reste : `start.biome` côté serveur et client (le monde connaît déjà le biome de
-  chaque case), le désert n'est pas survivable (5/5 famines en dix jours : oasis à élargir ou
-  sable cultivable au ralenti, à mesurer).
+  fuzz par biome. Câblage livré le 2026-09-07 (serveur, protocole, client) : `start.biome` depuis la
+  case, `snapshot.biome` informatif, tous les clients construisent par `new_in_biome`, biome au
+  HUD ; vérifié : colonie fondée sur un désert du globe, 90 % de sable, 20 arbres du plancher.
+  Reste : le désert n'est pas survivable (fiche `desert-survivable`, en cours).
 
 **Reste**
 

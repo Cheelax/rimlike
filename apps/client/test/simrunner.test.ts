@@ -208,6 +208,11 @@ class FakeSim implements RunnerSim {
     return 1;
   }
 
+  /** Forêt tempérée : le biome du constructeur ordinaire du sim. */
+  biome(): number {
+    return 4;
+  }
+
   dayOfYear(): number {
     return 20;
   }

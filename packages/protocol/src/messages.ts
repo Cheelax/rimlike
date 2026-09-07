@@ -638,6 +638,23 @@ export const CLIMATE_AMPLITUDE_MIN = 0;
 export const CLIMATE_AMPLITUDE_MAX = 1000;
 
 /**
+ * Nombre de biomes du globe (`Biome` de `packages/world/src/biomes.ts`, et
+ * `sim::Biome` côté Rust) : les valeurs valides vont de 0 à `BIOME_COUNT - 1`.
+ * Dupliqué ici comme `CLIMATE_BASE_MIN` duplique la borne du sim — ce paquet
+ * n'a pas de dépendance runtime, donc pas d'import de `@rimlike/world` pour un
+ * entier.
+ */
+export const BIOME_COUNT = 10;
+
+/**
+ * Biome d'une colonie dont personne n'impose le biome : la forêt tempérée
+ * (`Biome.TemperateForest`, 4). C'est la carte que rend le constructeur
+ * `WasmSim` ordinaire, donc celle du solo et de toute salle hors monde — un
+ * `start` sans `biome` veut dire « celle-là », pas « aucune ».
+ */
+export const DEFAULT_BIOME = 4;
+
+/**
  * Climat à imposer au sim d'une colonie, en dixièmes de degré Celsius : la
  * forme attendue par `Command::SetClimate` (`crates/sim/src/climate.rs`).
  * Calculé par `@rimlike/world` (`climateForTile`) à partir de la température
@@ -653,9 +670,9 @@ export interface StartClimate {
 /**
  * Diffusé quand le host démarre. `tick` vaut 0 : le sim part de zéro.
  *
- * `climate` et `dayOfYear` n'apparaissent que dans une salle « case »
- * (`docs/protocol.md` §11) : la colonie hérite du climat **et** du jour de
- * l'année de sa case du globe (`worldDayOfYear`, §12.1). Absents en salle
+ * `climate`, `dayOfYear` et `biome` n'apparaissent que dans une salle « case »
+ * (`docs/protocol.md` §11) : la colonie hérite du climat, du jour de
+ * l'année et du biome de sa case du globe (`worldDayOfYear`, §12.1). Absents en salle
  * simple — le sim y garde son climat et son calendrier par défaut (printemps,
  * jour 0) tant que personne n'émet `SetClimate`/`SetCalendar`. Présents, ils
  * ne sont **imposés à personne** : c'est à l'hôte, et seulement lui, d'émettre
@@ -674,6 +691,18 @@ export interface ServerStartMessage {
   readonly climate?: StartClimate;
   /** Jour de l'année à imposer (`Command::SetCalendar`), dans `0..YEAR_DAYS`. */
   readonly dayOfYear?: number;
+  /**
+   * Biome de la case du globe (`0..BIOME_COUNT`), dont la carte de la colonie
+   * hérite : sols, arbres, buissons, rochers, veines et eau en suivent
+   * (`docs/protocol.md` §3.2, §11.6). À la différence de `climate` et de
+   * `dayOfYear`, ce n'est **pas** une information à imposer par une commande :
+   * le biome est fixé à la **construction** du sim (`WasmSim.new_in_biome`), il
+   * n'existe pas de `Command::SetBiome` — après le premier tick, ce serait une
+   * autre carte. Chaque client le lit donc dans ce `start` et construit son sim
+   * avec, hôte comme invité. Absent en salle simple : le sim y prend le biome
+   * par défaut (`DEFAULT_BIOME`, la forêt tempérée).
+   */
+  readonly biome?: number;
   /**
    * Marchands itinérants arrivés sur la case pendant que la colonie était
    * **fermée** (`docs/protocol.md` §13), au plus `MAX_PENDING_TRADERS`. L'hôte,
@@ -750,6 +779,15 @@ export interface ServerSnapshotMessage {
    * et la valeur imposée ici est déjà à jour, elle n'a pas à revieillir.
    */
   readonly goodwill?: GoodwillValues;
+  /**
+   * Biome de la case, comme `start.biome` — mais ici **aucun client n'a rien à
+   * en faire pour le sim** : le biome est fixé à la construction, et le sim que
+   * `data` restaure porte déjà sa carte. Le champ ne sert qu'à l'**affichage**
+   * (le HUD peut nommer le biome avant la première frame) et c'est la seule
+   * raison de sa présence : contrairement à `frozenTicks` ou `goodwill`, il ne
+   * déclenche aucune commande. Absent en salle simple.
+   */
+  readonly biome?: number;
 }
 
 /**

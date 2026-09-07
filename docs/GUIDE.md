@@ -547,7 +547,12 @@ libre) ou « Visiter » / « Reprendre ma colonie » (case déjà occupée).
 S'installer fonde une colonie ; visiter entre dans celle d'un autre joueur
 sans rien y changer d'office. Dans les deux cas, ça ouvre la salle de cette
 case exactement comme une salle nommée, avec une graine imposée par le
-serveur. Voir §5 pour les caravanes ; ci-dessous pour les colonies gelées.
+serveur. La carte engendrée suit le **biome de la case** : un désert n'a
+presque pas d'arbres et beaucoup de sable, une toundra reste enneigée, une
+jungle est dense — le nom du biome s'affiche dans la ligne du calendrier du
+HUD, à côté de la saison et de la température. Une partie solo, elle, se joue
+toujours en forêt tempérée. Voir §5 pour les caravanes ; ci-dessous pour les
+colonies gelées.
 Votre réputation envers les factions PNJ (§4) suit le joueur, pas la case :
 fonder ou rouvrir une autre colonie du même globe la retrouve telle quelle.
 

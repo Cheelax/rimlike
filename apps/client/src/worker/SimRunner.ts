@@ -92,6 +92,8 @@ export interface RunnerSim extends SimLike {
   ticksPerDay(): number;
   /** Saison courante, suivant `sim::climate::Season` (0 printemps … 3 hiver). */
   season(): number;
+  /** Biome de la carte, suivant `sim::Biome` ; constant, fixé à la construction. */
+  biome(): number;
   /** Jour de l'année courant, dans `0..yearDays()`. */
   dayOfYear(): number;
   /** Jours d'une année de jeu (quatre saisons), constant. */
@@ -386,6 +388,9 @@ export class SimRunner {
       weather: sim.weather(),
       temperature: sim.outdoorTemperature(),
       season: sim.season(),
+      // Constant pour la vie du sim, comme `yearDays` : un entier de plus par
+      // frame coûte moins qu'un aller-retour de RPC au démarrage.
+      biome: sim.biome(),
       dayOfYear: sim.dayOfYear(),
       yearDays: sim.yearDays(),
       hash: withHash ? sim.hash() : null,

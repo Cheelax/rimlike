@@ -140,6 +140,15 @@ export interface FrameMessage {
   readonly temperature: number;
   /** Saison courante, suivant `sim::climate::Season` (0 printemps … 3 hiver). */
   readonly season: number;
+  /**
+   * Biome de la carte, suivant `sim::Biome` (mêmes valeurs que
+   * `packages/world/src/biomes.ts`, `BIOME_NAMES` pour les libellés). Fixé à la
+   * construction du sim depuis la case du globe (`start.biome`,
+   * `docs/protocol.md` §3.2) : constant d'une frame à l'autre, comme
+   * `yearDays`, et porté ici pour la même raison — un entier ne justifie pas
+   * un canal à part.
+   */
+  readonly biome: number;
   /** Jour de l'année courant, dans `0..yearDays`. */
   readonly dayOfYear: number;
   /** Jours d'une année de jeu (quatre saisons), constant (`sim::climate::YEAR_DAYS`). */

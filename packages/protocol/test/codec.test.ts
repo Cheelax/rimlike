@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   base64ToBytes,
+  BIOME_COUNT,
   bytesToBase64,
   CLIMATE_AMPLITUDE_MAX,
   CLIMATE_BASE_MIN,
@@ -189,6 +190,10 @@ describe("encodeMessage / decodeMessage", () => {
     // Réputation du propriétaire, imposée à la fondation (§14).
     { type: "start", seed: 7, width: 64, height: 64, tick: 0, climate, dayOfYear: 1, goodwill: [-45, 0, 60] },
     { type: "start", seed: 7, width: 64, height: 64, tick: 0, goodwill: DEFAULT_GOODWILL },
+    // Biome de la case : la carte de la colonie en hérite à la construction.
+    { type: "start", seed: 7, width: 64, height: 64, tick: 0, climate, dayOfYear: 1, biome: 6 },
+    { type: "start", seed: 7, width: 64, height: 64, tick: 0, biome: 0 },
+    { type: "start", seed: 7, width: 64, height: 64, tick: 0, biome: BIOME_COUNT - 1 },
     { type: "bundle", from: 0, to: 2, ticks: [] },
     {
       type: "bundle",
@@ -215,6 +220,8 @@ describe("encodeMessage / decodeMessage", () => {
     // Colonie gelée qui rouvre : la réputation du joueur voyage à côté du
     // temps gelé, et s'impose **après** lui (§14).
     { type: "snapshot", tick: 1800, data: new Uint8Array([1]), frozenTicks: 3000, goodwill: [-100, 5, 100] },
+    // Biome de la case sur une réouverture : purement informatif (§11.6).
+    { type: "snapshot", tick: 1800, data: new Uint8Array([1]), frozenTicks: 3000, biome: 2 },
     { type: "desync", tick: 600, hashes: { 1: "aaaa", 2: "bbbb" } },
     { type: "desync", tick: 600, hashes: { 1: "aaaa", 2: "zzzz", 3: "aaaa" }, outliers: [2] },
     { type: "resynced", player: 2, tick: 900 },
@@ -722,6 +729,46 @@ describe("climat des colonies", () => {
     expect(validateServerMessage({ ...base, climate: { baseTemperature: 0 } })).toBeNull();
     expect(validateServerMessage({ ...base, climate: { amplitude: 0 } })).toBeNull();
     expect(validateServerMessage({ ...base, climate: "chaud" })).toBeNull();
+  });
+});
+
+describe("biome des colonies", () => {
+  it("laisse passer un start sans biome et garde le champ sinon", () => {
+    const plain = validateServerMessage({ type: "start", seed: 7, width: 128, height: 128, tick: 0 });
+    expect(plain !== null && "biome" in plain).toBe(false);
+
+    const wire = encodeMessage({ type: "start", seed: 7, width: 128, height: 128, tick: 0, biome: 6 });
+    const back = decodeServerMessage(wire);
+    expect(back?.type === "start" ? back.biome : null).toBe(6);
+  });
+
+  it("accepte les dix biomes du globe, sur start comme sur snapshot", () => {
+    // Contrat avec `packages/world/src/biomes.ts` et `sim::Biome`.
+    expect(BIOME_COUNT).toBe(10);
+    for (let biome = 0; biome < BIOME_COUNT; biome += 1) {
+      expect(validateServerMessage({ type: "start", seed: 1, width: 8, height: 8, tick: 0, biome })).not.toBeNull();
+      expect(validateServerMessage({ type: "snapshot", tick: 1, data: "AQID", biome })).not.toBeNull();
+    }
+  });
+
+  it("refuse un biome hors 0..9, sur start comme sur snapshot", () => {
+    for (const biome of [-1, BIOME_COUNT, 4.5, "6", null, [4]]) {
+      expect(validateServerMessage({ type: "start", seed: 1, width: 8, height: 8, tick: 0, biome })).toBeNull();
+      expect(validateServerMessage({ type: "snapshot", tick: 1, data: "AQID", biome })).toBeNull();
+    }
+  });
+
+  it("garde le biome d'un snapshot, à côté du temps gelé", () => {
+    const wire = encodeMessage({
+      type: "snapshot",
+      tick: 1800,
+      data: new Uint8Array([1, 2]),
+      frozenTicks: 3000,
+      biome: 2,
+    });
+    const back = decodeServerMessage(wire);
+    expect(back?.type === "snapshot" ? back.biome : null).toBe(2);
+    expect(back?.type === "snapshot" ? back.frozenTicks : null).toBe(3000);
   });
 });
 

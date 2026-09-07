@@ -54,6 +54,7 @@ function frame(): FrameMessage {
     weather: 2,
     temperature: 120,
     season: 1,
+    biome: 6,
     dayOfYear: 20,
     yearDays: 60,
     hash: "deadbeef",
@@ -185,6 +186,8 @@ describe("protocole du Worker de simulation", () => {
     expect(clone.season).toBe(1);
     expect(clone.dayOfYear).toBe(20);
     expect(clone.yearDays).toBe(60);
+    // Le biome (hérité de la case du globe) voyage de la même façon.
+    expect(clone.biome).toBe(6);
     // Dose de menace et richesse (`sim-wasm::difficulty`/`wealth`) : de simples
     // nombres, clonés tels quels, comme la température ou la saison.
     expect(clone.difficulty).toBe(2);

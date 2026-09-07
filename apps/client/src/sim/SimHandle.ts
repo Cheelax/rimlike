@@ -41,9 +41,27 @@ export class SimHandle implements SimLike {
     private readonly inner: WasmSim,
   ) {}
 
-  static async create(opts: { seed: bigint; width: number; height: number }): Promise<SimHandle> {
+  /**
+   * Sim neuf. `biome` (`sim::Biome`, mêmes valeurs que
+   * `packages/world/src/biomes.ts`) vient de la case du globe où la colonie est
+   * fondée (`start.biome`, `docs/protocol.md` §3.2) : sols, arbres, buissons,
+   * rochers, veines et eau en suivent. C'est le **seul** moment où il se règle
+   * — il n'y a pas de `Command::SetBiome`, la composition d'une carte ne change
+   * pas après le premier tick. Omis (solo, salle simple), le constructeur
+   * ordinaire du sim s'applique : la forêt tempérée.
+   */
+  static async create(opts: {
+    seed: bigint;
+    width: number;
+    height: number;
+    biome?: number;
+  }): Promise<SimHandle> {
     const wasm = await initOnce();
-    return new SimHandle(wasm, new WasmSim(opts.seed, opts.width, opts.height));
+    const inner =
+      opts.biome === undefined
+        ? new WasmSim(opts.seed, opts.width, opts.height)
+        : WasmSim.new_in_biome(opts.seed, opts.width, opts.height, opts.biome);
+    return new SimHandle(wasm, inner);
   }
 
   static async restore(bytes: Uint8Array): Promise<SimHandle> {
@@ -486,6 +504,15 @@ export class SimHandle implements SimLike {
   /** Saison courante, suivant `sim::climate::Season` (0 printemps … 3 hiver). */
   season(): number {
     return this.inner.season();
+  }
+
+  /**
+   * Biome de la carte, suivant `sim::Biome` (mêmes valeurs que
+   * `packages/world/src/biomes.ts`). Fixé à la construction (voir `create`) :
+   * constant pour la vie du sim, y compris après un snapshot.
+   */
+  biome(): number {
+    return this.inner.biome();
   }
 
   /** Jour de l'année courant, dans `0..yearDays()`. */

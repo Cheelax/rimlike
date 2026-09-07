@@ -9,6 +9,7 @@
  */
 
 import {
+  BIOME_COUNT,
   CLIMATE_AMPLITUDE_MAX,
   CLIMATE_AMPLITUDE_MIN,
   CLIMATE_BASE_MAX,
@@ -213,6 +214,17 @@ function asStartClimate(value: unknown): StartClimate | null {
     return null;
   }
   return { baseTemperature: value.baseTemperature, amplitude: value.amplitude };
+}
+
+/**
+ * `start.biome` / `snapshot.biome` : le biome de la case du globe, dans
+ * `0..BIOME_COUNT`. Même principe que `isDayOfYear` : hors bornes, la trame est
+ * refusée plutôt que rognée — le sim, lui, retomberait silencieusement sur la
+ * forêt tempérée pour un octet inconnu, et la frontière réseau ne laisse pas
+ * passer une valeur dont elle ne peut pas garantir l'effet.
+ */
+function isBiome(value: unknown): value is number {
+  return isInRange(value, 0, BIOME_COUNT - 1);
 }
 
 /**
@@ -756,6 +768,9 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       if (value.dayOfYear !== undefined && !isDayOfYear(value.dayOfYear)) {
         return null;
       }
+      if (value.biome !== undefined && !isBiome(value.biome)) {
+        return null;
+      }
       if (value.pendingTraders !== undefined && !isPendingTraders(value.pendingTraders)) {
         return null;
       }
@@ -775,6 +790,7 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
         tick: value.tick,
         ...(climate === undefined ? {} : { climate }),
         ...(value.dayOfYear === undefined ? {} : { dayOfYear: value.dayOfYear }),
+        ...(value.biome === undefined ? {} : { biome: value.biome }),
         ...(value.pendingTraders === undefined ? {} : { pendingTraders: value.pendingTraders }),
         ...(goodwill === undefined ? {} : { goodwill }),
       };
@@ -802,6 +818,9 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       if (value.pendingTraders !== undefined && !isPendingTraders(value.pendingTraders)) {
         return null;
       }
+      if (value.biome !== undefined && !isBiome(value.biome)) {
+        return null;
+      }
       let restored: GoodwillValues | undefined;
       if (value.goodwill !== undefined) {
         const parsed = asGoodwill(value.goodwill);
@@ -817,6 +836,7 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
         ...(value.frozenTicks === undefined ? {} : { frozenTicks: value.frozenTicks }),
         ...(value.pendingTraders === undefined ? {} : { pendingTraders: value.pendingTraders }),
         ...(restored === undefined ? {} : { goodwill: restored }),
+        ...(value.biome === undefined ? {} : { biome: value.biome }),
       };
     }
     case "desync": {

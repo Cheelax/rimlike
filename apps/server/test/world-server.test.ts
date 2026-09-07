@@ -12,6 +12,7 @@ import { gunzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_BIOME,
   DEFAULT_GOODWILL,
   NO_PLAYER,
   TICKS_PER_HOUR,
@@ -20,6 +21,7 @@ import {
   type CaravanSummary,
 } from "@rimlike/protocol";
 import {
+  Biome,
   climateForTile,
   deserializeWorld,
   findRoute,
@@ -385,6 +387,7 @@ describe("salle d'une case", () => {
         tick: 0,
         climate,
         dayOfYear: 0,
+        biome: globe.tiles[landTile]!.biome,
         goodwill: DEFAULT_GOODWILL,
       });
     }
@@ -409,6 +412,55 @@ describe("salle d'une case", () => {
     alice.send({ type: "start", seed: 1, width: 32, height: 32 });
     const start = await alice.nth("start");
     expect(start.climate).toEqual(expected);
+  });
+
+  it("porte le biome de la case dans le start, et le rappelle au snapshot d'une réouverture", async () => {
+    // Case 25 du globe de test : un désert. La case de référence des autres
+    // tests (`landTile`) est une forêt tempérée, donc le biome par défaut du
+    // sim : elle ne prouverait pas que le champ vient bien de la case.
+    const desertTile = 25;
+    expect(globe.tiles[desertTile]!.biome).toBe(Biome.Desert);
+    expect(globe.tiles[desertTile]!.biome).not.toBe(DEFAULT_BIOME);
+    expect(movementCost(globe.tiles[desertTile]!.biome)).not.toBeNull();
+
+    // Horloge accélérée pour le snapshot de conservation, horloge du monde
+    // figée pour rouvrir sans temps gelé : comme « conservation du snapshot ».
+    const fast = await startServer({
+      port: 0,
+      log: () => {},
+      worldSubdivisions: SUBDIVISIONS,
+      roomOptions: { tickRate: 60_000, bundleTicks: 600 },
+      worldNow: () => 1_757_000_000_000,
+    });
+    try {
+      const alice = await joinWorld("alice", fast);
+      alice.send({ type: "settle", tile: desertTile });
+      const settled = await alice.next("settled");
+      alice.send({ type: "join", room: settled.room, name: "alice" });
+      await alice.nth("welcome");
+      alice.send({ type: "start", seed: 1, width: 32, height: 32 });
+      // Le `start` porte le biome : chaque client construit son sim avec.
+      expect((await alice.nth("start")).biome).toBe(Biome.Desert);
+
+      // La colonie se conserve, puis se vide.
+      await alice.nth("request_snapshot");
+      const tick = alice.ofType("bundle").at(-1)!.to + 1;
+      alice.send({ type: "snapshot", tick, data: bytes(9, 9) });
+      await until("snapshot stocké", () => fast.world.snapshotFor(settled.room) !== undefined);
+      alice.close();
+      await until("salle détruite", () => fast.roomCount === 0);
+
+      // Elle rouvre : pas de `start`, mais le `snapshot` rappelle le biome —
+      // pour l'affichage seul, le sim restauré porte déjà sa carte (§11.6).
+      const bob = await joinWorld("bob", fast);
+      bob.send({ type: "visit", tile: desertTile });
+      const destination = await bob.next("settled");
+      bob.send({ type: "join", room: destination.room, name: "bob" });
+      await bob.nth("welcome");
+      expect((await bob.nth("snapshot")).biome).toBe(Biome.Desert);
+    } finally {
+      await fast.close();
+    }
   });
 
   it("porte le jour de l'année du monde dans le start, cohérent avec son horloge", async () => {
@@ -461,6 +513,9 @@ describe("salle d'une case", () => {
     expect(start).not.toHaveProperty("climate");
     expect(start).not.toHaveProperty("dayOfYear");
     expect(start).not.toHaveProperty("goodwill");
+    // Ni biome : le sim d'une salle simple prend celui du constructeur
+    // ordinaire, la forêt tempérée (§3.2).
+    expect(start).not.toHaveProperty("biome");
   });
 });
 
@@ -851,8 +906,16 @@ describe("conservation du snapshot d'une colonie", () => {
 
       const snapshot = await bob.nth("snapshot");
       // `goodwill` accompagne toute réouverture de colonie : c'est la valeur
-      // du **joueur**, pas celle du sim conservé (§14).
-      expect(snapshot).toEqual({ type: "snapshot", tick, data: bytes(1, 2, 3, 4), goodwill: DEFAULT_GOODWILL });
+      // du **joueur**, pas celle du sim conservé (§14). `biome` l'accompagne
+      // aussi, mais lui n'est qu'informatif : le sim conservé porte déjà sa
+      // carte, le champ ne sert qu'à nommer le biome avant la première frame.
+      expect(snapshot).toEqual({
+        type: "snapshot",
+        tick,
+        data: bytes(1, 2, 3, 4),
+        goodwill: DEFAULT_GOODWILL,
+        biome: globe.tiles[landTile]!.biome,
+      });
 
       // Puis les bundles reprennent à ce tick, sans rejeu de l'historique.
       await bob.waitUntil("des bundles après la réouverture", () => bob.ofType("bundle").length >= 2);

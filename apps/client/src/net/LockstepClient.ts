@@ -96,6 +96,27 @@ export interface LockstepState {
    */
   readonly dayOfYear: number | null;
   /**
+   * Biome hérité de la case du globe, reçu par `start.biome` (colonie neuve) ou
+   * `snapshot.biome` (colonie qui rouvre), `null` en salle simple
+   * (`docs/protocol.md` §3.2).
+   *
+   * Contrairement à `climate`, `dayOfYear` ou `goodwill`, il **ne se consomme
+   * pas** : ce n'est pas une consigne à émettre une seule fois, mais une valeur
+   * de la carte, déjà appliquée. Sur un `start`, elle l'a été à la construction
+   * du sim (`createSim(seed, width, height, biome)`) ; sur un `snapshot`, le sim
+   * restauré la portait déjà et le champ ne sert qu'à nommer le biome dans le
+   * HUD avant la première frame. Elle reste donc lisible tant que la salle vit.
+   *
+   * `null` ne veut pas dire « forêt tempérée » : le serveur n'ajoute le champ
+   * qu'aux salles « case », et le `snapshot` **relayé par l'hôte** à un
+   * rejoignant en cours de partie ne le porte pas (§8) — inutile, le sim
+   * restauré sait déjà de quoi sa carte est faite. La source qui fait foi est
+   * le sim lui-même (`SimHandle.biome()`, porté par le `frame`) ; ce champ n'en
+   * est qu'un avant-goût, pour la fenêtre entre l'adoption du sim et la
+   * première frame.
+   */
+  readonly biome: number | null;
+  /**
    * Marchands itinérants arrivés sur notre case pendant que la colonie était
    * fermée (`docs/protocol.md` §13.5), reçus par `start.pendingTraders`
    * (colonie neuve) ou `snapshot.pendingTraders` (colonie gelée qui rouvre) —
@@ -257,6 +278,8 @@ export class LockstepClient {
   private climateValue: StartClimate | null = null;
   /** Voir `LockstepState.dayOfYear` et `consumeStartDayOfYear`. */
   private dayOfYearValue: number | null = null;
+  /** Voir `LockstepState.biome` : jamais consommé, seulement remplacé. */
+  private biomeValue: number | null = null;
   /** Voir `LockstepState.pendingTraders` et `consumePendingTraders`. */
   private pendingTradersValue = 0;
   /** Voir `LockstepState.goodwill` et `consumeGoodwill`. */
@@ -644,7 +667,12 @@ export class LockstepClient {
         // et avant les marchands en attente. Toujours présente dans une salle
         // « case » (contrairement à `pendingTraders`), absente en salle simple.
         this.goodwillValue = message.goodwill ?? null;
-        this.adopt(this.createSim(message.seed, message.width, message.height));
+        // Biome de la case (§3.2) : le seul de ces champs qui ne devienne pas
+        // une commande. Il part directement au constructeur du sim — le sim
+        // n'a pas de `SetBiome`, la composition d'une carte ne change pas après
+        // le premier tick — et reste lisible pour le HUD.
+        this.biomeValue = message.biome ?? null;
+        this.adopt(this.createSim(message.seed, message.width, message.height, message.biome));
         this.emit();
         return;
       case "snapshot":
@@ -663,6 +691,10 @@ export class LockstepClient {
         // la valeur **du joueur**, pas celle que le sim restauré porte dans
         // `data` (déjà périmée par construction, voir `docs/protocol.md` §14).
         this.goodwillValue = message.goodwill ?? null;
+        // Biome de la case, purement informatif ici (§11.6) : le sim restauré
+        // porte déjà sa carte, le champ ne fait que la nommer pour le HUD avant
+        // la première frame. Rien à passer à `restoreSim`, qui relit tout.
+        this.biomeValue = message.biome ?? null;
         this.adopt(this.restoreSim(message.data));
         this.emit();
         return;
@@ -847,6 +879,7 @@ export class LockstepClient {
       frozenTicks: this.frozenTicksValue,
       climate: this.climateValue,
       dayOfYear: this.dayOfYearValue,
+      biome: this.biomeValue,
       pendingTraders: this.pendingTradersValue,
       goodwill: this.goodwillValue,
       traderArrivals: this.traderArrivalsValue,

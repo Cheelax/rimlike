@@ -18,6 +18,7 @@ import { gzipSync } from "node:zlib";
 
 import {
   CARAVAN_TICK_MS,
+  DEFAULT_BIOME,
   HEARTBEAT_MS,
   HEARTBEAT_TIMEOUT_MS,
   MAX_PLAYERS,
@@ -1401,6 +1402,14 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     // de compter un écart, le jour lui-même se relit depuis l'horloge à
     // chaque nouvelle salle.
     const dayOfYear = worldDayOfYear(worldState.clock.hours());
+    // Et elle hérite du **biome** de sa case (docs/protocol.md §3.2, §11.6) :
+    // le sim en tire ses sols, ses arbres, ses rochers et ses veines, fixés à
+    // la construction. Lu sur le globe comme le climat, rien à persister non
+    // plus. `isLand` garde le cas d'une colonie posée en mer : `settle` le
+    // refuse (`not_land`), mais un fichier d'état trafiqué pourrait en porter
+    // une — le biome par défaut vaut mieux qu'une carte d'océan. (`canSettle`
+    // ne conviendrait pas : la case est déjà colonisée quand la salle naît.)
+    const biome = worldState.isLand(tileId) ? globe.tiles[tileId]!.biome : DEFAULT_BIOME;
     // Une colonie qui rouvre depuis son snapshot ne reçoit aucun `start` : les
     // marchands qui l'ont visitée pendant son sommeil (§13) partent avec ce
     // snapshot, pris ici une fois pour toutes. Une colonie qui démarre en
@@ -1421,7 +1430,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       name,
       log,
       ...options.roomOptions,
-      tile: { id: tileId, seed: settlement.seed, climate, dayOfYear, goodwill },
+      tile: { id: tileId, seed: settlement.seed, climate, dayOfYear, biome, goodwill },
       ...(snapshot !== undefined
         ? {
             restore: {

@@ -142,6 +142,10 @@ const SIM_API: ReadonlySet<string> = new Set([
   // Habits (mêmes contrats que les armes, voir `crates/sim/src/craft.rs`).
   "pawnApparel",
   "apparel",
+  // Biome de la carte (`crates/sim/src/biome.rs`) : fixé à la construction
+  // depuis la case du globe, donc constant. Exposé ici pour le crochet de
+  // debug (`rpc("biome")`) ; il voyage aussi dans le `frame` (voir `SimRunner`).
+  "biome",
   // Climat, saisons et température (`crates/sim/src/climate.rs`).
   "setClimate",
   "setCalendar",
@@ -277,7 +281,17 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
     const transport = new ReconnectingTransport({ factory: () => new WebSocketTransport(message.server) });
     lockstep = new LockstepClient({
       transport,
-      createSim: (seed, width, height) => SimHandle.create({ seed: BigInt(seed), width, height }),
+      // `biome` vient de `start.biome` (docs/protocol.md §3.2) : la carte de la
+      // colonie hérite de sa case du globe. Il ne passe pas par une commande,
+      // contrairement au climat et au calendrier — le sim le fige à la
+      // construction. Absent (salle simple), le sim prend la forêt tempérée.
+      createSim: (seed, width, height, biome) =>
+        SimHandle.create({
+          seed: BigInt(seed),
+          width,
+          height,
+          ...(biome === undefined ? {} : { biome }),
+        }),
       restoreSim: (bytes) => SimHandle.restore(bytes),
       onState: (state) => post({ type: "net", state }),
       // Un marchand itinérant qui s'installe en jeu (§13.3) : seul l'hôte

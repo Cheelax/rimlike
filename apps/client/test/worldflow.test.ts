@@ -12,7 +12,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { CaravanArriveMessage, SettledMessage } from "@rimlike/protocol";
+import { DEFAULT_BIOME, type CaravanArriveMessage, type SettledMessage } from "@rimlike/protocol";
 import { findRoute, movementCost, tileCount, type World } from "@rimlike/world";
 
 import { startServer, type RunningServer } from "../../server/src/server.js";
@@ -48,10 +48,19 @@ interface FakeState {
 
 /** Sim sans WASM : son état est la suite des commandes appliquées. */
 class FakeSim implements SimLike {
-  private constructor(private readonly inner: FakeState) {}
+  private constructor(
+    private readonly inner: FakeState,
+    /**
+     * Biome demandé à la construction (`start.biome`, `docs/protocol.md` §3.2),
+     * `undefined` quand la salle n'en fournit pas. Hors de `FakeState` — donc
+     * hors du hash et du snapshot — comme dans le vrai sim, où le biome n'est
+     * pas une consigne du réseau mais la carte elle-même.
+     */
+    readonly builtWith: number | undefined = undefined,
+  ) {}
 
-  static fresh(seed: number): FakeSim {
-    return new FakeSim({ seed, tick: 0, applied: [] });
+  static fresh(seed: number, biome?: number): FakeSim {
+    return new FakeSim({ seed, tick: 0, applied: [] }, biome);
   }
 
   static fromSnapshot(data: Uint8Array): FakeSim {
@@ -183,7 +192,7 @@ async function enterRoom(room: string, name: string) {
   const errors: LockstepError[] = [];
   const client = new LockstepClient({
     transport,
-    createSim: (seed) => Promise.resolve(FakeSim.fresh(seed)),
+    createSim: (seed, _width, _height, biome) => Promise.resolve(FakeSim.fresh(seed, biome)),
     restoreSim: (data) => Promise.resolve(FakeSim.fromSnapshot(data)),
     onError: (error) => errors.push(error),
   });
@@ -273,6 +282,47 @@ describe("écran Monde contre le vrai serveur", () => {
     await waitFor("sim créé", () => room.sim() !== null);
     expect(room.client.state.seed).toBe(settled.seed);
     expect(room.sim()?.seed).toBe(settled.seed);
+    // Le serveur ajoute aussi le biome de la case (docs/protocol.md §3.2) :
+    // l'hôte ne le choisit pas plus que la graine, et le sim est construit
+    // avec — c'est le seul moment où le biome se règle.
+    expect(room.client.state.biome).toBe(land.biome);
+    expect(room.sim()?.builtWith).toBe(land.biome);
+  });
+
+  it("fonde sur un biome contrasté et construit le sim avec, jusqu'à la réouverture", async () => {
+    const { world } = await fetchWorld(server.url);
+    // Une case terrestre dont le biome n'est **pas** celui du constructeur
+    // ordinaire du sim : sinon le test ne prouverait pas que le biome traverse.
+    const exotic = world.tiles.find(
+      (tile) => movementCost(tile.biome) !== null && tile.biome !== DEFAULT_BIOME,
+    )!;
+    expect(exotic).toBeDefined();
+    const alice = await enterWorld(world, "alice");
+    alice.client.settle(exotic.id);
+    await waitFor("settled", () => alice.settled.length === 1);
+    const room = alice.settled[0].room;
+
+    const first = await enterRoom(room, "alice");
+    await waitFor("lobby", () => first.client.state.phase === "lobby");
+    first.client.startGame(1, 16, 16);
+    await waitFor("sim créé", () => first.sim() !== null);
+    expect(first.sim()?.builtWith).toBe(exotic.biome);
+
+    // La colonie se conserve, puis se vide.
+    await pumpUntil(
+      first.client,
+      "snapshot de conservation",
+      () => server.world.snapshotFor(room) !== undefined && first.client.tick > SNAPSHOT_EVERY,
+    );
+    first.client.close();
+    await waitFor("salle détruite", () => server.room(room) === undefined);
+
+    // À la réouverture, le sim vient du snapshot : le biome n'est pas
+    // reconstruit, mais le `snapshot` le rappelle pour l'affichage (§11.6).
+    const second = await enterRoom(room, "alice");
+    await waitFor("sim restauré", () => second.sim() !== null);
+    expect(second.sim()?.builtWith).toBeUndefined();
+    expect(second.client.state.biome).toBe(exotic.biome);
   });
 
   it("refuse une case d'océan et une case déjà colonisée", async () => {
