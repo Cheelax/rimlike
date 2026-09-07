@@ -292,6 +292,40 @@ fn a_metallurgy_colony_forges_a_sword_in_fifteen_days() {
     );
 }
 
+/// Même atelier que le banc à cinq veines, avec seulement trois veines
+/// exploitables : mesure du seuil de matière, sans changer les priorités ni
+/// ravitailler en minerai. Les rendements et les compétences varient sur les
+/// vingt graines ; seuls les vivres sont fournis pour isoler la chaîne.
+#[test]
+fn three_veins_supply_a_sword_for_most_metallurgy_colonies() {
+    let mut with_sword = 0u32;
+    for seed in 1..=20 {
+        let mut s = metallurgy_colony(seed);
+        for &(x, y) in &VEINS[3..] {
+            s.map_mut().set_feature(x, y, Feature::None);
+        }
+        let mut log = Log::default();
+        'days: for _ in 0..15 {
+            s.spawn_item(ItemKind::Berries, 60, 12, 12);
+            for _ in 0..DAY {
+                s.step(&[]);
+                log.poll(&s);
+                // L'événement suffit à prouver le délai ; inutile de jouer
+                // les journées restantes une fois la première épée forgée.
+                if log.swords > 0 {
+                    with_sword += 1;
+                    break 'days;
+                }
+            }
+        }
+    }
+    eprintln!("trois veines, 20 graines : {with_sword} colonies productrices");
+    assert!(
+        with_sword >= 15,
+        "seulement {with_sword}/20 colonies forgent une épée avec trois veines en quinze jours"
+    );
+}
+
 // ----------------------------------------------------------------------
 // La contrepartie : la survie
 // ----------------------------------------------------------------------

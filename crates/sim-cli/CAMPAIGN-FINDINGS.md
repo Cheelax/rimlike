@@ -2559,3 +2559,167 @@ contrôlée avec les campagnes précédentes.
 
 Fuzz d’acceptation renforcé : quatre graines × 20 000 ticks, six commandes par tick
 (480 000 commandes), terminé sans panique ni divergence.
+
+
+### 11.7 Épée à portée : comparaison contrôlée du 2026-09-07
+
+**Objectif atteint sur le bloc demandé, sans réunir plusieurs blocs de graines :
+1/9 → 3/9 colonies à la métallurgie forgent au moins une épée (11 % → 33 %).**
+Le seul réglage du sim est `craft::ORE_PER_INGOT`, **3 → 1**. Le candidat
+intermédiaire à 2 a été mesuré puis écarté : 2/9 reste inférieur au quart.
+
+#### Protocole et diagnostic
+
+Référence : `0045406bb0e8e2ed38419131add9221be8fd8d10`, branche
+`task/epee-a-portee`, collecte fractionnée et repli du bétail déjà intégrés.
+Avant toute modification de constante, exécution de :
+
+```sh
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64
+```
+
+Même commande après chaque candidat. Graines **1 à 30**, difficulté normale
+(2), climat tempéré, calendrier au jour 0, **432 000 ticks par graine**.
+Le joueur de `campaign.rs` est inchangé. Chaque version est aussi rejouée avec
+`--json` pour comparer les colonnes par graine, y compris le jour d'acquisition
+de la métallurgie. Aucun mélange avec les chiffres métal seul du §11.4.
+Les tableaux texte et JSON concordent sur les effectifs et les productions.
+Les durées murales ne constituent pas un benchmark : d'autres contrôles ont
+été exécutés en parallèle.
+
+La référence reproduit le §11.6 : neuf colonies à la métallurgie, sept forges,
+trois colonies fondent, mais seule la graine 27 forge (deux épées).
+La graine 13 fond deux lingots ; la 30 en fond trois sans fabriquer d'épée.
+Le banc existant à **cinq veines** passe déjà : la collecte fonctionne.
+
+Un banc complémentaire reprend les mêmes ateliers, trois colons, entrepôt
+6×6, métallurgie acquise, graines 1–20, quinze jours paisibles et ravitaillement
+quotidien en baies, avec **trois veines exploitables** au lieu de cinq. Aucun
+minerai ou lingot n'est fourni. La mesure complète sur quinze jours donne :
+
+| Coût d'un lingot en minerais | 3 (référence) | 2 (écarté) | 1 (retenu) |
+|---|---:|---:|---:|
+| Colonies qui forgent une épée | 2/20 | 20/20 | 20/20 |
+| Lingots fondus | 42 | 68 | 148 |
+| Épées forgées | 2 | 20 | 42 |
+| Minerai restant | 22 | 12 | 0 |
+| Lingots restants | 36 | 8 | 22 |
+
+Le seuil de matière est donc bien un frein : à trois minerais par lingot,
+les colonies conservent surtout des lingots insuffisants pour la recette de
+l'épée. Le candidat à deux débloque le banc paisible, mais **pas l'objectif de
+campagne**. Un seul minerai conserve les étapes minage, transport, fonte à la
+forge (300 ticks) et fabrication au poste (600 ticks), avec trois lingots par
+épée. Rendement des veines, valeur marchande, dégâts, recherche, priorités,
+collecte et combat restent identiques. Le prix moindre fait aussi avancer le
+travail et décale le déroulement des raids : on mesure cette conséquence au
+lieu de supposer les trajectoires inchangées.
+
+#### Campagne normale, mêmes trente graines
+
+| Mesure | Avant : 3 | Candidat : 2 | Après : 1 |
+|---|---:|---:|---:|
+| Colonies à la métallurgie | 9 | 9 | 9 |
+| Forges en fin | 7 | 7 | 7 |
+| Colonies qui fondent ≥ 1 lingot | 3 | 4 | 4 |
+| **Colonies qui forgent ≥ 1 épée** | **1/9** | **2/9** | **3/9** |
+| Lingots fondus | 12 | 20 | 39 |
+| Épées forgées | 2 | 4 | 6 |
+| Épées portées en fin | 2 | 4 | 7 |
+| Colonies vivantes au jour 30 | 20 | 20 | 21 |
+| Colons vivants au jour 30 | 62 | 61 | 69 |
+| Morts cumulés | 189 | 192 | 187 |
+| Événements perdus | 0 | 0 | 0 |
+
+« Forgée » compte uniquement `WeaponCrafted(Sword)` ; une épée achetée ou
+récupérée sur un pillard ne qualifie pas une colonie. Les sept épées portées
+ne sont donc pas sept fabrications. Le dénominateur comprend toutes les
+colonies ayant acquis la métallurgie, même celles qui meurent ensuite ou
+n'ont pas de forge.
+
+Les neuf colonies à la métallurgie, sans changement de jour d'acquisition :
+
+| Graine | Jour métallurgie | Forge avant → après | Lingots avant → après | Épées forgées avant → après |
+|---|---:|---:|---:|---:|
+| 3 | 11 | 1 → 1 | 0 → 6 | 0 → 1 |
+| 5 | 17 | 1 → 1 | 0 → 0 | 0 → 0 |
+| 8 | 18 | 1 → 1 | 0 → 0 | 0 → 0 |
+| 9 | 17 | 0 → 0 | 0 → 0 | 0 → 0 |
+| 13 | 14 | 1 → 1 | 2 → 6 | 0 → 2 |
+| 17 | 15 | 1 → 1 | 0 → 0 | 0 → 0 |
+| 22 | 14 | 0 → 0 | 0 → 0 | 0 → 0 |
+| 27 | 24 | 1 → 1 | 7 → 18 | 2 → 3 |
+| 30 | 15 | 1 → 1 | 3 → 9 | 0 → 0 |
+
+#### Survie appariée, graine à graine
+
+| Graine | Colons fin avant → après | Morts cumulés avant → après |
+|---|---:|---:|
+| 1 | 0 → 0 | 3 → 3 |
+| 2 | 3 → 3 | 7 → 7 |
+| 3 | 0 → 4 | 6 → 6 |
+| 4 | 4 → 4 | 6 → 6 |
+| 5 | 2 → 2 | 7 → 7 |
+| 6 | 2 → 2 | 7 → 7 |
+| 7 | 0 → 0 | 3 → 3 |
+| 8 | 3 → 3 | 7 → 7 |
+| 9 | 3 → 3 | 7 → 7 |
+| 10 | 0 → 0 | 3 → 3 |
+| 11 | 4 → 4 | 6 → 6 |
+| 12 | 2 → 2 | 8 → 8 |
+| 13 | 3 → 5 | 7 → 5 |
+| 14 | 4 → 4 | 6 → 6 |
+| 15 | 4 → 4 | 6 → 6 |
+| 16 | 4 → 4 | 5 → 5 |
+| 17 | 0 → 0 | 9 → 9 |
+| 18 | 0 → 0 | 4 → 4 |
+| 19 | 0 → 0 | 7 → 7 |
+| 20 | 4 → 4 | 6 → 6 |
+| 21 | 2 → 2 | 7 → 7 |
+| 22 | 3 → 3 | 7 → 7 |
+| 23 | 0 → 0 | 7 → 7 |
+| 24 | 0 → 0 | 9 → 9 |
+| 25 | 3 → 3 | 6 → 6 |
+| 26 | 3 → 3 | 7 → 7 |
+| 27 | 3 → 3 | 7 → 7 |
+| 28 | 3 → 3 | 7 → 7 |
+| 29 | 0 → 0 | 5 → 5 |
+| 30 | 3 → 4 | 7 → 7 |
+
+Les 26 graines autres que 3, 13, 27 et 30 ont **toutes les colonnes JSON
+identiques hors durée**. Au jour 10, les effectifs sont identiques pour les
+30 graines (74 colons) ; au jour 20, 66 → 71. Au jour 30, 27 effectifs sont
+identiques, trois augmentent (3, 13, 30), aucun ne baisse. La graine 3 est
+la seule extinction évitée ; aucune nouvelle extinction. La graine 13 perd
+deux colons de moins sur la durée ; les 29 autres nombres de morts sont
+identiques. Par cause : raids 152 → 151, blessures 32 → 31, famine 4 → 4,
+maladie 1 → 1, autres 0 → 0.
+
+Cela ne révèle aucune dégradation de survie sur les graines appariées ; les
+petits écarts ne démontrent pas une amélioration générale. De même, **3/9**
+passe la cible empirique du quart, mais neuf colonies ne suffisent pas à
+garantir ce taux sur toutes les graines : une productrice de moins ferait
+retomber le bloc à 22 %. Aucune nouvelle graine n'a été ajoutée au dénominateur.
+
+#### Régression et validation
+
+`three_veins_supply_a_sword_for_most_metallurgy_colonies`, dans
+`crates/sim/tests/balance_metal.rs`, exige au moins **15/20** colonies avec une
+épée en quinze jours. Il s'arrête à la première épée de chaque colonie, puisque
+ce fait suffit à prouver le délai ; les totaux du banc ci-dessus viennent de
+l'observation complète des quinze jours. La même assertion échoue à 2/20
+avec la constante historique et passe à 20/20 après. Ce test surveille le seuil
+de matière ; la campagne complète reste nécessaire pour vérifier le quart
+en présence des raids. Les tests existants de collecte, reprise de snapshot,
+survie et premier raid gardent leurs assertions. Aucune borne de `metal.rs`
+n'est modifiée.
+
+Validation de la version retenue : voir la section « Résultat » de
+`docs/tasks/epee-a-portee.md` pour les commandes et leur résultat.
+
+Le périmètre de cette tâche exclut le guide et le journal du plan. À
+l'intégration, l'orchestrateur devra actualiser la phrase de `docs/GUIDE.md`
+§3 « Métal » qui décrit encore trois minerais par lingot, puis journaliser
+le réglage dans `docs/PLAN.md`. Le coût de l'épée affiché dans le client
+reste exact : trois lingots. Aucun contrat, enum, stride ou état sérialisé
+ne change.

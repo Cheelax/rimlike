@@ -508,8 +508,8 @@ d'alice arrivé chez bob).
   une colonie, la suivante démarre avec la réputation obtenue.
 
 - **Métal** (2026-09-06, sim) : rochers veinés (un sur huit) qui donnent du minerai, technologie
-  Métallurgie (3 500 points, premier verrou) qui débloque la forge (20 pierre), fonte de 3
-  minerais en un lingot, épée (3 lingots depuis le 2026-09-06, 200 % de dégâts de mêlée, mesurée en duel sur 30
+  Métallurgie (3 500 points, premier verrou) qui débloque la forge (20 pierre), fonte d'un
+  minerai en un lingot (3 → 2 → 1, réglé le 2026-09-07 par comparaison contrôlée), épée (3 lingots depuis le 2026-09-06, 200 % de dégâts de mêlée, mesurée en duel sur 30
   graines), épées chez l'armurier et chez les pillards à forte menace ; objectif intenable
   sauté au lieu de bloquer la file. Interface livrée le 2026-09-06 : contrat des tailles porté à
   19 genres et 6 technologies, outil Forge grisé sans métallurgie, props du rocher veiné et de la
@@ -541,6 +541,14 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-07 : un minerai par lingot. Comparaison contrôlée graine à graine (Codex, branche
+  `task/epee-a-portee`) : à trois minerais par lingot, une colonie sur neuf à la métallurgie
+  forgeait une épée et le banc ciblé réussissait 2 fois sur 20 ; à deux, 2/9 (sous la cible d'un
+  quart) ; à un, 3/9, six épées au lieu de deux, 20/20 au banc, et 21 colonies vivantes au lieu de
+  20 sans baisse d'effectif sur aucune graine. Une seule constante changée (`ORE_PER_INGOT`), les
+  rendements des veines et le coût de l'épée gardés. Premier travail livré par Codex sur une
+  fiche du tableau ; la sandbox lui a interdit le commit, l'orchestrateur a relu et commité.
 
 - 2026-09-07 : intégration validée par 336 tests Rust, 409 tests client, Clippy,
   build WASM/client, fuzz et navigateur. La campagne combinée de 30 graines sur 30 jours
