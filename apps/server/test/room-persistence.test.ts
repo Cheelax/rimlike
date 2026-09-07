@@ -1,15 +1,15 @@
 /** Checkpoints, redémarrage et expiration : dates et minuteurs pilotés, aucun sommeil. */
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MAX_FROZEN_TICKS, decodeServerMessage, type ServerMessage } from "@rimlike/protocol";
+import { MAX_FROZEN_TICKS, decodeClientMessage, decodeServerMessage, encodeMessage, type ServerMessage } from "@rimlike/protocol";
 
 import { WorldStore, resolveWorldStateFile, type ScheduleTimeout, type WorldStateFile } from "../src/persistence.js";
 import { Room } from "../src/room.js";
-import { ROOM_PERSIST_MS, ROOM_TTL_HOURS, RoomPersistence, readSavedRooms } from "../src/room-persistence.js";
-import { startServer, type RunningServer, type ServerOptions } from "../src/server.js";
+import { MAX_SAVED_SNAPSHOT_BYTES, ROOM_PERSIST_MS, ROOM_TTL_HOURS, RoomPersistence, readSavedRooms } from "../src/room-persistence.js";
+import { DEFAULT_MAX_SNAPSHOT_BYTES, startServer, type RunningServer, type ServerOptions } from "../src/server.js";
 import { WorldState, sharedWorld } from "../src/world.js";
 import { TestClient, bytes } from "./helpers.js";
 
@@ -330,7 +330,7 @@ describe("fichier commun et horloge injectée", () => {
     expect((await disk()).version).toBe(5);
   });
 
-  it("relit les salles v5 sans perdre les octets et refuse une entrée incohérente", async () => {
+  it("relit les salles v5 sans perdre les octets", async () => {
     const { state, store } = setup();
     await store.save(state);
     const reader = new WorldStore({ file, worldSeed: 1, subdivisions: 0, now: time.now });
@@ -340,9 +340,111 @@ describe("fichier commun et horloge injectée", () => {
     expect(loaded.rooms[0]?.data).toBe("AQ==");
     await reader.save(loaded.state);
     expect((await disk()).rooms).toEqual(loaded.rooms);
-    expect(() => readSavedRooms([{ ...loaded.rooms[0], data: "invalide!" }])).toThrow();
-    expect(() => readSavedRooms([{ ...loaded.rooms[0], name: "tile-1" }])).toThrow();
-    expect(() => readSavedRooms([{ ...loaded.rooms[0], tick: -1 }])).toThrow();
+  });
+
+  it("refuse de conserver le tick 1e20 reçu de l'hôte malgré son acceptation par le codec", async () => {
+    const { registry, state, store } = setup();
+    const room = new Room({
+      name: "hostile", now: time.now, startClock: () => () => {}, log: () => {},
+      onSnapshot: (report) => { registry.snapshot("hostile", room.seed!, room.createdAt, report); },
+    });
+    const host = room.join("alice", () => {})!;
+    room.handle(host, { type: "start", seed: 42, width: 64, height: 32 });
+    const message = decodeClientMessage(encodeMessage({ type: "snapshot", tick: 1e20, data: bytes(9) }));
+    expect(message).not.toBeNull();
+    room.handle(host, message!);
+    expect(registry.get("hostile")).toBeUndefined();
+    expect(registry.restore("hostile", 1000)).toBeUndefined();
+
+    room.handle(host, { type: "snapshot", tick: 6, data: bytes(6) });
+    const valid = registry.get("hostile");
+    time.advance(1000);
+    room.handle(host, message!);
+    expect(registry.get("hostile")).toEqual(valid);
+    await store.save(state);
+    expect((await disk()).rooms?.map((entry) => entry.tick)).toEqual([3, 6]);
+    room.stop();
+  });
+
+  it.each([
+    { tick: -1 }, { tick: 1.5 }, { tick: 1e20 }, { tick: Number.MAX_SAFE_INTEGER + 1 },
+    { tick: NaN }, { tick: Infinity },
+    { seed: -1 }, { seed: 1.5 }, { seed: Number.MAX_SAFE_INTEGER + 1 },
+    { width: 0 }, { width: 4097 }, { width: 1.5 },
+    { height: 0 }, { height: 4097 }, { height: 1.5 },
+    { name: "" }, { name: "tile-1" }, { name: "a".repeat(65) }, { createdAt: -1 },
+  ])("ignore les métadonnées non persistables : %j", (invalid) => {
+    const { registry } = setup();
+    const before = registry.toJSON();
+    const candidate = { name: "demo", seed: 42, createdAt: time.at, tick: 6, data: bytes(9), width: 64, height: 32, ...invalid };
+    registry.snapshot(candidate.name, candidate.seed, candidate.createdAt, candidate);
+    expect(registry.toJSON()).toEqual(before);
+    expect(readSavedRooms([{ ...before[0], ...invalid }], () => {})).toEqual([]);
+  });
+
+  it.each([0, Number.MAX_SAFE_INTEGER])("accepte les bornes sûres de tick et graine : %i", (boundary) => {
+    const registry = new RoomPersistence(time.now);
+    registry.snapshot("limites", boundary, time.at, { tick: boundary, data: bytes(0, 255), width: 1, height: 4096 });
+    expect(registry.size).toBe(1);
+    expect(readSavedRooms(registry.toJSON())).toEqual(registry.toJSON());
+    expect(registry.restore("limites", 1000)).toMatchObject({ seed: boundary, tick: boundary, data: bytes(0, 255) });
+  });
+
+  it("borne les octets avant conservation et à la lecture, y compris le dernier quartet base64", () => {
+    const { registry } = setup();
+    const before = registry.toJSON();
+    expect(MAX_SAVED_SNAPSHOT_BYTES).toBe(DEFAULT_MAX_SNAPSHOT_BYTES);
+    const data = new Uint8Array(MAX_SAVED_SNAPSHOT_BYTES + 1);
+    registry.snapshot("demo", 42, time.at, { tick: 6, data, width: 64, height: 32 });
+    expect(registry.toJSON()).toEqual(before);
+    const atLimit = { ...before[0]!, data: Buffer.alloc(MAX_SAVED_SNAPSHOT_BYTES).toString("base64") };
+    expect(readSavedRooms([atLimit])).toEqual([atLimit]);
+    for (const size of [MAX_SAVED_SNAPSHOT_BYTES + 1, MAX_SAVED_SNAPSHOT_BYTES + 3]) {
+      expect(readSavedRooms([{ ...atLimit, data: Buffer.alloc(size).toString("base64") }], () => {})).toEqual([]);
+    }
+  });
+
+  it.each([
+    null, 42, [], {}, { tick: 1e20 }, { data: "invalide!" }, { name: "tile-1" }, { frozenAt: -1 },
+  ])("charge le fichier sans quarantaine malgré une salle corrompue : %j", async (invalid) => {
+    const { registry, state, store } = setup();
+    const globe = sharedWorld(0, 1);
+    const player = state.createPlayer("alice");
+    const tile = globe.tiles.find((tile) => state.canSettle(tile.id))!.id;
+    expect(state.settle(tile, player.key)).toMatchObject({ ok: true });
+    state.saveSnapshot(`tile-${tile}`, { tick: 9, data: bytes(4, 2), width: 32, height: 32 });
+    await store.save(state);
+    const saved = await disk();
+    const demo = registry.get("demo")!;
+    const corrupt = invalid !== null && typeof invalid === "object" && !Array.isArray(invalid)
+      ? (Object.keys(invalid).length === 0 ? invalid : { ...demo, ...invalid })
+      : invalid;
+    const rooms = [{ ...demo, name: "avant" }, corrupt, demo, { ...demo, name: "après" }];
+    const raw = JSON.stringify({ ...saved, rooms });
+    await writeFile(file, raw);
+    const messages: string[] = [];
+    const reader = new WorldStore({ file, worldSeed: 1, subdivisions: 0, now: time.now, log: (line) => messages.push(line) });
+    const loaded = await reader.load(globe, { now: time.now, merchantCount: 0 });
+    expect(loaded.kind).toBe("loaded");
+    if (loaded.kind !== "loaded") throw new Error("chargement refusé");
+    expect(loaded.rooms).toEqual([rooms[0], demo, rooms[3]]);
+    expect(loaded.state.list()).toEqual(state.list());
+    expect(loaded.state.listPlayers()).toEqual(state.listPlayers());
+    expect(loaded.state.snapshotFor(`tile-${tile}`)).toEqual(state.snapshotFor(`tile-${tile}`));
+    expect(messages).toEqual(["[monde] salle sauvegardée incohérente à l'index 1, ignorée"]);
+    expect(await readFile(file, "utf8")).toBe(raw);
+    expect(await readdir(dir)).toEqual(["world.json"]);
+    await reader.save(loaded.state);
+    expect((await disk()).rooms).toEqual(loaded.rooms);
+  });
+
+  it("garde la première salle valide en cas de doublon et journalise l'entrée ignorée", () => {
+    const { registry } = setup();
+    const demo = registry.get("demo")!;
+    const messages: string[] = [];
+    expect(readSavedRooms([demo, { ...demo, tick: 12 }, { ...demo, name: "autre" }], (line) => messages.push(line)))
+      .toEqual([demo, { ...demo, name: "autre" }]);
+    expect(messages).toHaveLength(1);
   });
 
   it("borne frozenTicks, protège les salles occupées du TTL et renouvelle la dernière visite", () => {

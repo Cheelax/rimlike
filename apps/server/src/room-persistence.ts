@@ -6,6 +6,8 @@ import { tileFromRoomName } from "./world.js";
 
 export const ROOM_PERSIST_MS = 30_000;
 export const ROOM_TTL_HOURS = 72;
+/** Plafond des octets conservés, aligné sur MAX_SNAPSHOT_BYTES par défaut (§2). */
+export const MAX_SAVED_SNAPSHOT_BYTES = 8_388_608;
 
 export interface SavedRoom {
   readonly name: string;
@@ -20,8 +22,30 @@ export interface SavedRoom {
   readonly frozenAt: number;
 }
 
-/** Valide les métadonnées sans interpréter les octets du sim. */
-export function readSavedRooms(value: unknown): SavedRoom[] {
+/** Même contrat à la réception et à la lecture, sans interpréter le sim. */
+function validMetadata(entry: Omit<SavedRoom, "data">): boolean {
+  return (
+    entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
+    typeof entry.name === "string" && entry.name.length >= 1 && entry.name.length <= 64 &&
+    tileFromRoomName(entry.name) === null &&
+    // Le protocole ne fixe pas de plafond de tick plus bas que l'entier sûr JS.
+    [entry.seed, entry.tick, entry.width, entry.height].every(Number.isSafeInteger) &&
+    entry.seed >= 0 && entry.tick >= 0 &&
+    entry.width >= 1 && entry.width <= 4096 && entry.height >= 1 && entry.height <= 4096 &&
+    [entry.createdAt, entry.lastVisitedAt, entry.frozenAt].every((n) => Number.isFinite(n) && n >= 0)
+  );
+}
+
+function validSavedData(data: unknown): boolean {
+  if (typeof data !== "string" || data.length > Math.ceil(MAX_SAVED_SNAPSHOT_BYTES / 3) * 4) {
+    return false;
+  }
+  const bytes = base64ToBytes(data);
+  return bytes !== null && bytes.byteLength <= MAX_SAVED_SNAPSHOT_BYTES;
+}
+
+/** Une entrée hostile ne condamne ni les autres salles ni l'état du monde. */
+export function readSavedRooms(value: unknown, log: (line: string) => void = console.error): SavedRoom[] {
   if (value === undefined) {
     return [];
   }
@@ -29,21 +53,17 @@ export function readSavedRooms(value: unknown): SavedRoom[] {
     throw new Error("liste de salles sauvegardées invalide");
   }
   const names = new Set<string>();
-  return value.map((entry: SavedRoom) => {
-    if (
-      entry === null || typeof entry !== "object" ||
-      typeof entry.name !== "string" || (entry.name.length < 1 || entry.name.length > 64) ||
-      tileFromRoomName(entry.name) !== null || names.has(entry.name) ||
-      ![entry.seed, entry.tick, entry.width, entry.height].every(Number.isSafeInteger) ||
-      entry.seed < 0 || entry.tick < 0 || entry.width < 1 || entry.width > 4096 || entry.height < 1 || entry.height > 4096 ||
-      ![entry.createdAt, entry.lastVisitedAt, entry.frozenAt].every((n) => Number.isFinite(n) && n >= 0) ||
-      typeof entry.data !== "string" || base64ToBytes(entry.data) === null
-    ) {
-      throw new Error("salle sauvegardée incohérente");
+  const rooms: SavedRoom[] = [];
+  for (const [index, entry] of value.entries()) {
+    if (!validMetadata(entry) || names.has(entry.name) || !validSavedData(entry.data)) {
+      // L'index suffit au diagnostic : aucun contenu fourni par l'hôte dans le journal.
+      log(`[monde] salle sauvegardée incohérente à l'index ${index}, ignorée`);
+      continue;
     }
     names.add(entry.name);
-    return entry;
-  });
+    rooms.push(entry);
+  }
+  return rooms;
 }
 
 export class RoomPersistence {
@@ -85,14 +105,16 @@ export class RoomPersistence {
   }
 
   snapshot(name: string, seed: number, createdAt: number, report: RoomSnapshotReport): void {
+    const at = this.now();
+    const entry = { name, seed, createdAt, ...report, lastVisitedAt: at, frozenAt: at };
+    if (!validMetadata(entry) || !(report.data instanceof Uint8Array) || report.data.byteLength > MAX_SAVED_SNAPSHOT_BYTES) {
+      return;
+    }
     const known = this.saved.get(name);
     if (known !== undefined && report.tick < known.tick) {
       return;
     }
-    const at = this.now();
-    this.saved.set(name, {
-      name, seed, createdAt, ...report, data: bytesToBase64(report.data), lastVisitedAt: at, frozenAt: at,
-    });
+    this.saved.set(name, { ...entry, data: bytesToBase64(report.data) });
   }
 
   restore(name: string, hourMs: number): RoomRestore | undefined {

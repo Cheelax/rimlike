@@ -562,6 +562,15 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-07 : la relecture indépendante paie. `codex exec review` sur le commit des salles
+  persistantes a trouvé un défaut réel : un snapshot d'hôte au tick hors des entiers sûrs
+  passait à la sauvegarde et faisait mettre tout le fichier commun en quarantaine au redémarrage
+  (colonies, identités et salles perdues). Corrigé : métadonnées refusées à la réception si le
+  lecteur ne les accepterait pas (tick entier sûr, taille bornée), et lecture tolérante : une
+  salle corrompue est ignorée et journalisée, le reste chargé. La même revue sur le câblage du
+  biome n'a rien trouvé. Règle retenue : une revue indépendante pour tout ce qui touche la
+  persistance ou le réseau.
+
 - 2026-09-07 : le joueur scripté referme son enceinte (Codex, fiche `enceinte-sans-trous`) : le
   carré (13, puis 11, puis 9) est glissé à ≤ 8 cases du barycentre jusqu'à un pourtour sans
   eau ni rocher, le tracé est dégagé, les brèches retentées, la porte face au stockage avec
