@@ -1,8 +1,8 @@
 ---
 slug: betail-a-l-abri
-status: open
-claimed_by:
-claimed_at:
+status: claimed
+claimed_by: claude-opus (session Fable)
+claimed_at: 2026-09-07
 layer: sim
 scope:
   - crates/sim/src/livestock.rs

@@ -1,8 +1,8 @@
 ---
 slug: epee-a-portee
-status: open
-claimed_by:
-claimed_at:
+status: claimed
+claimed_by: codex (worktree task/epee-a-portee)
+claimed_at: 2026-09-07
 layer: sim
 scope:
   - crates/sim/src/craft.rs
