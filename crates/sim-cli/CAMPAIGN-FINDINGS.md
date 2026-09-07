@@ -2556,3 +2556,6 @@ ouvertes pour une comparaison contrôlée graine à graine et la suite de l’é
 Les mesures métal seul du §11.4 ne doivent pas être présentées comme le résultat de
 cette version combinée. Le temps de campagne n’est pas une comparaison de performance
 contrôlée avec les campagnes précédentes.
+
+Fuzz d’acceptation renforcé : quatre graines × 20 000 ticks, six commandes par tick
+(480 000 commandes), terminé sans panique ni divergence.
