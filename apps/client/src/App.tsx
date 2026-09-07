@@ -41,6 +41,7 @@ import {
   type TileRect,
 } from "./render/Renderer";
 import { acquireGl, type SharedGl } from "./render/gl";
+import { AUTO_PAUSE_EVENTS, loadAutoPause, saveAutoPause, shouldAutoPause, type AutoPauseSettings } from "./autoPause";
 import { DEFAULT_GRAPHICS, effectivePixelRatio, loadGraphics, saveGraphics, type GraphicsSettings } from "./settings";
 import {
   ANIMAL_FLAG,
@@ -671,6 +672,21 @@ export function App() {
     }
   };
   /**
+   * Réglages de la pause automatique (menu Options → Pause automatique,
+   * §autoPause.ts) : relus au premier rendu, sauvés à chaque changement.
+   * `autoPauseRef` les rend lisibles depuis `notifyEvents`, dans l'effet
+   * persistant de la partie — comme `panelRef` et `toolRef` pour le même
+   * besoin (un état React ne se relit pas depuis une fermeture créée avant
+   * lui sans passer par une ref à jour).
+   */
+  const [autoPause, setAutoPauseState] = useState<AutoPauseSettings>(() => loadAutoPause());
+  const autoPauseRef = useRef<AutoPauseSettings>(autoPause);
+  const updateAutoPause = (next: AutoPauseSettings) => {
+    autoPauseRef.current = next;
+    setAutoPauseState(next);
+    saveAutoPause(next);
+  };
+  /**
    * Armé par le bouton « Mettre le feu (débogage) » (dev uniquement) : le
    * prochain clic gauche sur la carte émet `encodeIgnite`, puis se désarme
    * (un clic droit l'annule aussi). Pas de raccourci clavier. `igniteArmedRef`
@@ -1153,6 +1169,13 @@ export function App() {
      * sont ceux du `frame` courant : `eventLabel` (pure, sans sim) ne les
      * connaît pas de lui-même, ils sont ceux au moment de l'affichage, pas
      * forcément ceux du tick de l'événement (mission « factions » §4).
+     *
+     * Pause automatique (`autoPause.ts`, solo seulement) : un événement grave
+     * met la partie en pause comme un appui sur `Espace`, et son toast (et sa
+     * ligne de Journal, qui partage le même `text`) porte « · pause ». Une
+     * seule pause par appel (`pauseTriggered`) même si plusieurs événements
+     * qualifiés arrivent d'un coup dans le même `frame` : pas de bascule en
+     * boucle, `paused` passe une fois à `true`, jamais togglé.
      */
     const notifyEvents = (
       events: Int32Array,
@@ -1166,6 +1189,7 @@ export function App() {
         lastEventSeq = events.length >= EVENT_STRIDE ? events[events.length - EVENT_STRIDE] : -1;
         return;
       }
+      let pauseTriggered = false;
       for (let o = 0; o + EVENT_STRIDE <= events.length; o += EVENT_STRIDE) {
         const seq = events[o];
         if (seq <= lastEventSeq) continue;
@@ -1183,6 +1207,10 @@ export function App() {
           text += ` — mené par ${factionDefinite(lastRaidFaction)}`;
         }
         if (!text) continue;
+        if (shouldAutoPause(kind, autoPauseRef.current, isMulti)) {
+          text += " · pause";
+          pauseTriggered = true;
+        }
         const target = eventTarget(kind, arg, buildEventFocusCtx());
         setToasts((prev) => [...prev, { id: seq, text, target }]);
         toastTimers.push(
@@ -1197,6 +1225,14 @@ export function App() {
         const log = eventLogRef.current;
         log.push({ seq, tick, kind, arg, text });
         if (log.length > MAX_JOURNAL_ENTRIES) log.splice(0, log.length - MAX_JOURNAL_ENTRIES);
+      }
+      // Déclenchée une seule fois pour tout l'appel, même mécanisme que
+      // `Espace` (`bridge.setPaused`) : jamais togglée, et sans effet si la
+      // partie est déjà en pause (manuellement, ou par un événement plus tôt
+      // dans ce même `frame`).
+      if (pauseTriggered && !paused) {
+        paused = true;
+        bridge.setPaused(true);
       }
     };
 
@@ -3123,6 +3159,40 @@ export function App() {
               )}
               {stats.difficulty === DIFFICULTY.Peaceful && (
                 <div className="help">paisible : plus aucun raid, le reste de la vie de la colonie continue</div>
+              )}
+              <div className="panel-section">Pause automatique</div>
+              {multi ? (
+                <div className="help">indisponible en multijoueur</div>
+              ) : (
+                <>
+                  <div className="options-row">
+                    <button
+                      className={autoPause.enabled ? "active" : ""}
+                      onClick={() => updateAutoPause({ ...autoPause, enabled: !autoPause.enabled })}
+                    >
+                      {autoPause.enabled ? "Activée" : "Désactivée"}
+                    </button>
+                  </div>
+                  <div className="autopause-list">
+                    {AUTO_PAUSE_EVENTS.map((def) => (
+                      <label key={def.kind} className={autoPause.enabled ? "" : "disabled"}>
+                        <input
+                          type="checkbox"
+                          checked={autoPause.events[def.kind] ?? def.defaultOn}
+                          disabled={!autoPause.enabled}
+                          onChange={(e) =>
+                            updateAutoPause({
+                              ...autoPause,
+                              events: { ...autoPause.events, [def.kind]: e.target.checked },
+                            })
+                          }
+                        />
+                        {def.label}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="help">met la partie en pause comme `Espace` quand l'un des événements cochés survient</div>
+                </>
               )}
               <div className="panel-section">Graphismes</div>
               <div className="help">Rapport de pixels</div>

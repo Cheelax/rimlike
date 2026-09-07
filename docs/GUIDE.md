@@ -118,6 +118,9 @@ colon libre les construit alors.
 multijoueur : l'horloge du serveur ne s'arrête jamais et rien n'est persisté
 côté client.
 
+Menu Options → « Pause automatique » : pause seule sur raid, colon à terre ou
+incendie (marchand décoché par défaut) ; solo uniquement, réglages mémorisés.
+
 ### Panneaux
 
 | Touche | Panneau | Contenu |

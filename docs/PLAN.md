@@ -516,6 +516,10 @@ d'alice arrivé chez bob).
   forge, lingots et épées dans la fabrication ; vérifié : forge refusée puis acceptée après la
   technologie, 19 entrées dans le stock et la recherche.
 
+- **Pause automatique** (2026-09-07, client, solo seulement) : raid annoncé, raid, colon à terre et
+  incendie mettent la partie en pause (marchand désactivé par défaut), une seule pause par salve,
+  toast « · pause » cliquable, réglable dans Options et mémorisé ; module `autoPause.ts` pur.
+
 **Reste**
 
 - Mods de contenu : pas commencés.
