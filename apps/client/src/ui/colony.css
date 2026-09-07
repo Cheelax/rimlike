@@ -225,3 +225,23 @@ body:not(:has(.ui-layout-marker)) .help-panel { top: 16px; bottom: 16px; max-hei
 .work-table-scroll { flex: none; max-width: 100%; overflow-x: auto; padding-bottom: 6px; overscroll-behavior: contain; }
 .work-table { width: 100%; min-width: 600px; }
 .work-table th:first-child { position: sticky; left: 0; background: #1e261f; z-index: 1; }
+
+/* Le guide reste sous les portraits, à gauche, sans déplacer le HUD. */
+.first-steps { position: fixed; z-index: 2; top: 205px; left: 16px; width: min(300px, calc(100% - 32px)); max-height: calc(100dvh - 325px); overflow: auto; padding: 12px; border: 1px solid var(--ui-line); border-radius: 9px; background: var(--ui-panel); color: var(--ui-text); font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; pointer-events: auto; }
+.first-steps-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ui-muted); font-size: 11px; }
+.first-steps h2 { margin: 10px 0 4px; font-size: 15px; font-weight: 550; }
+.first-steps p { margin: 6px 0; }
+.first-steps button { padding: 5px 7px; border: 1px solid var(--ui-line); border-radius: 5px; background: var(--ui-raised); color: var(--ui-text); }
+.first-steps button:hover { border-color: var(--ui-accent); }
+.first-steps-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.first-steps kbd { color: var(--ui-accent); margin-left: 4px; }
+.first-steps-success { color: var(--ui-accent); }
+.first-steps details { margin-top: 10px; color: var(--ui-muted); font-size: 11px; }
+.first-steps summary { cursor: pointer; }
+.first-steps ul { list-style: none; padding: 0; margin: 6px 0 0; }
+@media (max-width: 560px) {
+  .first-steps { top: 243px; left: 8px; width: min(300px, calc(100% - 16px)); max-height: calc(100dvh - 365px); }
+}
+@media (max-height: 580px) and (min-width: 561px) {
+  .first-steps { top: 170px; max-height: calc(100dvh - 290px); }
+}
