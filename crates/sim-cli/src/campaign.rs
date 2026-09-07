@@ -31,8 +31,8 @@ use sim::health::BLOOD_MAX;
 use sim::map::chebyshev;
 use sim::pawn::{NEED_MAX, STARVING};
 use sim::{
-    BuildKind, Command, Designation, Difficulty, EventKind, Faction, Feature, ItemKind, Material,
-    Sim, Species, TICKS_PER_DAY, Tech, WorkType, Zone, build, path,
+    Biome, BuildKind, Command, Designation, Difficulty, EventKind, Faction, Feature, ItemKind,
+    Material, Sim, Species, TICKS_PER_DAY, Tech, WorkType, Zone, build, path,
 };
 
 use crate::cli::{CliError, Options, wants_help};
@@ -1056,6 +1056,9 @@ const EVENT_POLL: u64 = 60;
 /// Ce qu'une graine a donné.
 struct Run {
     seed: u64,
+    /// Biome de la carte jouée : le même pour toute la campagne, répété par
+    /// ligne pour qu'un tableau collé dans un rapport se lise seul.
+    biome: Biome,
     colonists_end: u32,
     /// `None` si la campagne s'arrête avant ce jour-là.
     colonists_day10: Option<u32>,
@@ -1215,10 +1218,15 @@ struct Settings {
     /// l'été. Pour mesurer l'automne et l'hiver — les tuniques, le premier gel,
     /// les cultures tuées par le froid — il faut partir de 30.
     day_of_year: Option<u32>,
+    /// Biome de la carte (`sim::Biome`). Comme le serveur monde l'imposera à la
+    /// fondation, il est **fixé à la construction** et non par une commande :
+    /// c'est `Sim::new_in_biome`, pas un `Command`. Défaut : forêt tempérée,
+    /// c'est-à-dire la carte de toutes les campagnes d'avant.
+    biome: Biome,
 }
 
 fn play_seed(seed: u64, s: &Settings) -> Run {
-    let mut sim = Sim::new(seed, s.size, s.size);
+    let mut sim = Sim::new_in_biome(seed, s.size, s.size, s.biome);
     let total = u64::from(TICKS_PER_DAY) * s.days;
 
     let mut deaths = [0u32; CAUSE_COUNT];
@@ -1321,6 +1329,7 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
 
     Run {
         seed,
+        biome: s.biome,
         colonists_end: n,
         colonists_day10,
         colonists_day20,
@@ -1437,8 +1446,9 @@ fn goodwill_cell(g: &[i32; factions::FACTION_COUNT]) -> String {
 
 fn print_table(runs: &[Run]) {
     println!(
-        "{:>6} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>7}",
+        "{:>6} {:>14} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>7}",
         "graine",
+        "biome",
         "fin",
         "j10",
         "j20",
@@ -1473,8 +1483,9 @@ fn print_table(runs: &[Run]) {
     );
     for r in runs {
         println!(
-            "{:>6} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>7}",
+            "{:>6} {:>14} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>7}",
             r.seed,
+            r.biome.name(),
             r.colonists_end,
             milestone(r.colonists_day10),
             milestone(r.colonists_day20),
@@ -1702,10 +1713,12 @@ fn json_milestone(v: Option<u32>) -> String {
 fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Duration) {
     println!("{{");
     print!(
-        "  \"campaign\": {{\"seeds\": {}, \"days\": {}, \"size\": {}, \"difficulty\": \"{}\", \"climate\": ",
+        "  \"campaign\": {{\"seeds\": {}, \"days\": {}, \"size\": {}, \"biome\": {}, \"biome_name\": \"{}\", \"difficulty\": \"{}\", \"climate\": ",
         s.seeds,
         s.days,
         s.size,
+        s.biome as u8,
+        s.biome.name(),
         difficulty_label(s.difficulty)
     );
     match s.climate {
@@ -1726,8 +1739,9 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
             .collect();
         let goodwill: Vec<String> = r.goodwill.iter().map(i32::to_string).collect();
         println!(
-            "    {{\"seed\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"tame_orders\": {}, \"tamed\": {}, \"metallurgy_day\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
+            "    {{\"seed\": {}, \"biome\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"tame_orders\": {}, \"tamed\": {}, \"metallurgy_day\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
             r.seed,
+            r.biome as u8,
             r.colonists_end,
             json_milestone(r.colonists_day10),
             json_milestone(r.colonists_day20),
@@ -1771,13 +1785,21 @@ rimlike-sim campaign — joue des colonies entières avec un joueur scripté et 
 
 USAGE :
     rimlike-sim campaign [--seeds N] [--days D] [--size W] [--difficulty L]
-                         [--climate T] [--day-of-year J] [--seed S] [--json]
+                         [--biome N] [--climate T] [--day-of-year J] [--seed S]
+                         [--json]
 
 OPTIONS :
     --seeds N        nombre de graines jouées (défaut 30)
     --days D         jours de jeu par graine (défaut 30)
     --size W         carte carrée W x W (défaut 96)
     --difficulty L   0 paisible, 1 facile, 2 normal (défaut), 3 difficile
+    --biome N        biome de la carte (defaut 4, forêt tempérée) : 0 océan
+                     (retombe sur tempéré), 1 banquise, 2 toundra, 3 forêt
+                     boréale, 4 forêt tempérée, 5 prairie, 6 désert, 7 savane,
+                     8 jungle, 9 montagne. Mêmes valeurs que le globe
+                     (packages/world/src/biomes.ts). Le biome décide de la
+                     composition de la carte — sols, arbres, rochers, eau —,
+                     pas de la température : celle-là vient de --climate
     --climate T      moyenne annuelle imposée, en dixièmes de °C (SetClimate) ;
                      absente, la carte garde son climat tempéré (120)
     --day-of-year J  jour de l'année au démarrage (SetCalendar), 0 à 59 ;
@@ -1842,6 +1864,7 @@ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
         "climate",
         "seed",
         "day-of-year",
+        "biome",
     ])?;
     let seeds = opts.u64_or("seeds", 30)?;
     if seeds == 0 {
@@ -1886,6 +1909,14 @@ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
         }
         Some(day)
     };
+    let raw_biome = opts.u64_or("biome", 4)?;
+    if raw_biome >= Biome::COUNT as u64 {
+        return Err(CliError::new(format!(
+            "--biome doit être dans 0..{} (voir packages/world/src/biomes.ts)",
+            Biome::COUNT
+        )));
+    }
+    let biome = Biome::from_u8(raw_biome as u8);
     let settings = Settings {
         seeds,
         first_seed: opts.u64_or("seed", 1)?,
@@ -1894,12 +1925,14 @@ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
         difficulty: Difficulty::from_u8(level as u8),
         climate,
         day_of_year,
+        biome,
     };
 
     let ticks_per_seed = u64::from(TICKS_PER_DAY) * days;
     if !json {
         println!(
-            "campagne : {seeds} graines, {days} jours ({ticks_per_seed} ticks), carte {size}x{size}, difficulté {}, climat {}, départ au jour {}",
+            "campagne : {seeds} graines, {days} jours ({ticks_per_seed} ticks), carte {size}x{size}, biome {}, difficulté {}, climat {}, départ au jour {}",
+            biome.name(),
             difficulty_label(settings.difficulty),
             match climate {
                 Some(c) => format!("{c} dixièmes"),

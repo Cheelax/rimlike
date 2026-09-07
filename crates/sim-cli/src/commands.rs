@@ -430,7 +430,7 @@ fn reconstruct_pre_state(
     commands_per_tick: u64,
     target_tick: u64,
 ) -> Sim {
-    let mut sim = Sim::new(run_seed, size, size);
+    let mut sim = Sim::new_in_biome(run_seed, size, size, fuzzgen::biome_for_run(run_seed));
     let mut cmd_rng = Rng::new(run_seed);
     for _ in 0..target_tick {
         let mut cmds = Vec::with_capacity(commands_per_tick as usize);
@@ -529,8 +529,11 @@ fn fuzz_one_run(
     snapshot_every: u64,
     variant_counts: &mut [u64; fuzzgen::VARIANT_COUNT],
 ) -> FuzzOutcome {
-    let mut a = Sim::new(run_seed, size, size);
-    let mut b = Sim::new(run_seed, size, size);
+    // Un biome par run (voir `fuzzgen::biome_for_run`) : le fuzz éprouve toutes
+    // les compositions de carte, pas seulement la tempérée.
+    let biome = fuzzgen::biome_for_run(run_seed);
+    let mut a = Sim::new_in_biome(run_seed, size, size, biome);
+    let mut b = Sim::new_in_biome(run_seed, size, size, biome);
     let mut cmd_rng = Rng::new(run_seed);
     let mut recent = RecentCommands::new();
     let mut total_commands = 0u64;
@@ -661,7 +664,10 @@ fn fuzz_inner(args: &[String]) -> Result<u8, CliError> {
             } => {
                 total_ticks += ticks;
                 total_commands += commands;
-                println!("run {r} : OK, {ticks} ticks, {commands} commandes, hash {hash:016x}");
+                println!(
+                    "run {r} : OK, biome {}, {ticks} ticks, {commands} commandes, hash {hash:016x}",
+                    fuzzgen::biome_for_run(run_seed).name()
+                );
                 println!(
                     "  colons={colons} pillards={pillards} objets={objets} chantiers={chantiers}"
                 );

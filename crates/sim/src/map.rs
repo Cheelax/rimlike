@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::biome::{Biome, ORE_DIE};
 use crate::noise;
 use crate::regions::Regions;
 
@@ -16,6 +17,13 @@ pub enum Terrain {
     Gravel = 5,
     WoodFloor = 6,
     StoneFloor = 7,
+    /// Sol enneigé des cartes froides (voir `biome::BiomeTable::snow`). Il ne
+    /// fond pas et n'apparaît jamais en cours de partie : c'est la couverture
+    /// de départ d'une toundra ou d'une calotte, pas un état météo (la neige
+    /// qui **tombe** est `weather::Weather::Snow`). On y marche moins vite que
+    /// sur l'herbe, rien n'y pousse (voir `Map::is_soil`) et rien n'y brûle.
+    /// **Ajouté en fin d'énumération** : les valeurs sont un contrat.
+    Snow = 8,
 }
 
 impl Terrain {
@@ -28,6 +36,7 @@ impl Terrain {
             4 => Terrain::Dirt,
             6 => Terrain::WoodFloor,
             7 => Terrain::StoneFloor,
+            8 => Terrain::Snow,
             _ => Terrain::Gravel,
         }
     }
@@ -42,7 +51,15 @@ impl Terrain {
             Terrain::Dirt => Some(105),
             Terrain::Gravel => Some(115),
             Terrain::WoodFloor | Terrain::StoneFloor => Some(90),
+            // On s'enfonce : plus cher que le gravier, moins que l'eau.
+            Terrain::Snow => Some(140),
         }
+    }
+
+    /// Le sol est-il de l'eau ? Profonde ou basse : c'est ce qui compte pour le
+    /// point d'eau garanti d'une carte (`Map::ensure_resources`).
+    pub fn is_water(self) -> bool {
+        matches!(self, Terrain::DeepWater | Terrain::ShallowWater)
     }
 
     pub fn walkable(self) -> bool {
@@ -394,14 +411,62 @@ pub struct Map {
     regions: Regions,
 }
 
-/// Un rocher sur `ORE_IN_ROCKS` est veiné (`Feature::OreRock`). Le tirage est
-/// un bruit par case (`noise::scatter` sur un seed dérivé), donc déterministe
-/// et sans rapport avec la dispersion des arbres et des buissons : même
-/// graine, mêmes veines, sur toutes les cibles.
-pub const ORE_IN_ROCKS: u32 = 8;
+/// Un rocher sur `ORE_IN_ROCKS` est veiné (`Feature::OreRock`) sur une carte
+/// tempérée. Le tirage est un bruit par case (`noise::scatter` sur un seed
+/// dérivé), donc déterministe et sans rapport avec la dispersion des arbres et
+/// des buissons : même graine, mêmes veines, sur toutes les cibles. La part
+/// exacte vient désormais du biome (`biome::BiomeTable::ore_share`) ; cette
+/// constante reste la valeur tempérée, celle que `tests/metal.rs` mesure.
+pub const ORE_IN_ROCKS: u32 = ORE_DIE;
 /// Seed dérivé pour le tirage des veines : il doit être **différent** de celui
 /// des arbres, sinon les veines tomberaient toujours au même endroit du dé.
 const ORE_SEED_SALT: u64 = 0x0FE5_1CA1_0FE5_1CA1;
+
+/// Arbres atteignables depuis le centre qu'une carte de colonie doit porter
+/// coûte que coûte : un arbre rend 20 bois (`jobs::yield_of`), donc 20 arbres
+/// font 400 bois — de quoi une enceinte d'une quarantaine de cases (5 bois la
+/// case), un poste de fabrication (10), un établi de recherche (15) et des
+/// lits. C'est le seul plancher que la génération impose au bruit.
+pub const MIN_TREES: u32 = 20;
+/// Rochers atteignables garantis, même raisonnement : un rocher rend 15 pierre,
+/// donc 10 rochers font 150 pierre — la forge en coûte 20, une tombe 5.
+///
+/// **Mesuré avant d'être réglé** (40 graines × 7 tailles, cartes tempérées) :
+/// le bruit seul laisse *zéro* rocher atteignable au pire cas à **toutes** les
+/// tailles, jusqu'à 128×128 — les rochers naissent en massifs, et le massif
+/// tombe souvent hors de la région du centre. Une colonie sans pierre ne peut
+/// ni forger ni enterrer ses morts : c'est exactement ce que ce plancher
+/// corrige, et c'est pourquoi il change quelques cartes tempérées (voir
+/// `Map::ensure_resources`).
+pub const MIN_ROCKS: u32 = 10;
+/// Cases d'eau garanties sur la carte (la mare de l'oasis). Décor pour
+/// l'instant : rien ne se boit ni ne se pêche.
+pub const MIN_WATER: u32 = 8;
+/// En dessous de tant de cases de **terre atteignable** (l'eau ne compte pas :
+/// on ne plante rien dans un lac), la carte ne promet **rien** : la colonie
+/// tient sur un îlot ou dans une poche de roche, et il n'y a matériellement pas
+/// la place d'y poser un bosquet. Au serveur monde de ne pas proposer une telle
+/// case ; à la génération de ne pas mentir.
+const MIN_OPEN: u32 = 64;
+/// Cases de terre atteignable par arbre garanti : la garantie est **bornée par
+/// la place**. 960 cases de terre ouvrent droit aux vingt arbres, 64 à un seul.
+///
+/// **Mesuré** : le facteur tient compte de ce qui est réellement plantable — ni
+/// l'eau, ni les cases déjà prises, ni les goulets d'une jungle où presque tout
+/// est arbre. Une clairière de jungle bordée d'un lac (1 746 cases
+/// atteignables, dont l'essentiel en eau) ne trouve la place que de sept
+/// rochers : c'est le nombre que la carte promet alors, et pas dix.
+const OPEN_PER_TREE: u32 = 48;
+/// Cases de terre atteignable par rocher garanti, même raisonnement.
+const OPEN_PER_ROCK: u32 = 96;
+/// Rayon (Tchebychev) laissé libre autour du centre : c'est la place des trois
+/// colons du départ (`Sim::spawn_starting_pawns`). Rien de forcé n'y tombe, et
+/// le bosquet posé plus loin est un **disque**, jamais un anneau : le
+/// complémentaire d'un disque est connexe, la colonie n'est donc jamais
+/// enfermée par ce que la génération ajoute.
+const CENTER_KEEPOUT: u32 = 2;
+/// Distance à laquelle le bosquet, l'affleurement et la mare sont ancrés.
+const FORCED_ANCHOR: i32 = 5;
 
 /// Au-delà, la zone est trop vaste pour être une pièce : c'est le dehors.
 pub const ROOM_MAX_TILES: usize = 200;
@@ -410,7 +475,37 @@ pub const ROOM_MAX_TILES: usize = 200;
 pub const ROOM_ID_MAX: u8 = 255;
 
 impl Map {
-    pub fn generate(seed: u64, width: u32, height: u32) -> Map {
+    /// Carte de colonie du biome donné (voir `crate::biome`) : la composition
+    /// tirée du bruit, puis le plancher de jouabilité
+    /// (`Map::ensure_resources`). C'est par là que passe le jeu.
+    pub fn generate(seed: u64, width: u32, height: u32, biome: Biome) -> Map {
+        let mut map = Map::generate_bare(seed, width, height, biome);
+        map.ensure_resources();
+        map
+    }
+
+    /// La **composition seule**, sans le plancher de ressources.
+    ///
+    /// Trois champs de bruit par case — élévation, humidité, et un dé de cent
+    /// faces pour la dispersion —, tirés exactement comme avant l'arrivée des
+    /// biomes ; seuls les **seuils** viennent de la table. Sur
+    /// `Biome::TemperateForest`, tous ces seuils retombent sur les nombres
+    /// écrits en dur autrefois (92, 104, 114, 184, 204, humidité 96 et 150,
+    /// dés 18/21, 5/7, 1, un rocher sur huit) : la carte tempérée est donc
+    /// bit-à-bit celle d'avant. C'est ce que vérifie
+    /// `tests/biomes.rs::temperate_generation_is_bit_identical_to_before`, en
+    /// comparant à une recopie de l'ancien code — et c'est pour cette
+    /// comparaison que cette fonction est publique. Le plancher, lui, est une
+    /// règle neuve : il a le droit de compléter une carte pauvre, tempérée
+    /// comprise.
+    ///
+    /// L'ordre des tests place la roche **avant** le sable : un piton reste un
+    /// piton en plein désert, où le sable couvre tout le reste du sol. Sur une
+    /// carte tempérée les bandes sont disjointes, l'ordre n'y change rien.
+    pub fn generate_bare(seed: u64, width: u32, height: u32, biome: Biome) -> Map {
+        let t = biome.table();
+        let (deep, water) = (t.deep_noise(), t.water_noise());
+        let (sand_top, gravel_base, rock_base) = (t.sand_noise(), t.gravel_noise(), t.rock_noise());
         let moisture_seed = seed ^ 0x77AA_1234_5678_9ABC;
         let n = (width * height) as usize;
         let mut tiles = Vec::with_capacity(n);
@@ -420,51 +515,47 @@ impl Map {
                 let elevation = noise::fbm3(seed, x, y, 32);
                 let moisture = noise::fbm3(moisture_seed, x, y, 32);
                 let dice = noise::scatter(seed, x, y) % 100;
-                let (t, f) = if elevation < 92 {
+                let (terrain, f) = if elevation < deep {
                     (Terrain::DeepWater, Feature::None)
-                } else if elevation < 104 {
+                } else if elevation < water {
                     (Terrain::ShallowWater, Feature::None)
-                } else if elevation < 114 {
-                    (Terrain::Sand, Feature::None)
-                } else if elevation < 184 {
-                    if moisture > 150 {
-                        let f = if dice < 18 {
-                            Feature::Tree
-                        } else if dice < 21 {
-                            Feature::Bush
-                        } else {
-                            Feature::None
-                        };
-                        (Terrain::Grass, f)
-                    } else if moisture > 96 {
-                        let f = if dice < 5 {
-                            Feature::Tree
-                        } else if dice < 7 {
-                            Feature::Bush
-                        } else {
-                            Feature::None
-                        };
-                        (Terrain::Grass, f)
+                } else if elevation >= rock_base {
+                    // Une veine, tirée par un bruit à part pour ne pas suivre
+                    // le dé des arbres.
+                    let die = noise::scatter(seed ^ ORE_SEED_SALT, x, y) % ORE_DIE;
+                    let f = if t.veined(die) {
+                        Feature::OreRock
                     } else {
-                        (
-                            Terrain::Dirt,
-                            if dice < 1 {
-                                Feature::Tree
-                            } else {
-                                Feature::None
-                            },
-                        )
-                    }
-                } else if elevation < 204 {
-                    (Terrain::Gravel, Feature::None)
-                } else if noise::scatter(seed ^ ORE_SEED_SALT, x, y) % ORE_IN_ROCKS == 0 {
-                    // Une veine : un rocher sur huit environ, tiré par un
-                    // bruit à part pour ne pas suivre le dé des arbres.
-                    (Terrain::Gravel, Feature::OreRock)
+                        Feature::Rock
+                    };
+                    (Terrain::Gravel, f)
+                } else if elevation >= gravel_base {
+                    // Le piémont : du gravier nu, blanchi si le biome est
+                    // enneigé.
+                    (snow_or(t.snow, Terrain::Gravel), Feature::None)
+                } else if elevation < sand_top {
+                    (snow_or(t.snow, Terrain::Sand), Feature::None)
                 } else {
-                    (Terrain::Gravel, Feature::Rock)
+                    let ground = if t.snow {
+                        Terrain::Snow
+                    } else if moisture > t.grass_moisture() {
+                        Terrain::Grass
+                    } else {
+                        Terrain::Dirt
+                    };
+                    // Le dé a cent faces, les densités sont en pour mille.
+                    let roll = dice * 10;
+                    let (trees, plants) = t.plant_odds(moisture);
+                    let f = if roll < trees {
+                        Feature::Tree
+                    } else if roll < plants {
+                        Feature::Bush
+                    } else {
+                        Feature::None
+                    };
+                    (ground, f)
                 };
-                tiles.push(t as u8);
+                tiles.push(terrain as u8);
                 features.push(f as u8);
             }
         }
@@ -1113,6 +1204,207 @@ impl Map {
         })
     }
 
+    // ------------------------------------------------------------------
+    // Ressources garanties (voir `MIN_TREES`, `MIN_ROCKS`, `MIN_WATER`)
+    // ------------------------------------------------------------------
+
+    /// Complète la carte pour qu'une colonie y soit jouable, quelle que soit la
+    /// table du biome et quelle que soit la graine : au moins `MIN_TREES`
+    /// arbres et `MIN_ROCKS` rochers **atteignables depuis le centre**, et
+    /// `MIN_WATER` cases d'eau sur la carte.
+    ///
+    /// Entièrement déterministe et sans hasard : un remplissage depuis le
+    /// centre, puis des spirales d'ordre fixe. La génération n'a pas de `Rng`
+    /// et n'en prend pas ici.
+    ///
+    /// **Sur une carte tempérée, ce complément ne fait rien** : le bruit y
+    /// donne des centaines d'arbres, des dizaines de rochers et plusieurs
+    /// centaines de cases d'eau dès 16×16. Il n'entre en jeu que sur les biomes
+    /// extrêmes (le désert n'a pas un arbre naturel, la calotte pas un seul) et
+    /// sur les cartes minuscules, où la garantie est de toute façon bornée par
+    /// la place disponible.
+    fn ensure_resources(&mut self) {
+        let (cx, cy) = (self.width / 2, self.height / 2);
+        let Some(center) = self.nearest_passable(cx, cy) else {
+            return;
+        };
+        let seen = self.reachable_from(center);
+        let open = self.open_land(&seen);
+        if open < MIN_OPEN {
+            return;
+        }
+        let want_trees = MIN_TREES.min(open / OPEN_PER_TREE);
+        let want_rocks = MIN_ROCKS.min(open / OPEN_PER_ROCK);
+        let (trees, rocks) = self.reachable_resources(&seen);
+        if trees < want_trees {
+            self.force_blockers(center, &seen, Feature::Tree, want_trees - trees);
+        }
+        if rocks < want_rocks {
+            self.force_blockers(center, &seen, Feature::Rock, want_rocks - rocks);
+        }
+        let water = self.water_count();
+        if water < MIN_WATER {
+            self.force_water(center, &seen, MIN_WATER - water);
+        }
+    }
+
+    /// Cases franchissables atteignables depuis `from`, une valeur par case.
+    /// Mêmes règles que l'A\* (`path::find_path`) : huit directions, jamais de
+    /// coupe de coin. Un remplissage par pile explicite, jamais de récursion.
+    fn reachable_from(&self, from: (u32, u32)) -> Vec<bool> {
+        let n = (self.width * self.height) as usize;
+        let mut seen = vec![false; n];
+        if !self.passable(from.0, from.1) {
+            return seen;
+        }
+        seen[self.index(from.0, from.1)] = true;
+        let mut stack = vec![from];
+        while let Some((x, y)) = stack.pop() {
+            for (dx, dy) in NEIGHBORS {
+                let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                if !self.in_bounds(nx, ny) {
+                    continue;
+                }
+                let (nx, ny) = (nx as u32, ny as u32);
+                let j = self.index(nx, ny);
+                if seen[j] || !self.passable(nx, ny) {
+                    continue;
+                }
+                if dx != 0 && dy != 0 && (!self.passable(x, ny) || !self.passable(nx, y)) {
+                    continue;
+                }
+                seen[j] = true;
+                stack.push((nx, ny));
+            }
+        }
+        seen
+    }
+
+    /// Cases de **terre** atteignables : les cases marquées, l'eau retirée.
+    /// C'est la mesure de ce qu'une colonie peut planter et miner, donc la
+    /// borne de tout ce que `ensure_resources` promet.
+    fn open_land(&self, seen: &[bool]) -> u32 {
+        (0..seen.len())
+            .filter(|&i| seen[i] && !Terrain::from_u8(self.tiles[i]).is_water())
+            .count() as u32
+    }
+
+    /// Arbres et rochers bordés par au moins une case atteignable : c'est là
+    /// qu'un colon se poste pour couper ou miner.
+    fn reachable_resources(&self, seen: &[bool]) -> (u32, u32) {
+        let mut trees = 0;
+        let mut rocks = 0;
+        for i in 0..self.features.len() {
+            let f = Feature::from_u8(self.features[i]);
+            if f != Feature::Tree && !f.is_rock() {
+                continue;
+            }
+            let (x, y) = (i as u32 % self.width, i as u32 / self.width);
+            if self.touches(seen, x, y) {
+                if f == Feature::Tree {
+                    trees += 1;
+                } else {
+                    rocks += 1;
+                }
+            }
+        }
+        (trees, rocks)
+    }
+
+    /// La case touche-t-elle (huit voisins) une case marquée ?
+    fn touches(&self, seen: &[bool], x: u32, y: u32) -> bool {
+        NEIGHBORS.iter().any(|&(dx, dy)| {
+            let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+            self.in_bounds(nx, ny) && seen[self.index(nx as u32, ny as u32)]
+        })
+    }
+
+    /// Cases d'eau de la carte, profonde ou basse.
+    fn water_count(&self) -> u32 {
+        self.tiles
+            .iter()
+            .filter(|&&t| Terrain::from_u8(t).is_water())
+            .count() as u32
+    }
+
+    /// Pose `count` arbres (ou rochers) autour d'un point ancré à
+    /// `FORCED_ANCHOR` du centre — les arbres d'un côté, les rochers de
+    /// l'autre, pour ne pas mêler le bosquet à l'affleurement.
+    ///
+    /// **Jamais côte à côte** : deux éléments forcés gardent au moins une case
+    /// d'écart. C'est ce qui rend la garantie démontrable —
+    /// chaque élément posé garde ses voisins orthogonaux libres et atteignables,
+    /// donc il est lui-même atteignable, et un obstacle isolé ne peut couper
+    /// aucune carte en deux. Un bosquet compact, lui, aurait un cœur
+    /// inaccessible et pourrait enfermer une clairière.
+    fn force_blockers(&mut self, center: (u32, u32), seen: &[bool], f: Feature, count: u32) {
+        let toward: i32 = if f == Feature::Tree { 1 } else { -1 };
+        let ax = (center.0 as i32 + toward * FORCED_ANCHOR).clamp(0, self.width as i32 - 1) as u32;
+        let mut placed: Vec<(u32, u32)> = Vec::new();
+        let mut left = count;
+        for (x, y) in spiral(self.width, self.height, ax, center.1) {
+            if left == 0 {
+                break;
+            }
+            if chebyshev((x, y), center) <= CENTER_KEEPOUT
+                || self.feature(x, y) != Feature::None
+                || self.get(x, y).is_water()
+                || !seen[self.index(x, y)]
+                || placed.iter().any(|&p| chebyshev(p, (x, y)) < 2)
+                || self.free_neighbours(seen, x, y) < 2
+            {
+                continue;
+            }
+            if f == Feature::Tree {
+                // Un arbre planté sur du sable, c'est l'oasis : le sol devient
+                // herbe, donc cultivable. Ailleurs le sol ne change pas — un
+                // conifère de toundra reste sur la neige.
+                if self.get(x, y) == Terrain::Sand {
+                    self.set_terrain(x, y, Terrain::Grass);
+                }
+            } else {
+                // Un rocher affleure : il découvre le gravier sous le sol.
+                self.set_terrain(x, y, Terrain::Gravel);
+            }
+            self.set_feature(x, y, f);
+            placed.push((x, y));
+            left -= 1;
+        }
+    }
+
+    /// Voisins **orthogonaux** franchissables et atteignables d'une case.
+    fn free_neighbours(&self, seen: &[bool], x: u32, y: u32) -> u32 {
+        let mut n = 0;
+        for (dx, dy) in [(0i32, -1i32), (0, 1), (-1, 0), (1, 0)] {
+            let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+            if self.in_bounds(nx, ny) && seen[self.index(nx as u32, ny as u32)] {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Creuse une mare d'eau basse (franchissable, donc elle ne coupe rien)
+    /// près du centre : le point d'eau de l'oasis.
+    fn force_water(&mut self, center: (u32, u32), seen: &[bool], count: u32) {
+        let ay = (center.1 as i32 + FORCED_ANCHOR).clamp(0, self.height as i32 - 1) as u32;
+        let mut left = count;
+        for (x, y) in spiral(self.width, self.height, center.0, ay) {
+            if left == 0 {
+                break;
+            }
+            if chebyshev((x, y), center) <= CENTER_KEEPOUT
+                || self.feature(x, y) != Feature::None
+                || self.get(x, y).is_water()
+                || !seen[self.index(x, y)]
+            {
+                continue;
+            }
+            self.set_terrain(x, y, Terrain::ShallowWater);
+            left -= 1;
+        }
+    }
+
     /// Case franchissable la plus proche de `(cx, cy)`, par anneaux croissants.
     /// L'ordre de parcours est fixe, donc le résultat est déterministe.
     pub fn nearest_passable(&self, cx: u32, cy: u32) -> Option<(u32, u32)> {
@@ -1133,6 +1425,46 @@ impl Map {
         }
         None
     }
+}
+
+/// Les huit voisins d'une case, dans l'ordre fixe utilisé par tout ce qui
+/// balaie un voisinage dans ce module.
+const NEIGHBORS: [(i32, i32); 8] = [
+    (1, 0),
+    (-1, 0),
+    (0, 1),
+    (0, -1),
+    (1, 1),
+    (1, -1),
+    (-1, 1),
+    (-1, -1),
+];
+
+/// Cases d'une carte `width × height` par anneaux croissants autour de
+/// `(cx, cy)`, dans un ordre fixe : c'est celui de `Map::nearest_passable`, et
+/// donc celui de tout ce que la génération ajoute (voir
+/// `Map::ensure_resources`).
+fn spiral(width: u32, height: u32, cx: u32, cy: u32) -> impl Iterator<Item = (u32, u32)> {
+    let max_r = width.max(height) as i32;
+    (0..max_r).flat_map(move |r| {
+        (-r..=r).flat_map(move |dy| {
+            (-r..=r).filter_map(move |dx| {
+                if dx.abs() != r && dy.abs() != r {
+                    return None;
+                }
+                let (x, y) = (cx as i32 + dx, cy as i32 + dy);
+                if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
+                    return None;
+                }
+                Some((x as u32, y as u32))
+            })
+        })
+    })
+}
+
+/// Le sol du biome, blanchi s'il est enneigé.
+fn snow_or(snow: bool, plain: Terrain) -> Terrain {
+    if snow { Terrain::Snow } else { plain }
 }
 
 /// Distance de Tchebychev entre deux cases.

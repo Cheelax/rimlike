@@ -14,6 +14,7 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod animals;
+pub mod biome;
 pub mod build;
 pub mod caravan;
 pub mod climate;
@@ -48,6 +49,7 @@ pub mod work;
 use serde::{Deserialize, Serialize};
 
 pub use animals::{MAX_ANIMALS, Species};
+pub use biome::{Biome, BiomeTable};
 pub use build::{Blueprint, BuildKind, Material};
 pub use caravan::{CaravanManifest, MANIFEST_VERSION};
 pub use climate::{Climate, Season, YEAR_DAYS};
@@ -60,7 +62,9 @@ pub use health::{BodyPart, Injury};
 pub use items::{ItemKind, ItemStack};
 pub use jobs::{Regrow, Reservation};
 pub use livestock::{MAX_LIVESTOCK, TAME_TICKS};
-pub use map::{Designation, Feature, Map, ROOM_MAX_TILES, Rect, Terrain, Zone};
+pub use map::{
+    Designation, Feature, MIN_ROCKS, MIN_TREES, MIN_WATER, Map, ROOM_MAX_TILES, Rect, Terrain, Zone,
+};
 pub use pawn::{Faction, Job, Pawn};
 pub use research::{ResearchState, Tech};
 pub use rng::Rng;
@@ -563,6 +567,21 @@ pub struct Sim {
     /// **hors état**, ni snapshot, ni hash, ni égalité.
     #[serde(skip)]
     job_paths: WorkCounter,
+    /// Biome de la case du globe où la colonie est fondée (voir
+    /// `crate::biome`), tel que la carte a été bâtie — l'océan et un octet
+    /// inconnu y sont déjà retombés sur la forêt tempérée
+    /// (`Biome::for_colony`).
+    ///
+    /// **Rien dans le sim ne le lit** : il a tout dit à `Map::generate`, et
+    /// aucune règle ne le consulte ensuite. Il est pourtant **sérialisé**, et à
+    /// ce titre il coûte un octet dans le snapshot et entre dans le hash : un
+    /// joueur qui rejoint une salle doit voir le même biome que les autres dans
+    /// son interface, et une colonie relue d'un snapshot doit se souvenir d'où
+    /// elle est. C'est de l'état, pas un cache.
+    ///
+    /// **Champ ajouté en fin de structure** : un vieux snapshot est refusé net
+    /// (fin de tampon) plutôt que relu de travers.
+    biome: Biome,
 }
 
 /// Compteur d'observation. Il compte du **travail**, jamais de l'état : il
@@ -599,11 +618,36 @@ impl Sim {
     /// Même chose, sur un climat imposé : c'est ce que fera le serveur monde
     /// pour une case de globe qui n'est pas tempérée.
     pub fn new_with_climate(seed: u64, width: u32, height: u32, climate: Climate) -> Sim {
+        Sim::new_in_biome_with_climate(seed, width, height, Biome::default(), climate)
+    }
+
+    /// Carte du **biome** de la case du globe où la colonie est fondée (voir
+    /// `crate::biome`) : sols, arbres, buissons, rochers, veines et eau en
+    /// suivent. Le climat reste tempéré ; le serveur monde le pose juste après
+    /// par `Command::SetClimate`, comme aujourd'hui.
+    ///
+    /// Il n'y a **pas** de `Command::SetBiome` : la composition d'une carte ne
+    /// peut pas changer après le premier tick, ce serait une autre carte. Le
+    /// biome se choisit ici, une fois pour toutes.
+    pub fn new_in_biome(seed: u64, width: u32, height: u32, biome: Biome) -> Sim {
+        Sim::new_in_biome_with_climate(seed, width, height, biome, Climate::default())
+    }
+
+    /// Biome **et** climat imposés : ce que fera le serveur monde à la
+    /// fondation d'une colonie.
+    pub fn new_in_biome_with_climate(
+        seed: u64,
+        width: u32,
+        height: u32,
+        biome: Biome,
+        climate: Climate,
+    ) -> Sim {
         let mut rng = Rng::new(seed);
         // Le seed de la carte est dérivé : changer la gen de terrain ne doit pas
         // décaler le flux RNG du gameplay, et inversement.
         let map_seed = rng.next_u64();
-        Sim::with_map(rng, Map::generate(map_seed, width, height), climate)
+        let map = Map::generate(map_seed, width, height, biome);
+        Sim::with_map_in_biome(rng, map, climate, biome)
     }
 
     /// Sim sur une carte fournie (tests, scénarios).
@@ -617,6 +661,10 @@ impl Sim {
     }
 
     fn with_map(rng: Rng, map: Map, climate: Climate) -> Sim {
+        Sim::with_map_in_biome(rng, map, climate, Biome::default())
+    }
+
+    fn with_map_in_biome(rng: Rng, map: Map, climate: Climate, biome: Biome) -> Sim {
         let mut sim = Sim {
             tick: 0,
             rng,
@@ -665,6 +713,7 @@ impl Sim {
             bury_scans: WorkCounter::default(),
             firefight_paths: WorkCounter::default(),
             job_paths: WorkCounter::default(),
+            biome: biome.for_colony(),
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -1044,6 +1093,12 @@ impl Sim {
 
     pub fn map(&self) -> &Map {
         &self.map
+    }
+
+    /// Biome dont la carte est bâtie (voir `crate::biome`). Fixé à la
+    /// construction, immuable : aucune commande ne le change.
+    pub fn biome(&self) -> Biome {
+        self.biome
     }
 
     /// Accès direct à la carte, pour les tests et scénarios. Le jeu passe par

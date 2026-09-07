@@ -136,7 +136,7 @@ fn the_index_agrees_with_the_a_star_on_a_generated_map() {
     // (lacs, massifs rocheux, îles) : pour un marcheur sans particularité,
     // « même région » et « il existe un chemin » sont **le même** prédicat.
     // Quarante-neuf paires suffisent à traverser la carte dans tous les sens.
-    let mut m = sim::Map::generate(7, 48, 48);
+    let mut m = sim::Map::generate(7, 48, 48, sim::Biome::TemperateForest);
     m.refresh_regions();
     let marks: Vec<(u32, u32)> = (0..7)
         .flat_map(|i| (0..7).map(move |j| (3 + 7 * i, 3 + 7 * j)))

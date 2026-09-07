@@ -121,6 +121,31 @@ impl WasmSim {
         WasmSim::wrap(sim::Sim::new(seed, width, height))
     }
 
+    /// Carte du **biome** de la case du globe où la colonie est fondée
+    /// (`sim::Biome`, mêmes valeurs que `packages/world/src/biomes.ts`) : sols,
+    /// arbres, buissons, rochers, veines et eau en suivent. Un octet inconnu,
+    /// comme l'océan, retombe sur la forêt tempérée — c'est-à-dire sur la carte
+    /// que rend le constructeur `new`.
+    ///
+    /// Le climat n'est **pas** dedans : le serveur monde le pose juste après
+    /// par `SetClimate`, comme aujourd'hui. Et il n'y a pas de `SetBiome` : la
+    /// composition d'une carte ne change pas après le premier tick.
+    pub fn new_in_biome(seed: u64, width: u32, height: u32, biome: u8) -> WasmSim {
+        console_error_panic_hook::set_once();
+        WasmSim::wrap(sim::Sim::new_in_biome(
+            seed,
+            width,
+            height,
+            sim::Biome::from_u8(biome),
+        ))
+    }
+
+    /// Biome dont la carte est bâtie (`sim::Biome`, 0 à 9). Jamais l'océan : il
+    /// est retombé sur la forêt tempérée à la construction.
+    pub fn biome(&self) -> u8 {
+        self.inner.biome() as u8
+    }
+
     /// Avance de `n` ticks. Les commandes en attente sont appliquées au premier.
     pub fn step(&mut self, n: u32) {
         if n == 0 {

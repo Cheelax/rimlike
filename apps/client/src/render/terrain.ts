@@ -25,6 +25,8 @@ export const TERRAIN = {
   Gravel: 5,
   WoodFloor: 6,
   StoneFloor: 7,
+  /** Sol enneigé de départ des biomes froids (`sim::map::Terrain::Snow`). */
+  Snow: 8,
 } as const;
 
 export const TERRAIN_COLORS: readonly number[] = [
@@ -36,6 +38,7 @@ export const TERRAIN_COLORS: readonly number[] = [
   0x8b8c7c, // gravier
   0x66543e, // plancher
   0x6b6e64, // dallage
+  0xe6ebef, // neige
 ];
 
 export const FEATURE = {

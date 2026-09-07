@@ -300,7 +300,9 @@ pub fn terrain_burns(t: Terrain, temperature: i32, wet: bool) -> bool {
         | Terrain::Sand
         | Terrain::Dirt
         | Terrain::Gravel
-        | Terrain::StoneFloor => false,
+        | Terrain::StoneFloor
+        // La neige ne brûle pas, et elle protège ce qu'elle couvre.
+        | Terrain::Snow => false,
     }
 }
 

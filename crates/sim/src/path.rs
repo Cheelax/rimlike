@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn deterministic() {
-        let m = Map::generate(99, 96, 96);
+        let m = Map::generate(99, 96, 96, crate::biome::Biome::TemperateForest);
         let from = m.nearest_passable(2, 2).unwrap();
         let to = m.nearest_passable(90, 90).unwrap();
         assert_eq!(find_path(&m, from, to), find_path(&m, from, to));

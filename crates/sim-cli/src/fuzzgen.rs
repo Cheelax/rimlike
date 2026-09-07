@@ -5,8 +5,8 @@
 //! passe par `sim::Rng`, comme l'exige le sim.
 
 use sim::{
-    BuildKind, CaravanManifest, Command, Designation, Difficulty, ItemKind, MANIFEST_VERSION,
-    Material, Pawn, Rng, Sim, WorkType, YEAR_DAYS, Zone,
+    Biome, BuildKind, CaravanManifest, Command, Designation, Difficulty, ItemKind,
+    MANIFEST_VERSION, Material, Pawn, Rng, Sim, WorkType, YEAR_DAYS, Zone,
 };
 
 /// Nombre de variantes de `Command` couvertes par le générateur.
@@ -44,6 +44,22 @@ pub const VARIANT_NAMES: [&str; VARIANT_COUNT] = [
 ];
 
 const TRIGGER_RAID_VARIANT: usize = 8;
+
+/// Sel du tirage du biome : il doit être **différent** du seed du run, sinon le
+/// biome suivrait le premier tirage des commandes.
+const BIOME_SALT: u64 = 0xB10E_0000_B10E_0000;
+
+/// Biome de la carte d'un run de fuzz : chaque run éprouve une composition
+/// différente (l'océan compris, qui doit retomber sur la forêt tempérée).
+///
+/// Tiré sur un `Rng` **à part**, jamais sur celui des commandes : le flux des
+/// commandes d'un run doit rester exactement le sien, puisque
+/// `commands::reconstruct_pre_state` rejoue le run depuis zéro pour diagnostiquer
+/// une panique. Un tirage de plus au début décalerait tout.
+pub fn biome_for_run(run_seed: u64) -> Biome {
+    let mut rng = Rng::new(run_seed ^ BIOME_SALT);
+    Biome::from_u8(rng.below(Biome::COUNT as u32) as u8)
+}
 
 /// Coordonnée pour les commandes à rectangle (`i32`) : le plus souvent dans
 /// la carte ou juste à côté, parfois franchement hors carte, parfois aux

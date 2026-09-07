@@ -525,6 +525,14 @@ d'alice arrivé chez bob).
   enceinte avec porte), touches et boutons tirés des mêmes constantes que la barre, masquable
   et mémorisé, « Revoir les premiers pas » dans Options ; module `firstSteps.ts` pur, 26 tests.
 
+- **Cartes selon le biome** (2026-09-07, sim) : dix biomes alignés sur le globe, table entière par
+  biome (arbres, buissons, rochers, veines, eau, sable, herbe, neige), génération tempérée
+  bit-identique à l'ancienne composition, plancher de jouabilité (20 arbres, 10 rochers, 8 cases
+  d'eau atteignables, oasis au désert), `Terrain::Snow`, `Sim::new_in_biome`, `campaign --biome`,
+  fuzz par biome. Reste : `start.biome` côté serveur et client (le monde connaît déjà le biome de
+  chaque case), le désert n'est pas survivable (5/5 famines en dix jours : oasis à élargir ou
+  sable cultivable au ralenti, à mesurer).
+
 **Reste**
 
 - Mods de contenu : pas commencés.
@@ -550,6 +558,16 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-07 : la carte suit le biome, et le biome est fixé à la naissance. Pas de
+  `Command::SetBiome` : changer la composition après le premier tick serait une autre carte ; le
+  monde fournit le biome à la fondation et `Sim::new` reste tempéré. La génération tempérée est
+  bit-identique à l'ancienne (test contre une recopie de l'ancien code), à une exception assumée :
+  un plancher de ressources atteignables (20 arbres, 10 rochers, 8 cases d'eau) parce que le
+  bruit tempéré laissait zéro rocher atteignable au pire cas à toutes les tailles, soit une
+  colonie qui ne peut ni forger ni enterrer. Le hash de `demo` bouge d'un octet, celui du champ
+  `biome` sérialisé, prouvé par un test qui retire ce dernier octet. Constat ouvert : le désert
+  n'est pas survivable (aucun buisson, sable incultivable hors oasis).
 
 - 2026-09-07 : les pillards ne chassent plus le troupeau. Comparaison contrôlée (binaires de
   quatre révisions, 30 puis 60 graines) : les 27 bêtes perdues de la campagne de référence
