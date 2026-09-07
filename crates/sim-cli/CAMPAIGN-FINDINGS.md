@@ -2932,6 +2932,36 @@ l'eau, ou replier son tracé — et elle vaut la peine : les cinq graines qui
 referment leur mur sont aussi celles où des bêtes sont à l'abri quand la bande
 entre.
 
+#### Régression du tri par rang, corrigée le 2026-09-07
+
+Une relecture indépendante (Codex, gravité P2) a trouvé le trou du tri unique,
+et l'a reproduit de façon déterministe : **trois colons derrière une enceinte
+fermée faisaient fuir le pillard devant une bête accessible à trois cases**. Le
+rang plaçait les trois colons avant elle, `take(MELEE_TARGETS)` bornait la
+recherche à ces trois inatteignables, elle ne rendait rien, et `raider_ai`
+lisait ce vide comme « personne sur la carte » et décrochait. Le code d'avant le
+rang (malus de trois cases) attaquait ce lapin : c'était bien une régression, pas
+le réglage voulu. La règle mesurée ici est « les colons d'abord **quand ils sont
+atteignables** », jamais « le bétail est intouchable ».
+
+Correction : `nearest_reachable_enemy` fait désormais **deux passes bornées**
+au lieu d'un tri commun — les candidats de rang 0 (tout sauf une bête de la
+colonie hors de portée de bras), puis, seulement si aucun n'est atteignable, les
+bêtes différées. Chaque passe garde son ordre `(distance, x, y)` et son propre
+budget de `MELEE_TARGETS` chemins ; un chercheur de la colonie saute la seconde
+(une bête apprivoisée est de son camp). Aucun tirage nouveau, ordre fixe : le
+scénario `demo` garde son hash (`402c950b5ca15d90` au tick 10 000, graine 1,
+carte 64, depuis l'octet de biome du 2026-09-07).
+
+Le test qui l'attrape est `a_raider_facing_a_closed_wall_attacks_the_herd_outside`
+(cinq graines, enceinte sans porte, lapin apprivoisé à trois cases du pillard :
+il le vise, puis le rejoint). Vérifié qu'il **échoue** avec le tri unique
+rétabli, sur le message « le pillard fuit alors qu'une bête paît à trois
+cases ». Les dix tests précédents de `balance_livestock.rs` — dont ses deux
+mesures statistiques — et `first_raid_is_dangerous_but_survivable`
+(`tests/gameplay.rs`) restent verts sans modification : la seconde passe ne
+s'ouvre que quand plus aucun colon n'est atteignable, ce qui n'arrive dans aucun
+de leurs décors (l'enceinte y a une porte).
 
 ## 12. Enceinte sans trous : joueur scripté du 2026-09-07
 

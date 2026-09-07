@@ -97,7 +97,9 @@ pub const DEFEND_RADIUS: u32 = 8;
 /// assaillant. Au contact, elle est une cible comme une autre ; au-delà, elle
 /// passe **après tous les colons atteignables** dans le choix de cible
 /// (`nearest_reachable_enemy`), aussi loin soient-ils : un pillard vient pour
-/// la colonie, pas pour son troupeau.
+/// la colonie, pas pour son troupeau. « Atteignables » est le mot qui compte :
+/// des colons murés ne mettent pas le troupeau à l'abri, ils cèdent la place
+/// (voir la seconde passe de `nearest_reachable_enemy`).
 ///
 /// **Mesuré, pas deviné** (`CAMPAIGN-FINDINGS.md` §11.8, campagnes de 60
 /// graines × 30 jours en normale, carte 64). La règle d'avant handicapait la
@@ -121,8 +123,9 @@ pub const DEFEND_RADIUS: u32 = 8;
 /// ciblage, une colonie qui élève perd **moins** de colons qu'une colonie qui
 /// n'élève pas. Le troupeau ne devient pas invisible pour autant : une bête au
 /// contact reste une cible (c'est ce qui arrive à celle qui bouche une porte),
-/// et une colonie réduite à son bétail le perd — plus aucun colon atteignable,
-/// tous les candidats sont des bêtes et elles se trient entre elles.
+/// et dès qu'il ne reste aucun colon atteignable — colonie éteinte, ou colons
+/// derrière une enceinte fermée — les bêtes se trient entre elles et y
+/// passent.
 pub const LIVESTOCK_TARGET_REACH: u32 = 1;
 /// En dessous de ces PV, un pillard décroche et quitte la carte. Assez haut
 /// pour qu'un pillard lâche prise après une bonne raclée (environ 40 % de
@@ -608,15 +611,38 @@ impl Sim {
     /// peut atteindre un pillard qu'en traversant ses propres pièges ne le
     /// prend pas pour cible — sans quoi il basculerait d'`Attack` à `Idle` à
     /// chaque tick sans jamais travailler ni se battre.
+    ///
+    /// **Deux passes bornées, pas un tri commun.** Le rang du bétail
+    /// (`LIVESTOCK_TARGET_REACH`) dit « les colons d'abord *quand ils sont
+    /// atteignables* », pas « jamais le bétail ». Un tri unique par
+    /// `(rang, distance)` disait le second : trois colons derrière une
+    /// enceinte fermée remplissaient à eux seuls le budget de `MELEE_TARGETS`
+    /// chemins, la recherche ne rendait rien, et `raider_ai` faisait fuir le
+    /// pillard sans avoir regardé la bête à trois cases de lui. Chaque rang a
+    /// donc sa passe et son propre budget, dans un ordre fixe : les colons,
+    /// puis — seulement si aucun n'est atteignable — le troupeau.
     fn nearest_reachable_enemy(&self, i: usize, radius: u32) -> Option<u32> {
+        if let Some(id) = self.nearest_reachable_in_rank(i, radius, false) {
+            return Some(id);
+        }
+        // Une bête de la colonie est du même camp qu'un colon : la seconde
+        // passe ne peut rien lui donner, autant lui épargner le parcours.
+        if self.pawns[i].faction == Faction::Colony {
+            return None;
+        }
+        self.nearest_reachable_in_rank(i, radius, true)
+    }
+
+    /// Une passe de `nearest_reachable_enemy` sur un seul rang : les candidats
+    /// de ce rang, triés par `(distance, x, y)`, dont on teste le chemin pour
+    /// les `MELEE_TARGETS` premiers. `herd` vaut vrai pour le rang différé —
+    /// les bêtes de la colonie au-delà de `LIVESTOCK_TARGET_REACH` — et faux
+    /// pour tout le reste, une bête au contact comprise.
+    fn nearest_reachable_in_rank(&self, i: usize, radius: u32, herd: bool) -> Option<u32> {
         let me = self.pawns[i].tile();
         let faction = self.pawns[i].faction;
         let walker = self.walker(i);
-        // Le tri se fait sur un **rang** avant la distance : une bête de la
-        // colonie passe derrière tous les colons atteignables, sauf au contact
-        // (`LIVESTOCK_TARGET_REACH`). C'est le seul endroit où le rang joue ;
-        // la distance vraie reste celle qui décide du rayon et de la mêlée.
-        let mut enemies: Vec<(u32, u32, u32, u32, u32)> = self
+        let mut enemies: Vec<(u32, u32, u32, u32)> = self
             .pawns
             .iter()
             .filter(|p| {
@@ -631,17 +657,19 @@ impl Sim {
                 if d > radius {
                     return None;
                 }
-                let rank = u32::from(p.is_livestock() && d > LIVESTOCK_TARGET_REACH);
-                Some((rank, d, x, y, p.id))
+                // Le rang, et rien d'autre : la distance vraie reste celle qui
+                // décide du rayon et de la mêlée.
+                if (p.is_livestock() && d > LIVESTOCK_TARGET_REACH) != herd {
+                    return None;
+                }
+                Some((d, x, y, p.id))
             })
             .collect();
         enemies.sort_unstable();
         enemies
             .iter()
             .take(MELEE_TARGETS)
-            .find(|&&(_, _, x, y, _)| {
-                chebyshev(me, (x, y)) <= 1 || self.path_adjacent_for(me, (x, y), walker).is_some()
-            })
+            .find(|&&(d, x, y, _)| d <= 1 || self.path_adjacent_for(me, (x, y), walker).is_some())
             .map(|&(.., id)| id)
     }
 
