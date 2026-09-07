@@ -432,9 +432,25 @@ Détails de la vie d'une salle :
 - Le **host** est le premier joueur connecté. S'il part, le joueur restant le
   plus ancien le devient et un `players` le diffuse. Les demandes de snapshot
   en cours sont réémises vers le nouveau host.
-- La salle est **détruite dès qu'elle est vide**. Une salle ordinaire ne
-  laisse rien derrière elle ; une salle « case » laisse son dernier snapshot
-  de conservation au serveur, qui rouvre la colonie avec (§11).
+- **Persistance des salles nommées** : avec `WORLD_STATE_FILE` actif, le relais
+  conserve le dernier snapshot reçu de l'hôte (périodique ou pour un rejoignant),
+  son tick, la graine, les dimensions et les dates de présence/gel dans le tableau
+  `rooms` du fichier commun, désormais en version 5 (versions 1 à 4 relues).
+  Les écritures automatiques du fichier commun sont espacées d'au moins
+  `ROOM_PERSIST_MS` (30 s) dès qu'il conserve des salles nommées ;
+  `SIGINT`/`SIGTERM` forcent la dernière sauvegarde. Au redémarrage ou au dernier
+  départ, une salle sauvée est gelée sans horloge (`running`, zéro joueur dans
+  `GET /rooms`) ; le premier `join` devient hôte et reçoit `welcome` puis
+  `snapshot`, sans nouveau `start`, avec `frozenTicks` calculé jusqu'à sa visite
+  depuis l'arrêt ou le dernier départ (dernier checkpoint en cas de crash), selon
+  `WORLD_HOUR_MS` et la borne de 60 jours (§11.6). Aucun message ni changement
+  client : l'hôte émet déjà l'avance rapide en lockstep. Une salle sans présence
+  depuis `ROOM_TTL_HOURS` (72 heures réelles) est oubliée ; une salle occupée
+  n'expire pas, une sauvegarde sans visite ne renouvelle pas le TTL. Les salles
+  gelées comptent dans `MAX_ROOMS`. Un lobby ou une partie sans snapshot reçu
+  disparaît ; les commandes postérieures au snapshot sauvé ne sont pas reprises.
+  `WORLD_PERSIST=0` désactive aussi cette conservation. Les salles « case »
+  gardent leur cycle et leur horloge monde (§11), sans ce TTL.
 - `start` par un non-host → `not_host`. `start` sur une salle démarrée →
   `already_running`. `command`, `hash`, `snapshot` ou `resync` avant `start` →
   `not_running`.

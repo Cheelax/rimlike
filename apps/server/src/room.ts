@@ -10,7 +10,7 @@
  * Deux sortes de salles, même code :
  *
  * - **salle simple** (`join { room: "demo" }`) : l'hôte choisit la graine et
- *   la taille de carte, la salle disparaît sans laisser de trace ;
+ *   la taille de carte, la salle peut être conservée par le relais ;
  * - **salle « case »** (`tile`), adossée à une case du globe : la graine est
  *   imposée par le serveur, le climat et le jour de l'année de la case
  *   partent dans le `start` diffusé au démarrage (`TileRoom.climate`,
@@ -95,6 +95,8 @@ export interface TileRoom {
  * repart bien du `tick` du snapshot.
  */
 export interface RoomRestore {
+  /** Obligatoire hors salle de case : la graine choisie au démarrage. */
+  readonly seed?: number;
   readonly tick: number;
   readonly data: Uint8Array;
   readonly width: number;
@@ -117,7 +119,7 @@ export interface RoomRestore {
   readonly goodwill?: GoodwillValues;
 }
 
-/** Snapshot de conservation remonté par l'hôte d'une salle « case ». */
+/** Snapshot de conservation remonté par l'hôte d'une salle. */
 export interface RoomSnapshotReport {
   readonly tick: number;
   readonly data: Uint8Array;
@@ -127,6 +129,9 @@ export interface RoomSnapshotReport {
 
 export interface RoomOptions {
   readonly name: string;
+  readonly createdAt?: number;
+  /** Temps gelé calculé à la première visite, même après un long séjour sans hôte. */
+  readonly frozenTicks?: () => number;
   readonly tickRate?: number;
   readonly bundleTicks?: number;
   readonly maxHistoryBundles?: number;
@@ -138,7 +143,7 @@ export interface RoomOptions {
   readonly log?: (line: string) => void;
   /** Présent pour une salle adossée à une case du globe. */
   readonly tile?: TileRoom;
-  /** Rouvre la salle depuis un snapshot au lieu d'un lobby. Exige `tile`. */
+  /** Rouvre depuis un snapshot ; exige `tile` ou `restore.seed`. */
   readonly restore?: RoomRestore;
   /** Appelé quand l'hôte remonte un snapshot de conservation. */
   readonly onSnapshot?: (snapshot: RoomSnapshotReport) => void;
@@ -198,6 +203,7 @@ export class Room {
    * abandonnée pendant que la salle restait peuplée.
    */
   private readonly createdAtValue: number;
+  private readonly frozenTicks: (() => number) | undefined;
 
   private readonly players: RoomPlayer[] = [];
   private readonly history: BundleHistory;
@@ -236,7 +242,8 @@ export class Room {
     this.bundleTicks = options.bundleTicks ?? BUNDLE_TICKS;
     this.maxPlayersLimit = options.maxPlayers ?? MAX_PLAYERS;
     this.now = options.now ?? Date.now;
-    this.createdAtValue = this.now();
+    this.createdAtValue = options.createdAt ?? this.now();
+    this.frozenTicks = options.frozenTicks;
     this.startClock = options.startClock ?? defaultClock;
     this.log = options.log ?? ((line) => console.log(line));
     this.tile = options.tile ?? null;
@@ -255,9 +262,10 @@ export class Room {
       this.mapSeed = this.tile.seed;
     }
     if (options.restore !== undefined) {
-      if (this.tile === null) {
-        throw new Error("restore n'a de sens que pour une salle de case");
+      if (this.tile === null && options.restore.seed === undefined) {
+        throw new Error("restore exige une salle de case ou une graine sauvegardée");
       }
+      this.mapSeed ??= options.restore.seed ?? null;
       // Reprise : la salle est déjà en jeu, l'horloge repart du tick du
       // snapshot et l'historique repart vide (pas de rejeu).
       this.restore = options.restore;
@@ -366,7 +374,7 @@ export class Room {
         // fournir. Aucun bundle à rejouer, l'historique repart de ce tick.
         // `frozenTicks` n'est transporté que s'il y a du temps à rattraper :
         // c'est à ce joueur, qui est l'hôte, d'émettre l'avance rapide.
-        const frozenTicks = opening.frozenTicks ?? 0;
+        const frozenTicks = this.frozenTicks?.() ?? opening.frozenTicks ?? 0;
         const pendingTraders = opening.pendingTraders ?? 0;
         this.sendTo(player, {
           type: "snapshot",
@@ -551,7 +559,7 @@ export class Room {
     this.roomState = "running";
     this.scheduler = new Scheduler({ bundleTicks: this.bundleTicks });
     this.history.clear();
-    this.nextKeepTick = this.tile === null ? Number.POSITIVE_INFINITY : this.snapshotEveryTicks;
+    this.nextKeepTick = this.onSnapshot === null ? Number.POSITIVE_INFINITY : this.snapshotEveryTicks;
     for (const p of this.players) {
       p.synced = true;
     }
@@ -744,16 +752,14 @@ export class Room {
       return;
     }
     if (
-      this.tile !== null &&
-      forPlayer === undefined &&
+      (this.tile === null || forPlayer === undefined) &&
       this.onSnapshot !== null &&
       this.width !== null &&
       this.height !== null
     ) {
-      // Snapshot de conservation : il n'est diffusé à personne, il devient le
-      // dernier état connu de la colonie. Il sert quand même les rejoignants
-      // encore en attente, juste en dessous : c'est exactement l'état qu'ils
-      // réclament.
+      // Conserve aussi les snapshots ciblés des salles nommées : l'hôte
+      // vient de fournir un état utilisable, sans sollicitation supplémentaire.
+      // Le routage vers les rejoignants reste indépendant, juste en dessous.
       this.onSnapshot({ tick, data, width: this.width, height: this.height });
       this.log(`[${this.name}] snapshot conservé au tick ${tick} (${data.length} octets)`);
     }
