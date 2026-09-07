@@ -560,6 +560,14 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-07 : le joueur scripté referme son enceinte (Codex, fiche `enceinte-sans-trous`) : le
+  carré (13, puis 11, puis 9) est glissé à ≤ 8 cases du barycentre jusqu'à un pourtour sans
+  eau ni rocher, le tracé est dégagé, les brèches retentées, la porte face au stockage avec
+  une sortie libre. Enceintes refermées 6/30 → 24/30 ; colonies vivantes avec bétail 14/17 →
+  19/20 ; survivantes 17 → 20 ; morts 189 → 200. Aucun changement du sim : l'instrument seul.
+  Les mesures « avec enceinte » des campagnes antérieures étaient en réalité des mesures
+  « sans » pour cinq colonies sur six.
+
 - 2026-09-07 : la carte suit le biome, et le biome est fixé à la naissance. Pas de
   `Command::SetBiome` : changer la composition après le premier tick serait une autre carte ; le
   monde fournit le biome à la fondation et `Sim::new` reste tempéré. La génération tempérée est

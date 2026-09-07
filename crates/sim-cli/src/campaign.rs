@@ -9,8 +9,8 @@
 //!
 //! 1. `plan` — le **joueur scripté**. Une fonction **pure** de l'état vers une
 //!    liste de commandes, appelée toutes les `PLAN_INTERVAL` ticks. Aucune
-//!    mémoire : tout ce qu'il faut savoir (« ai-je déjà bâti le feu de camp ? »)
-//!    se relit dans la `Sim`. C'est ce qui la rend testable et déterministe.
+//!    mémoire cachée : le tracé choisi au départ est un paramètre explicite ;
+//!    travaux et ressources se relisent dans la `Sim`.
 //! 2. `play_seed` — le **harnais de mesure**. Il joue une graine, observe les
 //!    colons à chaque tick (pour attribuer une cause à chaque mort) et vide le
 //!    journal d'événements régulièrement (il est borné à 32 entrées).
@@ -73,15 +73,17 @@ const STOCKPILE_SIDE_METAL: i32 = 6;
 const GROWING_SIDE: i32 = 5;
 /// Demi-côté de l'enceinte : 13 cases de côté, angles compris.
 const WALL_RADIUS: i32 = 6;
+/// Déplacement maximal du centre depuis le barycentre initial (Chebyshev).
+const ENCLOSURE_SHIFT: i32 = 8;
 /// Pièges posés devant la porte.
 const TRAPS: u32 = 3;
 
 /// Bois qu'il faut en stock avant de bâtir le confort de base (feu de camp,
 /// lits, poste de fabrication).
 const WOOD_FOR_BASE: u32 = 40;
-/// Bois qu'il faut avant de lancer l'enceinte : les 40 du confort de base plus
-/// 60. L'enceinte en demande bien plus (48 cases à 5 bois) : elle se remplit au
-/// fil des coupes, et c'est précisément ce qu'on veut mesurer.
+/// Bois disponible (au sol ou porté) avant de lancer l'enceinte : 100.
+/// Un chantier commencé retente ses brèches même sous ce seuil. Le côté 13
+/// demande 245 bois (47 murs à 5 et une porte à 10), livrés au fil des coupes.
 const WOOD_FOR_WALLS: u32 = 100;
 /// Bois qu'on ne troque ni n'offre jamais.
 const WOOD_RESERVE: u32 = 40;
@@ -141,6 +143,275 @@ fn anchor(sim: &Sim) -> Option<(i32, i32)> {
     sim.map()
         .nearest_passable(cx, cy)
         .map(|(x, y)| (x as i32, y as i32))
+}
+
+/// Tracé du joueur, conservé par le harnais : il ne suit ni les colons au
+/// travail ni la disparition des arbres. Aucun état ajouté à la simulation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Enclosure {
+    center: (i32, i32),
+    radius: i32,
+    door: (i32, i32),
+    outward: (i32, i32),
+}
+
+impl Enclosure {
+    fn perimeter(self) -> Vec<(i32, i32)> {
+        let (cx, cy) = self.center;
+        let r = self.radius;
+        let mut tiles = Vec::new();
+        for y in cy - r..=cy + r {
+            for x in cx - r..=cx + r {
+                if (x - cx).abs() == r || (y - cy).abs() == r {
+                    tiles.push((x, y));
+                }
+            }
+        }
+        tiles
+    }
+
+    fn traps(self) -> Vec<(i32, i32)> {
+        let (dx, dy) = self.outward;
+        // Le milieu reste libre : trois pièges contigus devant l'unique
+        // porte interdiraient la sortie aux colons (marcheur COLONIST).
+        [-2, -1, 1]
+            .into_iter()
+            .map(|k| (self.door.0 + dx - k * dy, self.door.1 + dy + k * dx))
+            .collect()
+    }
+}
+
+/// Carrés de 13, puis 11, puis 9 cases, centres triés par (distance, x, y).
+/// L'eau, les rochers et les buissons sont exclus ; les arbres ne passent
+/// que si la coupe peut les dégager depuis la région des colons. Les piles attendront
+/// le rangement : ce sont des occupants temporaires, pas du terrain.
+fn choose_enclosure(sim: &Sim, origin: (i32, i32)) -> Option<Enclosure> {
+    let base = anchor(sim)?;
+    let map = sim.map();
+    let from = (base.0 as u32, base.1 as u32);
+    let mut centers = Vec::new();
+    for x in origin.0 - ENCLOSURE_SHIFT..=origin.0 + ENCLOSURE_SHIFT {
+        for y in origin.1 - ENCLOSURE_SHIFT..=origin.1 + ENCLOSURE_SHIFT {
+            centers.push(((x - origin.0).abs().max((y - origin.1).abs()), x, y));
+        }
+    }
+    centers.sort_unstable();
+    for radius in [WALL_RADIUS, 5, 4] {
+        for &(_, cx, cy) in &centers {
+            if !map.in_bounds(cx - radius - 2, cy - radius - 2)
+                || !map.in_bounds(cx + radius + 2, cy + radius + 2)
+            {
+                continue;
+            }
+            let mut enclosure = Enclosure {
+                center: (cx, cy),
+                radius,
+                door: (cx, cy + radius),
+                outward: (0, 1),
+            };
+            let perimeter = enclosure.perimeter();
+            if !perimeter.iter().all(|&(x, y)| {
+                let (ux, uy) = (x as u32, y as u32);
+                !map.get(ux, uy).is_water()
+                    && matches!(map.feature(ux, uy), Feature::None | Feature::Tree)
+                    && !sim.blueprints().iter().any(|b| (b.x, b.y) == (ux, uy))
+            }) {
+                continue;
+            }
+            // Projection locale de la coupe : une rangée d'arbres est
+            // dégageable depuis son extrémité, même si l'arbre du milieu
+            // n'a pas encore de voisine libre au premier tick.
+            let mut cleared = map.clone();
+            for &(x, y) in &perimeter {
+                cleared.set_feature(x as u32, y as u32, Feature::None);
+            }
+            cleared.refresh_regions();
+            if !perimeter.iter().all(|&(x, y)| {
+                cleared.same_region_for(from, (x as u32, y as u32), path::Walker::COLONIST)
+                    == Some(true)
+            }) {
+                continue;
+            }
+            // La coupe générale dégagera aussi l'intérieur. On examine la
+            // circulation APRÈS fermeture : une case bâtissable aujourd'hui
+            // peut devenir une poche inaccessible entre le mur et un lac.
+            for y in cy - radius + 1..cy + radius {
+                for x in cx - radius + 1..cx + radius {
+                    if cleared.feature(x as u32, y as u32) == Feature::Tree {
+                        cleared.set_feature(x as u32, y as u32, Feature::None);
+                    }
+                }
+            }
+            let stock = (
+                cx + (2 - (WALL_RADIUS - radius) * 2 + (1 + STOCKPILE_SIDE).min(radius - 1)) / 2,
+                cy + (2 - (WALL_RADIUS - radius) + (1 + STOCKPILE_SIDE).min(radius - 1)) / 2,
+            );
+            let door_at = |dx: i32, dy: i32| {
+                (
+                    if dx == 0 {
+                        stock.0.clamp(cx - radius + 1, cx + radius - 1)
+                    } else {
+                        cx + dx * radius
+                    },
+                    if dy == 0 {
+                        stock.1.clamp(cy - radius + 1, cy + radius - 1)
+                    } else {
+                        cy + dy * radius
+                    },
+                )
+            };
+            let mut sides = [(0, 1), (1, 0), (0, -1), (-1, 0)];
+            sides.sort_by_key(|&(dx, dy)| {
+                let door = door_at(dx, dy);
+                (door.0 - stock.0).abs() + (door.1 - stock.1).abs()
+            });
+            for outward in sides {
+                if outward.0 * (stock.0 - cx) < 0 || outward.1 * (stock.1 - cy) < 0 {
+                    continue;
+                }
+                enclosure.outward = outward;
+                enclosure.door = door_at(outward.0, outward.1);
+                let door = (enclosure.door.0 as u32, enclosure.door.1 as u32);
+                let mut closed = cleared.clone();
+                for &(x, y) in &perimeter {
+                    closed.set_feature(x as u32, y as u32, Feature::WallWood);
+                }
+                closed.set_feature(door.0, door.1, Feature::DoorWood);
+                closed.refresh_regions();
+                let accessible = |x: i32, y: i32| {
+                    closed.same_region_for(door, (x as u32, y as u32), path::Walker::COLONIST)
+                        == Some(true)
+                };
+                if !accessible(cx, cy)
+                    || !accessible(enclosure.door.0 + outward.0, enclosure.door.1 + outward.1)
+                    || !perimeter.iter().all(|&(x, y)| {
+                        [(-1, 0), (0, -1), (0, 1), (1, 0)]
+                            .into_iter()
+                            .any(|(dx, dy)| accessible(x + dx, y + dy))
+                    })
+                {
+                    continue;
+                }
+                return Some(enclosure);
+            }
+        }
+    }
+    None
+}
+
+/// Barycentre relevé une seule fois, avant le premier ordre.
+fn starting_center(sim: &Sim) -> Option<(i32, i32)> {
+    let (mut x, mut y, mut n) = (0, 0, 0);
+    for p in sim
+        .pawns()
+        .iter()
+        .filter(|p| p.is_colonist() && p.is_alive())
+    {
+        let tile = p.tile();
+        x += tile.0 as i32;
+        y += tile.1 as i32;
+        n += 1;
+    }
+    (n > 0).then(|| (x / n, y / n))
+}
+
+/// La coupe précède la pose. Les cases libérées mais encore chargées de bois
+/// attendent un rangeur ; aucun segment n'est silencieusement abandonné.
+fn plan_enclosure(sim: &Sim, cmds: &mut Vec<Command>, e: Enclosure, wood: u32) {
+    let tiles = e.perimeter();
+    for &(x, y) in &tiles {
+        if sim.map().feature(x as u32, y as u32) == Feature::Tree {
+            cmds.push(Command::Designate {
+                kind: Designation::Chop,
+                x0: x,
+                y0: y,
+                x1: x,
+                y1: y,
+            });
+        }
+    }
+    let started = tiles.iter().any(|&(x, y)| {
+        sim.map().feature(x as u32, y as u32).is_wall()
+            || sim.map().feature(x as u32, y as u32).is_door()
+            || sim
+                .blueprints()
+                .iter()
+                .any(|b| (b.x as i32, b.y as i32) == (x, y))
+    });
+    if (!started && wood < WOOD_FOR_WALLS)
+        || tiles
+            .iter()
+            .any(|&(x, y)| sim.map().feature(x as u32, y as u32) == Feature::Tree)
+    {
+        return;
+    }
+    // La porte est toujours exclue des murs, même si sa pose attend une pile.
+    build_free(sim, cmds, BuildKind::Door, &[e.door], 1);
+    for &(x, y) in &tiles {
+        if (x, y) != e.door {
+            build_free(sim, cmds, BuildKind::Wall, &[(x, y)], 1);
+        }
+    }
+    if sim
+        .map()
+        .feature(e.door.0 as u32, e.door.1 as u32)
+        .is_door()
+    {
+        build_free(sim, cmds, BuildKind::SpikeTrap, &e.traps(), TRAPS);
+    }
+}
+
+/// Une enceinte déplacée peut épuiser son bosquet avant d'être payée.
+/// Seulement tant qu'elle reste ouverte : chercher quatre arbres plus loin
+/// lorsque la coupe locale n'a plus rien d'atteignable, comme pour le minage.
+fn enclosure_timber(sim: &Sim, cmds: &mut Vec<Command>, e: Enclosure) {
+    if e.perimeter()
+        .iter()
+        .all(|&(x, y)| sim.map().feature(x as u32, y as u32).blocks_room())
+        || sim.colony_total(ItemKind::Wood) >= WOOD_FOR_WALLS
+    {
+        return;
+    }
+    let Some(from) = sim
+        .pawns()
+        .iter()
+        .find(|p| p.is_colonist() && p.is_alive())
+        .map(|p| p.tile())
+    else {
+        return;
+    };
+    let mut trees = Vec::new();
+    for y in 0..sim.map().height() {
+        for x in 0..sim.map().width() {
+            if sim.map().feature(x, y) == Feature::Tree {
+                trees.push((
+                    chebyshev((e.center.0 as u32, e.center.1 as u32), (x, y)),
+                    x,
+                    y,
+                ));
+            }
+        }
+    }
+    trees.sort_unstable();
+    let reachable: Vec<_> = trees
+        .into_iter()
+        .filter(|&(_, x, y)| minable(sim, from, (x, y)))
+        .take(4)
+        .collect();
+    if reachable.iter().any(|&(distance, x, y)| {
+        distance <= CHOP_RADIUS as u32 || sim.map().designation(x, y) == Designation::Chop
+    }) {
+        return;
+    }
+    for (_, x, y) in reachable {
+        cmds.push(Command::Designate {
+            kind: Designation::Chop,
+            x0: x as i32,
+            y0: y as i32,
+            x1: x as i32,
+            y1: y as i32,
+        });
+    }
 }
 
 /// Colons vivants, dans l'ordre des ids.
@@ -218,6 +489,28 @@ fn build_free(
         });
         left -= 1;
     }
+}
+
+/// Une implantation réduite garde ses murs libres, même pour les lits des
+/// nouveaux arrivants et les emplacements de secours des ateliers.
+fn build_inside(
+    sim: &Sim,
+    enclosure: Option<Enclosure>,
+    cmds: &mut Vec<Command>,
+    kind: BuildKind,
+    tiles: &[(i32, i32)],
+    count: u32,
+) {
+    let tiles: Vec<_> = tiles
+        .iter()
+        .copied()
+        .filter(|&(x, y)| {
+            enclosure.is_none_or(|e| {
+                (x - e.center.0).abs() < e.radius && (y - e.center.1).abs() < e.radius
+            })
+        })
+        .collect();
+    build_free(sim, cmds, kind, &tiles, count);
 }
 
 /// Une pile au sol sur cette case ? C'est le seul refus de `Command::Build`
@@ -476,11 +769,15 @@ fn nearest_wild(
 /// n'annule jamais un chantier. Il ne mine qu'**après la métallurgie**, et
 /// seulement de quoi bâtir sa forge puis creuser ses veines (voir §3 bis) :
 /// avant cela, pas une pierre, donc ni tombe ni épieu.
-pub fn plan(sim: &Sim) -> Vec<Command> {
+fn plan(sim: &Sim, enclosure: Option<Enclosure>) -> Vec<Command> {
     let mut cmds = Vec::new();
-    let Some((ax, ay)) = anchor(sim) else {
+    let Some((ax, ay)) = enclosure.map(|e| e.center).or_else(|| anchor(sim)) else {
         return cmds;
     };
+    // Toute l'installation suit le carré choisi avant le premier ordre :
+    // garder les anciens offsets absolus mettrait un lit ou le stockage
+    // sur le nouveau pourtour. Les replis à 11/9 restent à l'intérieur.
+    let radius = enclosure.map_or(WALL_RADIUS, |e| e.radius);
     let tick = sim.tick();
     let pass = tick / PLAN_INTERVAL;
     let day = tick / u64::from(TICKS_PER_DAY);
@@ -500,23 +797,28 @@ pub fn plan(sim: &Sim) -> Vec<Command> {
     if sim.map().stockpile_count() == 0 {
         cmds.push(Command::SetZone {
             zone: Zone::Stockpile,
-            x0: ax + 2,
-            y0: ay + 2,
-            x1: ax + 1 + STOCKPILE_SIDE,
-            y1: ay + 1 + STOCKPILE_SIDE,
+            x0: ax + 2 - (WALL_RADIUS - radius) * 2,
+            y0: ay + 2 - (WALL_RADIUS - radius),
+            x1: ax + (1 + STOCKPILE_SIDE).min(radius - 1),
+            y1: ay + (1 + STOCKPILE_SIDE).min(radius - 1),
         });
     }
     if sim.map().growing_count() == 0 {
         cmds.push(Command::SetZone {
             zone: Zone::Growing,
             x0: ax + 1,
-            y0: ay - GROWING_SIDE,
-            x1: ax + GROWING_SIDE,
+            y0: ay - GROWING_SIDE.min(radius - 1),
+            x1: ax + GROWING_SIDE.min(radius - 1),
             y1: ay - 1,
         });
     }
     // La coupe : on remarque le bois tant qu'il en manque pour l'enceinte.
-    if wood < WOOD_FOR_WALLS {
+    let clearing_perimeter = enclosure.is_some_and(|e| {
+        e.perimeter()
+            .iter()
+            .any(|&(x, y)| sim.map().feature(x as u32, y as u32) == Feature::Tree)
+    });
+    if wood < WOOD_FOR_WALLS && !clearing_perimeter {
         cmds.push(Command::Designate {
             kind: Designation::Chop,
             x0: ax - CHOP_RADIUS,
@@ -562,8 +864,9 @@ pub fn plan(sim: &Sim) -> Vec<Command> {
     // ------------------------------------------------------------------
     if wood >= WOOD_FOR_BASE {
         if sim.map().campfire_count() == 0 {
-            build_free(
+            build_inside(
                 sim,
+                enclosure,
                 &mut cmds,
                 BuildKind::Campfire,
                 &[(ax - 3, ay + 3), (ax - 4, ay + 3), (ax - 3, ay + 4)],
@@ -573,11 +876,12 @@ pub fn plan(sim: &Sim) -> Vec<Command> {
         let beds = sim.map().bed_count();
         if beds < n {
             let row: Vec<(i32, i32)> = (0..8).map(|k| (ax - 3 + k, ay - 3)).collect();
-            build_free(sim, &mut cmds, BuildKind::Bed, &row, n - beds);
+            build_inside(sim, enclosure, &mut cmds, BuildKind::Bed, &row, n - beds);
         }
         if sim.map().crafting_spot_count() == 0 {
-            build_free(
+            build_inside(
                 sim,
+                enclosure,
                 &mut cmds,
                 BuildKind::CraftingSpot,
                 &[(ax + 3, ay - 3), (ax + 4, ay - 3), (ax + 3, ay - 4)],
@@ -585,54 +889,10 @@ pub fn plan(sim: &Sim) -> Vec<Command> {
             );
         }
     }
-    if wood >= WOOD_FOR_WALLS {
-        // La porte **avant** les murs : le plan de porte occupe la case, et le
-        // rectangle de mur la saute (`Command::Build` ignore une case déjà
-        // planifiée). Sans ça, l'enceinte se refermerait sur la colonie.
-        let door = (ax, ay + WALL_RADIUS);
-        build_free(sim, &mut cmds, BuildKind::Door, &[door], 1);
-        for (x0, y0, x1, y1) in [
-            (
-                ax - WALL_RADIUS,
-                ay - WALL_RADIUS,
-                ax + WALL_RADIUS,
-                ay - WALL_RADIUS,
-            ),
-            (
-                ax - WALL_RADIUS,
-                ay + WALL_RADIUS,
-                ax + WALL_RADIUS,
-                ay + WALL_RADIUS,
-            ),
-            (
-                ax - WALL_RADIUS,
-                ay - WALL_RADIUS + 1,
-                ax - WALL_RADIUS,
-                ay + WALL_RADIUS - 1,
-            ),
-            (
-                ax + WALL_RADIUS,
-                ay - WALL_RADIUS + 1,
-                ax + WALL_RADIUS,
-                ay + WALL_RADIUS - 1,
-            ),
-        ] {
-            cmds.push(Command::Build {
-                kind: BuildKind::Wall,
-                material: Material::Wood,
-                x0,
-                y0,
-                x1,
-                y1,
-            });
-        }
-        // Les pièges une fois la porte debout : trois cases en enfilade juste
-        // devant, là où passe qui vient frapper.
-        if sim.map().in_bounds(door.0, door.1)
-            && sim.map().feature(door.0 as u32, door.1 as u32).is_door()
-        {
-            let line: Vec<(i32, i32)> = (-1..=1).map(|k| (ax + k, ay + WALL_RADIUS + 1)).collect();
-            build_free(sim, &mut cmds, BuildKind::SpikeTrap, &line, TRAPS);
+    if let Some(e) = enclosure {
+        plan_enclosure(sim, &mut cmds, e, sim.colony_total(ItemKind::Wood));
+        if !clearing_perimeter {
+            enclosure_timber(sim, &mut cmds, e);
         }
     }
 
@@ -640,8 +900,9 @@ pub fn plan(sim: &Sim) -> Vec<Command> {
     // 3. Recherche : établi au jour 5, agriculture puis médecine
     // ------------------------------------------------------------------
     if day >= RESEARCH_DAY && sim.map().research_bench_count() == 0 && wood >= WOOD_FOR_BASE {
-        build_free(
+        build_inside(
             sim,
+            enclosure,
             &mut cmds,
             BuildKind::ResearchBench,
             &[(ax - 3, ay - 3), (ax - 4, ay - 3), (ax - 3, ay - 4)],
@@ -685,8 +946,8 @@ pub fn plan(sim: &Sim) -> Vec<Command> {
                 zone: Zone::Stockpile,
                 x0: ax,
                 y0: ay,
-                x1: ax + STOCKPILE_SIDE_METAL - 1,
-                y1: ay + STOCKPILE_SIDE_METAL - 1,
+                x1: ax + (STOCKPILE_SIDE_METAL - 1).min(radius - 1),
+                y1: ay + (STOCKPILE_SIDE_METAL - 1).min(radius - 1),
             });
         }
         // **Les veines d'abord.** Le minerai est ce qui manque partout — un
@@ -707,8 +968,9 @@ pub fn plan(sim: &Sim) -> Vec<Command> {
                 // même passage : `forge_spots` lit les zones telles qu'elles
                 // sont, et l'agrandissement n'a pas encore été appliqué —
                 // la forge tomberait dans l'entrepôt de demain.
-                build_free(
+                build_inside(
                     sim,
+                    enclosure,
                     &mut cmds,
                     BuildKind::Forge,
                     &forge_spots(sim, ax, ay),
@@ -1081,10 +1343,12 @@ struct Run {
     /// vise un arc par colon (`SetCraftTarget`) dès le premier passage : cet
     /// écart-là dit si la chaîne fabrication → équipement tient sa promesse.
     armed: u32,
-    /// Chantiers encore ouverts en fin de partie. L'enceinte fait 48 murs et
+    /// Chantiers encore ouverts en fin de partie. Le côté 13 fait 47 murs et
     /// une porte : un chiffre qui reste haut dit que la colonie n'a jamais fini
     /// de se fermer, ce qui change la lecture des morts en raid.
     blueprints_left: u32,
+    /// Au moins une pièce fermée en fin de campagne, pas seulement des plans.
+    enclosed: bool,
     /// Forges debout en fin de partie (`Map::forge_count`). Le joueur scripté
     /// vise la métallurgie en troisième technologie : sans ce chiffre, on ne
     /// sait pas si la recherche a servi à quelque chose ou si elle s'est
@@ -1228,13 +1492,14 @@ struct Settings {
 fn play_seed(seed: u64, s: &Settings) -> Run {
     let mut sim = Sim::new_in_biome(seed, s.size, s.size, s.biome);
     let total = u64::from(TICKS_PER_DAY) * s.days;
+    let start = Instant::now();
+    let enclosure = starting_center(&sim).and_then(|at| choose_enclosure(&sim, at));
 
     let mut deaths = [0u32; CAUSE_COUNT];
     let mut journal = Journal::default();
     let mut colonists_day10 = None;
     let mut colonists_day20 = None;
     let mut tame_orders = 0u32;
-    let start = Instant::now();
 
     let mut prev: Vec<Watched> = Vec::new();
     let mut cur: Vec<Watched> = Vec::new();
@@ -1261,7 +1526,7 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
             }
         }
         if t % PLAN_INTERVAL == 0 {
-            cmds.append(&mut plan(&sim));
+            cmds.append(&mut plan(&sim, enclosure));
         }
         tame_orders += cmds
             .iter()
@@ -1346,6 +1611,7 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
         mood_percent,
         armed,
         blueprints_left: sim.blueprints().len() as u32,
+        enclosed: sim.map().indoor_count() > 0,
         forges: sim.map().forge_count(),
         ingots: journal.ingots,
         swords: journal.swords,
@@ -1446,7 +1712,7 @@ fn goodwill_cell(g: &[i32; factions::FACTION_COUNT]) -> String {
 
 fn print_table(runs: &[Run]) {
     println!(
-        "{:>6} {:>14} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>7}",
+        "{:>6} {:>14} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>8} {:>7}",
         "graine",
         "biome",
         "fin",
@@ -1479,11 +1745,12 @@ fn print_table(runs: &[Run]) {
         "trib.",
         "humeur",
         "chantier",
+        "enclosed",
         "ms"
     );
     for r in runs {
         println!(
-            "{:>6} {:>14} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>7}",
+            "{:>6} {:>14} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>8} {:>7}",
             r.seed,
             r.biome.name(),
             r.colonists_end,
@@ -1516,6 +1783,7 @@ fn print_table(runs: &[Run]) {
             r.tributes,
             r.mood_percent,
             r.blueprints_left,
+            r.enclosed,
             r.elapsed_ms
         );
     }
@@ -1620,6 +1888,11 @@ fn print_summary(runs: &[Run], ticks: u64, elapsed: std::time::Duration) {
         runs.iter().map(|r| r.fires).sum::<u32>(),
         runs.iter().map(|r| r.burned).sum::<u32>(),
         runs.iter().filter(|r| r.fires > 0).count(),
+    );
+    println!(
+        "  enceintes refermées    : {}/{} (enclosed, au moins une pièce en fin)",
+        runs.iter().filter(|r| r.enclosed).count(),
+        n,
     );
     // Les deux chiffres qui disent si la colonie a eu le temps de se préparer :
     // des colons armés, et une enceinte finie plutôt qu'un chantier abandonné.
@@ -1739,7 +2012,7 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
             .collect();
         let goodwill: Vec<String> = r.goodwill.iter().map(i32::to_string).collect();
         println!(
-            "    {{\"seed\": {}, \"biome\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"tame_orders\": {}, \"tamed\": {}, \"metallurgy_day\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
+            "    {{\"seed\": {}, \"biome\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"enclosed\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"tame_orders\": {}, \"tamed\": {}, \"metallurgy_day\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
             r.seed,
             r.biome as u8,
             r.colonists_end,
@@ -1758,6 +2031,7 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
             r.mood_percent,
             r.armed,
             r.blueprints_left,
+            r.enclosed,
             r.forges,
             r.ingots,
             r.swords,
@@ -1965,6 +2239,12 @@ mod tests {
     use sim::testmap::map_from;
     use sim::{Feature, ItemKind};
 
+    // Les tests de décisions isolées fournissent un tracé explicite, comme
+    // le harnais ; les tests de construction conservent le leur entre ticks.
+    fn plan(sim: &Sim) -> Vec<Command> {
+        super::plan(sim, anchor(sim).and_then(|at| choose_enclosure(sim, at)))
+    }
+
     /// Une clairière large : de la place pour l'enceinte, des arbres à l'ouest,
     /// des buissons à l'est. Le repère (`anchor`) tombe au centre.
     fn clearing() -> Sim {
@@ -1999,6 +2279,195 @@ mod tests {
     fn has_build(cmds: &[Command], wanted: BuildKind) -> bool {
         cmds.iter()
             .any(|c| matches!(c, Command::Build { kind, .. } if *kind == wanted))
+    }
+
+    #[test]
+    fn le_lac_au_sud_decale_l_enceinte_au_nord() {
+        let map = map_from(&[
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "................................",
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+        ]);
+        let s = Sim::from_map(1, map);
+        let origin = starting_center(&s).unwrap();
+        let e = choose_enclosure(&s, origin).expect("carré au nord du lac");
+        assert_eq!(e.radius, 6, "on garde le côté 13 quand il tient");
+        assert!(e.center.1 < origin.1);
+        assert!(
+            (e.center.0 - origin.0)
+                .abs()
+                .max((e.center.1 - origin.1).abs())
+                <= 8
+        );
+        assert!(
+            e.perimeter()
+                .iter()
+                .all(|&(x, y)| !s.map().get(x as u32, y as u32).is_water())
+        );
+        assert_eq!(e.outward, (0, 1), "la porte fait face au stockage au sud");
+        assert_eq!(Some(e), choose_enclosure(&s, origin), "choix déterministe");
+    }
+
+    #[test]
+    fn le_carre_se_reduit_a_onze_puis_neuf_sans_sortir_du_rayon() {
+        for radius in [5, 4] {
+            let mut rows = vec![vec![b'~'; 24]; 24];
+            for row in rows.iter_mut().take(13 + radius).skip(12 - radius) {
+                row[12 - radius..=12 + radius].fill(b'.');
+            }
+            // Un accès au sud, trop étroit pour accueillir un carré plus grand.
+            for row in rows.iter_mut().skip(12 + radius).take(3) {
+                row[12] = b'.';
+            }
+            let strings: Vec<_> = rows
+                .into_iter()
+                .map(|r| String::from_utf8(r).unwrap())
+                .collect();
+            let refs: Vec<_> = strings.iter().map(String::as_str).collect();
+            let s = Sim::from_map(1, map_from(&refs));
+            let e = choose_enclosure(&s, (12, 12)).expect("carré réduit");
+            assert_eq!(e.radius, radius as i32);
+            assert_eq!(e.center, (12, 12));
+        }
+        let s = Sim::from_map(1, map_from(&["~~~~~", "~~~~~", "~~.~~", "~~~~~", "~~~~~"]));
+        assert!(
+            choose_enclosure(&s, (2, 2)).is_none(),
+            "aucun tracé constructible"
+        );
+    }
+
+    #[test]
+    fn la_coupe_et_le_rangement_precedent_les_murs_sans_condamner_la_porte() {
+        let mut s = installed();
+        store_wood(&mut s, 150);
+        let e = choose_enclosure(&s, anchor(&s).unwrap()).unwrap();
+        let tree = e.perimeter()[0];
+        s.map_mut()
+            .set_feature(tree.0 as u32, tree.1 as u32, Feature::Tree);
+        let mut cmds = Vec::new();
+        plan_enclosure(&s, &mut cmds, e, 150);
+        assert!(cmds.contains(&Command::Designate {
+            kind: Designation::Chop,
+            x0: tree.0,
+            y0: tree.1,
+            x1: tree.0,
+            y1: tree.1,
+        }));
+        assert!(!has_build(&cmds, BuildKind::Wall));
+        s.map_mut()
+            .set_feature(tree.0 as u32, tree.1 as u32, Feature::None);
+        s.spawn_item(ItemKind::Wood, 1, e.door.0 as u32, e.door.1 as u32);
+        cmds.clear();
+        plan_enclosure(&s, &mut cmds, e, 150);
+        s.step(&cmds);
+        assert!(
+            !s.blueprints()
+                .iter()
+                .any(|b| (b.x as i32, b.y as i32) == e.door),
+            "une porte momentanément occupée ne doit jamais devenir un mur"
+        );
+        for _ in 0..TICKS_PER_DAY {
+            s.step(&[]);
+        }
+        assert!(
+            !has_pile(&s, e.door.0 as u32, e.door.1 as u32),
+            "bois rangé"
+        );
+        cmds.clear();
+        plan_enclosure(&s, &mut cmds, e, 150);
+        assert!(has_build(&cmds, BuildKind::Door), "la brèche est retentée");
+    }
+
+    #[test]
+    fn l_enceinte_cherche_du_bois_plus_loin_quand_le_bosquet_est_epuise() {
+        let mut rows = vec!["........................"; 24];
+        rows[0] = "TW......................";
+        rows[1] = "WW......................";
+        rows[23] = ".......................T";
+        let s = Sim::from_map(1, map_from(&rows));
+        let e = choose_enclosure(&s, (12, 12)).unwrap();
+        let mut cmds = Vec::new();
+        enclosure_timber(&s, &mut cmds, e);
+        assert_eq!(
+            cmds,
+            vec![Command::Designate {
+                kind: Designation::Chop,
+                x0: 23,
+                y0: 23,
+                x1: 23,
+                y1: 23,
+            }],
+            "le bois voisin mais inaccessible n'est pas désigné"
+        );
+    }
+
+    #[test]
+    fn l_enceinte_construite_ferme_une_piece_et_garde_une_sortie() {
+        let mut s = installed();
+        store_wood(&mut s, 500);
+        let e = choose_enclosure(&s, anchor(&s).unwrap()).unwrap();
+        let mut cmds = vec![Command::SetDifficulty {
+            level: Difficulty::Peaceful,
+        }];
+        plan_enclosure(&s, &mut cmds, e, 500);
+        s.step(&cmds);
+        for _ in 0..TICKS_PER_DAY * 3 {
+            s.step(&[]);
+        }
+        assert!(
+            s.map().indoor_count() > 0,
+            "les vrais chantiers doivent fermer la pièce"
+        );
+        assert!(
+            e.perimeter()
+                .iter()
+                .all(|&(x, y)| s.map().feature(x as u32, y as u32).blocks_room())
+        );
+        // Pose des pièges finis pour vérifier précisément le passage, sans
+        // attendre qu'un raid vienne les déclencher.
+        for (x, y) in e.traps() {
+            s.map_mut()
+                .set_feature(x as u32, y as u32, Feature::SpikeTrap);
+        }
+        s.map_mut().refresh_regions();
+        let inside = (
+            (e.door.0 - e.outward.0) as u32,
+            (e.door.1 - e.outward.1) as u32,
+        );
+        let outside = (
+            (e.door.0 + e.outward.0 * 2) as u32,
+            (e.door.1 + e.outward.1 * 2) as u32,
+        );
+        assert!(colonist_can_reach(&s, inside, outside));
     }
 
     #[test]
@@ -2188,7 +2657,7 @@ mod tests {
                 )
             })
             .count();
-        assert_eq!(walls, 4, "quatre segments d'enceinte attendus : {cmds:?}");
+        assert_eq!(walls, 47, "47 murs et une porte attendus : {cmds:?}");
         assert!(has_build(&cmds, BuildKind::Door), "pas de porte : {cmds:?}");
         // La porte est émise avant les murs, sinon l'enceinte se referme.
         let door_at = cmds
@@ -2226,10 +2695,11 @@ mod tests {
             !has_build(&plan(&s), BuildKind::SpikeTrap),
             "pièges posés sans porte"
         );
-        let (ax, ay) = anchor(&s).expect("repère");
+        let enclosure = choose_enclosure(&s, anchor(&s).expect("repère")).expect("tracé");
+        let (dx, dy) = enclosure.door;
         s.map_mut()
-            .set_feature(ax as u32, (ay + WALL_RADIUS) as u32, Feature::DoorWood);
-        let cmds = plan(&s);
+            .set_feature(dx as u32, dy as u32, Feature::DoorWood);
+        let cmds = super::plan(&s, Some(enclosure));
         let traps = cmds
             .iter()
             .filter(|c| {

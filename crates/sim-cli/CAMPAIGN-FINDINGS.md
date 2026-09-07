@@ -2931,3 +2931,146 @@ C'est une tâche de joueur scripté — choisir l'emplacement de l'enceinte hors
 l'eau, ou replier son tracé — et elle vaut la peine : les cinq graines qui
 referment leur mur sont aussi celles où des bêtes sont à l'abri quand la bande
 entre.
+
+
+## 12. Enceinte sans trous : joueur scripté du 2026-09-07
+
+**24/30 enceintes fermées au jour 30, contre 6/30 avant : objectif ≥ 24/30
+atteint.** Seul l'instrument change (`campaign.rs` et ses tests), pas le sim.
+
+### 12.1 Protocole et référence
+
+Worktree `task/enceinte-sans-trous`, base **`d151bbe`** (cartes par biome,
+après le ciblage des pillards du §11.8). Commande identique avant et après :
+
+```sh
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --json
+```
+
+Graines **1 à 30**, 30 jours, carte 64×64, forêt tempérée, difficulté normale,
+calendrier au jour 0 ; 432 000 ticks par graine, **12 960 000 ticks** par campagne.
+Le relevé « avant » ajoute seulement `enclosed` au harnais, sans changer les
+commandes du joueur. Ce booléen signifie exactement **`indoor_count() > 0` à
+la fin de la campagne** ; il apparaît par graine dans le tableau et le JSON,
+et son total figure au résumé. Un plan de mur ne suffit pas et une enceinte
+qui a brûlé avant la fin n'est plus comptée.
+
+La référence historique du §11.8 était **5/30**, **16/21 colonies vivantes avec
+bétail**, 21 colonies survivantes, 65 colons et 191 morts. Le worktree inclut
+depuis la génération par biome et son plancher de ressources : sa référence
+rejouée donne **6/30**, **14/17**, 17 colonies, 52 colons et 189 morts. Les chiffres
+ci-dessous comparent le même sim et les mêmes graines ; ils ne substituent pas
+le résultat historique à la mesure d'avant.
+
+### 12.2 Ce qui change dans le joueur
+
+- Le barycentre initial est relevé avant le premier ordre. Le script essaie
+  les carrés **13, puis 11, puis 9**, à distance de Chebyshev **≤ 8** ; les centres
+  sont triés par `(distance, x, y)`. Aucun pourtour avec eau, roche ou buisson
+  indestructible par la coupe n'est accepté. Une projection sur une copie de
+  la carte vérifie la coupe des arbres et l'accès aux murs **après fermeture** :
+  un lac intérieur ne doit pas laisser de chantier inaccessible.
+- Le tracé choisi est conservé comme paramètre explicite de `plan`, sans état
+  ajouté à `Sim`. L'installation suit ce site : stockage, culture et bâtiments
+  restent à l'intérieur, y compris aux côtés 11 et 9. Sans ce déplacement,
+  l'ancien emplacement d'un atelier ou de l'entrepôt pouvait occuper le nouveau mur.
+- La porte se projette face au stockage, sur le côté accessible le plus proche.
+  Sa case est toujours exclue des murs, même lorsqu'une pile y retarde le plan.
+  Les trois pièges suivent la porte en laissant libre le passage central pour
+  les colons, qui refusent de traverser leurs propres pièges armés.
+- Les arbres du tracé sont coupés avant les murs et avant la coupe générale.
+  Les cases occupées par le bois attendent le rangement, puis sont retentées.
+  Le seuil initial de 100 bois inclut le bois au sol et porté, utilisable par
+  les livreurs ; une enceinte commencée retente ses trous même sous ce seuil.
+- Tant que l'enceinte reste ouverte, un bosquet local épuisé fait chercher
+  **quatre arbres atteignables plus loin**, dans l'ordre distance/x/y. La coupe
+  n'est pas élargie si du travail local reste possible, si une coupe candidate
+  attend déjà, si 100 bois sont disponibles, ou si l'enceinte est fermée.
+  Sans ce ravitaillement, les emplacements constructibles des graines pauvres
+  en bois restaient des chantiers : le diagnostic comptait 19 fermetures obtenues,
+  dont seulement 16 encore présentes à la fin.
+
+Ni coût de construction, ni rendement de coupe, ni priorité de travail, ni
+combat, ni comportement du bétail n'est réglé dans le sim. Ces changements
+modifient plusieurs décisions du joueur dès le départ : les écarts de survie
+ne sont donc pas attribuables au seul effet thermique des murs.
+
+### 12.3 Avant → après, mêmes graines
+
+| Mesure | Avant | Après |
+|---|---:|---:|
+| **Enceintes fermées en fin (`enclosed`)** | **6/30** | **24/30** |
+| **Colonies vivantes avec bétail / colonies vivantes** | **14/17 (82 %)** | **19/20 (95 %)** |
+| Colonies vivantes au jour 30 | 17/30 | 20/30 |
+| Colons vivants au jour 10 / 20 | 68 / 64 | 90 / 84 |
+| Colons vivants au jour 30 | 52 | 61 |
+| Bêtes vivantes au jour 30 (toutes colonies) | 20 | 23 |
+| Marquages / apprivoisements | 31 / 27 | 39 / 30 |
+| Morts de colons cumulés | 189 | 200 |
+| Dont raids / blessures / famine | 150 / 36 / 3 | 165 / 28 / 7 |
+| Événements perdus | 0 | 0 |
+
+La survie finale augmente sur ce bloc, mais **les morts cumulés augmentent aussi
+(+11)** ; davantage de colons vivent assez longtemps pour accueillir des voyageurs
+et subir d'autres raids. Ce n'est pas une preuve d'amélioration générale de la
+survie. Le seuil des enceintes est atteint exactement, sans marge statistique.
+
+Un diagnostic temporaire de la version retenue a observé une première fermeture
+dans **26/30** graines. Les graines **12 et 17** ont ensuite perdu des murs au feu
+après extinction de la colonie ; elles ne sont pas comptées dans les 24. Les
+quatre autres (**6, 7, 16, 28**) n'ont pas de tracé accepté dans la recherche bornée.
+Aucun assouplissement par graine n'est ajouté. Ce diagnostic n'est pas un champ
+persistant du sim ni une redéfinition de `enclosed`.
+
+| Graine | Enclosed avant → après (0/1) | Colons fin avant → après | Bétail fin avant → après |
+|---|---:|---:|---:|
+| 1 | 0 → 1 | 0 → 3 | 1 → 1 |
+| 2 | 0 → 1 | 4 → 3 | 1 → 1 |
+| 3 | 1 → 1 | 4 → 0 | 1 → 1 |
+| 4 | 0 → 1 | 0 → 2 | 0 → 1 |
+| 5 | 0 → 1 | 0 → 3 | 1 → 1 |
+| 6 | 0 → 0 | 0 → 8 | 1 → 1 |
+| 7 | 0 → 0 | 0 → 0 | 0 → 0 |
+| 8 | 1 → 1 | 3 → 2 | 1 → 1 |
+| 9 | 0 → 1 | 4 → 4 | 1 → 1 |
+| 10 | 0 → 1 | 4 → 2 | 1 → 1 |
+| 11 | 0 → 1 | 0 → 0 | 1 → 0 |
+| 12 | 1 → 0 | 0 → 0 | 0 → 0 |
+| 13 | 0 → 1 | 4 → 0 | 1 → 0 |
+| 14 | 0 → 1 | 0 → 0 | 0 → 1 |
+| 15 | 1 → 1 | 4 → 3 | 1 → 1 |
+| 16 | 0 → 0 | 0 → 0 | 0 → 0 |
+| 17 | 0 → 0 | 0 → 0 | 0 → 0 |
+| 18 | 0 → 1 | 0 → 5 | 0 → 1 |
+| 19 | 1 → 1 | 1 → 2 | 1 → 1 |
+| 20 | 0 → 1 | 3 → 4 | 1 → 1 |
+| 21 | 0 → 1 | 3 → 3 | 1 → 1 |
+| 22 | 0 → 1 | 2 → 2 | 1 → 1 |
+| 23 | 0 → 1 | 0 → 3 | 1 → 1 |
+| 24 | 0 → 1 | 4 → 4 | 1 → 1 |
+| 25 | 0 → 1 | 3 → 4 | 0 → 1 |
+| 26 | 0 → 1 | 3 → 0 | 0 → 1 |
+| 27 | 0 → 1 | 2 → 2 | 1 → 1 |
+| 28 | 0 → 0 | 1 → 1 | 0 → 0 |
+| 29 | 1 → 1 | 3 → 0 | 1 → 1 |
+| 30 | 0 → 1 | 0 → 1 | 1 → 1 |
+
+### 12.4 Vérification
+
+Les tests ciblent le lac au sud (décalage au nord), les replis 11/9 et l'absence
+de site, la coupe préalable et la pile sur la porte, le bois lointain inaccessible,
+puis une enceinte effectivement construite par les colons et sa sortie praticable
+avec les pièges armés. Les tests historiques de porte/pièges utilisent le tracé
+choisi ; `une_campagne_courte_tourne_sans_panique` reste inchangé.
+
+Validation : `cargo fmt --all -- --check`, `cargo test --workspace` (**359 tests
+réussis, 2 ignorés existants**) et `cargo clippy --workspace --all-targets -- -D
+warnings` passent. Après la dernière précision du côté de porte, les **46 tests
+sim-cli** (29 unitaires et 17 CLI) et Clippy ont été relancés avec succès. La campagne
+finale reproduit les chiffres du tableau : 30 lignes JSON, aucune perte d'événement.
+Les tests du CLI vérifient aussi les sorties texte et JSON. Les durées de campagne
+(25,4 s avant, 18,9 s après) ne constituent pas un benchmark contrôlé.
+
+Relevés bruts disponibles dans ce worktree hôte : `/tmp/enceinte-before.json` et
+`/tmp/enceinte-after.json` ; les chiffres par graine ci-dessus restent dans le dépôt.
+Aucun fichier de `crates/sim` modifié ; aucun commit ni push depuis cette sandbox.
