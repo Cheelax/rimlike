@@ -566,6 +566,29 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-09 (nuit) : **on chasse à mains nues, et la harde dépend du biome** (décision de Thomas,
+  PR #13, sous-agent Opus, seconde passe de la fiche `banquise-survivable`). `try_start_hunt`
+  n'exige plus d'arme : un colon désarmé engage le gibier avec ses dégâts de mains nues déjà
+  existants, dans un rayon mesuré de `HAND_HUNT_RANGE` = 12 cases (sans borne, la toundra tombait
+  de 22 à 16/30 : le colon partait une journée après un cerf qui détale ; à 8 la glace retombe, à
+  20 la toundra redécroche). « Toutes les espèces » et « le sanglier exige une arme » sont
+  indiscernables une fois la borne posée → la plus libre est gardée. `BiomeTable::game_mix`
+  (poids cerf/lapin/sanglier) : `[1,1,1]` partout = le `below(3)` d'avant, bit-identique
+  (empreintes de la première passe inchangées) ; `ICE = [2,1,0]`, pas de sanglier (il charge et
+  tue un chasseur désarmé ; rejeté `[1,2,0]` : le lièvre ne nourrit pas, 61 famines). `game_density`
+  reste à 2000 (1500 sans marge : 22/40). Correction d'instrument : le joueur maigre du banc bâtit
+  un poste de fabrication, sans quoi une dépouille ne devient jamais de la viande — c'était la
+  moitié du 0/20. **Résultat** : banc banquise 0 → 18/20 (30/40), test d'acceptation actif et
+  vert, autres biomes dans le bruit (pire perte −3/40), tempéré 18/30 identique en campagne (173
+  morts contre 207 : on chasse avant d'avoir un arc, on s'enrichit moins vite, moins de bandes),
+  `demo` inchangé. **Mais la campagne banquise reste à 0/30** (97 % famine), et la cause est
+  isolée par trois mesures : ni l'abondance (2000 → 8000 ‰ : 0/30), ni le joueur scripté (le
+  joueur du banc bridé comme lui : 18 → 16/20), mais **la taille de carte** (24² → 3/30, 32² et
+  au-delà → 0/30) : `MAX_ANIMALS` plafonne douze bêtes **par carte**, et les hardes entrent par le
+  bord — sur 64² le gibier est hors des douze cases d'un chasseur désarmé. Fiche laissée ouverte
+  pour une troisième passe (densité de faune par surface, ou hardes qui rejoignent la colonie),
+  avec le coût par tick de la faune à mesurer avant. Rapport §14.3.
+
 - 2026-09-09 (soir) : le gibier ne suffit pas à la banquise — résultat négatif mesuré (PR #12,
   sous-agent Opus sur la fiche `banquise-survivable`). Livré : `BiomeTable::game_density` (pour
   mille, 1000 = identité sur toutes les tables, 2000 sur `ICE`), qui divise le délai entre hardes

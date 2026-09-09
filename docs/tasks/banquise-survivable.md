@@ -1,8 +1,8 @@
 ---
 slug: banquise-survivable
-status: claimed
-claimed_by: Claude Fable (session orchestrateur, seconde passe)
-claimed_at: 2026-09-09
+status: open
+claimed_by:
+claimed_at:
 layer: sim
 scope:
   - crates/sim/src/biome.rs
@@ -26,6 +26,41 @@ done_in:
 ---
 
 # Une banquise survivable : vivre de chasse sur la glace
+
+## Ce qui a été appris (seconde passe, 2026-09-09, PR #13)
+
+Livré et fusionné : la chasse à mains nues (`jobs::may_hunt`, rayon `HAND_HUNT_RANGE` = 12
+cases pour un chasseur désarmé, mesuré), `BiomeTable::game_mix` (`[1,1,1]` partout,
+`ICE = [2,1,0]`), `game_density` confirmé à 2000, et le joueur maigre du banc qui bâtit un
+poste de fabrication (sans poste, une dépouille ne devient jamais de la viande). **Le banc
+passe** : banquise 0 → 18/20 (30/40), `ice_colonies_survive_often_enough` actif et vert,
+autres biomes dans le bruit, tempéré 18/30 identique en campagne, `demo` inchangé.
+
+**La campagne banquise échoue encore : 0/30, 97 % famine**, à −10 °C aussi. Trois mesures
+isolent la cause (rapport §14.3) : ce n'est ni l'abondance (2000 → 8000 ‰ : 0/30), ni le
+joueur scripté (le joueur du banc bridé comme lui : 18 → 16/20), c'est **la taille de
+carte** — même joueur, 24² → 3/30 et 68 % de famine, 32² / 48² / 64² → 0/30 et 100 %. Le
+mécanisme : `animals::MAX_ANIMALS` plafonne **douze bêtes par carte**, quelle que soit la
+surface, et les hardes entrent par le bord (`find_entry_tile`) ; sur 64² elles paissent à
+trente cases du centre, hors des douze cases d'un chasseur désarmé, et la colonie ne les voit
+jamais. La borne de 12 cases est à recalibrer si `MAX_ANIMALS` change.
+
+## Troisième passe : à trancher
+
+Deux leviers, pas mesurés, et pas équivalents en coût :
+
+- **A. Un plafond de faune par surface** (`MAX_ANIMALS` devient un nombre par tranche de
+  cases, ou est mis à l'échelle par `game_density`) : plus de bêtes sur les grandes cartes,
+  donc plus près de la colonie en moyenne. Touche **tous** les biomes sur 128×128 (la carte du
+  client), et le coût par tick de la faune suit le nombre de pawns — « à surveiller, pas
+  encore mesuré » dans le plan : il faut le `bench` avant et après.
+- **B. Des hardes qui rejoignent la colonie** : au lieu de paître au hasard à leur point
+  d'entrée, une harde dérive vers le centre de la carte (ou le barycentre des colons) —
+  déterministe, sans A\* (pas en ligne droite comme la fuite). Change le comportement partout
+  sauf si on le borne à la table (`game_mix`/`game_density` ≠ référence) ; réaliste sur la
+  glace (les bêtes vont au trou d'eau), discutable ailleurs.
+
+Dans les deux cas la campagne banquise 64² est le critère, les critères du frontmatter restent.
 
 ## Ce qui a été appris (première passe, 2026-09-09, PR #12)
 
