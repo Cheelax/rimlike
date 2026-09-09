@@ -566,6 +566,23 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
 ## 8. Journal des décisions
 
+- 2026-09-09 (soir) : le gibier ne suffit pas à la banquise — résultat négatif mesuré (PR #12,
+  sous-agent Opus sur la fiche `banquise-survivable`). Livré : `BiomeTable::game_density` (pour
+  mille, 1000 = identité sur toutes les tables, 2000 sur `ICE`), qui divise le délai entre hardes
+  **après** un tirage inchangé — empreintes d'état figées avant le changement (tempéré et toundra,
+  6 jours en 48×48) qui prouvent que les neuf autres biomes jouent la même partie, `demo` inchangé,
+  témoin tempéré identique colonne par colonne. Mais banc **0/20** et campagne **0/30, 100 %
+  famine** de 1000 à 20000 ‰ : le goulot n'est pas la quantité de gibier. (1) Un colon à mains
+  nues ne chasse pas (`try_start_hunt`), et les joueurs scriptés meurent au jour 3, avant de
+  s'armer. (2) Armé (joueur de relevé, jamais dans un test qui affirme), la famine tombe
+  monotonement avec l'abondance (47/62 → 0/59 à 8000 ‰) mais les vivantes restent à 2-6/20 : le
+  sanglier (une bête sur trois) tue. 2000 gardé comme plus petite valeur qui passe la famine sous
+  la moitié des morts chez un joueur armé — un défaut mesuré, pas une victoire. Le test
+  `ice_colonies_survive_often_enough` est écrit et **posé `#[ignore]`** avec ce diagnostic : il
+  sortira de l'ignore quand le goulot sera levé. Fiche remise `open` avec deux leviers à trancher
+  (chasse du petit gibier à mains nues ou arme de départ ; composition des hardes par biome), les
+  deux hors du périmètre initial. Rapport §14.2.
+
 - 2026-09-09 : la toundra était jouable, la banquise ne l'est pas — mesuré avant de décider.
   Le « banquise et toundra injouables (rien à verdir) » du 2026-09-07 reposait sur le banc
   d'**avant** le correctif du plancher qui murait les colonies (0/20 et 4/20, §13.6 du rapport).

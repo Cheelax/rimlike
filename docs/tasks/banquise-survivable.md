@@ -1,8 +1,8 @@
 ---
 slug: banquise-survivable
-status: claimed
-claimed_by: Claude Fable (session orchestrateur)
-claimed_at: 2026-09-09
+status: open
+claimed_by:
+claimed_at:
 layer: sim
 scope:
   - crates/sim/src/biome.rs
@@ -23,6 +23,48 @@ done_in:
 ---
 
 # Une banquise survivable : vivre de chasse sur la glace
+
+## Ce qui a été appris (première passe, 2026-09-09, PR #12)
+
+La première passe a livré le **mécanisme** (`BiomeTable::game_density`, 2000 ‰ sur `ICE`,
+1000 partout ailleurs, flux RNG intact, empreintes figées) et la **mesure**, mais **aucun
+critère de survie n'est atteint** : banc 0/20, campagne 0/30, 100 % famine, de 1000 à
+20000 ‰ d'abondance. Le rapport est au §14.2 de `CAMPAIGN-FINDINGS.md`. Le goulot n'est pas
+la quantité de gibier :
+
+1. **Un colon à mains nues ne chasse pas** (`jobs.rs::try_start_hunt`), et ni le joueur maigre
+   du banc ni le joueur scripté de la campagne ne s'arment avant de mourir — sur la glace les
+   trois colons sont morts au jour 3, avant le poste de fabrication. Sur les autres biomes, on
+   mange des baies en attendant ; ici il n'y a rien à attendre.
+2. **Armé, on ne meurt plus de faim, on meurt du sanglier.** Avec un joueur de relevé qui
+   fabrique un poste et un arc par colon (`plan_armed`, relevé seulement), la famine tombe de
+   façon monotone avec l'abondance (47/62 → 27/59 à 2000 → 0/59 à 8000), mais les colonies
+   vivantes ne bougent pas (2 à 6 sur 20) : une bête sur trois est un sanglier, il charge, et
+   ce joueur n'a ni lit ni médecine. Le test `ice_colonies_survive_often_enough` est écrit et
+   posé `#[ignore]` avec ce diagnostic.
+
+La fiche est donc **remise ouverte**, avec un design à trancher (ci-dessous) qui sort du
+périmètre initial. Le constat et les interdits d'origine restent valables.
+
+## Design à trancher avant la seconde passe (décision de Thomas)
+
+Deux leviers, à mesurer l'un contre l'autre avec le même banc :
+
+- **A. La chasse au petit gibier à mains nues** : un lapin (2 viandes, 150 PV) se prend sans
+  arc — `try_start_hunt` accepterait un chasseur désarmé **pour cette seule espèce**, au
+  corps à corps. Périmètre : `jobs.rs` (et le joueur maigre du banc n'a rien à changer : il
+  marque déjà le gibier). Variante : une arme de départ (un épieu) pour toute colonie fondée
+  sur un biome `has_no_soil` — touche `lib.rs::spawn_starting_pawns`, et change le tempéré
+  si on ne la borne pas au biome.
+- **B. La composition des hardes par biome** : moins (ou pas) de sangliers sur la glace,
+  plus de cerfs — une seconde entrée de table, ou une pondération d'espèces par table.
+  Périmètre : `animals::spawn_herd`, même règle de flux RNG que `game_density`. **Non
+  chiffrée** : le relevé `measure_ice_bottleneck` dit que le sanglier tue, pas de combien
+  une harde sans sanglier sauverait.
+
+Dans les deux cas, l'entrée `game_density` reste le second étage (elle règle la famine
+d'une colonie qui sait chasser) ; sa valeur sera à remesurer une fois le goulot levé, et
+`ice_colonies_survive_often_enough` doit alors sortir de `#[ignore]`.
 
 ## Constat mesuré (2026-09-09, `main` à `1aa8a3c`)
 
