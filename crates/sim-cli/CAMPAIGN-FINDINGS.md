@@ -3816,7 +3816,7 @@ dit pourquoi : les bêtes disparaissent de la carte au lieu de tomber.
 | jour | 1 | 2 | 3 | 4 | 5 |
 |---|---|---|---|---|---|
 | bêtes sur la carte, **arme exigée** (graine 1) | 8 | 8 | 10 | 10 | 10 |
-| bêtes sur la carte, **mains nues sans borne** | 0 | 0 | 3 | 3 | 3 |
+| bêtes sur la carte, **mains nues sans borne** (A2) | 0 | 0 | 3 | 3 | 3 |
 
 Le colon désarmé atteint le gibier, le frappe, la bête détale — et une fois sur
 quatre elle passe la lisière et ne revient pas. Il vide la carte sans rien
@@ -3834,8 +3834,10 @@ graine  5 fin 4 | colons [3, 3, 3, 3, 4, 4, 4, 5, 4, 4]
    vivres [19, 10, 0, 2, 0, 0, 0, 36, 15, 20]   armés [0,0,0,0,0,0,0,0,1,1]
 ```
 
-Neuf colonies sur vingt finissent les dix jours **sans qu'un seul colon ait tenu
-une arme** : c'est le résultat que la fiche demandait.
+Onze colonies sur vingt **n'ont jamais tenu une arme** de la partie
+(`measure_ice_bottleneck` : « 9/20 colonies ont eu une arme »), et comme deux
+seulement s'éteignent, **au moins neuf des dix-huit survivantes ont vécu dix
+jours au poing** : c'est le résultat que la fiche demandait.
 
 #### Les rejets, chiffrés
 
@@ -3990,9 +3992,10 @@ deux colons meurent de leurs plaies plutôt que de faim.
 #### Par graine, banquise en campagne
 
 Trente lignes plates, et c'est le résultat : `0 colon, 3 morts, 3 famines`
-partout, sauf la graine 29 (`0 colon, 4 morts, 2 famines` — le quatrième est un
-colon errant arrivé après coup, mort de ses plaies). Seule la richesse finale
-bouge, de 200 à 814 selon les dépouilles restées au sol.
+partout, sauf la graine 29 (`0 colon, 4 morts, 2 famines` — deux colons errants
+arrivés après coup, morts de leurs plaies : ce sont les deux seules morts de la
+tranche qui ne soient pas des famines). Seule la richesse finale bouge, de 200 à
+814 selon les dépouilles restées au sol.
 
 | gr. | rich. | | gr. | rich. | | gr. | rich. | | gr. | rich. | | gr. | rich. |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
