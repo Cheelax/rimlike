@@ -16,7 +16,8 @@ et la diplomatie enfin mesurées — au **§10**. Le **§11**, écrit dans la fo
 corrige le **joueur scripté** lui-même sur trois points (forge et minage,
 tuniques d'automne, apprivoisement) et donne l'effet mesuré de chacun ; le
 tableau d'arrivée des cinq campagnes est au §2, sous « Joueur scripté corrigé
-le 2026-09-06 ».
+le 2026-09-06 ». Le **§14** (2026-09-09) remesure les deux biomes enneigés :
+la toundra est jouable, la banquise meurt de faim en moins de dix jours.
 
 **Ce document mesure, il ne règle rien.** Aucune constante du sim n'a été
 touchée pour l'écrire. Chaque constat porte une proposition chiffrée, à
@@ -3284,6 +3285,9 @@ jours contre 13,9) : **le désert reste dur, il n'est plus impossible.**
 - **La banquise et la toundra ne gagnent rien** : `has_no_soil` les vise aussi,
   mais elles n'ont pas une case de sable à verdir (leur sol est blanchi), et le
   banc les laisse à **0/20** et **4/20**. Hors périmètre de cette tranche.
+  **Remesuré le 2026-09-09 (§14)** : le 4/20 de la toundra datait d'avant le
+  correctif du plancher qui murait les colonies (§13.9) — elle est à **19/20**
+  au banc et 22/30 en campagne ; la banquise reste à 0/20 et 30/30 éteintes.
 - **Une carte tempérée sans terre reste possible** (1 sur 40 en 24×24) : le
   plancher ne la regarde plus. C'est un constat, pas une régression.
 - **Le banc livré tourne à 24×24 sur dix jours**, et c'est un compromis de coût
@@ -3410,3 +3414,84 @@ forêt boréale). Tests ajoutés dans `crates/sim/tests/playability.rs` :
 `the_resource_floor_never_seals_a_map` et
 `every_settleable_map_has_stone_within_reach` (les quatre échouent sur le code
 d'avant), plus le relevé `#[ignore] measure`.
+
+## 14. Les deux biomes enneigés, remesurés (2026-09-09)
+
+### 14.1 La toundra est jouable, la banquise ne l'est pas
+
+Le §13.6 laissait « banquise et toundra » en dehors du périmètre avec un banc
+à **0/20** et **4/20**, et `docs/PLAN.md` les disait injouables. Ces deux
+chiffres datent d'**avant** le §13.9 : le plancher de ressources murait alors
+des colonies en posant ses obstacles sur des couloirs, et c'est ce qui tuait la
+toundra, pas sa table. Remesuré sur `main` à `1aa8a3c`, sans toucher au code.
+
+**Protocole.** Le banc `tests/balance_biomes.rs::measure_survival` (20 graines,
+24×24, 10 jours, joueur maigre : zones, coupe, récolte, feu, chasse quand la
+nourriture crue passe sous 60) et `measure_larder` (garde-manger au jour 1 en
+64×64), puis la campagne (`campaign --seeds 30 --days 30 --size 64`) sur la
+toundra (`--biome 2`) au climat tempéré par défaut et à `--climate -50` (la
+campagne « froide » du §9), sur la banquise (`--biome 1`) au climat par défaut
+et à `--climate -150`, et le témoin tempéré (`--biome 4`) le même jour.
+
+**Banc, colonies vivantes au jour 10 (20 graines).**
+
+| biome | vivantes | | biome | vivantes |
+|---|---|---|---|---|
+| **banquise** | **0/20** | | prairie | 20/20 |
+| **toundra** | **19/20** (toutes sauf la 13) | | désert | 20/20 |
+| forêt boréale | 20/20 | | savane | 20/20 |
+| forêt tempérée (témoin) | 18/20 | | jungle | 11/20 |
+| montagne | 17/20 | | | |
+
+**Garde-manger au jour 1 (64×64, 20 graines).** Banquise : **0 case semable,
+0 case de sol, 0 buisson**, 2 à 4 bêtes. Toundra : 0 case semable et 0 case de
+sol (la neige n'est pas un sol, `Map::is_soil`), mais **34 à 81 buissons
+atteignables (54 en moyenne)** — plus que le tempéré (0 à 66, 35 en moyenne) —
+et 2 à 4 bêtes. Désert : 49 cases semables partout (le potager du §13).
+
+**Campagne (30 graines, 64×64, 30 jours).**
+
+| campagne | vivantes | colons j10 / j20 | morts | dont famine | vivres (j) | raids/colonie |
+|---|---|---|---|---|---|---|
+| tempéré `--biome 4` (témoin du jour) | 18/30 | 3,1 / 3,2 | 207 | 5 (2 %) | 10,3 | 7,4 |
+| toundra `--biome 2` | **22/30** | 3,2 / 2,7 | 218 | 1 (0 %) | 10,8 | 7,0 |
+| toundra `--biome 2 --climate -50` | **8/30** | 2,4 / 1,5 | 202 | 3 (1 %) | 6,3 | 5,4 |
+| banquise `--biome 1` | **0/30** | 0,0 / 0,0 | 90 | **90 (100 %)** | 0,0 | 0,0 |
+| banquise `--biome 1 --climate -150` | **0/30** | 0,0 / 0,0 | 90 | **90 (100 %)** | 0,0 | 0,0 |
+
+La campagne froide de référence du §9 (tempéré à `--climate -50`) laissait
+11/30 colonies vivantes : la toundra froide, à 8/30, est plus dure mais dans
+le même ordre — et rien n'y meurt de faim (3 morts sur 202) : 81 % des morts
+sont des morts de raid, comme partout. Au climat par défaut elle fait **mieux**
+que le tempéré (22 contre 18), ce qui n'est pas un paradoxe : ses buissons sont
+plus nombreux, ses arbres rares (40 ‰) laissent le sol dégagé, et le froid n'y
+est pas encore (c'est `SetClimate` qui l'apporte, pas la table).
+
+La banquise, elle, s'éteint **avant le jour 10 sur les 30 graines**, sans avoir
+reçu un seul raid (rien à piller, richesse finale 230 à 582), et les 90 morts
+sont 90 famines. Ce n'est pas la graine, c'est la **table** : `ICE` n'a ni sol
+(`has_no_soil`) ni buisson (`bush_density: 0`), et `Map::force_soil` ne verdit
+que le sable — c'est voulu, une calotte ne dégèle pas. Il ne reste que la
+chasse, et elle ne suffit pas d'un facteur deux : une colonie de trois mange
+trois repas par jour, soit **15 unités crues** (`pawn::HUNGER_DECAY`,
+`farm::RAW_PER_MEAL`) ; une harde entre tous les **2 à 4 jours**
+(`storyteller.rs`, `next_herd_at`), de **2 à 4 cerfs ou lapins**
+(`animals::spawn_herd`), un cerf rendant **12 viandes** et un lapin **2**
+(`Species::meat`) — soit **~7 unités par jour** au mieux, et encore faut-il un
+colon armé pour chasser (poste à 10 bois, puis un arc). Ni le joueur scripté ni
+le joueur maigre du banc ne sont en cause : tous deux chassent dès que la
+viande manque.
+
+**Ce que ça décide.** La toundra sort du « Reste » du plan et gagne un test
+statistique (`tundra_colonies_survive_often_enough`, même patron que le
+désert : au moins la moitié du témoin, témoin joué seulement si nécessaire).
+La banquise a sa fiche, `docs/tasks/banquise-survivable.md` : le levier imposé
+est l'**abondance du gibier par la table du biome** (une seule entrée nouvelle,
+à 1000 pour toutes les tables existantes, flux RNG inchangé ailleurs), et il est
+interdit de dégeler, verdir ou planter la glace. Les critères d'acceptation
+chiffrés sont dans la fiche ; le §14.2 recevra la mesure.
+
+**Vérification.** `cargo test --workspace` (0 échec sur `main` avant tout
+changement) ; les cinq campagnes ci-dessus tournent en 2 à 16 s chacune ; le
+témoin tempéré du jour (18/30, 207 morts) est la référence « identique colonne
+par colonne » demandée par la fiche.

@@ -18,6 +18,13 @@
 //! qui ont servi à trancher entre les pistes ; ils sont gardés pour qu'une
 //! retouche de `biome::DESERT` ou du plancher d'oasis se recalibre avec, et pas
 //! à l'intuition.
+//!
+//! Le même critère vaut pour la toundra depuis le 2026-09-09 (§14 du rapport) :
+//! elle passait pour injouable sur une mesure d'avant le correctif du plancher
+//! qui murait les colonies, et elle survit en fait 19 fois sur 20 ici — ses
+//! buissons nourrissent. Le test la garde à ce niveau. La banquise, elle, reste
+//! à 0/20 (ni sol, ni buisson) : sa fiche est `docs/tasks/banquise-survivable.md`,
+//! et son test viendra avec elle.
 
 use sim::{Biome, Command, Designation, Feature, Sim, Terrain, Zone};
 
@@ -367,6 +374,38 @@ fn desert_colonies_survive_often_enough() {
         desert * 2 >= temperate,
         "désert {desert}/{SEEDS} (graines {d_seeds:?}) contre tempéré \
          {temperate}/{SEEDS} (graines {t_seeds:?}) : moins de la moitié"
+    );
+}
+
+/// **La toundra reste jouable** : au moins la moitié du témoin tempéré, sur les
+/// mêmes graines et avec le même joueur — même critère et même économie de
+/// témoin que le désert.
+///
+/// Elle n'a pas une case de sol (la neige ne se cultive pas, `Map::is_soil`),
+/// mais ses buissons sont plus nombreux que ceux du tempéré (34 à 81
+/// atteignables en 64×64 contre 0 à 66, relevé `measure_larder` du 2026-09-09)
+/// et ils repoussent : la colonie vit de baies, puis de chasse. Mesuré à 19/20
+/// ici et 22/30 en campagne le 2026-09-09 (`crates/sim-cli/CAMPAIGN-FINDINGS.md`
+/// §14) — le 4/20 qui l'avait fait déclarer injouable datait d'avant le
+/// correctif du plancher qui murait les colonies (§13.9). Ce test empêche
+/// qu'une retouche de `biome::TUNDRA` ou du plancher la fasse retomber sans
+/// qu'on le voie.
+#[test]
+fn tundra_colonies_survive_often_enough() {
+    let (tundra, t_seeds) = survivors(Biome::Tundra);
+    if tundra * 2 >= SEEDS as u32 {
+        return;
+    }
+    let (temperate, w_seeds) = survivors(Biome::TemperateForest);
+    assert!(
+        temperate * 3 >= SEEDS as u32,
+        "le témoin tempéré ne survit que {temperate}/{SEEDS} fois : la mesure \
+         de la toundra ne veut plus rien dire (graines {w_seeds:?})"
+    );
+    assert!(
+        tundra * 2 >= temperate,
+        "toundra {tundra}/{SEEDS} (graines {t_seeds:?}) contre tempéré \
+         {temperate}/{SEEDS} (graines {w_seeds:?}) : moins de la moitié"
     );
 }
 

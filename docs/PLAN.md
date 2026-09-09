@@ -534,8 +534,11 @@ d'alice arrivé chez bob).
   HUD ; vérifié : colonie fondée sur un désert du globe, 90 % de sable, 20 arbres du plancher.
   Sélecteur de biome en solo livré le 2026-09-07 (Codex) : neuf biomes fondables à l'accueil,
   mémorisé, sauvegarde qui garde son biome. Désert rendu survivable le 2026-09-07 (potager
-  garanti de 49 cases, 0/30 → 14/30 colonies à 30 jours). Reste : banquise et toundra
-  injouables (rien à verdir), plancher de ressources à corriger (fiche `plancher-de-ressources`).
+  garanti de 49 cases, 0/30 → 14/30 colonies à 30 jours). Plancher corrigé le 2026-09-07
+  (fiche `plancher-de-ressources`). Toundra remesurée **jouable** le 2026-09-09 (19/20 au banc,
+  22/30 en campagne : ses buissons nourrissent ; test `tundra_colonies_survive_often_enough`).
+  Reste : banquise injouable (0/30, 100 % famine, ni sol ni buisson — fiche
+  `banquise-survivable`, levier = gibier par biome), une graine de désert sur vingt.
 
 **Reste**
 
@@ -562,6 +565,25 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 
 ## 8. Journal des décisions
+
+- 2026-09-09 : la toundra était jouable, la banquise ne l'est pas — mesuré avant de décider.
+  Le « banquise et toundra injouables (rien à verdir) » du 2026-09-07 reposait sur le banc
+  d'**avant** le correctif du plancher qui murait les colonies (0/20 et 4/20, §13.6 du rapport).
+  Remesuré sur `main` (`1aa8a3c`), même banc, mêmes graines : toundra **19/20** (témoin tempéré
+  18/20) et **22/30** colonies vivantes en campagne 64×64 × 30 jours contre 18/30 en tempéré ;
+  8/30 à `--climate -50` contre 11/30 pour la campagne froide de référence — ses 34 à 81
+  buissons atteignables nourrissent, et 84 % de ses morts sont des morts de raid, comme
+  ailleurs. Banquise : **0/20** au banc, **30/30 éteintes en campagne, 90 morts, 100 % famine,
+  plus aucun colon au jour 10**, identique à `--climate -150`. Le mécanisme est dans la table,
+  pas dans la graine : zéro case de sol, zéro buisson (`has_no_soil`, `bush_density: 0`, et
+  `force_soil` ne verdit que le sable — une calotte ne dégèle pas, c'est voulu) ; il ne reste
+  que la chasse, et une harde de 2 à 4 bêtes tous les 2 à 4 jours (12 viandes le cerf, 2 le
+  lapin) apporte ~7 unités crues par jour quand trois colons en mangent 15 : insuffisant d'un
+  facteur deux avant même de s'armer. Décisions : la toundra sort du « Reste » et gagne son test
+  statistique (`tundra_colonies_survive_often_enough`, patron du désert, témoin joué seulement
+  si nécessaire) ; la banquise a sa fiche (`docs/tasks/banquise-survivable.md`) avec un levier
+  imposé — l'abondance du gibier par la table du biome, une seule entrée à 1000 partout sauf
+  sur la glace, flux RNG inchangé ailleurs — et l'interdiction de dégeler. Rapport §14.
 
 - 2026-09-07 : trois défauts de relecture indépendante corrigés dans le sim. Le plancher de
   ressources posait des obstacles sur des passages critiques (forêt boréale graine 77 : terre
