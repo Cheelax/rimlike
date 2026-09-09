@@ -24,13 +24,14 @@
 //! qui murait les colonies, et elle survit en fait 19 fois sur 20 ici — ses
 //! buissons nourrissent. Le test la garde à ce niveau.
 //!
-//! La banquise, elle, reste à **0/20** après la tranche du gibier du
-//! 2026-09-09 (`crates/sim-cli/CAMPAIGN-FINDINGS.md` §14.2), et son test de
-//! survie est ici, `#[ignore]`, avec la mesure qui dit pourquoi : ce n'est plus
-//! sa table qui bloque — `BiomeTable::game_density` fait tomber la famine de
-//! 47 morts sur 62 à 0 sur 59 quand la colonie peut tirer — c'est que **le
-//! joueur de ce fichier ne fabrique jamais d'arme**, et qu'un colon à mains
-//! nues ne chasse pas.
+//! La banquise a rejoint la liste le 2026-09-09, à la seconde passe de sa fiche
+//! (`crates/sim-cli/CAMPAIGN-FINDINGS.md` §14.3) : **0/20 avant, 18/20 après**,
+//! et son test de survie est actif comme les deux autres. Trois choses l'ont
+//! débloquée, et aucune n'est l'abondance du gibier : la chasse **à mains nues**
+//! (`jobs::may_hunt`), une harde de banquise **sans sanglier et à deux tiers de
+//! cerf** (`biome::ICE::game_mix`), et — côté banc seulement — le **poste de
+//! fabrication** que le joueur de `plan` ne bâtissait pas, sans lequel une
+//! dépouille ne devient jamais de la viande.
 
 use sim::{Biome, Command, Designation, Feature, Sim, Terrain, Zone};
 
@@ -257,6 +258,21 @@ fn plan(s: &Sim) -> Vec<Command> {
             y1: ay,
         });
     }
+    // Un poste de fabrication, dès dix bois : **sans lui une dépouille ne
+    // devient jamais de la viande** (`jobs::try_start_butcher`). Sur un biome
+    // qui mange des baies, ça ne se voyait pas — le joueur du banc chassait et
+    // laissait pourrir ses prises ; sur la banquise, où la chasse est tout le
+    // repas, c'était la moitié du 0/20 mesuré au §14.2 du rapport.
+    if m.crafting_spot_count() == 0 && s.stored_totals()[sim::ItemKind::Wood as usize] >= 10 {
+        cmds.push(Command::Build {
+            kind: sim::BuildKind::CraftingSpot,
+            material: sim::Material::Wood,
+            x0: ax + 2,
+            y0: ay - 2,
+            x1: ax + 2,
+            y1: ay - 2,
+        });
+    }
     // La chasse : toute bête sauvage est du gibier, tant qu'il n'y a pas de
     // quoi manger trois jours.
     let stored = s.stored_totals();
@@ -341,10 +357,12 @@ struct IceTrace {
     other: u32,
 }
 
-/// Joue une colonie de banquise en relevant le goulot. Même joueur et mêmes
-/// réglages que `play` : c'est la même partie, simplement mieux observée.
-fn ice_trace(seed: u64, armed_player: bool) -> IceTrace {
-    let mut s = Sim::new_in_biome(seed, SIZE, SIZE, Biome::Ice);
+/// Joue une colonie en relevant le goulot. Même joueur et mêmes réglages que
+/// `play` : c'est la même partie, simplement mieux observée. Écrite pour la
+/// banquise, elle sert à tous les biomes depuis la seconde passe — la chasse à
+/// mains nues les touche tous, et il a fallu mesurer où les morts se déplacent.
+fn trace(seed: u64, biome: Biome, armed_player: bool) -> IceTrace {
+    let mut s = Sim::new_in_biome(seed, SIZE, SIZE, biome);
     let ticks = u64::from(DAYS) * u64::from(sim::TICKS_PER_DAY);
     let mut played = Played {
         end: 0,
@@ -430,32 +448,13 @@ fn ice_trace(seed: u64, armed_player: bool) -> IceTrace {
 }
 
 /// **Instrument de diagnostic, pas le joueur du banc.** Le joueur de `plan`
-/// marque du gibier mais ne fabrique jamais d'arme — et « un colon à mains
-/// nues ne chasse pas » (`jobs.rs::try_start_hunt`). Sur un biome qui mange
-/// autre chose que de la viande, ça ne se voyait pas ; sur la banquise, c'est
-/// tout le sujet. Ce joueur-ci ajoute les deux ordres qui manquent, et **rien
-/// d'autre** : un poste de fabrication dès qu'il y a dix bois, et un arc par
-/// colon. Il ne sert qu'aux relevés `#[ignore]`, pour séparer « il n'y a pas
-/// assez de gibier » de « personne ne peut le tirer ».
+/// chasse à mains nues et à courte portée (`jobs::HAND_HUNT_RANGE`) ; celui-ci
+/// ajoute **un seul ordre** : un arc par colon. Il sert à séparer « il n'y a
+/// pas assez de gibier » de « personne ne peut le tirer » — et depuis que le
+/// poste de fabrication est passé dans `plan`, c'est tout ce qui les distingue.
+/// Il ne sert qu'aux relevés `#[ignore]`.
 fn plan_armed(s: &Sim) -> Vec<Command> {
     let mut cmds = plan(s);
-    let m = s.map();
-    let Some((ax, ay)) = m
-        .nearest_passable(m.width() / 2, m.height() / 2)
-        .map(|(x, y)| (x as i32, y as i32))
-    else {
-        return cmds;
-    };
-    if m.crafting_spot_count() == 0 && s.stored_totals()[sim::ItemKind::Wood as usize] >= 10 {
-        cmds.push(Command::Build {
-            kind: sim::BuildKind::CraftingSpot,
-            material: sim::Material::Wood,
-            x0: ax + 2,
-            y0: ay - 2,
-            x1: ax + 2,
-            y1: ay - 2,
-        });
-    }
     let alive = colonists(s);
     if s.craft_targets()[sim::ItemKind::Bow as usize] < alive {
         cmds.push(Command::SetCraftTarget {
@@ -558,35 +557,35 @@ fn tundra_colonies_survive_often_enough() {
     );
 }
 
-/// **Le critère de la fiche `banquise-survivable`, et il n'est pas atteint.**
-/// Même patron que le désert et la toundra : au moins la moitié du témoin
-/// tempéré, mêmes graines, même joueur, témoin joué seulement si nécessaire.
+/// **Le critère de la fiche `banquise-survivable`, atteint à la seconde
+/// passe.** Même patron que le désert et la toundra : au moins la moitié du
+/// témoin tempéré, mêmes graines, même joueur, témoin joué seulement si
+/// nécessaire.
 ///
-/// Il part `#[ignore]` parce qu'il **échoue** : la banquise reste à **0/20**
-/// ici, quelle que soit l'abondance du gibier — mesuré de 1 000 à 8 000 pour
-/// mille, voir `measure_ice_bottleneck` et le §14.2 du rapport. Ce n'est pas
-/// la table qui bloque, et c'est tout l'intérêt de le laisser écrit :
+/// Il est parti `#[ignore]` le 2026-09-09 au matin, avec **0/20** et deux
+/// causes écrites, et il en sort le soir avec **18/20** (30/40 sur le relevé à
+/// quarante graines). Ce n'est pas l'abondance du gibier qui l'a débloqué —
+/// elle avait été mesurée de 1 000 à 20 000 pour mille sans gagner une colonie
+/// (§14.2 du rapport) — ce sont trois choses, dans cet ordre d'importance
+/// (§14.3) :
 ///
-/// 1. **Le joueur de ce fichier ne chasse pas.** Il marque du gibier
-///    (`Command::Hunt`), mais « un colon à mains nues ne chasse pas »
-///    (`jobs.rs::try_start_hunt`) et il ne fabrique jamais d'arme. Sur les
-///    autres biomes ça ne se voyait pas — on y mange des baies ; ici c'est
-///    tout le repas. Résultat : **60 morts de faim sur 60**, à toutes les
-///    valeurs de `game_density`.
-/// 2. **Armé, on ne meurt plus de faim, on meurt du sanglier.** Avec un poste
-///    de fabrication et un arc par colon (`plan_armed`, relevé seulement), la
-///    famine tombe de 47 morts sur 62 à 27 sur 59 à 2 000 pour mille et à 0
-///    sur 59 à 8 000 — l'entrée de table fait donc exactement ce qu'on lui
-///    demande — mais les colonies vivantes ne bougent pas (2 à 6 sur 20) :
-///    une bête sur trois est un sanglier, il charge, et ce joueur n'a ni lit
-///    ni médecine.
+/// 1. **Un colon à mains nues chasse** (`jobs::may_hunt`), dans un rayon de
+///    `jobs::HAND_HUNT_RANGE` cases. Sans arme, la première journée d'une
+///    banquise était injouable : il n'y a ni baie ni légume pour attendre le
+///    poste de fabrication et l'arc.
+/// 2. **La harde de banquise n'a pas de sanglier et deux tiers de cerf**
+///    (`biome::ICE::game_mix`, `[2, 1, 0]`). Le sanglier charge le chasseur
+///    désarmé, et le lièvre ne rend que deux viandes quand le cerf en rend
+///    douze.
+/// 3. **Le joueur de ce fichier bâtit un poste de fabrication** (voir `plan`) :
+///    sans lui une dépouille ne devient jamais de la viande, et la moitié du
+///    0/20 tenait à ce trou de l'instrument, pas au jeu.
 ///
-/// Lever `#[ignore]` demandera donc autre chose que la table : un joueur de
-/// banc qui s'arme et se soigne, ou une chasse au petit gibier à mains nues.
-/// C'est écrit ici plutôt que nulle part pour que le jour où l'un des deux
-/// arrive, la mesure soit déjà en place.
+/// Ce que le test ne dit pas, et que le rapport dit : la **campagne** en 64×64
+/// reste à 0/30. Ce banc joue en 24×24 (voir `SIZE`), et sur une carte sept
+/// fois plus grande les douze bêtes du plafond (`animals::MAX_ANIMALS`) sont
+/// sept fois plus dispersées.
 #[test]
-#[ignore]
 fn ice_colonies_survive_often_enough() {
     let (ice, i_seeds) = survivors(Biome::Ice);
     if ice * 2 >= SEEDS as u32 {
@@ -595,13 +594,11 @@ fn ice_colonies_survive_often_enough() {
     let (temperate, w_seeds) = survivors(Biome::TemperateForest);
     assert!(
         temperate * 3 >= SEEDS as u32,
-        "le témoin tempéré ne survit que {temperate}/{SEEDS} fois : la mesure \
-         de la banquise ne veut plus rien dire (graines {w_seeds:?})"
+        "le témoin tempéré ne survit que {temperate}/{SEEDS} fois : la mesure          de la banquise ne veut plus rien dire (graines {w_seeds:?})"
     );
     assert!(
         ice * 2 >= temperate,
-        "banquise {ice}/{SEEDS} (graines {i_seeds:?}) contre tempéré \
-         {temperate}/{SEEDS} (graines {w_seeds:?}) : moins de la moitié"
+        "banquise {ice}/{SEEDS} (graines {i_seeds:?}) contre tempéré          {temperate}/{SEEDS} (graines {w_seeds:?}) : moins de la moitié"
     );
 }
 
@@ -837,7 +834,7 @@ fn measure_ice_vs_temperate() {
 #[ignore]
 fn measure_ice_trajectories() {
     for seed in 1..=SEEDS {
-        let t = ice_trace(seed, false);
+        let t = trace(seed, Biome::Ice, false);
         println!(
             "  graine {seed:2} fin {} | colons {:?}\n     vivres {:?}\n     bêtes {:?}\n     armés {:?} | première arme jour {}",
             t.played.end, t.played.daily, t.played.food, t.wild, t.armed, t.first_weapon_day
@@ -861,7 +858,7 @@ fn measure_ice_bottleneck() {
         // temps la colonie tient.
         let mut colonist_days = 0u32;
         for seed in 1..=SEEDS {
-            let t = ice_trace(seed, armed);
+            let t = trace(seed, Biome::Ice, armed);
             alive += u32::from(t.played.end > 0);
             wood += u32::from(t.armed.iter().any(|&a| a > 0));
             starved += t.starved;
@@ -981,5 +978,143 @@ fn measure_greening() {
             }
             println!("  {row}");
         }
+    }
+}
+
+/// **Le relevé qui a réglé la chasse à mains nues** : tous les biomes, mêmes
+/// graines que `measure_survival`, mais avec les **colons-jours** et les causes
+/// de mort. Le compte de colonies vivantes saute de deux ou trois sur un tirage
+/// à vingt graines ; les colons-jours, eux, bougent doucement, et la colonne
+/// « morts » dit vers quoi la mort s'est déplacée — c'est ce qui a permis de
+/// voir qu'à mains nues sans borne de portée la toundra ne perdait pas des
+/// colons de faim mais du **temps de travail** (§14.3 du rapport).
+#[test]
+#[ignore]
+fn measure_hunt_impact() {
+    for b in Biome::ALL {
+        let (mut alive, mut starved, mut hurt, mut other, mut days) =
+            (0u32, 0u32, 0u32, 0u32, 0u32);
+        for seed in 1..=SEEDS {
+            let t = trace(seed, b, false);
+            alive += u32::from(t.played.end > 0);
+            starved += t.starved;
+            hurt += t.hurt;
+            other += t.other;
+            days += t.played.daily.iter().sum::<u32>();
+        }
+        println!(
+            "{:16} {alive}/{SEEDS} | {days} colons-jours | morts : {starved} faim, {hurt} blessés, {other} autres",
+            b.name()
+        );
+    }
+}
+
+/// **Le même relevé sur quarante graines**, pour les décisions que vingt ne
+/// tranchent pas. Le banc joue vingt graines parce qu'il doit tenir dans
+/// `cargo test` en `debug` ; à ce format, ±3 colonies sur 20 est du bruit — la
+/// jungle, qui vit une fois sur deux, en donne la mesure. Doubler l'échantillon
+/// coûte le double de temps et se lance à la main : c'est lui qui a départagé
+/// les portées de chasse et les compositions de harde, et lui qui dit que les
+/// biomes autres que la banquise n'ont pas bougé de plus d'une colonie sur
+/// quarante (§14.3).
+#[test]
+#[ignore]
+fn measure_forty_seeds() {
+    for b in Biome::ALL {
+        let (mut alive, mut days, mut starved, mut hurt) = (0u32, 0u32, 0u32, 0u32);
+        for seed in 1..=40u64 {
+            let t = trace(seed, b, false);
+            alive += u32::from(t.played.end > 0);
+            days += t.played.daily.iter().sum::<u32>();
+            starved += t.starved;
+            hurt += t.hurt;
+        }
+        println!(
+            "{:16} {alive}/40 | {days} colons-jours | morts : {starved} faim, {hurt} blessés",
+            b.name()
+        );
+    }
+}
+
+/// Le joueur du banc, **bridé comme celui de la campagne**, sur un point ou
+/// sur les deux : le poste de fabrication attendu à quarante bois plutôt que
+/// dix (`campaign.rs`, `WOOD_FOR_BASE`), et une seule bête marquée à la fois
+/// plutôt que toute la harde. Voir `measure_the_campaign_restrictions`.
+fn plan_like(s: &Sim, wood_for_spot: u32, one_at_a_time: bool) -> Vec<Command> {
+    let mut cmds = plan(s);
+    if s.stored_totals()[sim::ItemKind::Wood as usize] < wood_for_spot {
+        cmds.retain(|c| {
+            !matches!(
+                c,
+                Command::Build {
+                    kind: sim::BuildKind::CraftingSpot,
+                    ..
+                }
+            )
+        });
+    }
+    if one_at_a_time {
+        let already = s.pawns().iter().any(|p| p.hunted && p.is_alive());
+        let mut kept = false;
+        cmds.retain(|c| {
+            if !matches!(c, Command::Hunt { on: true, .. }) {
+                return true;
+            }
+            if already || kept {
+                return false;
+            }
+            kept = true;
+            true
+        });
+    }
+    cmds
+}
+
+/// Joue une banquise avec `plan_like` et rend `1000 × (colonie vivante) +
+/// colons-jours` — un seul entier, parce que ce relevé n'a besoin de rien
+/// d'autre.
+fn play_like(seed: u64, wood_for_spot: u32, one: bool) -> u32 {
+    let mut s = Sim::new_in_biome(seed, SIZE, SIZE, Biome::Ice);
+    let ticks = u64::from(DAYS) * u64::from(sim::TICKS_PER_DAY);
+    let mut tick = 0;
+    let mut days = 0u32;
+    while tick < ticks {
+        let cmds = if tick % PLAN_INTERVAL == 0 {
+            plan_like(&s, wood_for_spot, one)
+        } else {
+            Vec::new()
+        };
+        s.step(&cmds);
+        tick += 1;
+        if tick % u64::from(sim::TICKS_PER_DAY) == 0 {
+            days += colonists(&s);
+        }
+    }
+    u32::from(colonists(&s) > 0) * 1000 + days
+}
+
+/// **Est-ce le joueur de la campagne qui bloque la banquise ?** La campagne
+/// reste à 0/30 en 64×64 quand le banc passe à 18/20 en 24×24, et la fiche
+/// interdit de toucher `campaign.rs` : restait à savoir si ses deux brides —
+/// poste de fabrication à quarante bois, une bête marquée à la fois — suffisent
+/// à l'expliquer. **Non** : elles coûtent deux colonies sur vingt au banc
+/// (18/20 → 16/20), pas dix-huit. Ce qui reste, c'est la **taille de carte**
+/// (voir §14.3).
+#[test]
+#[ignore]
+fn measure_the_campaign_restrictions() {
+    for (label, wood, one) in [
+        ("banc (poste à 10, toute la harde)", 10u32, false),
+        ("poste à 40 bois", 40, false),
+        ("une bête à la fois", 10, true),
+        ("les deux, comme la campagne", 40, true),
+    ] {
+        let (mut alive, mut days) = (0u32, 0u32);
+        for seed in 1..=SEEDS {
+            let r = play_like(seed, wood, one);
+            alive += r / 1000;
+            days += r % 1000;
+        }
+        println!("{label:32} {alive}/{SEEDS} vivantes | {days} colons-jours");
     }
 }

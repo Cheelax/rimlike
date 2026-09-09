@@ -311,7 +311,13 @@ impl Sim {
         if living >= MAX_ANIMALS {
             return 0;
         }
-        let species = Species::from_u8(self.rng.below(SPECIES_COUNT as u32) as u8);
+        // La composition de la harde vient de la table du biome : le dé a
+        // `game_total()` faces au lieu de trois, et l'espèce se lit par tranche
+        // (`BiomeTable::herd_species`). À `[1, 1, 1]` — toutes les tables sauf
+        // la banquise — c'est le `below(3)` puis `Species::from_u8` d'avant,
+        // au tirage près : même dé, même résultat.
+        let table = self.biome.table();
+        let species = table.herd_species(self.rng.below(table.game_total()));
         // Le sanglier est solitaire ; cerfs et lapins vont par deux à quatre.
         let wanted = if species.aggressive() {
             1 + self.rng.below(2)
