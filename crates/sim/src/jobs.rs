@@ -29,6 +29,46 @@ use crate::{EventKind, Sim, TICKS_PER_DAY, Tech, Weather};
 /// Nombre maximal de candidats pour lesquels on tente un A* par recherche.
 pub(crate) const PATH_ATTEMPTS: usize = 6;
 
+/// Rayon de la chasse **à mains nues**, en cases (distance de Tchebychev entre
+/// le colon et sa proie au moment où il prend le job). Un chasseur armé n'a pas
+/// de rayon : il court après le gibier marqué où qu'il soit, comme avant.
+///
+/// Pourquoi une borne : un colon désarmé ne tue pas d'un coup. Il frappe, la
+/// bête détale six cents ticks (`animals::FLEE_TICKS`) plus vite que lui, il la
+/// rattrape, il refrappe — un cerf demande six coups. Sans borne, **la chasse
+/// devient un piège à main-d'œuvre** : le colon quitte la colonie pour une
+/// journée et revient parfois bredouille (une débandade sur quatre finit hors
+/// carte, `animals::ESCAPE_CHANCE`). Mesuré en campagne 64×64 : la toundra
+/// tombe de 22 à 16 colonies vivantes sur 30 et ses vivres de 10,8 à 5,0 jours,
+/// pour zéro colonie gagnée sur la glace. Avec la borne, toundra et forêt
+/// tempérée retrouvent leur relevé de référence
+/// (`crates/sim-cli/CAMPAIGN-FINDINGS.md` §14.3).
+///
+/// Douze cases, c'est `animals::WILD_MIN_DISTANCE` : le rayon où la carte pose
+/// les bêtes de départ, donc « le gibier qui passe à portée de la colonie ».
+/// Rejets chiffrés : 8 (la banquise retombe à 24 colonies sur 40), 16 (28), 20
+/// (la toundra redécroche), sans borne (16/30 en campagne toundra).
+pub const HAND_HUNT_RANGE: u32 = 12;
+
+/// Ce chasseur-là peut-il s'en prendre à cette bête, `distance` cases plus
+/// loin ?
+///
+/// **Oui, même à mains nues** : un colon désarmé cogne du poing comme un
+/// pillard désarmé (`combat::COLONIST_DAMAGE`, 80 à 121), par le même
+/// `Sim::engage` que la chasse à l'arc. C'est ce qui rend la banquise jouable —
+/// sans sol ni buisson la chasse y est le seul repas, et exiger une arme
+/// rendait la première journée impossible à jouer.
+///
+/// Deux variantes ont été mesurées avant de garder celle-ci : la libre (toutes
+/// les espèces) et la prudente (le sanglier exige une arme, il charge au lieu
+/// de fuir). Avec la borne de `HAND_HUNT_RANGE` elles ne se départagent plus —
+/// 30 colonies sur 40 sur la glace pour les deux, et les huit autres biomes
+/// dans le bruit l'un de l'autre — donc **la plus libre est gardée** : ce que
+/// le joueur marque, le colon va le chercher.
+fn may_hunt(weapon: Option<ItemKind>, distance: u32) -> bool {
+    weapon.is_some() || distance <= HAND_HUNT_RANGE
+}
+
 /// Cadence de réessai des recherches de travail qui visent un **poste** ou une
 /// **cible** dont rien ne garantit qu'elle soit atteignable : dépeçage,
 /// fabrication, fonte, recherche, chasse, réarmement. Une demi-seconde de jeu.
@@ -2780,28 +2820,26 @@ impl Sim {
     }
 
     /// Part chasser le gibier marqué le plus proche. **Un colon à mains nues
-    /// ne chasse pas** : on ne court pas après un cerf pour l'étrangler.
+    /// chasse aussi**, dans un rayon de `HAND_HUNT_RANGE` cases (`may_hunt`).
     fn try_start_hunt(&mut self, i: usize) -> bool {
-        // Trois court-circuits : pas d'arme, rien de marqué sur la carte, ou
-        // ce n'est pas le tour du colon. Le dernier vaut son pesant : une bête
-        // marquée de l'autre rive coûtait six candidats fois huit voisines,
-        // soit quarante-huit A\* ratés, à chaque tick et pour chaque chasseur.
-        if self.pawns[i].weapon.is_none()
-            || !self
-                .pawns
-                .iter()
-                .any(|p| p.hunted && p.faction == Faction::Animal && p.is_alive())
-            || !self.job_retry_due(i)
-        {
+        // Deux court-circuits : rien que *ce* colon-là puisse chasser, ou ce
+        // n'est pas son tour. Le second vaut son pesant : une bête marquée de
+        // l'autre rive coûtait six candidats fois huit voisines, soit
+        // quarante-huit A\* ratés, à chaque tick et pour chaque chasseur.
+        let weapon = self.pawns[i].weapon;
+        let from = self.pawns[i].tile();
+        let mine = |p: &crate::pawn::Pawn| {
+            p.hunted
+                && p.faction == Faction::Animal
+                && p.is_alive()
+                && may_hunt(weapon, chebyshev(from, p.tile()))
+        };
+        if !self.pawns.iter().any(mine) || !self.job_retry_due(i) {
             return false;
         }
-        let from = self.pawns[i].tile();
         let mut candidates: Vec<(u32, u32, u32, u32)> = Vec::new();
         for p in &self.pawns {
-            if !p.hunted || p.faction != Faction::Animal || !p.is_alive() {
-                continue;
-            }
-            if self.hunted_by_other(i, p.id) {
+            if !mine(p) || self.hunted_by_other(i, p.id) {
                 continue;
             }
             let (x, y) = p.tile();

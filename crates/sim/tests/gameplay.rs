@@ -3033,31 +3033,125 @@ fn armed_colonist_hunts_and_carcass_is_butchered() {
     );
 }
 
-/// À mains nues, on ne court pas après un cerf.
+/// **À mains nues, on chasse quand même** : le lapin marqué finit au sol, et
+/// sa dépouille au poste de dépeçage. C'est ce qui rend la banquise jouable —
+/// sans sol ni buisson, la chasse y est le seul repas et il n'y a pas de quoi
+/// attendre un arc (`crates/sim-cli/CAMPAIGN-FINDINGS.md` §14.3).
 #[test]
-fn unarmed_colonists_do_not_hunt() {
+fn unarmed_colonists_hunt_what_is_close() {
     let mut s = clearing();
-    let deer = s.spawn_animal(2, 6, Species::Deer);
+    // Des baies pour que personne ne meure de faim pendant la course, et
+    // aucune arme au sol : le colon part du poing.
     s.spawn_item(ItemKind::Berries, 200, 6, 6);
+    let rabbit = s.spawn_animal(4, 6, Species::Rabbit);
     s.step(&[Command::Hunt {
-        animal: deer,
+        animal: rabbit,
         on: true,
     }]);
     assert!(
         s.pawns().iter().all(|p| p.weapon.is_none()),
         "un colon est armé, le test ne prouve rien"
     );
-    for _ in 0..DAY / 4 {
+
+    let mut hunted = false;
+    let mut dead = false;
+    for _ in 0..DAY {
+        // Ce lapin-là ne quitte pas la carte : la débandade qui finit hors
+        // carte tient à un dé (`animals::ESCAPE_CHANCE`), et ce test parle de
+        // chasse, pas de fuite.
+        if let Some(quarry) = s.pawn_mut(rabbit) {
+            quarry.leaving = false;
+        }
         s.step(&[]);
+        hunted |= s
+            .pawns()
+            .iter()
+            .any(|p| matches!(p.job, Job::Hunt { target } if target == rabbit));
+        dead |= find_pawn(&s, rabbit).is_none();
+        if dead {
+            break;
+        }
+    }
+    assert!(hunted, "aucun colon désarmé n'a pris le job de chasse");
+    assert!(dead, "le lapin a survécu à une journée de poings");
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == EventKind::AnimalHunted && e.arg == Species::Rabbit as u32),
+        "pas d'événement de chasse : {:?}",
+        s.events()
+    );
+}
+
+/// **Mais on ne traverse pas la carte au pas de course.** Au-delà de
+/// `jobs::HAND_HUNT_RANGE` cases, un colon désarmé laisse filer le gibier
+/// marqué : sans arme la mise à mort demande une demi-journée de poursuite, et
+/// sans cette borne la chasse devient un piège à main-d'œuvre (la toundra y
+/// perdait six colonies sur trente en campagne). Un colon **armé**, lui, n'a
+/// pas de rayon.
+#[test]
+fn unarmed_colonists_do_not_cross_the_map() {
+    let map = map_from(&[
+        "..............................",
+        "..............................",
+        "..............................",
+        "..............................",
+        "..............................",
+        "..............................",
+        "..............................",
+        "..............................",
+    ]);
+    let mut s = Sim::from_map(1, map);
+    s.spawn_item(ItemKind::Berries, 200, 15, 4);
+    // Les colons naissent au centre ; le lapin est posé au bord, bien au-delà
+    // des douze cases de `HAND_HUNT_RANGE`.
+    let far = s.spawn_animal(29, 7, Species::Rabbit);
+    s.step(&[Command::Hunt {
+        animal: far,
+        on: true,
+    }]);
+
+    // On n'observe que tant que la bête reste hors de portée de **tous** les
+    // colons : elle broute, ils flânent, et le test parlerait d'autre chose si
+    // l'un des deux comblait la distance.
+    let mut watched = 0;
+    for _ in 0..DAY / 4 {
+        let Some(prey) = find_pawn(&s, far).map(|p| p.tile()) else {
+            break;
+        };
+        let nearest = s
+            .pawns()
+            .iter()
+            .filter(|p| p.is_colonist() && p.is_alive())
+            .map(|p| sim::map::chebyshev(p.tile(), prey))
+            .min()
+            .unwrap_or(0);
+        if nearest <= sim::jobs::HAND_HUNT_RANGE {
+            break;
+        }
+        s.step(&[]);
+        watched += 1;
         assert!(
             !s.pawns().iter().any(|p| matches!(p.job, Job::Hunt { .. })),
-            "un colon désarmé est parti chasser au tick {}",
+            "un colon désarmé est parti au bout de la carte au tick {}",
             s.tick()
         );
     }
     assert!(
-        find_pawn(&s, deer).is_some(),
-        "le cerf est mort sans chasseur"
+        watched >= 300,
+        "le lapin s'est approché au bout de {watched} ticks : rien n'a été mesuré"
+    );
+
+    // Une massue, et le même lapin redevient du gibier : la borne ne vise que
+    // les mains nues.
+    let hunter = s.pawns()[0].id;
+    s.pawn_mut(hunter).expect("le colon existe").weapon = Some(ItemKind::Club);
+    assert!(
+        run_until(&mut s, DAY, |s| s
+            .pawns()
+            .iter()
+            .any(|p| matches!(p.job, Job::Hunt { target } if target == far))),
+        "un colon armé refuse encore le gibier lointain"
     );
 }
 

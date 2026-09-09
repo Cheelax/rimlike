@@ -3730,3 +3730,394 @@ voir plus haut). Relevés `#[ignore]` ajoutés : `measure_ice_vs_temperate`,
 `measure_ice_trajectories`, `measure_ice_bottleneck`. `climate.rs`, `jobs.rs`,
 `combat.rs`, `Species::meat`, `MAX_ANIMALS` et
 `crates/sim-cli/src/campaign.rs` sont inchangés.
+
+### 14.3 Seconde passe : chasse à mains nues et hardes par biome (2026-09-09)
+
+**La banquise passe de 0 à 18 colonies vivantes sur 20 au banc (30/40 sur le
+relevé à quarante graines), et pour la première fois une colonie de glace y vit
+de chasse du premier au dixième jour. La campagne 64×64, elle, reste à 0/30 :
+elle bute sur la taille de carte, pas sur la table.** Trois leviers ont été
+mesurés séparément puis ensemble ; l'abondance du gibier, seul levier de la
+première passe, n'en fait pas partie — elle n'a pas bougé. Fiche :
+`docs/tasks/banquise-survivable.md`.
+
+#### Protocole
+
+Arbre de travail `task/banquise-survivable-2`, base **`9529df6`** (la première
+passe, PR #12, déjà fusionnée). Mêmes commandes avant et après :
+
+```sh
+cargo test -p sim --release --test balance_biomes measure_survival        -- --ignored --nocapture
+cargo test -p sim --release --test balance_biomes measure_hunt_impact     -- --ignored --nocapture
+cargo test -p sim --release --test balance_biomes measure_forty_seeds     -- --ignored --nocapture
+cargo test -p sim --release --test balance_biomes measure_ice_bottleneck  -- --ignored --nocapture
+cargo run  -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 1
+cargo run  -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 1 --climate -100
+cargo run  -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 4
+cargo run  -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 2
+```
+
+Le banc joue vingt graines en 24×24 sur dix jours (voir `SIZE`), et **c'est trop
+court pour départager deux réglages voisins** : la jungle, qui vit une fois sur
+deux, saute de trois colonies d'un tirage à l'autre. Un relevé à quarante
+graines (`measure_forty_seeds`) a donc été ajouté et c'est lui qui tranche ;
+les tableaux qui suivent donnent les deux.
+
+#### Ce qui a été livré, et pourquoi
+
+**1. Un colon à mains nues chasse** (`jobs::may_hunt`, appelé par
+`try_start_hunt`). Il cogne du poing comme un pillard désarmé
+(`combat::COLONIST_DAMAGE`, 80 à 121), par le même `Sim::engage` que la chasse à
+l'arc. `combat.rs`, `do_hunt` et le reste de `jobs.rs` sont inchangés.
+
+**2. Mais pas au bout de la carte** (`jobs::HAND_HUNT_RANGE`, douze cases,
+distance de Tchebychev au moment où le job est pris ; un chasseur **armé** n'a
+pas de rayon). Sans arme la mise à mort demande une demi-journée : on frappe, la
+bête détale six cents ticks plus vite qu'un homme (`animals::FLEE_TICKS`,
+`Species::speed_percent`), on la rattrape, on refrappe — un cerf demande six
+coups, et une débandade sur quatre finit hors carte
+(`animals::ESCAPE_CHANCE`). **Sans borne, la chasse devient un piège à
+main-d'œuvre**, et c'est la toundra qui paie : 22 → 16 colonies vivantes sur 30
+en campagne, vivres de 10,8 à 5,0 jours, pour zéro colonie gagnée sur la glace.
+Douze cases, c'est `animals::WILD_MIN_DISTANCE`, le rayon où la carte pose les
+bêtes de départ : « le gibier qui passe à portée de la colonie ».
+
+**3. La composition des hardes vient de la table du biome**
+(`BiomeTable::game_mix`, un poids par espèce dans l'ordre de `Species::ALL`).
+`spawn_herd` tire `rng.below(game_total())` et lit l'espèce par tranche
+(`herd_species`). À `[1, 1, 1]` — **toutes** les tables sauf `ICE` — le dé garde
+ses trois faces et rend l'espèce de son indice : c'est exactement le
+`below(3)` puis `Species::from_u8` d'avant, même tirage, même résultat. Sur
+`ICE` : **`[2, 1, 0]`, deux cerfs pour un lièvre et pas un sanglier.**
+`spawn_starting_animals` n'a pas bougé.
+
+**4. `game_density` reste à 2000 sur `ICE`** et à 1000 partout ailleurs : la
+valeur de la première passe est **gardée telle quelle**, et la seconde passe
+n'ajoute rien de ce côté (rejets chiffrés plus bas — 1000, 1250, 1500, 1750,
+2500, 3000, 4000, 8000 ont tous été mesurés).
+
+**5. Le joueur du banc bâtit un poste de fabrication** (`plan`, dans
+`tests/balance_biomes.rs`, dès dix bois). **Ce n'est pas un réglage de jeu,
+c'est un trou de l'instrument** : sans poste, `jobs::try_start_butcher` ne
+tourne jamais et **une dépouille ne devient jamais de la viande**. Le joueur du
+banc chassait donc pour rien depuis toujours ; sur un biome à baies ça ne se
+voyait pas, sur la glace c'était la moitié du 0/20 du §14.2. Corrigé seul, sans
+rien d'autre, il ne change presque rien : les dix biomes rendent le relevé du
+2026-09-09 à une colonie près (jungle 11 → 10), et la banquise reste à **0/20**.
+`plan_armed` n'ajoute donc plus qu'un arc.
+
+#### Le goulot, corrigé : ce n'est pas l'arme, c'est la mise à mort
+
+Le §14.2 concluait « un colon à mains nues ne chasse pas ». Lever cette règle
+seule (variante A1, toutes les espèces, sans borne de portée, `ICE` encore à
+`[1, 1, 1]`) ne sauve **aucune** colonie de glace, et le relevé jour par jour
+dit pourquoi : les bêtes disparaissent de la carte au lieu de tomber.
+
+| jour | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| bêtes sur la carte, **arme exigée** (graine 1) | 8 | 8 | 10 | 10 | 10 |
+| bêtes sur la carte, **mains nues sans borne** | 0 | 0 | 3 | 3 | 3 |
+
+Le colon désarmé atteint le gibier, le frappe, la bête détale — et une fois sur
+quatre elle passe la lisière et ne revient pas. Il vide la carte sans rien
+rapporter. Deux choses ont corrigé ça : le **poste de dépeçage** (sans lui, même
+une prise ne nourrit personne) et la **borne de portée** (sans elle, il court
+après celles qui filent au lieu de guetter celles qui passent).
+
+Avec les cinq points en place, la même colonie de glace mange **dès le premier
+jour**, sans une arme (`measure_ice_trajectories`, graines 3 et 5) :
+
+```
+graine  3 fin 4 | colons [3, 3, 3, 2, 3, 3, 3, 3, 4, 4]
+   vivres [46, 38, 18, 7, 5, 0, 0, 0, 21, 32]   armés [0,0,0,0,0,1,1,1,1,1]
+graine  5 fin 4 | colons [3, 3, 3, 3, 4, 4, 4, 5, 4, 4]
+   vivres [19, 10, 0, 2, 0, 0, 0, 36, 15, 20]   armés [0,0,0,0,0,0,0,0,1,1]
+```
+
+Neuf colonies sur vingt finissent les dix jours **sans qu'un seul colon ait tenu
+une arme** : c'est le résultat que la fiche demandait.
+
+#### Les rejets, chiffrés
+
+Tous au banc, vingt graines, 24×24, dix jours. « c-j » = colons-jours (la somme
+des colons debout au soir de chaque jour) : le compte de colonies saute de deux
+ou trois sur vingt graines, celui-ci bouge doucement.
+
+**A. La chasse à mains nues, seule** (`ICE` inchangée à `[1, 1, 1]`, 2000 ‰) :
+
+| variante | banquise | c-j banquise | morts glace | jungle | toundra | désert |
+|---|---|---|---|---|---|---|
+| A0 arme exigée (référence) | **0/20** | 120 | 60 faim | 10/20 | 19/20 | 20/20 |
+| A1 toutes espèces | **5/20** | 403 | 46 faim, 18 blessés | 8/20 | 18/20 | 18/20 |
+| A2 sanglier exclu | **5/20** | 362 | 52 faim, 9 blessés | 6/20 | 19/20 | 20/20 |
+
+Cinq colonies sur vingt, c'est un quart du critère : **la chasse à mains nues
+seule ne suffit pas**, et elle coûte deux à quatre colonies aux autres biomes.
+Rejetée telle quelle.
+
+**B. La composition de la harde de banquise** (A1, sans borne de portée,
+`game_density` 2000) :
+
+| `game_mix` | banquise | c-j | morts | verdict |
+|---|---|---|---|---|
+| `[1, 1, 1]` (référence) | 5/20 | 403 | 46 faim, 18 blessés | l'état d'avant |
+| `[1, 2, 0]` deux lièvres pour un cerf | 5/20 | 411 | **61 faim**, 7 blessés | **le lièvre ne nourrit pas** : deux viandes contre douze (`Species::meat`), la famine empire |
+| `[1, 1, 0]` sans sanglier | 11/20 | 520 | 39 faim, 8 blessés | passe de justesse ; **21/40** au relevé long, soit 10,5/20 attendus pour un seuil à 10 — aucune marge |
+| `[4, 1, 1]` sanglier rare | 12/20 | 505 | 35 faim, 11 blessés | presque aussi bon, mais garde une bête qui charge un désarmé |
+| **`[2, 1, 0]` (gardé)** | **15/20** | **584** | 28 faim, 11 blessés | **31/40** au relevé long |
+| `[3, 1, 0]` | 18/20 | 618 | 12 faim, 18 blessés | passe aussi, mais le lièvre devient décoratif |
+| `[1, 0, 0]` cerf seul | 20/20 | 668 | 2 faim, 21 blessés | une calotte sans un lièvre, et une banquise plus sûre que la forêt tempérée : ce n'est plus une banquise |
+
+**C. `game_density`, remesurée avec A et B** (A1, sans borne ; vingt graines,
+puis quarante quand c'est serré) :
+
+| ‰ | `[1, 1, 0]` | `[2, 1, 0]` | `[3, 1, 0]` | `[1, 0, 0]` |
+|---|---|---|---|---|
+| 1000 | 3/20 · 314 c-j | 7/20 · 402 (**15/40**) | 9/20 · 428 | 12/20 · 489 (23/40) |
+| 1250 | 5/20 · 301 | | | |
+| 1500 | 12/20 · 445 | 15/20 · 513 (**22/40**) | 15/20 · 518 | 14/20 · 574 |
+| 1750 | 6/20 · 389 | | | |
+| **2000** | 11/20 · 520 (21/40) | **15/20 · 584 (31/40)** | 18/20 · 618 | 20/20 · 668 |
+| 2500 | 9/20 · 457 | 27/40 · 1143 | | |
+| 3000 | 15/20 · 546 (30/40) | | | |
+
+**2000 est gardé, et ce n'est pas la plus petite valeur qui « passe » au sens
+strict** : à `[2, 1, 0]`, 1500 passe le tirage à vingt graines (15/20). Le
+relevé à quarante le contredit — **22/40, soit 11/20 attendus contre un seuil à
+10** : le test committé serait à pile ou face. 1000 échoue franchement (15/40).
+2500 ne rend rien de plus (27/40). **2000 est donc la plus petite valeur qui
+passe avec de la marge**, et c'est déjà celle de la première passe : la seconde
+passe ne touche pas à cette entrée, elle en explique seulement la mesure.
+
+**D. La borne de portée de la chasse à mains nues** (`[2, 1, 0]`, 2000 ‰) :
+
+| portée | banquise banc | banquise 40 gr. | campagne toundra | vivres toundra | campagne tempéré |
+|---|---|---|---|---|---|
+| A0, arme exigée (référence) | 0/20 | 0/40 | **22/30** | **10,8 j** | **18/30** |
+| sans borne | 15/20 | 31/40 | **16/30** | **5,0 j** | 21/30 |
+| 8 cases | 11/20 · 476 c-j | 24/40 | 23/30 | 11,2 j | 20/30 |
+| **12 cases (gardée)** | **18/20 · 574** | **30/40** | 20/30 | 8,9 j | **18/30** |
+| 16 cases | — | 28/40 | — | — | — |
+| 20 cases | 16/20 · 604 | — | 21/30 | 8,3 j | 18/30 |
+
+Sans borne, la toundra perd **six colonies sur trente** et près de la moitié de
+ses vivres : ses colons quittent la colonie dès le premier jour pour courir
+après un cerf qu'ils rattrapent une fois sur cinq. Huit cases rendent la toundra
+meilleure qu'avant (23/30) mais coûtent six colonies de glace sur quarante.
+**Douze est le compromis mesuré** : la glace au maximum de ce qu'on a vu (30/40,
+comme sans borne), le tempéré **exactement à sa référence** (18/30), la toundra
+à deux colonies près.
+
+**E. A1 contre A2, une fois la borne posée.** Elles ne se départagent plus : la
+banquise donne **30/40 dans les deux cas, au colon-jour près** (le sanglier ne
+vit pas sur la glace, `game_mix` le dit), et les huit autres biomes sont dans le
+bruit l'un de l'autre (jungle 19/40 des deux côtés, montagne 35 contre 34,
+toundra 37 contre 37, désert 38 contre 40, tempéré 36 contre 35 — somme 165
+contre 165). La fiche tranche : à égalité, **la plus libre**. `may_hunt` ne
+regarde donc que l'arme et la distance, pas l'espèce : ce que le joueur marque,
+le colon va le chercher — sanglier compris, s'il est à douze cases.
+
+#### Avant → après, banc
+
+**`measure_survival`, vingt graines, 24×24, dix jours.** « avant » = le relevé
+du 2026-09-09 (§14.1 et §14.2).
+
+| biome | avant | après | | biome | avant | après |
+|---|---|---|---|---|---|---|
+| **banquise** | **0/20** | **18/20** | | prairie | 20/20 | 19/20 |
+| toundra | 19/20 | 19/20 | | désert | 20/20 | 18/20 |
+| forêt boréale | 20/20 | 19/20 | | savane | 20/20 | 20/20 |
+| forêt tempérée (témoin) | 18/20 | 19/20 | | jungle | 11/20 | **8/20** |
+| montagne | 17/20 | 17/20 | | océan (= tempéré) | 18/20 | 19/20 |
+
+**Deux biomes sortent de la barre « pas plus d'une colonie sur vingt » : la
+jungle (−3) et le désert (−2).** Le relevé à quarante graines montre que c'est
+le tirage, pas le jeu — la jungle ne vit qu'une fois sur deux, c'est le biome le
+plus bruyant du lot :
+
+| biome | avant (40 gr.) | après (40 gr.) | c-j avant → après |
+|---|---|---|---|
+| **banquise** | **0/40** | **30/40** | 240 → 1094 |
+| jungle | 19/40 | **19/40** | 991 → 1021 |
+| désert | 39/40 | 38/40 | 1362 → 1297 |
+| forêt boréale | 38/40 | 35/40 | 1359 → 1338 |
+| toundra | 38/40 | 37/40 | 1298 → 1269 |
+| prairie | 38/40 | 37/40 | 1350 → 1356 |
+| savane | 38/40 | 38/40 | 1392 → 1329 |
+| montagne | 34/40 | 35/40 | 1247 → 1257 |
+| forêt tempérée (témoin) | 34/40 | 36/40 | 1273 → 1296 |
+
+À quarante graines, **aucun biome ne perd plus de trois colonies sur quarante**
+(la boréale), c'est-à-dire une et demie sur vingt, et les colons-jours ne
+bougent pas de plus de 5 % — sauf la banquise, qui les multiplie par 4,6. Les
+morts se déplacent partout un peu vers la colonne « blessures » : c'est le prix
+d'une chasse au poing, et il se paie en plaies, pas en colonies.
+
+#### Avant → après, campagnes 30 graines × 30 jours × 64×64
+
+| campagne | vivantes | colons j10 / j20 | morts | dont famine | vivres (j) | raids/colonie | richesse |
+|---|---|---|---|---|---|---|---|
+| banquise **avant** | 0/30 | 0,0 / 0,0 | 90 | 90 (100 %) | 0,0 | 0,0 | 406,0 |
+| banquise **après** | **0/30** | 0,0 / 0,0 | 91 | **89 (97 %)** | 0,0 | 0,1 | 415,8 |
+| banquise `--climate -100` **avant** | 0/30 | 0,0 / 0,0 | 90 | 90 (100 %) | 0,0 | 0,0 | 312,3 |
+| banquise `--climate -100` **après** | **0/30** | 0,0 / 0,0 | 90 | 90 (100 %) | 0,0 | 0,0 | 312,1 |
+| tempéré **avant** (témoin) | 18/30 | 3,1 / 3,2 | 207 | 5 (2 %) | 10,3 | 7,4 | 2 497,3 |
+| tempéré **après** | **18/30** | 2,4 / 1,9 | **173** | 4 (2 %) | **11,9** | 5,4 | 2 044,1 |
+| toundra **avant** | 22/30 | 3,2 / 2,7 | 218 | 1 (0 %) | 10,8 | 7,0 | 2 158,6 |
+| toundra **après** | **20/30** | 3,1 / 2,6 | 214 | 5 (2 %) | 8,9 | 6,7 | 2 034,3 |
+
+**Le tempéré tient son chiffre exactement** — 18/30 avant, 18/30 après — mais
+pas de la même façon, et l'écart s'explique en une phrase : **les colonies
+chassent avant d'avoir un arc.** Elles gagnent 1,6 jour de vivres (10,3 → 11,9)
+et perdent 34 morts (207 → 173, dont 18 morts de raid en moins), parce qu'un
+colon parti chasser au poing dans les douze cases n'est ni au chantier ni au
+mur : la colonie s'enrichit moins vite (2 497 → 2 044), le conteur lui envoie
+moins de bandes (7,4 → 5,4 raids par colonie) et elle en meurt moins. Moins de
+richesse, moins de raids, autant de colonies : le tempéré n'est pas dégradé, il
+est **un peu plus lent**.
+
+**La toundra perd deux colonies sur trente** (22 → 20) et 1,9 jour de vivres,
+par le même mécanisme joué en négatif : ses buissons la nourrissaient déjà, la
+chasse ne lui apporte rien qu'elle n'avait, et le temps de course est un coût
+net. La borne de portée ramène la perte de six colonies à deux (voir le rejet
+« sans borne » ci-dessus) ; c'est le prix mesuré et assumé de la chasse à mains
+nues sur un biome qui n'en a pas besoin.
+
+**La banquise en campagne ne bouge pas : 0/30, 89 famines sur 91.** La seule
+chose qui change est qu'une colonie sur trente reçoit désormais un raid et que
+deux colons meurent de leurs plaies plutôt que de faim.
+
+#### Par graine, banquise en campagne
+
+Trente lignes plates, et c'est le résultat : `0 colon, 3 morts, 3 famines`
+partout, sauf la graine 29 (`0 colon, 4 morts, 2 famines` — le quatrième est un
+colon errant arrivé après coup, mort de ses plaies). Seule la richesse finale
+bouge, de 200 à 814 selon les dépouilles restées au sol.
+
+| gr. | rich. | | gr. | rich. | | gr. | rich. | | gr. | rich. | | gr. | rich. |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 488 | | 7 | 220 | | 13 | 547 | | 19 | 542 | | 25 | 432 |
+| 2 | 307 | | 8 | 262 | | 14 | 230 | | 20 | 312 | | 26 | 242 |
+| 3 | 517 | | 9 | 200 | | 15 | 485 | | 21 | 499 | | 27 | 434 |
+| 4 | 225 | | 10 | 574 | | 16 | 262 | | 22 | 215 | | 28 | 532 |
+| 5 | 267 | | 11 | 629 | | 17 | 468 | | 23 | 417 | | 29 | **814** |
+| 6 | 567 | | 12 | 467 | | 18 | 562 | | 24 | 517 | | 30 | 242 |
+
+#### Pourquoi la campagne échoue là où le banc réussit : la taille de carte
+
+Le banc joue 24×24, la campagne 64×64 — sept fois la surface. Trois mesures
+séparent les causes.
+
+**1. Ce n'est pas l'abondance du gibier.** À composition gardée, en 64×64 :
+
+| `game_density` sur `ICE` | colonies vivantes | morts | dont famine |
+|---|---|---|---|
+| 2000 (gardé) | 0/30 | 91 | 89 (97 %) |
+| 4000 | 0/30 | 91 | 87 (95 %) |
+| 8000 | 0/30 | 91 | 90 (98 %) |
+
+Le §14.2 avait déjà poussé jusqu'à 20 000 ‰ sans gagner un colon. C'est confirmé
+avec la chasse à mains nues en place.
+
+**2. Ce n'est pas (surtout) le joueur scripté.** La fiche interdit de toucher
+`campaign.rs` ; on peut en revanche **brider le joueur du banc comme lui** et
+mesurer ce que ça coûte (`measure_the_campaign_restrictions`, 24×24) :
+
+| joueur du banc | vivantes | c-j |
+|---|---|---|
+| tel quel (poste dès 10 bois, toute la harde marquée) | 18/20 | 574 |
+| poste à 40 bois (`campaign.rs`, `WOOD_FOR_BASE`) | 18/20 | 526 |
+| une bête marquée à la fois | 16/20 | 560 |
+| les deux, comme la campagne | **16/20** | 560 |
+
+Ses deux brides coûtent **deux colonies sur vingt**, pas dix-huit.
+
+**3. C'est la taille.** Même joueur de campagne, mêmes trente graines, même
+table, seule la carte change :
+
+| carte | colonies vivantes | morts | dont famine |
+|---|---|---|---|
+| 24×24 | 3/30 | 157 | 107 (68 %) |
+| 32×32 | 0/30 | 90 | 90 (100 %) |
+| 48×48 | 0/30 | 90 | 90 (100 %) |
+| 64×64 | 0/30 | 91 | 89 (97 %) |
+
+Le mécanisme est dans `animals::MAX_ANIMALS` : le plafond de gibier est **un
+nombre de bêtes sur la carte (douze), pas une densité par surface**. En 24×24
+ces douze bêtes tiennent dans un rayon de douze cases autour de la colonie —
+celui que la chasse à mains nues autorise ; en 64×64 elles se répartissent sur
+sept fois plus de terrain, entrent par un bord à trente-deux cases du centre
+(`Sim::find_entry_tile`), et la colonie n'en voit passer presque aucune avant
+d'avoir épuisé ses deux jours et demi de faim. **`MAX_ANIMALS` est hors du
+périmètre de la fiche**, comme `campaign.rs` : le rapport le dit, et la tranche
+s'arrête là.
+
+#### État des critères de la fiche
+
+| critère | attendu | mesuré | |
+|---|---|---|---|
+| banc banquise | ≥ 10/20 | **18/20** (30/40) | ✅ |
+| aucun autre biome ne perd > 1 colonie / 20 | — | jungle −3/20 et désert −2/20 **au tirage à vingt** ; à quarante graines, pire perte = boréale −3/40 (1,5/20) | ⚠️ |
+| campagne banquise | ≥ 9/30, famine < 50 % | **0/30**, famine **97 %** | ❌ |
+| campagne banquise `--climate -100` | ≥ 5/30 | **0/30** | ❌ |
+| campagne tempéré | ≥ 17/30, écart expliqué | **18/30**, écart expliqué | ✅ |
+| campagne toundra (non-régression) | 22/30 | **20/30** | ⚠️ |
+| `demo` | hash inchangé ou justifié | **`402c950b5ca15d90` inchangé** | ✅ |
+| `fuzz` | OK | 3 runs OK | ✅ |
+| `ice_colonies_survive_often_enough` | actif et vert | actif, vert | ✅ |
+
+Le hash de `demo` ne bouge pas parce que **le scénario `demo` ne marque aucun
+gibier** : sans `Command::Hunt`, `try_start_hunt` sort au premier
+court-circuit, exactement comme avant, et la carte tempérée tire ses hardes à
+`[1, 1, 1]`, c'est-à-dire à l'identique. Les trois empreintes gelées de
+`tests/biomes.rs` (dont `the_other_biomes_draw_the_same_herds`, six jours joués
+en tempéré et en toundra) tiennent pour la même raison, **sans qu'aucune n'ait
+été retouchée**.
+
+#### Ce que la mesure laisse ouvert
+
+- **La banquise est jouable à la main, pas encore par un joueur qui bâtit.** Le
+  banc le prouve à 24×24 ; la campagne à 64×64 reste à 0/30, et la cause est
+  mesurée : douze bêtes pour 4 096 cases. Deux pistes, toutes deux hors
+  périmètre : un plafond de faune **proportionnel à la surface**
+  (`animals::MAX_ANIMALS`), ou une entrée de harde qui vise la colonie plutôt
+  qu'un bord de carte.
+- **La chasse à mains nues coûte du temps de travail, et ça se voit partout.**
+  Toundra −2/30 en campagne, tempéré −450 de richesse et −2 raids par colonie.
+  Ce n'est pas une régression de survie, c'est un ralentissement, et il est le
+  prix d'un ordre que le joueur donne lui-même.
+- **La borne de douze cases est un réglage, pas une loi.** Huit cases rendent la
+  toundra meilleure qu'avant (23/30) et la banquise moins bonne (24/40) ; vingt
+  font l'inverse à peine. Si `MAX_ANIMALS` change un jour, cette borne est à
+  recalibrer avec `measure_forty_seeds`, et pas à l'intuition.
+- **Le sanglier n'a pas été exclu de la chasse à mains nues**, parce que la
+  mesure ne le justifie plus une fois la borne posée. Il reste la seule bête qui
+  charge : un joueur qui marque un sanglier avec trois colons désarmés perdra du
+  sang. C'est un choix de jeu, pas un accident.
+- **La jungle reste le biome le plus bruyant du dépôt** : 19/40, une colonie sur
+  deux, et 113 morts de blessures pour zéro mort de faim. Elle ne relève pas de
+  la nourriture, et aucun test ne la surveille aujourd'hui.
+
+#### Vérification
+
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D
+warnings`, `cargo test --workspace` (**381 tests réussis, 0 échec**, 15 ignorés
+— 378 et 13 avant la tranche), `verify --seed 1 --size 64 --ticks 10000
+--scenario demo` (**OK**, hash **`402c950b5ca15d90`** inchangé), les quatre
+campagnes ci-dessus, `fuzz --seed 1 --size 24 --ticks 20000 --runs 3
+--commands-per-tick 6` (3 runs OK : jungle, montagne, forêt boréale).
+
+Tests ajoutés : `biome::tests::only_the_ice_picks_its_herds` (toutes les tables
+à `[1, 1, 1]` sauf `ICE`, et `[1, 1, 1]` est l'identité du tirage),
+`gameplay::unarmed_colonists_hunt_what_is_close` et
+`gameplay::unarmed_colonists_do_not_cross_the_map` (qui remplacent
+`unarmed_colonists_do_not_hunt`). Test réactivé :
+`balance_biomes::ice_colonies_survive_often_enough`, sorti de `#[ignore]`.
+Relevés `#[ignore]` ajoutés : `measure_hunt_impact`, `measure_forty_seeds`,
+`measure_the_campaign_restrictions` ; `measure_ice_trajectories` et
+`measure_ice_bottleneck` servent désormais tous les biomes
+(`trace(seed, biome, armé)`).
+
+`combat.rs`, `climate.rs`, `Species::meat`, `MAX_ANIMALS`,
+`animals::spawn_starting_animals` et `crates/sim-cli/src/campaign.rs` sont
+inchangés.

@@ -31,6 +31,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::animals::{SPECIES_COUNT, Species};
+
 /// Amplitude des bruits de `crate::noise` : `fbm3` rend `0..=255`, et les parts
 /// pour mille de la table sont converties en niveaux de bruit sur cette base.
 pub const NOISE_SPAN: i32 = 256;
@@ -225,6 +227,22 @@ pub struct BiomeTable {
     /// famine (`crates/sim-cli/CAMPAIGN-FINDINGS.md` §14). Une calotte ne
     /// dégèle pas ; elle nourrit par la chasse, ou pas du tout.
     pub game_density: u32,
+    /// **Composition des hardes** : un poids par espèce, dans l'ordre de
+    /// `Species::ALL` (cerf, lapin, sanglier). `spawn_herd` tire
+    /// `rng.below(somme des poids)` et choisit l'espèce par tranche
+    /// (`BiomeTable::herd_species`).
+    ///
+    /// `[1, 1, 1]` est la composition d'avant cette entrée — le `below(3)` puis
+    /// `Species::from_u8` d'`animals::spawn_herd` — et c'est la valeur de
+    /// **toutes** les tables sauf `ICE`
+    /// (`tests::only_the_ice_picks_its_herds`) : même tirage, même nombre de
+    /// tirages, même espèce, donc la même partie qu'avant
+    /// (`tests/biomes.rs::the_other_biomes_draw_the_same_herds`).
+    ///
+    /// La somme doit être non nulle : une table sans gibier ferait tirer
+    /// `below(0)`, et surtout un biome dont c'est la seule nourriture n'aurait
+    /// plus rien à manger.
+    pub game_mix: [u32; SPECIES_COUNT],
     /// Le sol de départ est-il enneigé (`Terrain::Snow`) ?
     ///
     /// **Lien avec `climate.rs`** : la neige au sol n'y existe pas — sous
@@ -325,6 +343,34 @@ impl BiomeTable {
         (ticks * 1000 / u64::from(self.game_density)).max(1)
     }
 
+    /// Somme des poids de `game_mix` : les faces du dé de `spawn_herd`.
+    pub fn game_total(self) -> u32 {
+        self.game_mix.iter().sum()
+    }
+
+    /// Espèce de la harde qui entre, `roll` étant tiré dans
+    /// `0..self.game_total()`. Les tranches se suivent dans l'ordre de
+    /// `Species::ALL` : à `[1, 1, 1]` c'est exactement `Species::from_u8(roll)`.
+    ///
+    /// Un poids nul retire l'espèce du tirage sans décaler les autres d'un
+    /// tirage : c'est le résultat qui change, jamais le flux d'aléa.
+    pub fn herd_species(self, roll: u32) -> Species {
+        let mut acc = 0;
+        for (k, &weight) in self.game_mix.iter().enumerate() {
+            acc += weight;
+            if roll < acc {
+                return Species::ALL[k];
+            }
+        }
+        // Inatteignable tant que `roll < game_total()` ; la dernière espèce
+        // pondérée fait office de garde-fou plutôt qu'une panique.
+        *Species::ALL
+            .iter()
+            .rev()
+            .find(|s| self.game_mix[**s as usize] > 0)
+            .unwrap_or(&Species::Deer)
+    }
+
     /// Le rocher de cette case est-il veiné ? `die` est le dé des veines
     /// (`0..ORE_DIE`), tiré sur un bruit à part.
     pub fn veined(self, die: u32) -> bool {
@@ -354,6 +400,7 @@ pub const TEMPERATE: BiomeTable = BiomeTable {
     sand_share: 70,
     grass_share: 625,
     game_density: 1000,
+    game_mix: [1, 1, 1],
     snow: false,
 };
 
@@ -361,12 +408,21 @@ pub const TEMPERATE: BiomeTable = BiomeTable {
 /// rares mares sont les seules cases d'eau (le reste est pris par le gel, que
 /// la carte ne modélise pas encore).
 ///
-/// C'est la **seule** table dont `game_density` n'est pas à 1000 : ni sol
-/// (`has_no_soil`) ni buisson, la chasse est la seule nourriture, et à la
-/// cadence de référence elle rend la moitié de ce qu'une colonie de trois
-/// mange. Le gibier y est donc dense — la banlieue d'un trou de phoque, pas
-/// un désert blanc. Valeur mesurée, rejets chiffrés :
-/// `crates/sim-cli/CAMPAIGN-FINDINGS.md` §14.2.
+/// C'est la **seule** table qui s'écarte de la faune de référence, et sur les
+/// deux entrées : ni sol (`has_no_soil`) ni buisson, la chasse y est la seule
+/// nourriture, et à la cadence de référence elle rend la moitié de ce qu'une
+/// colonie de trois mange.
+///
+/// - `game_density` à 2000 : le gibier y est deux fois plus pressé qu'ailleurs
+///   — la banlieue d'un trou de phoque, pas un désert blanc.
+/// - `game_mix` à `[2, 1, 0]` : **deux cerfs pour un lièvre, et pas un
+///   sanglier**. Le sanglier ne vit pas sur une calotte, et surtout il rend
+///   la chasse à mains nues mortelle (il charge au lieu de fuir) ; le lièvre
+///   ne rend que deux viandes (`Species::meat`) quand le cerf en rend douze,
+///   c'est l'appoint, pas le repas.
+///
+/// Valeurs mesurées, rejets chiffrés :
+/// `crates/sim-cli/CAMPAIGN-FINDINGS.md` §14.3.
 pub const ICE: BiomeTable = BiomeTable {
     tree_density: 0,
     bush_density: 0,
@@ -376,6 +432,7 @@ pub const ICE: BiomeTable = BiomeTable {
     sand_share: 0,
     grass_share: 0,
     game_density: 2000,
+    game_mix: [2, 1, 0],
     snow: true,
 };
 
@@ -389,6 +446,7 @@ pub const TUNDRA: BiomeTable = BiomeTable {
     sand_share: 0,
     grass_share: 600,
     game_density: 1000,
+    game_mix: [1, 1, 1],
     snow: true,
 };
 
@@ -403,6 +461,7 @@ pub const BOREAL: BiomeTable = BiomeTable {
     sand_share: 30,
     grass_share: 800,
     game_density: 1000,
+    game_mix: [1, 1, 1],
     snow: false,
 };
 
@@ -416,6 +475,7 @@ pub const GRASSLAND: BiomeTable = BiomeTable {
     sand_share: 50,
     grass_share: 900,
     game_density: 1000,
+    game_mix: [1, 1, 1],
     snow: false,
 };
 
@@ -445,6 +505,7 @@ pub const DESERT: BiomeTable = BiomeTable {
     sand_share: 1000,
     grass_share: 150,
     game_density: 1000,
+    game_mix: [1, 1, 1],
     snow: false,
 };
 
@@ -458,6 +519,7 @@ pub const SAVANNA: BiomeTable = BiomeTable {
     sand_share: 120,
     grass_share: 800,
     game_density: 1000,
+    game_mix: [1, 1, 1],
     snow: false,
 };
 
@@ -471,6 +533,7 @@ pub const JUNGLE: BiomeTable = BiomeTable {
     sand_share: 20,
     grass_share: 1000,
     game_density: 1000,
+    game_mix: [1, 1, 1],
     snow: false,
 };
 
@@ -485,6 +548,7 @@ pub const MOUNTAIN: BiomeTable = BiomeTable {
     sand_share: 20,
     grass_share: 700,
     game_density: 1000,
+    game_mix: [1, 1, 1],
     snow: false,
 };
 
@@ -588,6 +652,49 @@ mod tests {
         let ice = ICE;
         assert!(ice.herd_delay(28_800) < 28_800);
         assert_eq!(ice.herd_delay(0), 1);
+    }
+
+    /// **Une seule table compose ses hardes autrement**, et c'est encore la
+    /// banquise. Partout ailleurs `game_mix` vaut `[1, 1, 1]`, c'est-à-dire le
+    /// `below(3)` puis `Species::from_u8` d'avant l'entrée : même dé, même
+    /// nombre de faces, même espèce pour chaque tirage. Ce test est la garde,
+    /// comme `only_the_ice_bends_the_game_rate` l'est pour la cadence.
+    #[test]
+    fn only_the_ice_picks_its_herds() {
+        for b in Biome::ALL {
+            let t = b.table();
+            assert!(
+                t.game_total() > 0,
+                "{} : une table sans gibier ferait tirer below(0)",
+                b.name()
+            );
+            if b.for_colony() == Biome::Ice {
+                assert_eq!(t.game_mix, [2, 1, 0], "banquise");
+                // Pas un sanglier sur la calotte, et le cerf porte le repas.
+                assert_eq!(t.game_total(), 3);
+                assert_eq!(t.herd_species(0), Species::Deer);
+                assert_eq!(t.herd_species(1), Species::Deer);
+                assert_eq!(t.herd_species(2), Species::Rabbit);
+                continue;
+            }
+            assert_eq!(
+                t.game_mix,
+                [1, 1, 1],
+                "{} : ce n'est plus la composition de référence",
+                b.name()
+            );
+            // `[1, 1, 1]`, c'est l'identité : le dé garde ses trois faces et
+            // chacune rend l'espèce de son indice.
+            assert_eq!(t.game_total(), SPECIES_COUNT as u32);
+            for roll in 0..t.game_total() {
+                assert_eq!(
+                    t.herd_species(roll),
+                    Species::from_u8(roll as u8),
+                    "{} : tirage {roll}",
+                    b.name()
+                );
+            }
+        }
     }
 
     /// Aucune table ne peut demander plus de plantes que le dé n'a de faces,
