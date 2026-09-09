@@ -3495,3 +3495,238 @@ chiffrés sont dans la fiche ; le §14.2 recevra la mesure.
 changement) ; les cinq campagnes ci-dessus tournent en 2 à 16 s chacune ; le
 témoin tempéré du jour (18/30, 207 morts) est la référence « identique colonne
 par colonne » demandée par la fiche.
+
+### 14.2 Une banquise survivable : le gibier du 2026-09-09
+
+**Le critère de la fiche n'est pas atteint, et la mesure dit pourquoi.**
+L'abondance du gibier est bien réglable par la table
+(`BiomeTable::game_density`, 2 000 pour mille sur `ICE`, 1 000 partout
+ailleurs), et elle fait exactement ce qu'on lui demande : sur une colonie qui
+*peut* chasser, la famine tombe de **47 morts sur 62 à 27 sur 59** — et à zéro
+sur 59 si on pousse à 8 000. Mais **la banquise reste à 0/20 au banc et 0/30 en
+campagne**, à toutes les valeurs mesurées jusqu'à **vingt fois** la cadence de
+référence, parce que le goulot n'est pas la nourriture : c'est qu'**un colon à
+mains nues ne chasse pas** (`jobs.rs::try_start_hunt`) et que ni le joueur du
+banc ni le joueur scripté de la campagne ne s'arment avant de mourir. Fiche :
+`docs/tasks/banquise-survivable.md`.
+
+#### Protocole
+
+Arbre de travail `task/banquise-survivable`, base **`656c2c0`**. Mêmes
+commandes avant et après, le seul écart étant `biome::ICE::game_density` :
+
+```sh
+cargo test -p sim --release --test balance_biomes measure_survival        -- --ignored --nocapture
+cargo test -p sim --release --test balance_biomes measure_ice_bottleneck  -- --ignored --nocapture
+cargo run  -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 1
+cargo run  -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 1 --climate -100
+cargo run  -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 4
+```
+
+Avant de toucher une ligne de code, deux empreintes ont été relevées et
+épinglées (`tests/biomes.rs::the_other_biomes_draw_the_same_herds`) : six jours
+joués sans une commande, en 48×48, sur la graine 5 en forêt tempérée
+(`0x2cfd_cf37_5ca7_51ca`) et en toundra (`0xae9d_b4a0_1cb9_98d6`). Six jours,
+parce que la cadence des hardes est de deux à quatre jours : la fenêtre en
+contient deux, plus la première. Elles n'ont pas bougé depuis, ce qui prouve
+que les biomes à 1 000 tirent **exactement** les mêmes hardes qu'avant.
+
+#### Ce que l'entrée fait, et comment
+
+Une seule entrée nouvelle dans `BiomeTable`, entière, en pour mille :
+`game_density`. Elle met à l'échelle **la cadence des hardes**, et rien
+d'autre — le délai est **tiré comme avant**, dans le même ordre et pour le même
+nombre de tirages, puis le **résultat** est divisé (`BiomeTable::herd_delay`,
+appelée par `Sim::schedule_first_herd` et par le storyteller). À 1 000, c'est
+l'identité, y compris sur les bornes du tirage : le test unitaire
+`biome::tests::only_the_ice_bends_the_game_rate` le vérifie table par table et
+refuse toute valeur autre que 1 000 hors `ICE`.
+
+Ce qui n'a **pas** été touché, et pourquoi : la taille des hardes
+(`spawn_herd`), les bêtes de départ (`spawn_starting_animals`) et le plafond de
+bêtes sauvages (`MAX_ANIMALS`, 12). Le plafond d'abord, parce que la mesure
+montre qu'il ne mord pas quand la colonie chasse : avec un arc, le compte de
+bêtes sur la carte oscille entre 0 et 8, et il ne colle à 12 que dans le cas
+où personne ne tire — c'est-à-dire le cas où plus rien ne dépend de lui. La
+taille et les bêtes de départ ensuite, parce qu'elles agissent sur la **même**
+grandeur que la cadence (les unités crues par jour) et que la campagne prouve
+cette grandeur non contraignante jusqu'à vingt fois la référence : les
+multiplier aurait ajouté un levier sans ajouter un colon vivant. Composition
+nue de la banquise inchangée (neige > 900 ‰, 0 arbre, 0 buisson, 0 herbe) :
+aucune borne de `tests/biomes.rs::each_biome_has_its_signature` n'a bougé.
+
+#### Le goulot : ce n'est pas la nourriture, c'est l'arme
+
+Le §14.1 concluait « la chasse est insuffisante d'un facteur deux, avant même
+de compter le temps de s'armer ». Le relevé jour par jour
+(`measure_ice_trajectories`, banc à 24×24 sur dix jours) montre que c'est la
+seconde moitié de la phrase qui décide :
+
+- **Le joueur du banc n'a jamais une arme.** Il marque du gibier
+  (`Command::Hunt`) mais ne bâtit pas de poste de fabrication et ne demande pas
+  d'arc, et « un colon à mains nues ne chasse pas ». Sur les autres biomes ça
+  ne se voyait pas — on y mange des baies ou des légumes ; sur la glace c'est
+  tout le repas. À 4 000 pour mille, la carte porte **12 bêtes dès le jour 3**,
+  les trois colons meurent au jour 3 avec **0 unité de vivres** en stock, et
+  **0/20 colonies ont eu une arme**.
+- **Armé, on ne meurt plus de faim.** Un joueur de relevé identique au premier,
+  plus deux ordres (`plan_armed` : un poste dès dix bois, un arc par colon),
+  arme les trois colons **au jour 1 sur les vingt graines**, rentre 46 à 123
+  unités de vivres, et déplace la mort : **0 mort de faim sur 59 à 8 000 pour
+  mille**, contre 47 sur 62 à la cadence de référence.
+- **Mais on meurt du sanglier.** Une bête sur trois est un sanglier, il charge
+  quand on le tire (`animals::animal_hit`), et ce joueur n'a ni lit, ni
+  médecine, ni priorité de soin. Les morts passent de la colonne « faim » à la
+  colonne « blessures » sans que le nombre de colonies vivantes bouge : 2 à 6
+  sur 20 sur toute la plage, c'est-à-dire le bruit d'un tirage à vingt graines.
+
+#### Les rejets, chiffrés
+
+Banc à 24×24 sur dix jours, 20 graines. « Banc » = le joueur de
+`balance_biomes.rs` ; « avec arc » = le même plus un poste et un arc par colon
+(`plan_armed`, relevé seulement — il ne sert à aucun test qui affirme).
+
+| `game_density` | banc : vivantes / colons-jours / faim / blessures | avec arc : vivantes / colons-jours / faim / blessures | part de famine (avec arc) | verdict |
+|---|---|---|---|---|
+| 1 000 (référence) | 0/20 · 120 · 60 · 0 | 4/20 · 270 · 47 · 15 | **76 %** | c'est l'état d'avant : la faim tue trois morts sur quatre |
+| 1 500 | 0/20 · 120 · 60 · 0 | 2/20 · 239 · 37 · 28 | **57 %** | encore plus d'une mort sur deux : rejeté |
+| **2 000 (gardé)** | 0/20 · 120 · 60 · 0 | 3/20 · 267 · **27** · 32 | **46 %** | la plus petite valeur mesurée qui passe sous la barre de la fiche |
+| 2 500 | 0/20 · 120 · 60 · 0 | 6/20 · 329 · 14 · 54 | 21 % | passe aussi, mais plus grand — et les 6/20 sont dans le bruit (voir plus bas) |
+| 3 000 | 0/20 · 120 · 60 · 0 | 3/20 · 250 · 15 · 45 | 25 % | idem |
+| 4 000 | 0/20 · 120 · 60 · 0 | 2/20 · 224 · 5 · 61 | 8 % | idem |
+| 6 000 | 0/20 · 120 · 60 · 0 | 3/20 · 236 · 4 · 62 | 6 % | idem |
+| 8 000 | 0/20 · 120 · 60 · 0 | 3/20 · 225 · 0 · 59 | 0 % | plus une seule famine, et toujours 3 colonies sur 20 |
+
+**2 000 est gardé** parce que c'est la plus petite valeur mesurée qui fait
+passer la famine sous la moitié des morts — le seul critère chiffré de la fiche
+qu'un levier d'abondance puisse atteindre — et parce que c'est **exactement le
+facteur que le §14.1 avait diagnostiqué** : ~7 unités crues par jour quand il
+en faut 15. Doubler la cadence, c'est combler le déficit mesuré, pas plus.
+
+Ce que les colonnes de droite disent aussi, et qu'il faut lire : **aucune
+valeur n'achète une colonie vivante.** 4, 2, 3, 6, 3, 2, 3, 3 sur 20 n'est pas
+une courbe, c'est un tirage ; les colons-jours (224 à 329) ne montent pas non
+plus. La famine descend proprement et monotonement, la survie ne suit pas.
+
+#### Avant → après
+
+**Banc `measure_survival` (20 graines, 24×24, 10 jours), colonies vivantes.**
+Identique **biome par biome et graine par graine**, banquise comprise :
+
+| biome | avant | après | | biome | avant | après |
+|---|---|---|---|---|---|---|
+| **banquise** | **0/20** | **0/20** | | prairie | 20/20 | 20/20 |
+| toundra | 19/20 | 19/20 | | désert | 20/20 | 20/20 |
+| forêt boréale | 20/20 | 20/20 | | savane | 20/20 | 20/20 |
+| forêt tempérée (témoin) | 18/20 | 18/20 | | jungle | 11/20 | 11/20 |
+| montagne | 17/20 | 17/20 | | océan (= tempéré) | 18/20 | 18/20 |
+
+**Campagne (30 graines, 64×64, 30 jours).** La colonne « après » est à 2 000 ;
+les trois dernières lignes sont les valeurs poussées, pour montrer que la
+campagne n'est pas sensible du tout à l'abondance.
+
+| campagne | vivantes | colons j10 / j20 | morts | dont famine | vivres (j) | raids/colonie | richesse |
+|---|---|---|---|---|---|---|---|
+| banquise **avant** (1 000) | 0/30 | 0,0 / 0,0 | 90 | 90 (100 %) | 0,0 | 0,0 | 401,3 |
+| banquise **après** (2 000) | **0/30** | 0,0 / 0,0 | 90 | 90 (100 %) | 0,0 | 0,0 | 406,0 |
+| banquise `--climate -100` **avant** | 0/30 | 0,0 / 0,0 | 90 | 90 (100 %) | 0,0 | 0,0 | 314,7 |
+| banquise `--climate -100` **après** | **0/30** | 0,0 / 0,0 | 90 | 90 (100 %) | 0,0 | 0,0 | 312,3 |
+| tempéré `--biome 4` (témoin) | **18/30** | 3,1 / 3,2 | 207 | 5 (2 %) | 10,3 | 7,4 | 2 497,3 |
+| banquise à 4 000 (non gardé) | 0/30 | 0,0 / 0,0 | 90 | 90 (100 %) | 0,0 | 0,0 | 400,9 |
+| banquise à 8 000 (non gardé) | 0/30 | 0,0 / 0,0 | 90 | 90 (100 %) | 0,0 | 0,0 | 399,4 |
+| banquise à **20 000** (non gardé) | 0/30 | 0,0 / 0,0 | 91 | 90 (98 %) | 0,0 | 0,0 | 402,6 |
+
+À 20 000 pour mille, une harde entre toutes les **trois heures de jeu** — et il
+meurt toujours 90 colons de faim sur 30 graines, plus un de ses plaies (un
+sanglier a fini par entrer dans la colonie). **Le joueur scripté de la campagne
+ne s'arme jamais sur la glace** : son poste de fabrication se bâtit à
+l'intérieur de l'enceinte (`campaign.rs`), l'enceinte demande du bois, la
+banquise n'a que les vingt arbres du plancher forcé — et les trois colons de
+départ sont morts au jour 3. Aucune colonie n'a acquis une technologie, aucune
+n'a reçu un raid, et la richesse finale (225 à 562) ne bouge pas. La fiche
+interdit d'adapter `campaign.rs` ; conformément à ce qu'elle prévoit, le
+rapport le dit et la tranche s'arrête là.
+
+**Témoin tempéré, colonne par colonne.** Identique à la référence du 2026-09-09
+demandée par la fiche : **18/30 colonies vivantes**, 3,1 / 3,2 colons aux jours
+10 et 20, **207 morts** (raid 169 soit 81 %, blessures 33 soit 15 %, **5
+famines** soit 2 %), **10,3 jours de vivres**, **7,4 raids par colonie**, 26/30
+enceintes refermées, 13 forges, 119 lingots, 26 épées, humeur 53,8 %.
+
+#### Par graine, banquise avant → après
+
+Trente lignes identiques, et c'est le résultat : aucune graine ne change de
+sort. Colons en fin, morts, morts de faim — les trois colonnes valent 0, 3 et 3
+avant comme après, sur les trente. La seule qui bouge est la richesse finale,
+et elle ne bouge que parce qu'une harde de plus laisse une dépouille de plus au
+sol au trentième jour.
+
+| graine | colons | morts | famine | richesse | | graine | colons | morts | famine | richesse |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 0 → 0 | 3 → 3 | 3 → 3 | 527 → 488 | | 2 | 0 → 0 | 3 → 3 | 3 → 3 | 295 → 387 |
+| 3 | 0 → 0 | 3 → 3 | 3 → 3 | 445 → 452 | | 4 | 0 → 0 | 3 → 3 | 3 → 3 | 230 → 230 |
+| 5 | 0 → 0 | 3 → 3 | 3 → 3 | 317 → 252 | | 6 | 0 → 0 | 3 → 3 | 3 → 3 | 582 → 562 |
+| 7 | 0 → 0 | 3 → 3 | 3 → 3 | 242 → 262 | | 8 | 0 → 0 | 3 → 3 | 3 → 3 | 312 → 385 |
+| 9 | 0 → 0 | 3 → 3 | 3 → 3 | 257 → 255 | | 10 | 0 → 0 | 3 → 3 | 3 → 3 | 492 → 562 |
+| 11 | 0 → 0 | 3 → 3 | 3 → 3 | 462 → 424 | | 12 | 0 → 0 | 3 → 3 | 3 → 3 | 470 → 467 |
+| 13 | 0 → 0 | 3 → 3 | 3 → 3 | 547 → 547 | | 14 | 0 → 0 | 3 → 3 | 3 → 3 | 230 → 240 |
+| 15 | 0 → 0 | 3 → 3 | 3 → 3 | 487 → 485 | | 16 | 0 → 0 | 3 → 3 | 3 → 3 | 242 → 242 |
+| 17 | 0 → 0 | 3 → 3 | 3 → 3 | 472 → 468 | | 18 | 0 → 0 | 3 → 3 | 3 → 3 | 507 → 522 |
+| 19 | 0 → 0 | 3 → 3 | 3 → 3 | 547 → 542 | | 20 | 0 → 0 | 3 → 3 | 3 → 3 | 257 → 257 |
+| 21 | 0 → 0 | 3 → 3 | 3 → 3 | 467 → 480 | | 22 | 0 → 0 | 3 → 3 | 3 → 3 | 230 → 225 |
+| 23 | 0 → 0 | 3 → 3 | 3 → 3 | 417 → 417 | | 24 | 0 → 0 | 3 → 3 | 3 → 3 | 502 → 522 |
+| 25 | 0 → 0 | 3 → 3 | 3 → 3 | 472 → 512 | | 26 | 0 → 0 | 3 → 3 | 3 → 3 | 307 → 317 |
+| 27 | 0 → 0 | 3 → 3 | 3 → 3 | 423 → 423 | | 28 | 0 → 0 | 3 → 3 | 3 → 3 | 532 → 532 |
+| 29 | 0 → 0 | 3 → 3 | 3 → 3 | 537 → 482 | | 30 | 0 → 0 | 3 → 3 | 3 → 3 | 232 → 242 |
+
+Aucune colonie ne voit le jour 10, aucune ne reçoit un raid (rien à piller),
+aucune n'acquiert une technologie. Les 90 morts sont 90 famines, avant comme
+après.
+
+#### Ce que la mesure laisse ouvert
+
+- **Le critère de la fiche n'est pas atteint** : banc 0/20 pour 10/20 demandés,
+  campagne 0/30 pour 9/30, campagne froide 0/30 pour 5/30, famine 100 % des
+  morts pour moins de 50 % demandés. Le test
+  `balance_biomes::ice_colonies_survive_often_enough` est écrit, sur le patron
+  exact du désert, mais il part **`#[ignore]`** avec les chiffres et les deux
+  causes en commentaire : le committer actif ferait échouer `cargo test`.
+- **Deux verrous, aucun dans la table.** (1) `jobs.rs::try_start_hunt` refuse la
+  chasse à mains nues : sur un biome dont c'est la seule nourriture, ça rend la
+  première journée impossible à jouer quel que soit le gibier. Une chasse au
+  petit gibier (lapin) à mains nues, ou une arme de départ, changerait tout —
+  et les deux sont hors du périmètre de cette fiche. (2) Le joueur scripté
+  s'arme après avoir bâti, alors que sur la glace il faut s'armer d'abord.
+- **Le sanglier est le second mur.** Une fois armée, la colonie de banquise ne
+  meurt plus de faim mais du gibier lui-même : 59 morts de blessures sur 59 à
+  8 000 pour mille. Piste non essayée et non chiffrée, parce qu'elle sort du
+  levier imposé : une banquise dont les hardes tirent moins souvent le sanglier
+  (la composition, pas l'abondance).
+- **Le plafond de douze bêtes n'a pas été touché**, et la mesure dit qu'il n'en
+  a pas besoin tant que quelqu'un chasse (0 à 8 bêtes sur la carte avec un
+  arc). Il devient visible dès que personne ne chasse : la carte sature à 12 au
+  jour 3 et les hardes suivantes n'entrent plus. C'est un symptôme, pas une
+  cause.
+- **La valeur gardée est un choix par défaut assumé.** Aucun critère de survie
+  ne la départage des autres ; seule la part de famine le fait, et seulement
+  sur un joueur de relevé. Si le premier verrou saute un jour, `game_density`
+  est à recalibrer avec `measure_ice_bottleneck`, et pas à l'intuition.
+
+#### Vérification
+
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D
+warnings`, `cargo test --workspace` (**378 tests réussis, 0 échec**, 13 ignorés
+— 376 et 9 avant la tranche : deux tests actifs et quatre relevés ajoutés ici), `verify --seed 1 --size 64
+--ticks 10000 --scenario demo` (OK, hash **`402c950b5ca15d90`** inchangé),
+`campaign --biome 4` identique colonne par colonne, `fuzz --seed 1 --size 24
+--ticks 20000 --runs 3 --commands-per-tick 6` (3 runs OK : jungle, montagne,
+forêt boréale).
+
+Tests ajoutés : `biome::tests::only_the_ice_bends_the_game_rate` (toutes les
+tables à 1 000 sauf `ICE`, et 1 000 est l'identité),
+`biomes::the_other_biomes_draw_the_same_herds` (les deux empreintes de six
+jours), et `balance_biomes::ice_colonies_survive_often_enough` (`#[ignore]`,
+voir plus haut). Relevés `#[ignore]` ajoutés : `measure_ice_vs_temperate`,
+`measure_ice_trajectories`, `measure_ice_bottleneck`. `climate.rs`, `jobs.rs`,
+`combat.rs`, `Species::meat`, `MAX_ANIMALS` et
+`crates/sim-cli/src/campaign.rs` sont inchangés.

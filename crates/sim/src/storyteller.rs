@@ -550,7 +550,12 @@ impl Sim {
         if self.tick >= self.next_herd_at {
             self.spawn_herd();
             let two_days = u64::from(TICKS_PER_DAY) * 2;
-            self.next_herd_at = self.tick + two_days + u64::from(self.rng.below(TICKS_PER_DAY * 2));
+            // Deux à quatre jours, puis l'abondance du biome divise ce délai
+            // (1000 pour mille = identité partout sauf sur la banquise). Le
+            // tirage est fait dans tous les cas, et dans le même ordre : c'est
+            // son résultat qui est mis à l'échelle, jamais le flux d'aléa.
+            let delay = two_days + u64::from(self.rng.below(TICKS_PER_DAY * 2));
+            self.next_herd_at = self.tick + self.biome.table().herd_delay(delay);
         }
         if self.tick >= self.next_supply_at {
             self.supply_drop();
