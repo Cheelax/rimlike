@@ -1,24 +1,27 @@
 ---
 slug: banquise-survivable
-status: open
-claimed_by:
-claimed_at:
+status: claimed
+claimed_by: Claude Fable (session orchestrateur, seconde passe)
+claimed_at: 2026-09-09
 layer: sim
 scope:
   - crates/sim/src/biome.rs
   - crates/sim/src/animals.rs
   - crates/sim/src/storyteller.rs
+  - crates/sim/src/jobs.rs (try_start_hunt seulement)
   - crates/sim/tests/balance_biomes.rs
   - crates/sim/tests/biomes.rs
+  - crates/sim/tests/gameplay.rs (un test de chasse à mains nues)
   - crates/sim-cli/CAMPAIGN-FINDINGS.md
 acceptance:
   - cargo fmt --all -- --check && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
-  - cargo run -p sim-cli --release -- verify --seed 1 --size 64 --ticks 10000 --scenario demo (hash 402c950b5ca15d90 inchangé)
-  - cargo test -p sim --release --test balance_biomes measure_survival -- --ignored --nocapture → banquise ≥ 10/20 (la moitié du témoin tempéré, 18/20), toundra et désert inchangés (19/20, 20/20)
-  - cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 1 → colonies vivantes ≥ 9/30 (la moitié du témoin tempéré, 18/30) et famine < 50 % des morts
+  - cargo run -p sim-cli --release -- verify --seed 1 --size 64 --ticks 10000 --scenario demo → OK ; hash 402c950b5ca15d90 inchangé, ou changé pour une raison écrite (le scénario chasse sans arme)
+  - cargo test -p sim --release --test balance_biomes measure_survival -- --ignored --nocapture → banquise ≥ 10/20 (la moitié du témoin tempéré, 18/20) ; aucun autre biome ne perd plus d'une colonie sur vingt par rapport au relevé du 2026-09-09 (toundra 19, boréale 20, tempéré 18, prairie 20, désert 20, savane 20, jungle 11, montagne 17)
+  - cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 1 → colonies vivantes ≥ 9/30 (la moitié du témoin tempéré) et famine < 50 % des morts
   - cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 1 --climate -100 → colonies vivantes ≥ 5/30 (la moitié de la campagne froide de référence, 11/30 en tempéré à −50)
-  - cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 4 → identique colonne par colonne à la référence du 2026-09-09 (18/30 vivantes, 207 morts)
+  - cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 4 → colonies vivantes ≥ 17/30 (référence 18/30, 207 morts ; la chasse à mains nues a le droit de changer le tempéré, pas de le dégrader), et l'écart est expliqué dans le rapport
   - cargo run -p sim-cli --release -- fuzz --seed 1 --size 24 --ticks 20000 --runs 3 --commands-per-tick 6 → OK
+  - le test ice_colonies_survive_often_enough sort de #[ignore] et passe
 done_in:
 ---
 
@@ -46,25 +49,38 @@ la quantité de gibier :
 La fiche est donc **remise ouverte**, avec un design à trancher (ci-dessous) qui sort du
 périmètre initial. Le constat et les interdits d'origine restent valables.
 
-## Design à trancher avant la seconde passe (décision de Thomas)
+## Design tranché pour la seconde passe (Thomas, 2026-09-09)
 
-Deux leviers, à mesurer l'un contre l'autre avec le même banc :
+« On doit pouvoir chasser le gibier à mains nues, et la population d'animaux doit dépendre
+du biome. » Les deux leviers sont donc retenus, dans cet ordre, et se mesurent séparément
+puis ensemble :
 
-- **A. La chasse au petit gibier à mains nues** : un lapin (2 viandes, 150 PV) se prend sans
-  arc — `try_start_hunt` accepterait un chasseur désarmé **pour cette seule espèce**, au
-  corps à corps. Périmètre : `jobs.rs` (et le joueur maigre du banc n'a rien à changer : il
-  marque déjà le gibier). Variante : une arme de départ (un épieu) pour toute colonie fondée
-  sur un biome `has_no_soil` — touche `lib.rs::spawn_starting_pawns`, et change le tempéré
-  si on ne la borne pas au biome.
-- **B. La composition des hardes par biome** : moins (ou pas) de sangliers sur la glace,
-  plus de cerfs — une seconde entrée de table, ou une pondération d'espèces par table.
-  Périmètre : `animals::spawn_herd`, même règle de flux RNG que `game_density`. **Non
-  chiffrée** : le relevé `measure_ice_bottleneck` dit que le sanglier tue, pas de combien
-  une harde sans sanglier sauverait.
+- **A. La chasse à mains nues.** `try_start_hunt` (`jobs.rs`) n'exige plus d'arme : un
+  colon désarmé part chasser au corps à corps avec ses dégâts de mains nues
+  (`combat::COLONIST_DAMAGE`, 80 à 121, déjà là — les pillards désarmés se battent ainsi), par
+  le même `engage` que la chasse armée ; rien d'autre ne change dans la chasse ni le combat.
+  **À mesurer** : (1) toutes les espèces à mains nues, (2) seulement les bêtes non agressives
+  (`Species::aggressive`, le sanglier exige une arme). Garder la variante qui survit le mieux
+  sans retirer au joueur ce qui ne le tue pas ; si les deux se valent, la plus libre (1).
+  Un chasseur armé garde évidemment la priorité qu'il a aujourd'hui.
+- **B. La composition des hardes par biome.** Une pondération d'espèces dans `BiomeTable`
+  (par ex. `game_mix: [u32; SPECIES_COUNT]`, dans l'ordre de `Species::ALL` : cerf, lapin,
+  sanglier). `spawn_herd` tire `rng.below(somme des poids)` et choisit l'espèce par tranche :
+  avec `[1, 1, 1]` c'est exactement le `below(3)` d'aujourd'hui — **même tirage, même
+  résultat, bit-identique** — et c'est la valeur de toutes les tables sauf `ICE` (et, si la
+  mesure le justifie, `TUNDRA`). Sur la glace : pas de sanglier, ou presque (les bêtes du
+  relevé sont un cerf sur deux et un lapin sur deux au départ ; la harde peut suivre), valeur
+  à mesurer. Les bêtes de départ (`spawn_starting_animals`, cerf ou lapin) ne changent pas.
+- **C. `game_density` remesuré** une fois A et B en place : garder la plus petite valeur qui
+  passe les critères (elle peut redescendre à 1000 si A suffit — alors on le dit, et la valeur
+  de la première passe est un rejet de plus).
 
-Dans les deux cas, l'entrée `game_density` reste le second étage (elle règle la famine
-d'une colonie qui sait chasser) ; sa valeur sera à remesurer une fois le goulot levé, et
-`ice_colonies_survive_often_enough` doit alors sortir de `#[ignore]`.
+Protocole : relevé par variante (A1, A2, A1+B, A2+B, puis C) sur le banc, puis campagne
+banquise, campagne froide, et **les autres biomes** — la chasse à mains nues change tout le
+monde, la fiche exige de le mesurer (`measure_survival` complet, campagne tempérée). Le témoin
+tempéré a le droit de bouger : il ne doit pas se dégrader, et l'écart s'explique dans le
+rapport (par ex. « les colonies chassent avant d'avoir un arc, N morts de sanglier de plus »).
+Le hash de `demo` ne bouge que si le scénario chasse sans arme ; le dire.
 
 ## Constat mesuré (2026-09-09, `main` à `1aa8a3c`)
 
