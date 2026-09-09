@@ -205,6 +205,26 @@ pub struct BiomeTable {
     /// mille. C'est un seuil sur le bruit d'**humidité**, pas sur l'élévation :
     /// l'herbe suit la pluie. `LUSH_IN_GRASS` de cette part est luxuriante.
     pub grass_share: u32,
+    /// **Abondance du gibier**, en pour mille de la cadence de référence.
+    ///
+    /// 1000 est la cadence d'avant cette entrée — une harde tous les deux à
+    /// quatre jours (`storyteller.rs`, `next_herd_at`), de deux à quatre bêtes
+    /// (`animals::spawn_herd`) — et c'est la valeur de **toutes** les tables
+    /// sauf `ICE` (`tests::only_the_ice_bends_the_game_rate`). Au-dessus, les
+    /// hardes se pressent : le délai tiré est divisé d'autant
+    /// (`BiomeTable::herd_delay`).
+    ///
+    /// **Le flux d'aléa ne bouge pas.** On tire le délai comme avant, dans le
+    /// même ordre et pour le même nombre de tirages, puis on met le **résultat**
+    /// à l'échelle : c'est ce qui garantit qu'un biome à 1000 joue exactement la
+    /// même partie qu'avant (`tests/biomes.rs::the_other_biomes_draw_the_same_herds`).
+    ///
+    /// Pourquoi cette entrée existe : la banquise n'a ni sol ni buisson, et la
+    /// chasse à la cadence de référence rend ~7 unités crues par jour quand
+    /// trois colons en mangent 15 — 30 colonies éteintes sur 30, 100 % de
+    /// famine (`crates/sim-cli/CAMPAIGN-FINDINGS.md` §14). Une calotte ne
+    /// dégèle pas ; elle nourrit par la chasse, ou pas du tout.
+    pub game_density: u32,
     /// Le sol de départ est-il enneigé (`Terrain::Snow`) ?
     ///
     /// **Lien avec `climate.rs`** : la neige au sol n'y existe pas — sous
@@ -297,6 +317,14 @@ impl BiomeTable {
         (trees, trees + bushes)
     }
 
+    /// Délai avant la prochaine harde, `ticks` étant celui que le tirage a
+    /// rendu. À 1000 il ressort inchangé — c'est l'identité, et c'est le cas de
+    /// tous les biomes sauf la banquise. Jamais zéro : une harde par tick
+    /// n'aurait pas de sens, et `next_herd_at` doit avancer.
+    pub fn herd_delay(self, ticks: u64) -> u64 {
+        (ticks * 1000 / u64::from(self.game_density)).max(1)
+    }
+
     /// Le rocher de cette case est-il veiné ? `die` est le dé des veines
     /// (`0..ORE_DIE`), tiré sur un bruit à part.
     pub fn veined(self, die: u32) -> bool {
@@ -325,12 +353,20 @@ pub const TEMPERATE: BiomeTable = BiomeTable {
     water_level: 408,
     sand_share: 70,
     grass_share: 625,
+    game_density: 1000,
     snow: false,
 };
 
 /// Calotte de glace : tout est blanc, rien ne pousse, la roche affleure. Les
 /// rares mares sont les seules cases d'eau (le reste est pris par le gel, que
 /// la carte ne modélise pas encore).
+///
+/// C'est la **seule** table dont `game_density` n'est pas à 1000 : ni sol
+/// (`has_no_soil`) ni buisson, la chasse est la seule nourriture, et à la
+/// cadence de référence elle rend la moitié de ce qu'une colonie de trois
+/// mange. Le gibier y est donc dense — la banlieue d'un trou de phoque, pas
+/// un désert blanc. Valeur mesurée, rejets chiffrés :
+/// `crates/sim-cli/CAMPAIGN-FINDINGS.md` §14.2.
 pub const ICE: BiomeTable = BiomeTable {
     tree_density: 0,
     bush_density: 0,
@@ -339,6 +375,7 @@ pub const ICE: BiomeTable = BiomeTable {
     water_level: 220,
     sand_share: 0,
     grass_share: 0,
+    game_density: 2000,
     snow: true,
 };
 
@@ -351,6 +388,7 @@ pub const TUNDRA: BiomeTable = BiomeTable {
     water_level: 260,
     sand_share: 0,
     grass_share: 600,
+    game_density: 1000,
     snow: true,
 };
 
@@ -364,6 +402,7 @@ pub const BOREAL: BiomeTable = BiomeTable {
     water_level: 380,
     sand_share: 30,
     grass_share: 800,
+    game_density: 1000,
     snow: false,
 };
 
@@ -376,6 +415,7 @@ pub const GRASSLAND: BiomeTable = BiomeTable {
     water_level: 400,
     sand_share: 50,
     grass_share: 900,
+    game_density: 1000,
     snow: false,
 };
 
@@ -404,6 +444,7 @@ pub const DESERT: BiomeTable = BiomeTable {
     water_level: 200,
     sand_share: 1000,
     grass_share: 150,
+    game_density: 1000,
     snow: false,
 };
 
@@ -416,6 +457,7 @@ pub const SAVANNA: BiomeTable = BiomeTable {
     water_level: 340,
     sand_share: 120,
     grass_share: 800,
+    game_density: 1000,
     snow: false,
 };
 
@@ -428,6 +470,7 @@ pub const JUNGLE: BiomeTable = BiomeTable {
     water_level: 360,
     sand_share: 20,
     grass_share: 1000,
+    game_density: 1000,
     snow: false,
 };
 
@@ -441,6 +484,7 @@ pub const MOUNTAIN: BiomeTable = BiomeTable {
     water_level: 330,
     sand_share: 20,
     grass_share: 700,
+    game_density: 1000,
     snow: false,
 };
 
@@ -508,6 +552,42 @@ mod tests {
         // la banquise, c'est la neige.
         assert!(DESERT.sand_noise() >= DESERT.gravel_noise() && !DESERT.snow);
         assert!(TUNDRA.snow && TUNDRA.sand_noise() < TUNDRA.gravel_noise());
+    }
+
+    /// **Une seule table plie la cadence du gibier**, et c'est la banquise.
+    /// Partout ailleurs `game_density` vaut 1000, c'est-à-dire l'identité : le
+    /// délai tiré ressort tel quel, et la partie est celle d'avant l'entrée
+    /// (voir `tests/biomes.rs::the_other_biomes_draw_the_same_herds`). Ce test
+    /// est la garde : si une table s'écarte de 1000, elle change le jeu de son
+    /// biome, et il faut le mesurer avant.
+    #[test]
+    fn only_the_ice_bends_the_game_rate() {
+        for b in Biome::ALL {
+            let t = b.table();
+            if b.for_colony() == Biome::Ice {
+                assert!(
+                    t.game_density > 1000,
+                    "banquise : {} pour mille de gibier",
+                    t.game_density
+                );
+                continue;
+            }
+            assert_eq!(
+                t.game_density,
+                1000,
+                "{} : {} pour mille de gibier, ce n'est plus la cadence de référence",
+                b.name(),
+                t.game_density
+            );
+            // 1000, c'est l'identité, y compris sur les bornes du tirage.
+            for ticks in [1u64, 14_400, 28_800, 57_600] {
+                assert_eq!(t.herd_delay(ticks), ticks, "{}", b.name());
+            }
+        }
+        // La banquise presse les hardes, sans jamais annuler le délai.
+        let ice = ICE;
+        assert!(ice.herd_delay(28_800) < 28_800);
+        assert_eq!(ice.herd_delay(0), 1);
     }
 
     /// Aucune table ne peut demander plus de plantes que le dé n'a de faces,

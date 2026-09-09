@@ -296,9 +296,12 @@ impl Sim {
         fallback
     }
 
-    /// Programme le premier troupeau : pas avant le lendemain.
+    /// Programme le premier troupeau : pas avant le lendemain — ou plus tôt
+    /// sur un biome à gibier dense (`BiomeTable::game_density`), qui divise le
+    /// délai **après** le tirage.
     pub(crate) fn schedule_first_herd(&mut self) {
-        self.next_herd_at = u64::from(TICKS_PER_DAY) + u64::from(self.rng.below(TICKS_PER_DAY));
+        let delay = u64::from(TICKS_PER_DAY) + u64::from(self.rng.below(TICKS_PER_DAY));
+        self.next_herd_at = self.biome.table().herd_delay(delay);
     }
 
     /// Fait entrer un troupeau d'une même espèce par un bord de la carte,

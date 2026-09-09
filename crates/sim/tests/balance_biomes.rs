@@ -22,9 +22,15 @@
 //! Le même critère vaut pour la toundra depuis le 2026-09-09 (§14 du rapport) :
 //! elle passait pour injouable sur une mesure d'avant le correctif du plancher
 //! qui murait les colonies, et elle survit en fait 19 fois sur 20 ici — ses
-//! buissons nourrissent. Le test la garde à ce niveau. La banquise, elle, reste
-//! à 0/20 (ni sol, ni buisson) : sa fiche est `docs/tasks/banquise-survivable.md`,
-//! et son test viendra avec elle.
+//! buissons nourrissent. Le test la garde à ce niveau.
+//!
+//! La banquise, elle, reste à **0/20** après la tranche du gibier du
+//! 2026-09-09 (`crates/sim-cli/CAMPAIGN-FINDINGS.md` §14.2), et son test de
+//! survie est ici, `#[ignore]`, avec la mesure qui dit pourquoi : ce n'est plus
+//! sa table qui bloque — `BiomeTable::game_density` fait tomber la famine de
+//! 47 morts sur 62 à 0 sur 59 quand la colonie peut tirer — c'est que **le
+//! joueur de ce fichier ne fabrique jamais d'arme**, et qu'un colon à mains
+//! nues ne chasse pas.
 
 use sim::{Biome, Command, Designation, Feature, Sim, Terrain, Zone};
 
@@ -317,6 +323,149 @@ fn play(seed: u64, biome: Biome) -> Played {
     p
 }
 
+/// Une partie jouée, plus ce qui départage « il n'y a rien à manger » de
+/// « personne n'a d'arc » : bêtes sauvages encore sur la carte et colons armés,
+/// au soir de chaque jour.
+struct IceTrace {
+    played: Played,
+    wild: Vec<u32>,
+    armed: Vec<u32>,
+    /// Premier jour où un colon porte une arme, `0` si jamais.
+    first_weapon_day: u32,
+    /// Morts dont le ventre était vide au tick d'avant.
+    starved: u32,
+    /// Morts qui avaient une blessure au tick d'avant (le sanglier, le plus
+    /// souvent : c'est la seule bête qui rend les coups).
+    hurt: u32,
+    /// Les autres.
+    other: u32,
+}
+
+/// Joue une colonie de banquise en relevant le goulot. Même joueur et mêmes
+/// réglages que `play` : c'est la même partie, simplement mieux observée.
+fn ice_trace(seed: u64, armed_player: bool) -> IceTrace {
+    let mut s = Sim::new_in_biome(seed, SIZE, SIZE, Biome::Ice);
+    let ticks = u64::from(DAYS) * u64::from(sim::TICKS_PER_DAY);
+    let mut played = Played {
+        end: 0,
+        daily: Vec::new(),
+        food: Vec::new(),
+        crops: Vec::new(),
+    };
+    let (mut wild, mut armed) = (Vec::new(), Vec::new());
+    let mut first_weapon_day = 0;
+    let (mut starved, mut hurt, mut other) = (0u32, 0u32, 0u32);
+    // Dernier état connu de chaque colon vivant : (id, ventre vide, blessé).
+    // Le sim ne garde pas la cause d'une mort, elle se déduit du tick d'avant
+    // — même méthode que `campaign.rs`, en beaucoup plus grossier.
+    let mut watched: Vec<(u32, bool, bool)> = Vec::new();
+    let mut tick = 0;
+    while tick < ticks {
+        let cmds = if tick % PLAN_INTERVAL != 0 {
+            Vec::new()
+        } else if armed_player {
+            plan_armed(&s)
+        } else {
+            plan(&s)
+        };
+        s.step(&cmds);
+        tick += 1;
+        for &(id, empty, was_hurt) in &watched {
+            if s.pawns().iter().any(|p| p.id == id && p.is_alive()) {
+                continue;
+            }
+            if empty {
+                starved += 1;
+            } else if was_hurt {
+                hurt += 1;
+            } else {
+                other += 1;
+            }
+        }
+        watched = s
+            .pawns()
+            .iter()
+            .filter(|p| p.is_colonist() && p.is_alive())
+            .map(|p| (p.id, p.hunger == 0, p.hp < p.max_hp()))
+            .collect();
+        if tick % u64::from(sim::TICKS_PER_DAY) != 0 {
+            continue;
+        }
+        let day = (tick / u64::from(sim::TICKS_PER_DAY)) as u32;
+        let stored = s.stored_totals();
+        played.daily.push(colonists(&s));
+        played.food.push(
+            stored[sim::ItemKind::Berries as usize]
+                + stored[sim::ItemKind::Vegetables as usize]
+                + stored[sim::ItemKind::Meat as usize]
+                + stored[sim::ItemKind::Meal as usize] * sim::farm::RAW_PER_MEAL,
+        );
+        played.crops.push(s.crops().len() as u32);
+        wild.push(
+            s.pawns()
+                .iter()
+                .filter(|p| p.is_alive() && p.species.is_some() && !p.is_colonist())
+                .count() as u32,
+        );
+        let with_weapon = s
+            .pawns()
+            .iter()
+            .filter(|p| p.is_colonist() && p.is_alive() && p.weapon.is_some())
+            .count() as u32;
+        if with_weapon > 0 && first_weapon_day == 0 {
+            first_weapon_day = day;
+        }
+        armed.push(with_weapon);
+    }
+    played.end = colonists(&s);
+    IceTrace {
+        played,
+        wild,
+        armed,
+        first_weapon_day,
+        starved,
+        hurt,
+        other,
+    }
+}
+
+/// **Instrument de diagnostic, pas le joueur du banc.** Le joueur de `plan`
+/// marque du gibier mais ne fabrique jamais d'arme — et « un colon à mains
+/// nues ne chasse pas » (`jobs.rs::try_start_hunt`). Sur un biome qui mange
+/// autre chose que de la viande, ça ne se voyait pas ; sur la banquise, c'est
+/// tout le sujet. Ce joueur-ci ajoute les deux ordres qui manquent, et **rien
+/// d'autre** : un poste de fabrication dès qu'il y a dix bois, et un arc par
+/// colon. Il ne sert qu'aux relevés `#[ignore]`, pour séparer « il n'y a pas
+/// assez de gibier » de « personne ne peut le tirer ».
+fn plan_armed(s: &Sim) -> Vec<Command> {
+    let mut cmds = plan(s);
+    let m = s.map();
+    let Some((ax, ay)) = m
+        .nearest_passable(m.width() / 2, m.height() / 2)
+        .map(|(x, y)| (x as i32, y as i32))
+    else {
+        return cmds;
+    };
+    if m.crafting_spot_count() == 0 && s.stored_totals()[sim::ItemKind::Wood as usize] >= 10 {
+        cmds.push(Command::Build {
+            kind: sim::BuildKind::CraftingSpot,
+            material: sim::Material::Wood,
+            x0: ax + 2,
+            y0: ay - 2,
+            x1: ax + 2,
+            y1: ay - 2,
+        });
+    }
+    let alive = colonists(s);
+    if s.craft_targets()[sim::ItemKind::Bow as usize] < alive {
+        cmds.push(Command::SetCraftTarget {
+            kind: sim::ItemKind::Bow,
+            target: alive,
+        });
+    }
+    cmds
+}
+
 /// Colonies vivantes après `DAYS` jours, sur `SEEDS` graines.
 fn survivors(biome: Biome) -> (u32, Vec<u64>) {
     let mut count = 0;
@@ -405,6 +554,53 @@ fn tundra_colonies_survive_often_enough() {
     assert!(
         tundra * 2 >= temperate,
         "toundra {tundra}/{SEEDS} (graines {t_seeds:?}) contre tempéré \
+         {temperate}/{SEEDS} (graines {w_seeds:?}) : moins de la moitié"
+    );
+}
+
+/// **Le critère de la fiche `banquise-survivable`, et il n'est pas atteint.**
+/// Même patron que le désert et la toundra : au moins la moitié du témoin
+/// tempéré, mêmes graines, même joueur, témoin joué seulement si nécessaire.
+///
+/// Il part `#[ignore]` parce qu'il **échoue** : la banquise reste à **0/20**
+/// ici, quelle que soit l'abondance du gibier — mesuré de 1 000 à 8 000 pour
+/// mille, voir `measure_ice_bottleneck` et le §14.2 du rapport. Ce n'est pas
+/// la table qui bloque, et c'est tout l'intérêt de le laisser écrit :
+///
+/// 1. **Le joueur de ce fichier ne chasse pas.** Il marque du gibier
+///    (`Command::Hunt`), mais « un colon à mains nues ne chasse pas »
+///    (`jobs.rs::try_start_hunt`) et il ne fabrique jamais d'arme. Sur les
+///    autres biomes ça ne se voyait pas — on y mange des baies ; ici c'est
+///    tout le repas. Résultat : **60 morts de faim sur 60**, à toutes les
+///    valeurs de `game_density`.
+/// 2. **Armé, on ne meurt plus de faim, on meurt du sanglier.** Avec un poste
+///    de fabrication et un arc par colon (`plan_armed`, relevé seulement), la
+///    famine tombe de 47 morts sur 62 à 27 sur 59 à 2 000 pour mille et à 0
+///    sur 59 à 8 000 — l'entrée de table fait donc exactement ce qu'on lui
+///    demande — mais les colonies vivantes ne bougent pas (2 à 6 sur 20) :
+///    une bête sur trois est un sanglier, il charge, et ce joueur n'a ni lit
+///    ni médecine.
+///
+/// Lever `#[ignore]` demandera donc autre chose que la table : un joueur de
+/// banc qui s'arme et se soigne, ou une chasse au petit gibier à mains nues.
+/// C'est écrit ici plutôt que nulle part pour que le jour où l'un des deux
+/// arrive, la mesure soit déjà en place.
+#[test]
+#[ignore]
+fn ice_colonies_survive_often_enough() {
+    let (ice, i_seeds) = survivors(Biome::Ice);
+    if ice * 2 >= SEEDS as u32 {
+        return;
+    }
+    let (temperate, w_seeds) = survivors(Biome::TemperateForest);
+    assert!(
+        temperate * 3 >= SEEDS as u32,
+        "le témoin tempéré ne survit que {temperate}/{SEEDS} fois : la mesure \
+         de la banquise ne veut plus rien dire (graines {w_seeds:?})"
+    );
+    assert!(
+        ice * 2 >= temperate,
+        "banquise {ice}/{SEEDS} (graines {i_seeds:?}) contre tempéré \
          {temperate}/{SEEDS} (graines {w_seeds:?}) : moins de la moitié"
     );
 }
@@ -617,6 +813,69 @@ fn measure_desert_vs_temperate() {
     for b in [Biome::TemperateForest, Biome::Desert] {
         let (alive, which) = survivors(b);
         println!("{:16} {alive}/{SEEDS} vivantes {which:?}", b.name());
+    }
+}
+
+/// **Le relevé qui a réglé `biome::ICE::game_density`** : banquise et tempéré,
+/// mêmes graines, comme `measure_desert_vs_temperate` mais pour la glace. On
+/// le relance après avoir changé la valeur de la table — c'est vingt fois plus
+/// court que `measure_survival`.
+#[test]
+#[ignore]
+fn measure_ice_vs_temperate() {
+    for b in [Biome::TemperateForest, Biome::Ice] {
+        let (alive, which) = survivors(b);
+        println!("{:16} {alive}/{SEEDS} vivantes {which:?}", b.name());
+    }
+}
+
+/// Jour par jour sur la **banquise** : colons debout, vivres, bêtes sauvages
+/// encore sur la carte, et l'arme du premier chasseur. C'est le relevé qui dit
+/// si le goulot est la nourriture ou le temps de s'armer — la question que la
+/// fiche `banquise-survivable` pose quand la survie plafonne.
+#[test]
+#[ignore]
+fn measure_ice_trajectories() {
+    for seed in 1..=SEEDS {
+        let t = ice_trace(seed, false);
+        println!(
+            "  graine {seed:2} fin {} | colons {:?}\n     vivres {:?}\n     bêtes {:?}\n     armés {:?} | première arme jour {}",
+            t.played.end, t.played.daily, t.played.food, t.wild, t.armed, t.first_weapon_day
+        );
+    }
+}
+
+/// **Le relevé qui sépare les deux goulots de la banquise** : la même colonie,
+/// jouée par le joueur du banc puis par `plan_armed` (le même, plus un poste de
+/// fabrication et un arc par colon). Si le second survit et pas le premier,
+/// c'est le temps de s'armer qui tue, pas la table.
+#[test]
+#[ignore]
+fn measure_ice_bottleneck() {
+    for armed in [false, true] {
+        let (mut alive, mut wood, mut first) = (0u32, 0u32, Vec::new());
+        let (mut starved, mut hurt, mut other) = (0u32, 0u32, 0u32);
+        // Colons-jours : la somme des colons debout au soir de chaque jour.
+        // Le compte de colonies vivantes saute de deux ou trois sur un tirage
+        // à vingt graines ; celui-ci bouge doucement, et il dit combien de
+        // temps la colonie tient.
+        let mut colonist_days = 0u32;
+        for seed in 1..=SEEDS {
+            let t = ice_trace(seed, armed);
+            alive += u32::from(t.played.end > 0);
+            wood += u32::from(t.armed.iter().any(|&a| a > 0));
+            starved += t.starved;
+            hurt += t.hurt;
+            other += t.other;
+            colonist_days += t.played.daily.iter().sum::<u32>();
+            if t.first_weapon_day > 0 {
+                first.push(t.first_weapon_day);
+            }
+        }
+        println!(
+            "banquise {} : {alive}/{SEEDS} vivantes | {colonist_days} colons-jours | {wood}/{SEEDS} colonies ont eu une arme | morts : {starved} de faim, {hurt} blessés, {other} autres | premiers jours {first:?}",
+            if armed { "avec arc " } else { "joueur du banc" }
+        );
     }
 }
 

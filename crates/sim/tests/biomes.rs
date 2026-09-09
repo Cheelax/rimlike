@@ -288,7 +288,7 @@ fn untouched_temperate_maps_keep_their_fingerprint() {
         let s = Sim::new(seed, w, h);
         assert_eq!(
             fingerprint(s.map()),
-            want,
+            want, // TEMP
             "la carte de Sim::new a bougé (graine {seed}, {w}x{h})"
         );
     }
@@ -687,6 +687,39 @@ fn only_the_biome_byte_was_added_to_the_state() {
             sim::hash::fnv1a64(head),
             before,
             "l'état a changé ailleurs que dans l'octet de biome (graine {seed}, {w}x{h})"
+        );
+    }
+}
+
+/// **Les hardes des biomes à 1000 ne bougent pas.** Empreinte d'état après six
+/// jours joués sans une seule commande, sur une graine tempérée et une graine
+/// de toundra en 48×48.
+///
+/// Six jours, parce que la cadence des hardes est de deux à quatre jours
+/// (`storyteller.rs`, `next_herd_at`) : la fenêtre en contient deux, plus la
+/// première (`Sim::schedule_first_herd`, le lendemain). Tout ce que
+/// `BiomeTable::game_density` met à l'échelle passe donc dedans, et l'empreinte
+/// le dirait.
+///
+/// Les valeurs sont relevées le 2026-09-09 sur `main` à `656c2c0`, **avant** la
+/// tranche du gibier de la banquise : c'est la preuve que l'entrée nouvelle de
+/// la table, à 1000 partout ailleurs, ne change ni le nombre ni l'ordre des
+/// tirages des autres biomes.
+#[test]
+fn the_other_biomes_draw_the_same_herds() {
+    for (biome, seed, want) in [
+        (Biome::TemperateForest, 5u64, 0x2cfd_cf37_5ca7_51cau64),
+        (Biome::Tundra, 5, 0xae9d_b4a0_1cb9_98d6),
+    ] {
+        let mut s = Sim::new_in_biome(seed, 48, 48, biome);
+        for _ in 0..6 * u64::from(sim::TICKS_PER_DAY) {
+            s.step(&[]);
+        }
+        assert_eq!(
+            s.state_hash(),
+            want,
+            "{} (graine {seed}) : six jours joués ne rendent plus la même partie",
+            biome.name()
         );
     }
 }
