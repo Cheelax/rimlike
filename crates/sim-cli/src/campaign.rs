@@ -1341,6 +1341,19 @@ struct Run {
     livestock: u32,
     fires: u32,
     burned: u32,
+    /// Le **pire incendie unique** de la partie, en cases enflammées, par
+    /// opposition à `burned` qui les additionne toutes sur trente jours. Un
+    /// total de mille cases peut être un feu de mille ou dix feux de cent, et
+    /// ce n'est pas la même dérive : c'est ce chiffre-là que le contrat du §6
+    /// (« pas de demi-carte qui brûle ») vise réellement.
+    ///
+    /// Un « incendie » est ici un **épisode** : de la première case allumée
+    /// alors que la carte ne brûlait plus jusqu'à l'extinction de la dernière,
+    /// c'est-à-dire exactement l'`arg` d'un `EventKind::FireOut`
+    /// (`Sim::fires_lit`). Deux départs qui se chevauchent dans le temps
+    /// comptent donc pour un seul épisode — ce qui est le bon compte pour la
+    /// question posée : combien de carte un même sinistre a-t-il emporté.
+    worst_fire: u32,
     mood_percent: u32,
     /// Colons vivants qui portent une arme en fin de partie. Le joueur scripté
     /// vise un arc par colon (`SetCraftTarget`) dès le premier passage : cet
@@ -1411,6 +1424,9 @@ struct Journal {
     raids_repelled: u32,
     fires: u32,
     burned: u32,
+    /// Le plus gros `arg` de `FireOut` vu jusqu'ici : le pire épisode
+    /// d'incendie de la partie (voir `Run::worst_fire`).
+    worst_fire: u32,
     deaths_announced: u32,
     /// Lingots et épées **produits**, et tributs offerts : trois faits qui ne
     /// laissent aucune trace lisible dans l'état final (un lingot se consomme,
@@ -1449,7 +1465,10 @@ impl Journal {
                 }
                 EventKind::RaidRepelled => self.raids_repelled += 1,
                 EventKind::FireStarted => self.fires += 1,
-                EventKind::FireOut => self.burned += e.arg,
+                EventKind::FireOut => {
+                    self.burned += e.arg;
+                    self.worst_fire = self.worst_fire.max(e.arg);
+                }
                 EventKind::ColonistDied => self.deaths_announced += 1,
                 // `arg` porte le genre fabriqué : les armes passent par
                 // `WeaponCrafted`, tout le reste par `ItemCrafted`.
@@ -1623,6 +1642,7 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
         livestock: sim.livestock_count(),
         fires: journal.fires,
         burned: journal.burned,
+        worst_fire: journal.worst_fire,
         mood_percent,
         armed,
         blueprints_left: sim.blueprints().len() as u32,
@@ -1725,7 +1745,7 @@ fn goodwill_cell(g: &[i32; factions::FACTION_COUNT]) -> String {
 
 fn print_table(runs: &[Run]) {
     println!(
-        "{:>6} {:>14} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>8} {:>7}",
+        "{:>6} {:>14} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>8} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>8} {:>7}",
         "graine",
         "biome",
         "fin",
@@ -1749,6 +1769,7 @@ fn print_table(runs: &[Run]) {
         "bétail",
         "feux",
         "brûlé",
+        "pire feu",
         "armés",
         "forges",
         "ling.",
@@ -1763,7 +1784,7 @@ fn print_table(runs: &[Run]) {
     );
     for r in runs {
         println!(
-            "{:>6} {:>14} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>8} {:>7}",
+            "{:>6} {:>14} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>8} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>8} {:>7}",
             r.seed,
             r.biome.name(),
             r.colonists_end,
@@ -1787,6 +1808,7 @@ fn print_table(runs: &[Run]) {
             r.livestock,
             r.fires,
             r.burned,
+            r.worst_fire,
             r.armed,
             r.forges,
             r.ingots,
@@ -1802,7 +1824,7 @@ fn print_table(runs: &[Run]) {
     }
 }
 
-fn print_summary(runs: &[Run], ticks: u64, elapsed: std::time::Duration) {
+fn print_summary(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Duration) {
     let n = runs.len();
     let wiped = runs.iter().filter(|r| r.colonists_end == 0).count();
     let deaths_total: u32 = runs.iter().map(|r| r.deaths_total()).sum();
@@ -1902,6 +1924,43 @@ fn print_summary(runs: &[Run], ticks: u64, elapsed: std::time::Duration) {
         runs.iter().map(|r| r.burned).sum::<u32>(),
         runs.iter().filter(|r| r.fires > 0).count(),
     );
+    // Le contrat du §6 porte sur **un** sinistre, pas sur la somme de trente
+    // jours : la pire graine et le pire épisode se lisent côte à côte, et leur
+    // écart dit si la graine a brûlé d'un coup ou par petits bouts.
+    //
+    // Et il porte sur une colonie **encore debout** : une carte dont la
+    // colonie est éteinte continue d'être simulée jusqu'au trentième jour sans
+    // que personne y batte plus jamais les flammes. Les deux populations sont
+    // donc séparées, sans quoi la pire graine est presque toujours une carte
+    // abandonnée (voir §16).
+    {
+        let tiles = (s.size * s.size).max(1);
+        let worst_seed = runs.iter().map(|r| r.burned).max().unwrap_or(0);
+        let worst_fire = runs.iter().map(|r| r.worst_fire).max().unwrap_or(0);
+        let alive: Vec<&Run> = runs.iter().filter(|r| r.colonists_end > 0).collect();
+        let alive_seed = alive.iter().map(|r| r.burned).max().unwrap_or(0);
+        let alive_fire = alive.iter().map(|r| r.worst_fire).max().unwrap_or(0);
+        println!(
+            "  pire graine / pire feu : {worst_seed} cases ({} % de la carte) / {worst_fire} cases ({} %) — sur {tiles} cases",
+            worst_seed * 100 / tiles,
+            worst_fire * 100 / tiles,
+        );
+        println!(
+            "  — colonies vivantes    : {alive_seed} cases ({} %) / {alive_fire} cases ({} %) — {} graines, {} cases brûlées en tout",
+            alive_seed * 100 / tiles,
+            alive_fire * 100 / tiles,
+            alive.len(),
+            alive.iter().map(|r| r.burned).sum::<u32>(),
+        );
+        println!(
+            "  — colonies éteintes    : {} graines, {} cases brûlées en tout — personne n'y éteint plus rien",
+            n - alive.len(),
+            runs.iter()
+                .filter(|r| r.colonists_end == 0)
+                .map(|r| r.burned)
+                .sum::<u32>(),
+        );
+    }
     println!(
         "  enceintes refermées    : {}/{} (enclosed, au moins une pièce en fin)",
         runs.iter().filter(|r| r.enclosed).count(),
@@ -2025,7 +2084,7 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
             .collect();
         let goodwill: Vec<String> = r.goodwill.iter().map(i32::to_string).collect();
         println!(
-            "    {{\"seed\": {}, \"biome\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"enclosed\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"tame_orders\": {}, \"tamed\": {}, \"metallurgy_day\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
+            "    {{\"seed\": {}, \"biome\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"worst_fire\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"enclosed\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"tame_orders\": {}, \"tamed\": {}, \"metallurgy_day\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
             r.seed,
             r.biome as u8,
             r.colonists_end,
@@ -2041,6 +2100,7 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
             r.livestock,
             r.fires,
             r.burned,
+            r.worst_fire,
             r.mood_percent,
             r.armed,
             r.blueprints_left,
@@ -2249,7 +2309,7 @@ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
         print_json(&runs, &settings, ticks, elapsed);
     } else {
         print_table(&runs);
-        print_summary(&runs, ticks, elapsed);
+        print_summary(&runs, &settings, ticks, elapsed);
     }
     Ok(0)
 }
@@ -2824,6 +2884,99 @@ mod tests {
         journal.drain(&s);
         assert!(journal.ingots > 0, "aucun lingot compté");
         assert!(journal.swords > 0, "aucune épée comptée");
+        assert_eq!(journal.lost, 0, "journal débordé");
+    }
+
+    /// Le total brûlé et le **pire incendie** ne racontent pas la même chose :
+    /// quatre cases, c'est peut-être un feu de quatre, peut-être deux feux de
+    /// deux. Deux épisodes séparés dans le temps — trois cases d'un coup, puis
+    /// une — et le journal doit rendre `burned` = 4 et `worst_fire` = 3.
+    ///
+    /// La scène est celle du banc du feu en miniature : les trois colons
+    /// naissent enfermés dans un enclos de roche au centre, les arbres sont à
+    /// plus de `fire::FIREFIGHT_RADIUS` d'eux, personne ne vient éteindre. Les
+    /// arbres sont isolés sur de la terre nue, séparés de trois cases : rien ne
+    /// se propage, et le compte est exact plutôt que statistique.
+    #[test]
+    fn le_journal_retient_le_pire_incendie_et_pas_seulement_le_total() {
+        const W: u32 = 80;
+        const H: u32 = 9;
+        /// Arbres isolés, tous sur la ligne `TREE_Y`.
+        const TREES: [u32; 4] = [2, 5, 8, 76];
+        const TREE_Y: u32 = 4;
+        /// De quoi laisser un foyer vivre ses `fire::FIRE_BURN_TICKS` et
+        /// s'éteindre, sans attendre le premier changement de temps (une
+        /// demi-journée au plus tôt).
+        const EPISODE: u32 = 2_000;
+
+        let rows: Vec<String> = (0..H)
+            .map(|y| {
+                (0..W)
+                    .map(|x| {
+                        let pen = (37..=43).contains(&x) && (2..=6).contains(&y);
+                        let core = (38..=42).contains(&x) && (3..=5).contains(&y);
+                        if TREES.contains(&x) && y == TREE_Y {
+                            'T'
+                        } else if pen && !core {
+                            '#'
+                        } else {
+                            ','
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let mut s = Sim::from_map(1, map_from(&refs));
+        let center = s.colony_center().expect("colonie éteinte");
+        assert!(
+            (38..=42).contains(&center.0) && (3..=5).contains(&center.1),
+            "les colons ne sont pas nés dans l'enclos ({center:?})"
+        );
+
+        let mut journal = Journal::default();
+        // Épisode 1 : trois arbres allumés dans le même tick. La carte ne
+        // brûlait pas, elle ne brûlera plus à la fin : c'est **un** incendie
+        // de trois cases pour `EventKind::FireOut`.
+        s.step(&[
+            Command::Ignite {
+                x: TREES[0],
+                y: TREE_Y,
+            },
+            Command::Ignite {
+                x: TREES[1],
+                y: TREE_Y,
+            },
+            Command::Ignite {
+                x: TREES[2],
+                y: TREE_Y,
+            },
+        ]);
+        for _ in 0..EPISODE {
+            s.step(&[]);
+            journal.drain(&s);
+        }
+        assert_eq!(
+            journal.burned, 3,
+            "les trois arbres n'ont pas fini de brûler"
+        );
+        assert_eq!(journal.worst_fire, 3, "le premier épisode vaut trois cases");
+
+        // Épisode 2 : un seul arbre, bien plus tard, à l'autre bout.
+        s.step(&[Command::Ignite {
+            x: TREES[3],
+            y: TREE_Y,
+        }]);
+        for _ in 0..EPISODE {
+            s.step(&[]);
+            journal.drain(&s);
+        }
+        assert_eq!(journal.burned, 4, "le total additionne les deux épisodes");
+        assert_eq!(
+            journal.worst_fire, 3,
+            "le pire épisode reste celui de trois cases"
+        );
+        assert_eq!(journal.fires, 4, "quatre départs annoncés");
         assert_eq!(journal.lost, 0, "journal débordé");
     }
 

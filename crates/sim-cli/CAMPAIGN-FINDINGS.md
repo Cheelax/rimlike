@@ -1161,6 +1161,14 @@ Essayé, mesuré, rejeté.
 chiffres d'après sont en fin de section. Le banc de mesure vit désormais dans
 `crates/sim/tests/balance_fire.rs`.
 
+> **Le contrat de cette section est révisé au §16 (2026-09-10).** Le chiffre
+> « pire graine ≤ 534 cases, 13 % de la carte » ci-dessous vaut pour une carte
+> **habitée** — et il y est tenu six fois mieux qu'ici (87 cases). Le maximum
+> sur trente graines mêlait des colonies et des **ruines** : après l'extinction
+> d'une colonie, la campagne simule encore vingt jours de forêt d'été où
+> personne ne bat plus les flammes. Rien du feu n'a changé depuis cette
+> section ; c'est l'énoncé du contrat qui a été refait. Voir §16.6.
+
 ### Mesure (avant)
 
 Cases brûlées **par graine**, campagne de 30 graines :
@@ -4720,6 +4728,9 @@ de monde lent pour les mêmes effets de bord.
 
 - **Le contrat du §6 à K = 1** (24 % de la carte au lieu de 13 %) : constaté
   ci-dessus, non réglé, et c'est le premier candidat pour une fiche à part.
+  **Repris et clos au §16** : les 24 % sont ceux d'une carte dont la colonie est
+  éteinte ; sur une carte habitée la pire graine vaut 87 cases (2 %), et le
+  contrat est réécrit en deux clauses.
 - **Le vent qui ne tourne plus** à grand K : découvert sur le banc, pas mesuré
   en campagne. C'est un effet de l'échelle sur le feu qui va dans le sens
   inverse de la pluie qui ne tombe plus, et personne ne sait lequel domine sur
@@ -4728,6 +4739,328 @@ de monde lent pour les mêmes effets de bord.
   brûlé **par graine** sur trente jours (la colonne `brûlé`, comme au §6), pas la
   plus grande surface d'un incendie unique. Les deux se confondent quand une
   graine ne connaît qu'un ou deux feux (c'est le cas des pires), pas ailleurs.
-  Le distinguer demanderait un compteur de plus dans `campaign`.
+  Le distinguer demanderait un compteur de plus dans `campaign`. **Ajouté au
+  §16** (colonne `pire feu`) : la pire graine de K = 1 doit 993 de ses 1 000
+  cases à un seul incendie, celle de K = 30 seulement 830 sur 1 322.
 - **La cadence du joueur scripté**, **la tactique du raid** et **les cadences
   d'évaluation** : inchangés depuis le §15.10, rien ici ne les mesure.
+
+---
+
+## 16. Le feu et son contrat du §6 (2026-09-10)
+
+**Ce que cette section fait.** Elle reprend le constat laissé ouvert par le
+§15.11 — « le contrat du §6 n'est plus tenu à K = 1 non plus, pire graine à
+1 000 cases au lieu de 534 » —, en cherche la cause par **bissection de
+l'historique**, ajoute à `campaign` le compteur qui manquait (le **pire
+incendie unique**, par opposition au total brûlé), et **révise le contrat par
+écrit**. Fiche `docs/tasks/feu-contrat-du-6.md`, arbre de travail
+`task/feu-contrat-du-6`, base **`425b033`**.
+
+**Le résultat en trois lignes.** La bissection désigne un commit, `216728c`
+(la chasse à mains nues, PR #13), mais l'examen montre que ce n'est **pas** un
+mécanisme d'incendie : sur deux cents graines au lieu de trente, la
+distribution des surfaces brûlées est la même avant et après, au bruit près.
+Ce que la pire graine mesurait n'était pas le feu : c'était une **carte
+abandonnée**. Sur `main`, les dix-huit colonies encore debout au trentième jour
+brûlent **231 cases en tout, la pire 87 (2 % de la carte)** ; les douze
+colonies éteintes en brûlent **1 756, la pire 1 000 (24 %)** — dix à quinze
+jours **après** la mort du dernier colon, sur une carte où plus personne ne bat
+les flammes. **Aucune ligne de `crates/sim` n'a changé** : `DEMO_HASH` vaut
+toujours `e42d5ed14b0cdc69`.
+
+### 16.1 Protocole
+
+Une seule commande, celle du §6, rejouée révision par révision :
+
+```sh
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64
+```
+
+Chaque révision est compilée dans un `git worktree` détaché jeté ensuite, avec
+un répertoire de compilation partagé : une révision coûte une vingtaine de
+secondes de compilation et de dix secondes (`main`) à vingt minutes (`35cdd6d`,
+d'avant l'index de régions) de campagne. C'est ce qui rend la bissection
+possible en une session — la même campagne coûtait vingt-neuf minutes le
+2026-09-05.
+
+### 16.2 La bissection : un commit, `216728c`
+
+Pire graine (colonne `brûlé`), campagne normale, K = 1. Les révisions sont dans
+l'ordre de l'historique ; les lignes grises n'apportent rien de neuf et servent
+de témoin de stabilité.
+
+| révision | date | ce qu'elle apporte | **pire graine** | total brûlé | départs | vivantes |
+|---|---|---|---|---|---|---|
+| `35cdd6d` | 05/09 | **le feu suit le vent** (le réglage du §6) | **534** | 907 | 81 | 20/30 |
+| `8fc5135` | 06/09 | index de régions, atteignabilité en O(1) | 218 | 656 | 79 | 22/30 |
+| `d151bbe` | 07/09 | la carte suit le biome de sa case | 94 | 216 | 77 | 17/30 |
+| `626ca67` | 07/09 | **joueur scripté** : l'enceinte se referme (§12) | 605 | 1 289 | 110 | 20/30 |
+| `3877927` | 07/09 | le désert a un potager garanti | 605 | 1 289 | 110 | 20/30 |
+| `1aa8a3c` | 07/09 | **plancher de ressources** (20 arbres forcés) | 160 | 352 | 104 | 18/30 |
+| `6dbc4a8` | 09/09 | **gibier par biome** (PR #12) | 160 | 352 | 104 | 18/30 |
+| `4f374ae` | 09/09 | docs (PR #12 fusionnée) | 160 | 352 | 104 | 18/30 |
+| `9529df6` | 09/09 | docs — **le parent de la ligne suivante** | 160 | 352 | 104 | 18/30 |
+| **`216728c`** | **09/09** | **chasse à mains nues, hardes par biome (PR #13)** | **1 000** | **1 987** | **112** | 18/30 |
+| `7ad1de2` | 09/09 | docs | 1 000 | 1 987 | 112 | 18/30 |
+| `f9856bc` | 10/09 | **unification du scénario** (PR #14) | 1 000 | 1 987 | 112 | 18/30 |
+| `5fb5d01` | 10/09 | **échelle du jour** (PR #15) | 1 000 | 1 987 | 112 | 18/30 |
+| `339f3a1` | 10/09 | hémostase physique (PR #16) | 1 000 | 1 987 | 112 | 18/30 |
+| `425b033` | 10/09 | `main` | 1 000 | 1 987 | 112 | 18/30 |
+
+Trois choses se lisent tout de suite.
+
+1. **Le saut est unique et net** : `9529df6` (le parent) donne 160, `216728c`
+   donne 1 000, et **rien après ne bouge d'une case**. Les deux fiches que la
+   fiche demandait de vérifier au passage sont innocentes et le tableau le
+   prouve colonne par colonne : **PR #14 (unification du scénario) et PR #15
+   (échelle du jour) laissent la campagne rigoureusement identique** — même
+   pire graine, même total, même nombre de départs, mêmes trente lignes.
+2. **Le plancher de ressources et le gibier par biome sont innocents aussi**, et
+   pour la même raison mesurée : `1aa8a3c`, `6dbc4a8`, `4f374ae` et `9529df6`
+   rendent le **même fichier**. La forêt tempérée a bien plus que vingt arbres
+   au voisinage du repère, le plancher n'y mord jamais ; et `game_mix`
+   `[1, 1, 1]` est, hors banquise, l'identité exacte du dé d'avant.
+3. **Et pourtant la colonne saute dans tous les sens** : 534, 218, 94, 605, 605,
+   160, 1 000. Une révision qui ne touche pas au feu — l'index de régions, le
+   biome de la carte, le joueur qui referme son enceinte — divise ou multiplie
+   la pire graine par trois. C'est ce point-là, et non le commit désigné, qui
+   met sur la piste.
+
+### 16.3 Ce que la pire graine mesure vraiment : trente tirages d'une loi à queue
+
+Trente graines, c'est trop peu pour un maximum. La même campagne, jouée sur
+**deux cents graines** (les trente d'origine en font partie), sur les trois
+révisions qui encadrent le saut :
+
+| révision | n | total brûlé | médiane | p90 | **max** | graines ≥ 532 |
+|---|---|---|---|---|---|---|
+| `626ca67` (07/09) | 200 | 7 487 | 5 | 79 | 818 | 3 |
+| `9529df6` (09/09, avant) | 200 | 7 193 | 5 | 67 | **711** | 1 |
+| `216728c` = `main` (après) | 200 | 8 800 | 5 | 113 | **1 000** | 3 |
+
+**La loi ne change pas.** La médiane est la même (5 cases), le total varie de
+22 % d'un bout à l'autre, et la révision « d'avant » a elle aussi une graine à
+711 cases (17 % de la carte) et neuf graines au-dessus de 300 — elles n'étaient
+simplement pas dans les trente premières. Le passage de 160 à 1 000 sur trente
+graines est un **artefact d'échantillonnage** sur le maximum d'une distribution
+à queue lourde, pas une carte devenue plus inflammable. `216728c` change ce que
+font les colons dès le premier jour (un colon désarmé part chasser à douze
+cases), donc toute la suite des tirages : il **rebat les cartes**, il n'allume
+rien de plus.
+
+### 16.4 La vraie cause : la pire graine est une carte que plus personne n'habite
+
+Le compteur ajouté à `campaign` (§16.5) et la séparation des deux populations
+donnent la réponse en une ligne. Campagne normale, K = 1, `main` :
+
+| population | graines | cases brûlées | pire graine | pire feu unique |
+|---|---|---|---|---|
+| colonies **encore debout** au j30 | 18 | **231** | **87 (2 %)** | **85 (2 %)** |
+| colonies **éteintes** | 12 | **1 756** | **1 000 (24 %)** | **993 (24 %)** |
+
+Sur deux cents graines, le rapport tient : 107 colonies vivantes brûlent 905
+cases (pire 87), 93 colonies éteintes en brûlent 7 895 (pire 1 000). **Une carte
+abandonnée brûle dix fois plus qu'une carte habitée.**
+
+Et la campagne ne s'arrête pas à la mort du dernier colon : `play_seed` joue ses
+trente jours quoi qu'il arrive. Après l'extinction, la carte reste une forêt
+d'été où la foudre tombe et où **plus personne ne bat les flammes** —
+`fire_to_fight` n'a plus de colon à qui poser la question.
+
+**La chronologie de la pire graine le dit sans ambiguïté.** Graine 17, la même
+campagne tronquée à D jours (`campaign --seeds 1 --seed 17 --days D`) :
+
+| jour | 3 | 5 | 7 | 10 | 12 | 15 | **20** | 25 | 30 |
+|---|---|---|---|---|---|---|---|---|---|
+| colons | 3 | **0** | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| cases brûlées | 0 | 0 | 3 | 5 | 6 | 6 | **999** | 1 000 | 1 000 |
+| pire feu unique | 0 | 0 | 1 | 1 | 1 | 1 | **993** | 993 | 993 |
+
+La colonie meurt **entre le troisième et le cinquième jour** (deux morts en
+raid, une de ses blessures) ; l'incendie de 993 cases part **entre le quinzième
+et le vingtième**, en plein été, dix à quinze jours après le dernier colon.
+Jusque-là, la carte avait brûlé six cases.
+
+**Le sens de la causalité n'est pas discutable** : sur les trente graines, le
+feu tue **zéro** colon (colonne `feu` du tableau ; cinq morts sur les deux cents
+graines, contre 1 284 morts au total). Un incendie ne vide pas une colonie dans
+ce jeu ; c'est la colonie vide qui laisse l'incendie courir.
+
+**Le §6 tenait, et il tient encore.** Le 2026-09-05, la pire graine à 534 cases
+était une colonie **vivante** (graine 29, deux colons debout au trentième jour),
+et les dix colonies éteintes de cette campagne-là n'avaient brûlé que 20 cases à
+elles toutes — un tirage chanceux, comme le §16.3 le montre. Aujourd'hui la pire
+colonie **vivante** brûle **87 cases**, soit **2 % de la carte** : six fois
+moins que le contrat. Ce qui a changé entre les deux dates n'est pas la
+sévérité du feu, c'est **quelle graine tire le gros lot après sa mort**.
+
+### 16.5 Le compteur : le pire incendie unique
+
+`campaign` rapportait le **total** brûlé par graine sur trente jours. Un total
+de mille cases peut être un feu de mille ou dix feux de cent, et ce n'est pas la
+même dérive — c'est le manque que le §15.11 laissait ouvert. Trois ajouts,
+**purement additifs** : aucune colonne existante n'est renommée, déplacée dans
+son sens, ni recalculée, et le JSON garde tous ses champs.
+
+- `Run::worst_fire` et `Journal::worst_fire` : le plus grand `arg` d'un
+  `EventKind::FireOut` de la partie. Rien n'est ajouté au sim — `Sim::fires_lit`
+  comptait déjà les cases enflammées depuis que la carte a repris feu, et
+  `FireOut` le porte déjà.
+- une colonne **`pire feu`** dans le tableau, à côté de `brûlé` ;
+- un champ **`"worst_fire"`** dans le JSON, et trois lignes de résumé : la pire
+  graine et le pire feu, puis les mêmes **pour les colonies encore debout** et
+  le total des colonies éteintes.
+
+Un « incendie » est ici un **épisode** : de la première case allumée alors que
+la carte ne brûlait plus jusqu'à l'extinction de la dernière. Deux départs qui
+se chevauchent comptent pour un — c'est le bon compte pour la question posée
+(« combien de carte un même sinistre a-t-il emporté »), et c'est exactement ce
+que `FireOut` annonce déjà. Le test
+`campaign::tests::le_journal_retient_le_pire_incendie_et_pas_seulement_le_total`
+le vérifie sur une scène exacte plutôt que statistique : trois arbres isolés
+allumés d'un coup, puis un quatrième deux mille ticks plus tard, colons enfermés
+hors de portée — `burned` = 4, `worst_fire` = 3.
+
+**Ce que le compteur apprend.** Pire incendie unique par graine, campagne
+normale, K = 1, trié :
+
+```
+0 0 0 0 1 1 1 1 1 1 1 2 3 3 4 5 5 6 8 8 9 24 25 37 78 85 107 110 183 993
+```
+
+La pire graine doit **993 de ses 1 000 cases à un seul incendie** (99 %) : c'est
+bien un sinistre unique, pas une accumulation. Deuxième constat, moins attendu :
+sur la graine 3 (331 cases brûlées) le pire feu ne vaut que **183** — la moitié
+du total. Le compteur sert donc à quelque chose dès la deuxième ligne de la
+queue, et il servira surtout à K = 30, où la pire graine (1 322, graine 12) ne
+doit que **830** à son plus gros feu — et où le plus gros incendie de la
+campagne, **910 cases**, est sur une **autre** graine (17, 918 cases au total).
+Sans ce compteur, les deux se confondaient sous le mot « pire ».
+
+### 16.6 Le contrat du §6, révisé
+
+Aucune correction du feu n'est faite : il n'y a rien à corriger dans `fire.rs`
+— le mécanisme mesuré le 2026-09-05 fait exactement ce pour quoi il a été réglé,
+et il le fait **mieux** qu'alors sur les cartes habitées (87 cases contre 534).
+Ce qui était faux, c'est l'énoncé du contrat, qui mesurait sur un échantillon
+mêlant des colonies et des ruines. Il est donc **révisé**, en deux clauses :
+
+> **Contrat du feu (révisé le 2026-09-10, remplace celui du §6).**
+>
+> 1. **Sur une carte habitée** — colonie encore debout au trentième jour — le
+>    pire incendie unique et le total brûlé restent **sous 13 % de la carte**
+>    (532 cases sur 4 096). Mesuré sur `main` : **87 cases (2 %)** de total et
+>    **85 (2 %)** de pire feu à K = 1 ; **32 (0,8 %)** et **22** à K = 30.
+> 2. **Sur une carte abandonnée** — plus un colon — le contrat ne s'applique
+>    pas : personne n'y bat plus les flammes, et la campagne continue pourtant
+>    de la simuler jusqu'au trentième jour. La seule borne qu'on lui demande est
+>    celle du §6 dans son esprit — **pas de demi-carte** : le pire incendie
+>    unique reste **sous un tiers de la carte**. Mesuré : **993 cases (24 %)** à
+>    K = 1, **910 (22 %)** à K = 30, contre **2 339 (57 %)** avant le vent du
+>    2026-09-05.
+>
+> **Pourquoi deux clauses et pas une.** Le contrat du §6 disait « pas de
+> demi-carte qui brûle » et visait un joueur qui perd sa forêt ; il a été
+> mesuré par un maximum sur trente graines qui, elles, n'ont pas toutes un
+> joueur. Aucune constante de `fire.rs` ne sait faire la différence entre « la
+> colonie regarde » et « il n'y a plus personne » : la lutte est la seule chose
+> qui les sépare, et elle est du côté des colons. Serrer la propagation pour
+> tenir 13 % sur une carte vide rendrait le feu inoffensif sur une carte
+> habitée — c'est-à-dire rouvrirait, par l'autre bout, le régime « trois cases
+> ou rien » que le §6 a cassé.
+
+**Ce qui a été écarté, et pourquoi.**
+
+- **Toucher aux constantes du feu** (`FIRE_SPREAD_DEN`, `FIRE_BURN_TICKS`, les
+  diviseurs de vent). Le §6 a mesuré ce réglage sur le banc du bosquet et la
+  fiche interdit de rouvrir un réglage mesuré pour en réparer un autre. Ici il
+  n'y a même pas de dérive à réparer : le banc (`tests/balance_fire.rs`) passe
+  inchangé, et les cartes habitées sont **six fois** sous le contrat.
+- **Rouvrir la chasse à mains nues** (`216728c`, `jobs::may_hunt`). C'est la
+  révision que la bissection désigne, et c'est précisément le cas que la fiche
+  vise : un réglage mesuré d'une autre tranche, qu'on ne rouvre pas. Il n'y
+  aurait de toute façon rien à y gagner — le §16.3 montre qu'il ne rend pas la
+  carte plus inflammable.
+- **Arrêter la campagne à l'extinction de la colonie.** Ce serait l'instrument
+  le plus juste, mais il **changerait la valeur de colonnes existantes**
+  (`brûlé`, `feux`, et la richesse finale d'une ruine) et rendrait incomparables
+  tous les rapports d'avant. La fiche l'interdit ; la séparation des deux
+  populations au résumé donne la même information sans rien casser.
+- **Borner la durée d'une période météo en ticks réels** (le levier nommé au
+  §15.5). Il ne s'applique pas : à K = 1 le temps tourne déjà pendant la vie
+  d'un incendie, et le §15.11 a montré qu'il rouvrirait les pires graines de
+  K = 1 en faisant retourner le vent.
+
+### 16.7 Avant → après
+
+Rien du sim n'ayant changé, « avant » et « après » ne diffèrent que par ce que
+la campagne **rapporte**. Les deux colonnes de gauche sont la mesure du
+§15.11, reproduite au chiffre près sur cette base.
+
+| campagne normale, 30 graines × 30 jours, 64×64 | K = 1 | K = 30 |
+|---|---|---|
+| colonies vivantes | 18/30 | 15/30 |
+| morts au total (raid / blessures) | 173 (151 / 17) | 175 (149 / 23) |
+| départs de feu | 112 | 93 |
+| cases brûlées, toutes graines | 1 987 | 3 411 |
+| **pire graine** (le chiffre du §15.11) | **1 000 (24 %)** | **1 322 (32 %)** |
+| **pire incendie unique** *(nouveau)* | **993 (24 %)** | **910 (22 %)** |
+| **pire graine, colonies vivantes** *(nouveau)* | **87 (2 %)** | **32 (0,8 %)** |
+| **pire feu, colonies vivantes** *(nouveau)* | **85 (2 %)** | **22 (0,5 %)** |
+| cases brûlées par les colonies vivantes | 231 (18 graines) | 121 (15 graines) |
+| cases brûlées par les colonies éteintes | 1 756 (12 graines) | 3 290 (15 graines) |
+
+Les colonnes historiques sont identiques à celles du §15.11 : 18/30 et 15/30
+vivantes, 173 et 175 morts, 112 et 93 départs, 1 987 et 3 411 cases — la
+campagne n'a pas bougé d'une case, seul le rapport en dit plus.
+
+**Ce que la nouvelle lecture change à la conclusion du §15.11 sur l'échelle.**
+Le §15.11 écrivait « à K = 30 un incendie d'été brûle deux fois plus de cases
+qu'à K = 1 (36,7 contre 17,7), et c'est un effet de K assumé ». C'est vrai, mais
+la moyenne par feu se lit désormais autrement : **l'aggravation est presque
+entièrement sur les cartes abandonnées** (3 290 cases contre 1 756), tandis que
+les cartes habitées **brûlent moins** à K = 30 qu'à K = 1 (121 contre 231, pire
+graine 32 contre 87). Le joueur de K = 30, qui décide trente fois plus souvent
+par jour de jeu (§15.1), éteint mieux ; c'est la friche qui brûle. La
+proposition `WORLD_DAY_SCALE = 30` n'en est pas affaiblie — elle en est un peu
+mieux étayée.
+
+### 16.8 Vérification
+
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D
+  warnings` : propres.
+- `cargo test --workspace` : **393 réussis, 0 échec, 16 ignorés** (un test de
+  plus qu'avant : le compteur).
+- `rimlike-sim verify --seed 1 --size 64 --ticks 10000 --scenario demo` : OK, et
+  `run` affiche `hash final : e42d5ed14b0cdc69` — **`DEMO_HASH` inchangé**, ce
+  qui est la preuve la plus courte que le sim n'a pas bougé.
+- `pnpm build:wasm && pnpm test:client` : 34 fichiers, 477 tests, vert, dont
+  `parity.test.ts`.
+- `fuzz --seed 1 --size 24 --ticks 20000 --runs 3 --commands-per-tick 6` : trois
+  runs OK.
+
+### 16.9 Ce que la mesure laisse ouvert
+
+- **La pire graine reste un mauvais indicateur.** Même séparée par population,
+  c'est un maximum sur trente tirages d'une loi à queue lourde : le §16.2 le
+  montre en sautant de 94 à 605 sur des révisions qui ne touchent pas au feu.
+  Les campagnes à venir qui veulent parler du feu devraient lire **la colonne
+  `pire feu` des colonies vivantes**, et sur cent graines plutôt que trente.
+  Personne n'a mesuré le coût en temps réel de faire passer la campagne de
+  référence à cent graines (dix secondes à K = 1, quinze minutes à K = 30 :
+  c'est K = 30 qui déciderait).
+- **Une carte abandonnée n'est pas une scène neutre.** Pour la phase 6 (monde
+  partagé, colonies simulées par le serveur en l'absence du joueur), la question
+  « que devient une case dont la colonie est morte » n'est pas tranchée : ici
+  elle brûle jusqu'à un quart de sa surface en trois semaines. Ce n'est pas un
+  défaut tant que personne n'y revient ; c'en devient un le jour où le monde
+  recycle les cases abandonnées.
+- **Le feu ne tue toujours pas** : zéro mort sur trente graines, cinq sur deux
+  cents. Le §6 l'écrivait déjà (« le coût est en carte, pas en vies ») et rien
+  ici ne l'a changé. Reste à savoir si c'est voulu.
+- **Le banc du bosquet n'a pas été rejoué** contre les cartes habitées : il
+  mesure un incendie que personne ne combat, c'est-à-dire, on le sait
+  maintenant, le régime des cartes **abandonnées**. Un banc « avec lutte » —
+  mêmes vingt graines, colons libres — dirait ce que vaut vraiment
+  `EXTINGUISH_TICKS` face au front. Il n'existe pas.
