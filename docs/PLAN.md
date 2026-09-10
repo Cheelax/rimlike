@@ -65,6 +65,12 @@ Format binaire compact (structs typés), pas de JSON en prod.
 Le serveur **ne simule pas les cartes**. Il gère le monde et relaie. C'est ce qui
 rend le multi hébergeable à moindre coût.
 
+> **Décision du 2026-09-10 (phase 6)** : ce principe est celui des phases 3 à 5, et il
+> reste vrai tant que la phase 6 n'est pas livrée. En phase 6 le serveur **simule aussi** :
+> il charge le sim natif et devient un participant permanent de chaque carte, pour que le
+> monde vive en continu sans carte gelée. Les trois couches ne bougent pas : c'est le même
+> `crates/sim`, exécuté à un endroit de plus.
+
 ## 3. Modèle multijoueur monde
 
 - **Globe** : icosaèdre subdivisé → cases hexagonales (12 pentagones). Chaque case a
@@ -77,8 +83,13 @@ rend le multi hébergeable à moindre coût.
 - **Carte gelée** : personne présent → pas de simulation. Au retour, **avance rapide
   abstraite** (croissance des cultures, décomposition, faim des animaux via formules
   sur le temps écoulé), comme RimWorld le fait pour les cartes déchargées.
+  **Remplacé en phase 6** (décision du 2026-09-10) : plus de carte gelée, le monde est
+  simulé en continu par le serveur ; l'avance rapide ne sert plus qu'au redémarrage du
+  serveur. Voir la phase 6.
 - **Colonies hors ligne** : abstraites côté serveur. Pillables ou non → décision de
-  design à prendre en phase 5, pas avant.
+  design à prendre en phase 5, pas avant. **En phase 6 elles ne sont plus abstraites :
+  elles vivent**, et la règle qui les protège (ou pas) quand le propriétaire est absent
+  est la première décision ouverte de la phase 6.
 - **Caravanes** : entités du serveur monde. Déplacement le long d'un chemin sur le
   globe à vitesse dépendant du terrain et de la charge. À l'arrivée sur une case, la
   caravane est injectée dans le sim de carte comme groupe de pawns.
@@ -552,6 +563,71 @@ d'alice arrivé chez bob).
 jamais de l'intuition (règle « on mesure avant de régler », `AGENTS.md`) ; méthode et
 détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 
+### Phase 6 — Monde continu (ouvert, décidé le 2026-09-10)
+
+**La décision.** Plus de carte gelée : le monde entier est simulé en permanence, présence
+ou pas. C'est ce que le multijoueur doit apporter par rapport à RimWorld — un monde qui vit,
+pas des parties isolées qui se réveillent quand on y revient. Décision de Thomas, prise en
+connaissance des coûts ci-dessous.
+
+**Pourquoi c'est tenable.** Le bench de référence (128×128, natif, 2026-09-05) donne
+~2,2 M ticks/s à vide, ~0,6 M en pleine activité, ~0,2 M avec 15 colons. À 60 ticks/s en
+continu, ça fait **par cœur** ~36 000 cartes sauvages ou ~3 300 cartes de colonie active. Le
+globe à subdivision 5 compte 10 242 cases dont 57 % d'océan. Le calcul n'est pas le mur ; la
+mémoire (quelques centaines de Ko par carte, donc quelques Go pour tout le globe) et la
+persistance continue le sont davantage, et se mesurent avant de trancher la subdivision.
+
+**Ce qui change d'architecture, et ce qui ne change pas.** Le sim reste `crates/sim`,
+déterministe, exécuté en WASM chez les clients ; il s'exécute **en plus** en natif sur le
+serveur (option napi-rs prévue dès le §5, ou un processus Rust à côté du relais Node). Le
+serveur devient **un participant permanent de chaque salle** : il simule, il relaie, son hash
+est l'autorité en cas de désync, il détient toujours le snapshot pour un rejoignant. L'hôte de
+snapshot, la conservation par snapshot de l'hôte et l'avance rapide à la réouverture
+disparaissent ; `FastForward` ne sert plus qu'au redémarrage du serveur (le monde ne vieillit
+pas serveur éteint, décision du 2026-09-05 conservée). Le protocole change peu : le serveur
+est un joueur de plus, présent partout.
+
+**Étapes, dans l'ordre où elles rapportent — chacune se livre seule :**
+
+1. **Le serveur simule les colonies.** Sim natif chargé par le serveur, participant permanent
+   des salles `tile-N` ; test **natif contre WASM** en CI (même graine, mêmes commandes, même
+   hash après N ticks — aujourd'hui le test de déterminisme compare deux sims natives, et la
+   parité natif/WASM est un pari, pas une preuve). Mesurer d'abord : mémoire et ticks/s par
+   carte sur le VPS, snapshot périodique par carte. Jalon : une colonie continue de vivre
+   quand tous ses joueurs sont partis, et on la retrouve telle qu'elle a vécu.
+2. **La faune devient une entité du monde.** Les cases sauvages ne sont pas simulées carte par
+   carte tant que personne n'y est (leur seul contenu vivant est la faune, la météo et le
+   feu) : les hardes circulent de case en case sur le globe comme les caravanes marchandes le
+   font déjà (`WORLD_MERCHANTS`), et entrent dans une carte de colonie par le bord qui fait
+   face à la case d'où elles viennent. C'est là que se règle la banquise (fiche
+   `banquise-survivable`, troisième passe) : une calotte voisine d'une toundra reçoit du gibier
+   parce qu'il vient de là, et la composition des hardes (`game_mix`) devient la faune de la
+   case de départ. `MAX_ANIMALS` et l'entrée par le bord au hasard n'ont plus à porter la
+   survie d'un biome.
+3. **Des cartes contiguës.** Passer le bord d'une carte fait entrer dans la carte de la case
+   voisine (colons, bêtes, pillards), plutôt que de voyager sur le globe. Ne se fait qu'une
+   fois 1 et 2 tenus ; change la nature des raids (ils viennent de quelque part) et du globe
+   (les caravanes deviennent un raccourci, pas le seul chemin).
+
+**Décisions ouvertes, à trancher par écrit avant l'étape concernée :**
+
+- **La colonie du joueur absent** (avant l'étape 1). Elle vit, donc un raid peut la frapper à
+  trois heures du matin. Trois règles possibles, à mesurer en campagne avec un joueur scripté
+  qui « s'absente » : storyteller adouci ou suspendu pour les menaces tant que le propriétaire
+  n'est pas connecté ; colons en défense automatique seulement ; ou assumer la perte, comme
+  RimWorld assume la mort. Le plan penche pour la première : le monde vit, les menaces
+  attendent le joueur.
+- **Le taux de temps du monde** (avant l'étape 1). Aujourd'hui une carte tourne à 60 ticks/s
+  et le monde à `WORLD_HOUR_MS` (30 s l'heure). Un monde continu impose une seule horloge :
+  soit le monde adopte le tick des cartes (un jour de jeu = 4 min réelles, une année de 60
+  jours = 4 h : rapide pour une colonie qu'on ne regarde pas), soit les cartes ralentissent.
+  Le §7 disait déjà « 1 jour de jeu ≈ 20-30 min réel » : c'est à mesurer contre le confort
+  de jeu en solo, où x1-x3 restent possibles.
+- **La subdivision du globe** (avant l'étape 2) : 4 (2 562 cases) ou 5 (10 242), selon la
+  mémoire mesurée à l'étape 1 et le nombre de joueurs visé.
+- **Hébergement** : le VPS devient un serveur de calcul avec état ; sauvegarde et restauration
+  de `deploy/README.md` à revoir pour des snapshots par carte.
+
 ## 7. Risques identifiés
 
 | Risque | Mitigation |
@@ -563,8 +639,27 @@ détails dans `crates/sim-cli/CAMPAIGN-FINDINGS.md`.
 | Recherche de travail : chaque colon inactif balaie toute la carte à chaque tick | Compteurs dans `Map` (désignations, zones, lits, feux) qui court-circuitent les balayages ; l'oubli des lits et des feux coûtait un facteur 30 à vide, mesuré par `sim-cli bench` le 2026-09-05. À indexer (listes de cases) si la carte grossit |
 | Onglet en arrière-plan : le navigateur bride `requestAnimationFrame` à ~2/s, le client décroche du lockstep | Réglé le 2026-09-05 : sim et lockstep dans un Web Worker cadencé par timer, le thread principal ne fait que rendre. Mesuré : 60 ticks/s onglet masqué |
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
+| Phase 6 : natif et WASM divergent (un même sim, deux cibles, un `usize` ou un `wrapping` qui diffère) | Test natif contre WASM en CI dès l'étape 1, avant qu'un serveur simule quoi que ce soit ; le serveur est l'autorité de désync, donc un client qui diverge se resynchronise depuis lui |
+| Phase 6 : le serveur devient un gouffre (mémoire, disque, coût d'hébergement) | Mesurer par carte sur le VPS avant de fixer la subdivision ; les cases sauvages restent abstraites (étape 2), seules les colonies sont simulées ; snapshots par carte débouncés comme la persistance actuelle |
+| Phase 6 : la colonie meurt pendant que son joueur dort | Règle des absents écrite et mesurée en campagne avant l'étape 1 (voir les décisions ouvertes de la phase 6) |
 
 ## 8. Journal des décisions
+
+- 2026-09-10 : **plus de carte gelée — le monde est simulé en continu** (phase 6, décision de
+  Thomas : « pas de carte gelée, comme ça on a une simulation de monde complète »). Rouvre la
+  décision du 2026-09-04 « le serveur ne simule pas les cartes » avec un nouvel argument : c'est
+  ce que le multijoueur apporte par rapport à RimWorld, et les chiffres le permettent (bench du
+  2026-09-05 : par cœur ~36 000 cartes 128×128 à vide ou ~3 300 colonies actives à 60 ticks/s ;
+  le mur est la mémoire et la persistance, pas le calcul). Architecture : le sim ne change pas,
+  il s'exécute **aussi** en natif sur le serveur, qui devient participant permanent de chaque
+  salle (autorité de désync, snapshot toujours disponible) ; hôte de snapshot, cartes gelées et
+  avance rapide à la réouverture disparaissent. Trois étapes qui se livrent seules : (1) le
+  serveur simule les colonies, avec un test natif/WASM en CI ; (2) la faune devient une entité
+  du monde qui circule de case en case et entre dans les cartes par le bord d'où elle vient —
+  c'est la troisième passe de la banquise ; (3) cartes contiguës. Décisions ouvertes, à écrire
+  avant l'étape concernée : la règle de la colonie du joueur absent (le plan penche pour des
+  menaces suspendues tant qu'il n'est pas là), le taux de temps unique du monde, la
+  subdivision du globe, l'hébergement. Rien n'est codé : ce commit n'écrit que le plan.
 
 - 2026-09-09 (nuit) : **on chasse à mains nues, et la harde dépend du biome** (décision de Thomas,
   PR #13, sous-agent Opus, seconde passe de la fiche `banquise-survivable`). `try_start_hunt`

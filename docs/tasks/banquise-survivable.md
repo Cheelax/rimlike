@@ -45,7 +45,16 @@ surface, et les hardes entrent par le bord (`find_entry_tile`) ; sur 64² elles 
 trente cases du centre, hors des douze cases d'un chasseur désarmé, et la colonie ne les voit
 jamais. La borne de 12 cases est à recalibrer si `MAX_ANIMALS` change.
 
-## Troisième passe : à trancher
+## Troisième passe : tranchée par la phase 6 (2026-09-10)
+
+Le plan a décidé le **monde continu** (phase 6) : la faune devient une entité du monde qui
+circule de case en case et entre dans une carte par le bord qui fait face à la case d'où
+elle vient (étape 2 de la phase 6). C'est là que la banquise se règle : une calotte voisine
+d'une toundra reçoit du gibier parce qu'il vient de là, `game_mix` décrit la faune de la
+case de départ, et ni `MAX_ANIMALS` ni l'entrée par le bord au hasard n'ont plus à porter la
+survie d'un biome. La fiche reste ouverte jusque-là ; le critère campagne 64×64 et un relevé
+en 128×128 (la taille réelle du client) s'appliqueront à cette étape. Les deux leviers
+ci-dessous sont gardés pour mémoire : ils étaient les options d'un monde à cartes isolées.
 
 Deux leviers, pas mesurés, et pas équivalents en coût :
 
