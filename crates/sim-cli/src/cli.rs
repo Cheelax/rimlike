@@ -95,6 +95,17 @@ impl Options {
         })
     }
 
+    pub fn u32_or(&self, name: &str, default: u32) -> Result<u32, CliError> {
+        match self.raw(name) {
+            None => Ok(default),
+            Some(raw) => raw.parse::<u32>().map_err(|_| {
+                CliError::new(format!(
+                    "--{name} doit être un entier positif, reçu « {raw} »"
+                ))
+            }),
+        }
+    }
+
     pub fn u64_or(&self, name: &str, default: u64) -> Result<u64, CliError> {
         match self.raw(name) {
             None => Ok(default),

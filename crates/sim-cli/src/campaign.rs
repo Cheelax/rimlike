@@ -780,7 +780,10 @@ fn plan(sim: &Sim, enclosure: Option<Enclosure>) -> Vec<Command> {
     let radius = enclosure.map_or(WALL_RADIUS, |e| e.radius);
     let tick = sim.tick();
     let pass = tick / PLAN_INTERVAL;
-    let day = tick / u64::from(TICKS_PER_DAY);
+    // Les jours du joueur scripté sont des jours **de jeu** : ils suivent
+    // l'échelle. Sa cadence de décision (`PLAN_INTERVAL`), elle, reste en
+    // ticks réels.
+    let day = tick / u64::from(sim.ticks_per_day());
     let stored = sim.stored_totals();
     let wood = stored[ItemKind::Wood as usize];
     let colonists = colonist_ids(sim);
@@ -1098,7 +1101,7 @@ fn plan(sim: &Sim, enclosure: Option<Enclosure>) -> Vec<Command> {
     //    marque à la place est forcément une autre (`nearest_wild` écarte ce
     //    qui est déjà marqué).
     if sim.livestock_count() == 0 && stored[ItemKind::Berries as usize] >= TAME_BERRIES {
-        let switch = day % TAME_RETRY_DAYS == 0 && tick % u64::from(TICKS_PER_DAY) == 0;
+        let switch = day % TAME_RETRY_DAYS == 0 && tick % u64::from(sim.ticks_per_day()) == 0;
         let mut standing = false;
         for p in sim.pawns() {
             if !p.tame_marked || !p.is_alive() {
@@ -1487,11 +1490,23 @@ struct Settings {
     /// c'est `Sim::new_in_biome`, pas un `Command`. Défaut : forêt tempérée,
     /// c'est-à-dire la carte de toutes les campagnes d'avant.
     biome: Biome,
+    /// Échelle du jour (`sim::DayScale`, voir `docs/time.md`), fixée à la
+    /// construction comme le biome. Défaut 1 : la campagne d'avant l'échelle,
+    /// au bit près.
+    ///
+    /// La campagne compte ses jours avec `Sim::ticks_per_day()` : « trente
+    /// jours » veut dire trente jours **de jeu** à toutes les échelles. Le
+    /// joueur scripté, lui, garde sa cadence de décision en **ticks réels**
+    /// (`PLAN_INTERVAL`) : un joueur ne regarde pas sa colonie plus souvent
+    /// parce que la journée est longue. C'est un biais assumé, et il grandit
+    /// avec l'échelle — voir le §15 de `CAMPAIGN-FINDINGS.md`.
+    day_scale: u32,
 }
 
 fn play_seed(seed: u64, s: &Settings) -> Run {
-    let mut sim = Sim::new_in_biome(seed, s.size, s.size, s.biome);
-    let total = u64::from(TICKS_PER_DAY) * s.days;
+    let mut sim = Sim::new_scaled(seed, s.size, s.size, s.biome, s.day_scale);
+    let day = u64::from(sim.ticks_per_day());
+    let total = day * s.days;
     let start = Instant::now();
     let enclosure = starting_center(&sim).and_then(|at| choose_enclosure(&sim, at));
 
@@ -1549,10 +1564,10 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
         if tick % EVENT_POLL == 0 {
             journal.drain(&sim);
         }
-        if tick == 10 * u64::from(TICKS_PER_DAY) {
+        if tick == 10 * day {
             colonists_day10 = Some(colonist_ids(&sim).len() as u32);
         }
-        if tick == 20 * u64::from(TICKS_PER_DAY) {
+        if tick == 20 * day {
             colonists_day20 = Some(colonist_ids(&sim).len() as u32);
         }
     }
@@ -1620,9 +1635,7 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
         tributes: journal.tributes,
         tame_orders,
         tamed: journal.tamed,
-        metallurgy_day: journal
-            .metallurgy_tick
-            .map(|t| (t / u64::from(TICKS_PER_DAY)) as u32),
+        metallurgy_day: journal.metallurgy_tick.map(|t| (t / day) as u32),
         lost_events: journal.lost,
         deaths_announced: journal.deaths_announced,
         elapsed_ms: start.elapsed().as_millis(),
@@ -2060,7 +2073,7 @@ rimlike-sim campaign — joue des colonies entières avec un joueur scripté et 
 USAGE :
     rimlike-sim campaign [--seeds N] [--days D] [--size W] [--difficulty L]
                          [--biome N] [--climate T] [--day-of-year J] [--seed S]
-                         [--json]
+                         [--day-scale K] [--json]
 
 OPTIONS :
     --seeds N        nombre de graines jouées (défaut 30)
@@ -2082,6 +2095,11 @@ OPTIONS :
                      une campagne de 30 jours partie de 0 ne voit que le
                      printemps et l'été ; partir de 30 donne automne et hiver
     --seed S         première graine (défaut 1 ; la graine r est S + r)
+    --day-scale K    échelle du jour, 1 à 120 (défaut 1). Les jours restent des
+                     jours **de jeu** : --days 30 --day-scale 30 joue trente
+                     jours de jeu, soit trente fois plus de ticks. La cadence de
+                     décision du joueur scripté, elle, reste en ticks réels
+                     (biais assumé, voir CAMPAIGN-FINDINGS.md §15)
     --json           sortie machine (drapeau, sans valeur)
 
 Chaque graine est jouée par le même joueur scripté : zone de stockage et de
@@ -2139,6 +2157,7 @@ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
         "seed",
         "day-of-year",
         "biome",
+        "day-scale",
     ])?;
     let seeds = opts.u64_or("seeds", 30)?;
     if seeds == 0 {
@@ -2191,6 +2210,7 @@ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
         )));
     }
     let biome = Biome::from_u8(raw_biome as u8);
+    let day_scale = crate::commands::parse_day_scale(&opts)?;
     let settings = Settings {
         seeds,
         first_seed: opts.u64_or("seed", 1)?,
@@ -2200,12 +2220,13 @@ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
         climate,
         day_of_year,
         biome,
+        day_scale,
     };
 
-    let ticks_per_seed = u64::from(TICKS_PER_DAY) * days;
+    let ticks_per_seed = u64::from(TICKS_PER_DAY) * u64::from(day_scale) * days;
     if !json {
         println!(
-            "campagne : {seeds} graines, {days} jours ({ticks_per_seed} ticks), carte {size}x{size}, biome {}, difficulté {}, climat {}, départ au jour {}",
+            "campagne : {seeds} graines, {days} jours de jeu ({ticks_per_seed} ticks), carte {size}x{size}, biome {}, difficulté {}, climat {}, départ au jour {}, échelle du jour {day_scale}",
             biome.name(),
             difficulty_label(settings.difficulty),
             match climate {
