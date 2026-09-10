@@ -1,6 +1,6 @@
 ---
 slug: echelle-hemostase-pluie
-status: claimed
+status: done
 claimed_by: Claude Fable (session orchestrateur)
 claimed_at: 2026-09-10
 layer: sim
@@ -16,7 +16,7 @@ acceptance:
   - cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --day-scale 30 → part des morts par blessures ramenée sous 15 % (référence §15 : 33 % ; K = 1 : 9 %) et colonies vivantes ≥ 14/30 (référence §15 : 10/30 ; K = 1 : 18/30)
   - même campagne : surface brûlée par feu à K = 30 dans ±50 % de K = 1 (référence §15 : 37,8 contre 17,7 cases par feu), départs de feu par jour inchangés
   - cargo run -p sim-cli --release -- fuzz --seed 1 --size 24 --ticks 20000 --runs 3 --commands-per-tick 6 → OK, et un run --day-scale 30
-done_in:
+done_in: 011719e (PR #16)
 ---
 
 # L'échelle du jour, seconde mesure : l'hémostase et la pluie

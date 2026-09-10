@@ -668,6 +668,24 @@ est un joueur de plus, présent partout.
 
 ## 8. Journal des décisions
 
+- 2026-09-10 (nuit, suite) : **l'hémostase est physique, le feu ne bouge pas, K = 30 est proposé
+  pour le monde** (PR #16, sous-agent Opus, fiche `echelle-hemostase-pluie`). Une ligne de sim :
+  la compression qui arrête le sang n'est plus mise à l'échelle — elle court contre un
+  saignement qui ne ralentit pas, comme l'extinction contre les flammes ; le pansement complet
+  reste du travail. Survie à K = 30 : **10/30 → 15/30** en normal (K = 1 : 18/30), **5/30 →
+  11/30** en automne-hiver (K = 1 : 12/30) ; morts par blessures 33 % → 13 %. Le feu : la piste
+  « la consommation suit l'échelle » a été chiffrée et **éliminée** (400 arbres sur 400 au banc,
+  152 cases par feu et une pire graine à 59 % de la carte en campagne — le régime demi-carte du
+  §6), rien ne change au feu ; la surface moyenne par feu reste doublée à K = 30 (36,7 contre
+  17,7), effet de K accepté et écrit. Découverte au banc : à grand K le vent ne tourne plus non
+  plus, ce qui borne l'incendie (pire feu à ciel libre 86 % à K = 1, 41 % à K = 30). **Troisième
+  écart, sur `main` et pas sur K** : le contrat du §6 « pire graine ≤ 13 % de la carte » n'est plus
+  tenu à K = 1 — 1 000 cases, 24 %, contre 534 le 2026-09-05 ; fiche `feu-contrat-du-6` à part.
+  K = 1 identique au bit près (empreintes, parité, campagne graine par graine). **Proposition,
+  non appliquée** : `WORLD_DAY_SCALE = 30`, survie K = 30 / K = 1 de 0,83 (normal) et 0,92
+  (automne-hiver) ; réserves : le joueur scripté décide en ticks réels (borne haute), l'IA
+  tactique du raid devient plus urgente. La fiche `echelle-client-serveur` porte cette valeur.
+
 - 2026-09-10 (nuit) : **l'échelle du jour est câblée et mesurée — le mécanisme est livré, la
   valeur du monde ne l'est pas** (PR #15, sous-agent Opus, fiche `echelle-du-jour`). `Sim` porte
   `day_scale` (1..=120), dernier champ, sérialisé de façon qu'à K = 1 il n'écrive aucun octet :
