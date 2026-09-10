@@ -1,6 +1,6 @@
 ---
 slug: echelle-du-jour
-status: claimed
+status: done
 claimed_by: Claude Fable (session orchestrateur)
 claimed_at: 2026-09-10
 layer: sim
@@ -22,7 +22,7 @@ acceptance:
   - un test statistique par famille : une durée de travail s'étire avec K (un mur à K = 4 prend 4 fois plus de ticks), une durée physique ne s'étire pas (la marche d'un colon sur N cases prend le même nombre de ticks à K = 1 et K = 4), une durée en jours reste en jours (la faim tombe au même point du jour à K = 1 et K = 4)
   - le snapshot porte K : un snapshot pris à K = 30 se restaure et rejoue au même hash ; un snapshot d'avant (sans champ) se relit à K = 1 ou échoue proprement — dire lequel
   - cargo run -p sim-cli --release -- fuzz --seed 1 --size 24 --ticks 20000 --runs 3 --commands-per-tick 6 → OK, plus un run avec --day-scale 30 si le fuzz accepte l'option (l'ajouter sinon)
-done_in:
+done_in: e9aa80e (PR #15)
 ---
 
 # L'échelle du jour : un monde lent, des colons qui marchent normalement

@@ -668,6 +668,29 @@ est un joueur de plus, présent partout.
 
 ## 8. Journal des décisions
 
+- 2026-09-10 (nuit) : **l'échelle du jour est câblée et mesurée — le mécanisme est livré, la
+  valeur du monde ne l'est pas** (PR #15, sous-agent Opus, fiche `echelle-du-jour`). `Sim` porte
+  `day_scale` (1..=120), dernier champ, sérialisé de façon qu'à K = 1 il n'écrive aucun octet :
+  les empreintes épinglées, la campagne de référence (30 graines, colonne par colonne, graine
+  par graine) et la parité WASM sont **inchangées**, un snapshot d'avant se relit à K = 1.
+  Inventaire de toutes les constantes en ticks dans `docs/time.md` : travail ×K (24 lignes),
+  physique (18), en jours (30, suivent par construction), pas de calcul (13), chaque cas
+  ambigu tranché avec sa raison ; les besoins gardent le montant de K = 1 appliqué un tick sur
+  K (aucune division qui tombe à zéro). `--day-scale` sur tous les outils, `new_scaled` à la
+  frontière, `research_state()` rend un coût mis à l'échelle. **Mesure** (30 graines × 30 jours
+  de jeu) : K = 1 → 18/30 vivantes ; K = 10 → 13/30 ; K = 30 → **10/30** (critère « entre 0,5×
+  et 2× » tenu de justesse) ; automne-hiver 12/30 → 5/30. Le bench par tick ne bouge pas. **Deux
+  déséquilibres trouvés par la mesure, non corrigés** (la fiche l'interdisait) : (1) l'hémostase
+  est classée travail (60 → 1 800 ticks à K = 30) alors que le saignement est physique — le
+  blessé se vide avant la compression, blessures 9 % → 33 % des morts, c'est l'essentiel de la
+  perte de survie ; (2) la pluie n'éteint plus les incendies — une période de temps sec dure 30×
+  plus de ticks, surface brûlée par feu doublée. Ce que la marche gratuite change : métallurgie
+  au jour 9,7 au lieu de 19, vivres +47 %, survivantes plus riches, raids plus petits. Le joueur
+  scripté décide 30× plus souvent par jour de jeu (`PLAN_INTERVAL` en ticks réels) : les chiffres
+  à K = 30 sont une borne haute. **Suite** : fiche `echelle-hemostase-pluie` (reclasser
+  l'hémostase en physique, trancher le feu sous la pluie, remesurer) **avant** de fixer la valeur
+  du monde ; puis `echelle-client-serveur`.
+
 - 2026-09-10 (suite) : **le temps du monde se règle par l'échelle du jour, pas par la vitesse.**
   Thomas veut un monde lent « mais pas trop » : les saisons assez longues pour tenir une colonie
   sans être connecté (une demi-semaine par saison évoquée), les réserves pour l'hiver comme
