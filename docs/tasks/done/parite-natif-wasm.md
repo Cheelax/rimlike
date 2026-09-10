@@ -1,6 +1,6 @@
 ---
 slug: parite-natif-wasm
-status: claimed
+status: done
 claimed_by: Claude Fable (session orchestrateur)
 claimed_at: 2026-09-10
 layer: sim
@@ -18,7 +18,7 @@ acceptance:
   - pnpm build:wasm && pnpm --filter client typecheck && pnpm test:client → vert, dont apps/client/test/parity.test.ts
   - la même constante de hash est épinglée UNE fois côté Rust (crates/sim/src/scenario.rs) et lue côté TypeScript à travers la frontière WASM, jamais recopiée en dur dans le test client
   - le test Rust de determinism.rs compare le natif à cette constante ; le test client compare le WASM à la même constante → parité prouvée par transitivité
-done_in:
+done_in: fd686f5 (PR #14)
 ---
 
 # Parité natif / WASM : la preuve que le serveur peut simuler

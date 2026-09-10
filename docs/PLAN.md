@@ -656,6 +656,25 @@ est un joueur de plus, présent partout.
 
 ## 8. Journal des décisions
 
+- 2026-09-10 (nuit) : **la parité natif / WASM est prouvée, et le hash de référence était celui
+  d'une copie périmée** (phase 6, étape 1, PR #14, sous-agent Opus sur la fiche
+  `parite-natif-wasm`). Le scénario `demo` vit désormais en une seule source,
+  `crates/sim/src/scenario.rs`, avec deux empreintes épinglées : `DEMO_HASH`
+  (`e42d5ed14b0cdc69`, graine 1, 64×64, 10 000 tours) et `TUNDRA_IDLE_HASH`
+  (`ae9db4a01cb998d6`, l'empreinte de `tests/biomes.rs`). Le test de déterminisme compare le
+  natif à la constante ; `apps/client/test/parity.test.ts` compare le WASM à la même constante
+  lue à travers la frontière : **natif = WASM sur les deux parties**, vérifié en CI à chaque
+  commit. Découverte au passage : les deux copies du scénario avaient divergé depuis le commit
+  des saisons — la copie de `sim-cli` ignorait difficulté, fabrication, recherche, calendrier,
+  caravane, gel, chasse, élevage et troc, et `402c950b5ca15d90`, cité comme référence dans les
+  fiches et le rapport de campagne depuis des jours, était **son** hash. Toutes ces mentions
+  sont des relevés historiques exacts pour la partie qu'ils décrivaient ; la référence est
+  maintenant `e42d5ed14b0cdc69`, et les ticks/s de `bench` sur `demo` ne se comparent plus à
+  ceux d'avant (la caravane vide la carte au tour 7 000). Règle ajoutée à `AGENTS.md` : celui
+  qui change le sim met la constante à jour dans le même commit et écrit pourquoi. Reste :
+  sur la graine 1 le scénario laisse la carte sans colon après le tour 7 000 — une graine plus
+  vivante ferait une meilleure charge de référence, à changer en connaissance de cause.
+
 - 2026-09-10 (suite) : **la colonie du joueur absent : l'absence coûte, elle ne tue pas.**
   Thomas rejette « menaces suspendues tant que le propriétaire est absent » (une carte gelée
   déguisée : le monde n'est plus continu si les raids attendent) et demande un délai de

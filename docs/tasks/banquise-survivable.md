@@ -15,7 +15,7 @@ scope:
   - crates/sim-cli/CAMPAIGN-FINDINGS.md
 acceptance:
   - cargo fmt --all -- --check && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
-  - cargo run -p sim-cli --release -- verify --seed 1 --size 64 --ticks 10000 --scenario demo → OK ; hash 402c950b5ca15d90 inchangé, ou changé pour une raison écrite (le scénario chasse sans arme)
+  - cargo run -p sim-cli --release -- verify --seed 1 --size 64 --ticks 10000 --scenario demo → OK ; hash égal à sim::scenario::DEMO_HASH (e42d5ed14b0cdc69 depuis le 2026-09-10 — le 402c950b5ca15d90 des passes précédentes était celui d'une copie périmée du scénario, voir le journal du plan), ou changé pour une raison écrite dans le même commit
   - cargo test -p sim --release --test balance_biomes measure_survival -- --ignored --nocapture → banquise ≥ 10/20 (la moitié du témoin tempéré, 18/20) ; aucun autre biome ne perd plus d'une colonie sur vingt par rapport au relevé du 2026-09-09 (toundra 19, boréale 20, tempéré 18, prairie 20, désert 20, savane 20, jungle 11, montagne 17)
   - cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 1 → colonies vivantes ≥ 9/30 (la moitié du témoin tempéré) et famine < 50 % des morts
   - cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --biome 1 --climate -100 → colonies vivantes ≥ 5/30 (la moitié de la campagne froide de référence, 11/30 en tempéré à −50)
