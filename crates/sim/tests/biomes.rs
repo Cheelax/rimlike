@@ -705,14 +705,23 @@ fn only_the_biome_byte_was_added_to_the_state() {
 /// tranche du gibier de la banquise : c'est la preuve que l'entrée nouvelle de
 /// la table, à 1000 partout ailleurs, ne change ni le nombre ni l'ordre des
 /// tirages des autres biomes.
+///
+/// Celle de la toundra vit dans `sim::scenario` depuis le 2026-09-10 : le test
+/// de parité natif/WASM rejoue exactement cette partie côté navigateur, et une
+/// empreinte épinglée ne se recopie pas.
 #[test]
 fn the_other_biomes_draw_the_same_herds() {
     for (biome, seed, want) in [
         (Biome::TemperateForest, 5u64, 0x2cfd_cf37_5ca7_51cau64),
-        (Biome::Tundra, 5, 0xae9d_b4a0_1cb9_98d6),
+        (
+            Biome::Tundra,
+            sim::scenario::TUNDRA_IDLE_SEED,
+            sim::scenario::TUNDRA_IDLE_HASH,
+        ),
     ] {
-        let mut s = Sim::new_in_biome(seed, 48, 48, biome);
-        for _ in 0..6 * u64::from(sim::TICKS_PER_DAY) {
+        let size = sim::scenario::TUNDRA_IDLE_SIZE;
+        let mut s = Sim::new_in_biome(seed, size, size, biome);
+        for _ in 0..sim::scenario::TUNDRA_IDLE_DAYS * u64::from(sim::TICKS_PER_DAY) {
             s.step(&[]);
         }
         assert_eq!(
