@@ -611,12 +611,23 @@ est un joueur de plus, présent partout.
 
 **Décisions ouvertes, à trancher par écrit avant l'étape concernée :**
 
-- **La colonie du joueur absent** (avant l'étape 1). Elle vit, donc un raid peut la frapper à
-  trois heures du matin. Trois règles possibles, à mesurer en campagne avec un joueur scripté
-  qui « s'absente » : storyteller adouci ou suspendu pour les menaces tant que le propriétaire
-  n'est pas connecté ; colons en défense automatique seulement ; ou assumer la perte, comme
-  RimWorld assume la mort. Le plan penche pour la première : le monde vit, les menaces
-  attendent le joueur.
+- ~~**La colonie du joueur absent** (avant l'étape 1)~~ **Tranchée le 2026-09-10 : l'absence ne
+  tue pas, elle coûte.** Les menaces ne s'arrêtent jamais (suspendre les raids quand le
+  propriétaire est absent ferait une carte gelée déguisée, rejeté). Le bouclier est
+  **diégétique**, fait de pièces qui existent déjà : (a) **l'enceinte est le bouclier** — un
+  pillard devant une enceinte fermée n'entre pas, il pille dehors et repart (fiche
+  `repli-sur-le-betail`) ; (b) **la veille** — propriétaire absent et raid annoncé : les colons
+  rentrent, les portes se ferment, personne ne sort combattre ni travailler dehors tant que le
+  raid dure ; le raid assiège, prend les tas laissés à l'extérieur, tue les bêtes restées dehors,
+  et s'en va ; (c) **la prévenance** — le raid est annoncé assez tôt pour que les colons rentrent
+  et qu'un joueur présent puisse choisir de se battre plutôt que de se replier ; (d) **les
+  factions** — une faction alliée n'attaque déjà plus : payer sa paix est le bouclier
+  diplomatique. Conséquences assumées : une colonie sans enceinte reste vulnérable, absence ou
+  pas (les premiers pas disent depuis le début qu'il faut se murer) ; une colonie murée perd son
+  extérieur ; une colonie alliée ne perd rien. À mesurer avant d'écrire dans le sim : le coût de
+  la veille en campagne avec un joueur scripté absent la moitié du temps sur trente graines, et
+  les cas limites du repli (un colon à terre dehors quand les portes se ferment). Un bouclier
+  explicite à construire (objet avec un coût) n'est pas retenu à ce stade : l'enceinte suffit.
 - **Le taux de temps du monde** (avant l'étape 1). Aujourd'hui une carte tourne à 60 ticks/s
   et le monde à `WORLD_HOUR_MS` (30 s l'heure). Un monde continu impose une seule horloge :
   soit le monde adopte le tick des cartes (un jour de jeu = 4 min réelles, une année de 60
@@ -641,9 +652,22 @@ est un joueur de plus, présent partout.
 | Horloge globale sans pause frustrante | Vitesse de jeu monde lente (1 jour de jeu ≈ 20-30 min réel) ; automatisation forte (priorités, zones) pour ne pas exiger du micro-management |
 | Phase 6 : natif et WASM divergent (un même sim, deux cibles, un `usize` ou un `wrapping` qui diffère) | Test natif contre WASM en CI dès l'étape 1, avant qu'un serveur simule quoi que ce soit ; le serveur est l'autorité de désync, donc un client qui diverge se resynchronise depuis lui |
 | Phase 6 : le serveur devient un gouffre (mémoire, disque, coût d'hébergement) | Mesurer par carte sur le VPS avant de fixer la subdivision ; les cases sauvages restent abstraites (étape 2), seules les colonies sont simulées ; snapshots par carte débouncés comme la persistance actuelle |
-| Phase 6 : la colonie meurt pendant que son joueur dort | Règle des absents écrite et mesurée en campagne avant l'étape 1 (voir les décisions ouvertes de la phase 6) |
+| Phase 6 : la colonie meurt pendant que son joueur dort | Règle tranchée le 2026-09-10 : l'absence coûte, elle ne tue pas — enceinte comme bouclier, veille (repli automatique derrière les murs quand un raid est annoncé sans le propriétaire), prévenance longue, factions alliées ; à mesurer en campagne avec un joueur absent avant l'étape 1 |
 
 ## 8. Journal des décisions
+
+- 2026-09-10 (suite) : **la colonie du joueur absent : l'absence coûte, elle ne tue pas.**
+  Thomas rejette « menaces suspendues tant que le propriétaire est absent » (une carte gelée
+  déguisée : le monde n'est plus continu si les raids attendent) et demande un délai de
+  prévenance ou un bouclier. Retenu : un bouclier **diégétique**, sans règle spéciale ni objet
+  nouveau — l'enceinte est le bouclier (le pillard devant une enceinte fermée pille dehors et
+  repart, comportement déjà livré), une **veille** automatique quand un raid est annoncé sans le
+  propriétaire (colons rentrés, portes fermées, rien ne sort), une prévenance assez longue pour
+  rentrer ou choisir de se battre, et les factions alliées qui n'attaquent déjà plus. La
+  prévenance seule est écartée comme solution : sans compte ni notification hors du jeu, un
+  préavis ne réveille personne. Le bouclier explicite à construire n'est pas retenu pour
+  l'instant. À mesurer avant le sim : campagne avec un joueur scripté absent la moitié du temps,
+  cas limites du repli. Rien n'est codé.
 
 - 2026-09-10 : **plus de carte gelée — le monde est simulé en continu** (phase 6, décision de
   Thomas : « pas de carte gelée, comme ça on a une simulation de monde complète »). Rouvre la
