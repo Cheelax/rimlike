@@ -77,14 +77,85 @@ pub use traits::Trait;
 pub use weather::Weather;
 pub use work::{WORK_TYPES, WorkType};
 
-/// Ticks de simulation par seconde de jeu.
+/// Ticks de simulation par seconde de jeu. **Ne change jamais** : c'est la
+/// cadence du lockstep, du client et du serveur. C'est le jour qui s'étire
+/// (voir `DayScale`), pas la seconde.
 pub const TICKS_PER_SECOND: u32 = 60;
-/// Durée d'une journée de jeu. 4 minutes réelles pour l'instant.
+/// Durée d'une journée de jeu **à l'échelle 1** : 4 minutes réelles. Le sim
+/// lit `Sim::ticks_per_day()`, qui vaut `TICKS_PER_DAY × day_scale` ; cette
+/// constante reste l'unité dans laquelle les durées « en jours » s'écrivent.
 pub const TICKS_PER_DAY: u32 = TICKS_PER_SECOND * 60 * 4;
-/// La partie commence le matin, pas à minuit.
-const DAY_START_OFFSET: u32 = TICKS_PER_DAY * 3 / 10;
+/// Bornes de l'échelle du jour (voir `DayScale`).
+pub const DAY_SCALE_MIN: u32 = 1;
+pub const DAY_SCALE_MAX: u32 = 120;
+/// La partie commence le matin, pas à minuit : trois dixièmes de journée.
+const fn day_start_offset(ticks_per_day: u32) -> u32 {
+    ticks_per_day / 10 * 3
+}
 /// Événements gardés pour le client. Au-delà, le plus ancien est oublié.
 const MAX_EVENTS: usize = 32;
+
+/// Échelle du jour d'une partie : le facteur `K` de `docs/PLAN.md` §6, fixé à
+/// la création comme le biome, dans `DAY_SCALE_MIN..=DAY_SCALE_MAX`. Il
+/// multiplie la longueur du jour (`Sim::ticks_per_day`) **et** les durées de
+/// travail (`Sim::scaled`) ; il ne touche ni à la marche, ni au combat, ni au
+/// feu. Le classement complet est dans `docs/time.md`.
+///
+/// **Sérialisation.** À `K = 1` elle n'écrit **aucun octet** (postcard
+/// n'émet rien pour une unité) : le snapshot d'une partie à l'échelle 1 est
+/// donc identique au bit près à ce qu'il était avant l'existence de ce champ,
+/// et les empreintes épinglées (`scenario::DEMO_HASH`, `TUNDRA_IDLE_HASH`,
+/// `tests/biomes.rs`) ne bougent pas. Au-delà, elle écrit l'entier. À la
+/// relecture, un tampon épuisé — un snapshot d'avant cette fiche, ou une
+/// partie à l'échelle 1 — vaut `1`, et une valeur hors bornes retombe sur `1`
+/// elle aussi, comme un biome inconnu retombe sur le tempéré.
+///
+/// **Champ en fin de `Sim`** : c'est ce qui rend les deux règles ci-dessus
+/// possibles. Rien ne doit être ajouté après lui.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DayScale(u32);
+
+impl DayScale {
+    /// Échelle bornée. Hors de `DAY_SCALE_MIN..=DAY_SCALE_MAX`, on retombe
+    /// sur 1 : mieux vaut une partie à l'échelle ordinaire qu'une partie dont
+    /// le jour dure un an.
+    pub const fn new(value: u32) -> DayScale {
+        if value >= DAY_SCALE_MIN && value <= DAY_SCALE_MAX {
+            DayScale(value)
+        } else {
+            DayScale(1)
+        }
+    }
+
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl Default for DayScale {
+    fn default() -> DayScale {
+        DayScale(1)
+    }
+}
+
+impl Serialize for DayScale {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.0 == 1 {
+            // Zéro octet en postcard : voir la doc du type.
+            serializer.serialize_unit()
+        } else {
+            serializer.serialize_u32(self.0)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DayScale {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<DayScale, D::Error> {
+        // Le champ est le dernier de `Sim` : un tampon épuisé ici veut dire
+        // « échelle 1 », et rien d'autre ne peut manquer après lui.
+        Ok(u32::deserialize(deserializer).map_or(DayScale(1), DayScale::new))
+    }
+}
 
 /// Fait notable de la partie, poussé au client pour affichage.
 /// Les valeurs sont un contrat avec `apps/client/src/render/terrain.ts`.
@@ -584,6 +655,16 @@ pub struct Sim {
     /// **Champ ajouté en fin de structure** : un vieux snapshot est refusé net
     /// (fin de tampon) plutôt que relu de travers.
     biome: Biome,
+    /// Échelle du jour de cette partie (voir `DayScale`), fixée à la
+    /// construction comme le biome : il n'y a pas de `Command::SetDayScale`,
+    /// changer la longueur du jour après le premier tick serait une autre
+    /// partie.
+    ///
+    /// **Dernier champ de la structure, et il doit le rester** : à l'échelle 1
+    /// il n'écrit aucun octet, ce qui garde le snapshot — et donc le hash —
+    /// identique à celui d'avant l'échelle du jour, et un snapshot d'avant se
+    /// relit à l'échelle 1 au lieu d'être refusé.
+    day_scale: DayScale,
 }
 
 /// Compteur d'observation. Il compte du **travail**, jamais de l'état : il
@@ -644,12 +725,32 @@ impl Sim {
         biome: Biome,
         climate: Climate,
     ) -> Sim {
+        Sim::new_scaled_with_climate(seed, width, height, biome, climate, 1)
+    }
+
+    /// Carte d'un biome à une **échelle du jour** imposée (voir `DayScale`) :
+    /// `day_scale` multiplie la longueur du jour et les durées de travail.
+    /// `1` redonne exactement `Sim::new_in_biome`, au bit près.
+    pub fn new_scaled(seed: u64, width: u32, height: u32, biome: Biome, day_scale: u32) -> Sim {
+        Sim::new_scaled_with_climate(seed, width, height, biome, Climate::default(), day_scale)
+    }
+
+    /// Biome, climat **et** échelle du jour imposés : le constructeur complet,
+    /// celui que le serveur monde appellera à la fondation d'une colonie.
+    pub fn new_scaled_with_climate(
+        seed: u64,
+        width: u32,
+        height: u32,
+        biome: Biome,
+        climate: Climate,
+        day_scale: u32,
+    ) -> Sim {
         let mut rng = Rng::new(seed);
         // Le seed de la carte est dérivé : changer la gen de terrain ne doit pas
         // décaler le flux RNG du gameplay, et inversement.
         let map_seed = rng.next_u64();
         let map = Map::generate(map_seed, width, height, biome);
-        Sim::with_map_in_biome(rng, map, climate, biome)
+        Sim::with_map_in_biome(rng, map, climate, biome, DayScale::new(day_scale))
     }
 
     /// Sim sur une carte fournie (tests, scénarios).
@@ -662,11 +763,29 @@ impl Sim {
         Sim::with_map(Rng::new(seed), map, climate)
     }
 
-    fn with_map(rng: Rng, map: Map, climate: Climate) -> Sim {
-        Sim::with_map_in_biome(rng, map, climate, Biome::default())
+    /// Sim sur une carte fournie, à une échelle du jour imposée (tests de
+    /// l'échelle, cartes ASCII de `testmap`).
+    pub fn from_map_scaled(seed: u64, map: Map, day_scale: u32) -> Sim {
+        Sim::with_map_in_biome(
+            Rng::new(seed),
+            map,
+            Climate::default(),
+            Biome::default(),
+            DayScale::new(day_scale),
+        )
     }
 
-    fn with_map_in_biome(rng: Rng, map: Map, climate: Climate, biome: Biome) -> Sim {
+    fn with_map(rng: Rng, map: Map, climate: Climate) -> Sim {
+        Sim::with_map_in_biome(rng, map, climate, Biome::default(), DayScale::default())
+    }
+
+    fn with_map_in_biome(
+        rng: Rng,
+        map: Map,
+        climate: Climate,
+        biome: Biome,
+        day_scale: DayScale,
+    ) -> Sim {
         let mut sim = Sim {
             tick: 0,
             rng,
@@ -716,6 +835,7 @@ impl Sim {
             firefight_paths: WorkCounter::default(),
             job_paths: WorkCounter::default(),
             biome: biome.for_colony(),
+            day_scale,
         };
         // La couche « intérieur » est prête avant le premier tick : lire une
         // température juste après la construction doit donner le bon chiffre.
@@ -728,8 +848,9 @@ impl Sim {
         sim.schedule_first_raid();
         sim.schedule_first_herd();
         // La première journée reste claire un moment, le temps de s'installer.
-        sim.weather_until = u64::from(TICKS_PER_DAY / 2 + sim.rng.below(TICKS_PER_DAY / 2));
-        sim.next_wanderer_at = u64::from(4 * TICKS_PER_DAY + sim.rng.below(TICKS_PER_DAY));
+        let day = sim.ticks_per_day();
+        sim.weather_until = u64::from(day / 2 + sim.rng.below(day / 2));
+        sim.next_wanderer_at = u64::from(4 * day + sim.rng.below(day));
         // En dernier : les échéances des événements ajoutés après coup tirent
         // à la suite, sans décaler ce que les tirages précédents donnaient.
         sim.schedule_first_events();
@@ -1088,9 +1209,46 @@ impl Sim {
         self.tick
     }
 
-    /// Instant dans la journée, dans `0..TICKS_PER_DAY`. 0 = minuit.
+    /// Instant dans la journée, dans `0..ticks_per_day()`. 0 = minuit.
     pub fn time_of_day(&self) -> u32 {
-        ((self.tick + u64::from(DAY_START_OFFSET)) % u64::from(TICKS_PER_DAY)) as u32
+        let day = self.ticks_per_day();
+        ((self.tick + u64::from(day_start_offset(day))) % u64::from(day)) as u32
+    }
+
+    /// Échelle du jour de cette partie (voir `DayScale`). 1 par défaut.
+    pub fn day_scale(&self) -> u32 {
+        self.day_scale.get()
+    }
+
+    /// Durée d'une journée de jeu, échelle comprise : `TICKS_PER_DAY × K`.
+    /// C'est **la** valeur que lit le sim ; la constante, elle, reste celle de
+    /// l'échelle 1.
+    pub fn ticks_per_day(&self) -> u32 {
+        TICKS_PER_DAY.saturating_mul(self.day_scale.get())
+    }
+
+    /// Durée de **travail** mise à l'échelle : le seuil d'un effort, jamais le
+    /// pas qui l'alimente (voir `docs/time.md`). À l'échelle 1, l'identité.
+    pub(crate) fn scaled(&self, ticks: u32) -> u32 {
+        ticks.saturating_mul(self.day_scale.get())
+    }
+
+    /// Même chose en 64 bits, pour les cadences comparées au tick
+    /// (`self.tick % self.scaled64(HEAL_INTERVAL)`).
+    pub(crate) fn scaled64(&self, ticks: u64) -> u64 {
+        ticks.saturating_mul(u64::from(self.day_scale.get()))
+    }
+
+    /// Vrai un tick sur `K`. Les besoins (faim, repos, faim du bétail) sont
+    /// écrits en points par tick à l'échelle 1 (`NEED_MAX / TICKS_PER_DAY`,
+    /// soit 69) : les diviser par K les écraserait (2 au lieu de 2,31 à
+    /// K = 30, soit 15 % de jour de trop). On garde donc le montant de
+    /// l'échelle 1 et on ne l'applique qu'un tick sur K — même total par jour
+    /// de jeu, aucune division entière, et l'identité à K = 1 puisque
+    /// `tick % 1 == 0` est toujours vrai. Le compteur est le tick lui-même :
+    /// aucun champ nouveau, donc aucun octet de plus dans le snapshot.
+    pub(crate) fn needs_step(&self) -> bool {
+        self.tick % u64::from(self.day_scale.get()) == 0
     }
 
     pub fn map(&self) -> &Map {
@@ -1198,6 +1356,9 @@ impl Sim {
         postcard::to_allocvec(self).expect("sérialisation en mémoire infaillible")
     }
 
+    /// Relit un snapshot. L'échelle du jour y est bornée à la relecture (voir
+    /// `DayScale`) : un tampon d'avant l'échelle du jour, ou une valeur hors
+    /// bornes, donnent une partie à l'échelle 1.
     pub fn restore(bytes: &[u8]) -> Result<Sim, SnapshotError> {
         postcard::from_bytes(bytes).map_err(|_| SnapshotError::Corrupt)
     }

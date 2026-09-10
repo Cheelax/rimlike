@@ -140,10 +140,31 @@ impl WasmSim {
         ))
     }
 
+    /// Même chose avec l'**échelle du jour** de la partie (`sim::DayScale`,
+    /// 1 à 120 ; voir `docs/time.md`) : elle multiplie la longueur du jour et
+    /// les durées de travail, jamais la marche ni le combat. Fixée à la
+    /// construction comme le biome — il n'y a pas de commande pour la changer.
+    /// Hors bornes, elle retombe sur 1 ; à 1, c'est exactement `new_in_biome`.
+    pub fn new_scaled(seed: u64, width: u32, height: u32, biome: u8, day_scale: u32) -> WasmSim {
+        console_error_panic_hook::set_once();
+        WasmSim::wrap(sim::Sim::new_scaled(
+            seed,
+            width,
+            height,
+            sim::Biome::from_u8(biome),
+            day_scale,
+        ))
+    }
+
     /// Biome dont la carte est bâtie (`sim::Biome`, 0 à 9). Jamais l'océan : il
     /// est retombé sur la forêt tempérée à la construction.
     pub fn biome(&self) -> u8 {
         self.inner.biome() as u8
+    }
+
+    /// Échelle du jour de cette partie (voir `new_scaled`). 1 par défaut.
+    pub fn day_scale(&self) -> u32 {
+        self.inner.day_scale()
     }
 
     /// Avance de `n` ticks. Les commandes en attente sont appliquées au premier.
@@ -670,8 +691,11 @@ impl WasmSim {
         self.inner.tick() as f64
     }
 
+    /// Longueur d'une journée de jeu **à l'échelle de cette partie**
+    /// (`TICKS_PER_DAY × day_scale()`). C'est ce que le HUD doit lire pour son
+    /// horloge : à l'échelle 1, la valeur d'avant.
     pub fn ticks_per_day(&self) -> u32 {
-        sim::TICKS_PER_DAY
+        self.inner.ticks_per_day()
     }
 
     pub fn time_of_day(&self) -> u32 {
@@ -787,19 +811,28 @@ impl WasmSim {
     /// soit `1 + 3 × sim::Tech::COUNT` entiers, les technologies dans l'ordre
     /// de `sim::Tech`. `current` vaut 255 quand la colonie ne cherche rien ;
     /// `acquise` vaut 0 ou 1.
+    ///
+    /// Le coût est celui **de cette partie** : c'est un seuil de travail, il
+    /// est donc multiplié par l'échelle du jour (voir `docs/time.md`), sans
+    /// quoi la barre de recherche annoncerait une technologie acquise trente
+    /// ticks avant qu'elle le soit. À l'échelle 1, c'est `tech_cost`.
     pub fn research_state(&self) -> Vec<u32> {
         let state = self.inner.research();
+        let scale = self.inner.day_scale();
         let mut out = Vec::with_capacity(1 + 3 * sim::Tech::COUNT);
         out.push(u32::from(state.current));
         for tech in sim::Tech::ALL {
             out.push(state.progress_of(tech));
-            out.push(tech.cost());
+            out.push(tech.cost().saturating_mul(scale));
             out.push(u32::from(state.is_done(tech)));
         }
         out
     }
 
-    /// Coût en points d'une technologie ; 0 si le numéro n'en désigne aucune.
+    /// Coût en points d'une technologie **à l'échelle du jour 1** ; 0 si le
+    /// numéro n'en désigne aucune. Méthode statique : elle ne connaît aucune
+    /// partie, donc aucune échelle. Pour afficher l'avancement d'une partie,
+    /// lire `research_state`, qui met le coût à l'échelle.
     pub fn tech_cost(tech: u8) -> u32 {
         sim::Tech::from_u8(tech).map_or(0, |t| t.cost())
     }

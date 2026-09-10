@@ -233,7 +233,7 @@ impl Sim {
     /// Programme la visite suivante, rancune comprise.
     pub(crate) fn schedule_next_trader(&mut self) {
         let extra = if self.tick < self.trader_grudge_until {
-            u64::from(TRADER_GRUDGE_EXTRA)
+            u64::from(self.scaled(TRADER_GRUDGE_EXTRA))
         } else {
             0
         };
@@ -281,7 +281,7 @@ impl Sim {
         self.pawns[k].weapon = Some(ItemKind::Spear);
         self.pawns[k].apparel = Some(ItemKind::Tunic);
         self.pawns[k].wares = wares;
-        self.pawns[k].leaves_at = self.tick + u64::from(TRADER_STAY);
+        self.pawns[k].leaves_at = self.tick + u64::from(self.scaled(TRADER_STAY));
         if let Some(target) = stall
             && let Some(p) = path::find_path(&self.map, spot, target)
         {
@@ -399,7 +399,7 @@ impl Sim {
         self.scatter_goods(at, &wares);
         self.push_event(EventKind::TraderDied, p.id);
         self.add_goodwill(factions::GUILD, factions::TRADER_KILLED);
-        self.trader_grudge_until = self.tick + u64::from(TRADER_GRUDGE_TICKS);
+        self.trader_grudge_until = self.tick + u64::from(self.scaled(TRADER_GRUDGE_TICKS));
         self.next_trader_at = self
             .next_trader_at
             .saturating_add(u64::from(TRADER_GRUDGE_EXTRA));

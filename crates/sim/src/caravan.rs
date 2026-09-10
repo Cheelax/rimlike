@@ -80,7 +80,7 @@ impl CaravanManifest {
 /// Un manifeste arrive du réseau : rien ne garantit que ses colons respectent
 /// les invariants du sim. Tout ce qui pourrait déraper est borné avant qu'ils
 /// entrent en jeu.
-fn sanitize(p: &mut Pawn) {
+fn sanitize(p: &mut Pawn, day_scale: u32) {
     if p.name.chars().count() > MAX_NAME_CHARS {
         p.name = p.name.chars().take(MAX_NAME_CHARS).collect();
     }
@@ -118,15 +118,26 @@ fn sanitize(p: &mut Pawn) {
     for prio in &mut p.priorities {
         *prio = (*prio).min(4);
     }
+    // Les minuteries écrites en jours sont bornées à l'échelle de la colonie
+    // d'arrivée : un voyageur venu d'une carte à l'échelle 1 ne rapporte pas
+    // une horloge d'une autre longueur (`docs/time.md`).
     p.attack_cooldown = p.attack_cooldown.min(combat::ATTACK_COOLDOWN);
-    p.grief_ticks = p.grief_ticks.min(combat::GRIEF_TICKS);
-    p.relief_ticks = p.relief_ticks.min(pawn::RELIEF_TICKS);
+    p.grief_ticks = p
+        .grief_ticks
+        .min(combat::GRIEF_TICKS.saturating_mul(day_scale));
+    p.relief_ticks = p
+        .relief_ticks
+        .min(pawn::RELIEF_TICKS.saturating_mul(day_scale));
     // Ses avis parlent de gens restés là-bas (voir `social`) : deux colonies
     // numérotent leurs colons chacune de son côté, et un id recopié ici
     // désignerait un inconnu. Le voyageur débarque sans a priori.
     p.opinions.clear();
-    p.social_ticks = p.social_ticks.min(social::SOCIAL_TICKS);
-    p.quarrel_ticks = p.quarrel_ticks.min(social::QUARREL_TICKS);
+    p.social_ticks = p
+        .social_ticks
+        .min(social::SOCIAL_TICKS.saturating_mul(day_scale));
+    p.quarrel_ticks = p
+        .quarrel_ticks
+        .min(social::QUARREL_TICKS.saturating_mul(day_scale));
     p.idle_ticks = 0;
     p.gone = false;
     p.outdoor_storm = false;
@@ -345,7 +356,7 @@ impl Sim {
             p.path.clear();
             p.carrying = None;
             p.carrying_pawn = None;
-            sanitize(&mut p);
+            sanitize(&mut p, self.day_scale());
             self.pawns.push(p);
             arrived += 1;
         }

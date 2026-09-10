@@ -467,7 +467,7 @@ impl Sim {
     /// difficile, un raid de fin de partie peut dépasser 600 points.
     pub fn threat_points(&self) -> u32 {
         let colonists = self.living_colonists();
-        let days = (self.tick / u64::from(TICKS_PER_DAY)) as u32;
+        let days = (self.tick / u64::from(self.ticks_per_day())) as u32;
         let base = THREAT_PER_COLONIST
             .saturating_mul(colonists)
             .saturating_add(self.wealth_threat())
@@ -503,8 +503,9 @@ impl Sim {
     /// (`FIRST_RAID_POINTS`), pas un sursis — un sursis laisse la colonie
     /// grossir, donc la bande aussi (mesuré : voir `CAMPAIGN-FINDINGS.md` §4).
     pub(crate) fn schedule_first_raid(&mut self) {
-        let grace = u64::from(TICKS_PER_DAY) * u64::from(crate::combat::GRACE_DAYS);
-        self.next_raid_at = grace + u64::from(self.rng.below(TICKS_PER_DAY / 2));
+        let day = self.ticks_per_day();
+        let grace = u64::from(day) * u64::from(crate::combat::GRACE_DAYS);
+        self.next_raid_at = grace + u64::from(self.rng.below(day / 2));
     }
 
     /// Programme les événements qui n'existaient pas avant cette tranche.
@@ -518,8 +519,9 @@ impl Sim {
     /// Tick d'échéance tiré au sort : `self.tick + min_days` à
     /// `+ min_days + span_days` jours.
     pub(crate) fn roll_delay(&mut self, min_days: u32, span_days: u32) -> u64 {
-        let min = u64::from(TICKS_PER_DAY) * u64::from(min_days);
-        let span = TICKS_PER_DAY.saturating_mul(span_days).max(1);
+        let day = self.ticks_per_day();
+        let min = u64::from(day) * u64::from(min_days);
+        let span = day.saturating_mul(span_days).max(1);
         self.tick + min + u64::from(self.rng.below(span))
     }
 
@@ -532,7 +534,7 @@ impl Sim {
         // `factions::FADE_PER_DAY`). Pas de tirage, pas d'échéance : le
         // calendrier suffit, et une carte gelée rattrape son retard d'un coup
         // (`Sim::fast_forward`).
-        if self.tick > 0 && self.tick % u64::from(TICKS_PER_DAY) == 0 {
+        if self.tick > 0 && self.tick % u64::from(self.ticks_per_day()) == 0 {
             self.fade_grudges(1);
         }
         // Le sort de la dernière bande, tranché au tick d'après sa dernière
@@ -541,20 +543,21 @@ impl Sim {
         self.resolve_raid();
         if self.tick >= self.next_wanderer_at {
             self.spawn_wanderer();
-            let three_days = u64::from(TICKS_PER_DAY) * 3;
-            self.next_wanderer_at =
-                self.tick + three_days + u64::from(self.rng.below(TICKS_PER_DAY * 2));
+            let day = self.ticks_per_day();
+            let three_days = u64::from(day) * 3;
+            self.next_wanderer_at = self.tick + three_days + u64::from(self.rng.below(day * 2));
         }
         // Avant la sortie rapide du raid : sinon un troupeau n'entrerait
         // jamais tant qu'un raid est en attente, c'est-à-dire presque toujours.
         if self.tick >= self.next_herd_at {
             self.spawn_herd();
-            let two_days = u64::from(TICKS_PER_DAY) * 2;
+            let day = self.ticks_per_day();
+            let two_days = u64::from(day) * 2;
             // Deux à quatre jours, puis l'abondance du biome divise ce délai
             // (1000 pour mille = identité partout sauf sur la banquise). Le
             // tirage est fait dans tous les cas, et dans le même ordre : c'est
             // son résultat qui est mis à l'échelle, jamais le flux d'aléa.
-            let delay = two_days + u64::from(self.rng.below(TICKS_PER_DAY * 2));
+            let delay = two_days + u64::from(self.rng.below(day * 2));
             self.next_herd_at = self.tick + self.biome.table().herd_delay(delay);
         }
         if self.tick >= self.next_supply_at {
@@ -584,7 +587,9 @@ impl Sim {
         if self.difficulty != Difficulty::Peaceful {
             self.spawn_raid();
         }
+        // La cadence des raids est en jours : elle suit l'échelle.
         let (min, span) = self.difficulty.raid_delay();
+        let (min, span) = (self.scaled(min), self.scaled(span));
         let next = self.tick + u64::from(min) + u64::from(self.rng.below(span.max(1)));
         // Le raid qui vient d'entrer a pu faire basculer sa tribu du côté
         // hostile (`factions::RAID_LED`) et poser des représailles plus
@@ -602,7 +607,8 @@ impl Sim {
     /// pas le storyteller : c'est lui qui décidera de la bande, de sa taille et
     /// même de son existence (en paisible, personne ne vient).
     pub(crate) fn plan_reprisal(&mut self) {
-        let delay = u64::from(REPRISAL_MIN) + u64::from(self.rng.below(REPRISAL_SPAN.max(1)));
+        let delay = u64::from(self.scaled(REPRISAL_MIN))
+            + u64::from(self.rng.below(self.scaled(REPRISAL_SPAN).max(1)));
         self.next_raid_at = self.next_raid_at.min(self.tick + delay);
     }
 
@@ -651,7 +657,7 @@ impl Sim {
         {
             self.next_raid_at = self
                 .next_raid_at
-                .saturating_add(u64::from(RAID_DEATH_RESPITE));
+                .saturating_add(u64::from(self.scaled(RAID_DEATH_RESPITE)));
         }
     }
 
@@ -959,6 +965,8 @@ impl Sim {
     /// n'est pas celui d'un colon vivant.
     pub fn trigger_illness(&mut self, pawn: u32) -> bool {
         let tick = self.tick;
+        // Une maladie dure deux jours de jeu, quelle que soit l'échelle.
+        let duration = u64::from(self.scaled(ILLNESS_TICKS));
         let Some(p) = self
             .pawns
             .iter_mut()
@@ -966,7 +974,7 @@ impl Sim {
         else {
             return false;
         };
-        p.sick_until = tick + u64::from(ILLNESS_TICKS);
+        p.sick_until = tick + duration;
         p.illness_tended = false;
         p.sick = true;
         self.push_event(EventKind::Illness, pawn);
@@ -979,7 +987,7 @@ impl Sim {
         if !self.pawns[k].sick {
             return;
         }
-        let soon = self.tick + u64::from(ILLNESS_TENDED_TICKS);
+        let soon = self.tick + u64::from(self.scaled(ILLNESS_TENDED_TICKS));
         self.pawns[k].illness_tended = true;
         self.pawns[k].sick_until = self.pawns[k].sick_until.min(soon);
     }
@@ -1024,7 +1032,7 @@ impl Sim {
 
     fn set_temperature_swing(&mut self, tenths: i32) {
         self.temperature_offset = tenths;
-        self.offset_until = self.tick + u64::from(EXTREME_TICKS);
+        self.offset_until = self.tick + u64::from(self.scaled(EXTREME_TICKS));
     }
 
     /// Écart de température du coup de temps en cours, 0 le reste du temps.

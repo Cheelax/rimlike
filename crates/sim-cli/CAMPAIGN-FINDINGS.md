@@ -4124,3 +4124,307 @@ Relevés `#[ignore]` ajoutés : `measure_hunt_impact`, `measure_forty_seeds`,
 `combat.rs`, `climate.rs`, `Species::meat`, `MAX_ANIMALS`,
 `animals::spawn_starting_animals` et `crates/sim-cli/src/campaign.rs` sont
 inchangés.
+
+---
+
+## 15. L'échelle du jour (2026-09-10)
+
+**Ce que cette section mesure.** L'échelle du jour `K` (`Sim::day_scale`,
+fiche `docs/tasks/echelle-du-jour.md`, décision `docs/PLAN.md` §6) étire la
+journée de jeu et les durées de travail sans toucher à ce qui se voit à
+l'écran : la marche, les coups, la fuite, les flammes gardent leur rythme. Le
+classement complet — quelle durée s'étire, laquelle ne bouge pas, et pourquoi
+— est dans **`docs/time.md`** ; il n'est pas recopié ici.
+
+Cette section **mesure, elle ne règle rien** : aucune constante de jeu n'a été
+touchée pour l'écrire. Les deux déséquilibres qu'elle trouve (§15.4 et §15.5)
+portent chacun une proposition chiffrée, **non appliquée**.
+
+### 15.1 Protocole
+
+Arbre de travail `task/echelle-du-jour`, base **`fee7d12`**. Toutes les
+campagnes en release, machine à huit cœurs, une seule à la fois :
+
+```sh
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --day-scale 10
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --day-scale 30
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --day-of-year 30
+cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 --day-of-year 30 --day-scale 30
+cargo run -p sim-cli --release -- bench --size 128 --ticks 20000 [--day-scale 30]
+```
+
+**`--days` compte des jours de jeu**, pas des ticks : trente jours à K = 30
+font 12 960 000 ticks par graine (388 800 000 pour la campagne), contre
+432 000 à K = 1. C'est la seule comparaison qui ait un sens — comparer à
+nombre de ticks égal comparerait un mois de jeu à une demi-journée.
+
+**Le biais assumé.** Le joueur scripté garde sa cadence de décision en **ticks
+réels** (`PLAN_INTERVAL` = 600, dix secondes réelles) : un joueur ne regarde
+pas sa colonie plus souvent parce que la journée est longue. Conséquence : à
+K = 30, le joueur scripté prend **trente fois plus de décisions par jour de
+jeu** qu'à K = 1. Les colonies mesurées à K = 30 sont donc, si quelque chose,
+**favorisées** — elles sont micro-gérées comme aucune colonie de K = 1 ne
+l'est. Les chiffres de survie ci-dessous sont à lire comme une borne haute.
+
+### 15.2 K = 1 est l'identité, prouvée trois fois
+
+1. **Les empreintes du sim.** `sim::scenario::DEMO_HASH`
+   (`e42d5ed14b0cdc69`), `TUNDRA_IDLE_HASH` et les empreintes de
+   `crates/sim/tests/biomes.rs` n'ont pas bougé, et
+   `rimlike-sim run --seed 1 --size 64 --ticks 10000 --scenario demo` affiche
+   toujours `hash final : e42d5ed14b0cdc69`. C'est ce que permet la
+   sérialisation compacte du champ : **à K = 1 il n'écrit aucun octet**, le
+   snapshot est donc celui d'avant, au bit près.
+2. **La campagne.** `campaign --seeds 30 --days 30 --size 64` jouée sur la
+   branche et sur la base `fee7d12` donne le **même fichier**, colonne par
+   colonne, graine par graine — seules diffèrent la ligne d'en-tête (qui
+   annonce désormais l'échelle) et la colonne `ms` (du temps réel). Même
+   chose pour la campagne automne-hiver (`--day-of-year 30`).
+3. **Le WASM.** `pnpm build:wasm && pnpm test:client` reste vert, dont
+   `parity.test.ts`, qui rejoue le scénario de référence en WASM et le compare
+   à la constante lue à travers la frontière.
+
+**Attention à la référence citée par la fiche.** La fiche annonçait, pour le
+témoin tempéré du 2026-09-09 (§14.1) : 18/30 vivantes, 207 morts (raid 169,
+blessures 33, famine 5), 10,3 jours de vivres, 7,4 raids par colonie. Sur
+`fee7d12`, la même commande donne **18/30 vivantes, 173 morts (raid 151,
+blessures 17, famine 4, maladie 1), 11,9 jours de vivres, 5,4 raids par
+colonie**. L'écart ne vient pas de cette fiche — la base le produit à
+l'identique — mais de ce qui est passé entre le §14.1 (mesuré sur `1aa8a3c`)
+et `fee7d12` : la banquise (`game_density`) et l'unification du scénario de
+référence. **C'est la mesure sur `fee7d12` qui sert de témoin ci-dessous**, et
+c'est elle que l'identité colonne par colonne vérifie.
+
+### 15.3 Ce que donne l'échelle : trois campagnes normales
+
+30 graines, 30 **jours de jeu**, carte 64×64, difficulté normale, forêt
+tempérée.
+
+| | K = 1 (témoin) | K = 10 | K = 30 |
+|---|---|---|---|
+| colonies vivantes | **18/30** | **13/30** | **10/30** |
+| colons vivants en fin (moyenne) | 1,9 | 1,0 | 0,7 |
+| colons au jour 10 / 20 | 2,4 / 1,9 | 2,1 / 1,7 | 1,5 / 1,0 |
+| morts au total | 173 | 207 | 179 |
+| — raid | 151 (87 %) | 134 (64 %) | **110 (61 %)** |
+| — blessures | **17 (9 %)** | 66 (31 %) | **60 (33 %)** |
+| — famine | 4 (2 %) | 3 (1 %) | 3 (1 %) |
+| — maladie / feu | 1 / 0 | 3 / 1 | 5 / 1 |
+| raids reçus par colonie | 5,4 | 6,0 | 4,6 |
+| têtes par bande | 2,3 | 2,0 | 1,9 |
+| richesse finale (moyenne / max) | 2044 / 4587 | 2206 / 6206 | 1943 / 5755 |
+| jours de vivres en stock | 11,9 | 17,3 | **17,5** |
+| technologies acquises | 1,6 | 1,8 | 1,7 |
+| métallurgie : colonies / jour moyen | 14/30 · j **19,0** | 17/30 · j 13,4 | 17/30 · j **9,7** |
+| lingots / épées | 78 / 18 | 103 / 18 | 113 / 21 |
+| enceintes refermées | 19/30 | 21/30 | 18/30 |
+| incendies : départs / cases brûlées | 112 / **1987** | 77 / 3003 | 95 / **3593** |
+| bêtes apprivoisées | 29 | 28 | 25 |
+| humeur finale | 57,7 % | 54,6 % | 56,8 % |
+| perf | 12,96 M ticks en 10,6 s | 129,6 M en 202 s | 388,8 M en 465 s |
+
+**10/30 contre 18/30 : le critère de la fiche est tenu, de justesse.** La
+fiche demandait entre 0,5× et 2× le témoin, soit 9 à 36 colonies : K = 30 en
+laisse 10. Ce n'est pas une extinction, et ce n'est pas non plus le même jeu.
+
+### 15.4 Le premier déséquilibre : l'hémostase arrive trop tard
+
+**C'est le fait marquant de la mesure.** La colonne « blessures » — un colon
+mort de ses plaies, sans ennemi debout — passe de **17 morts sur 173 (9 %) à
+60 sur 179 (33 %)**, et le raid, lui, tue *moins* (151 → 110). Les colonies
+ne meurent plus sous les coups : elles meurent **après**.
+
+Le mécanisme est exactement à la frontière que la fiche demandait d'examiner
+(saignement contre guérison), et il se lit dans les constantes :
+
+- le **saignement** est classé **physique** (`docs/time.md`) : une plaie perd
+  son sang tous les `health::BLEED_INTERVAL` = 100 ticks, quelle que soit
+  l'échelle. Une blessure d'épieu (saignement ≈ 60) vide les
+  `health::BLOOD_MAX` = 1 000 points en **~1 700 ticks**, à K = 1 comme à
+  K = 30 ;
+- le **soin** est classé **travail** : `health::TEND_TICKS` = 240 et son
+  premier quart, `HEMOSTASIS_TICKS` = 60, sont multipliés par K. À K = 1, le
+  soignant arrête l'hémorragie en **60 ticks (une seconde)** ; à K = 30, il
+  lui en faut **1 800 (trente secondes)**.
+
+À K = 30, l'hémostase arrive donc **après** que le blessé se soit vidé. Ce
+n'est pas un réglage d'équilibrage qui manque, c'est un classement à corriger.
+
+**Proposition, non appliquée.** Reclasser `HEMOSTASIS_TICKS` en **physique**
+(60 ticks, inchangés) tout en laissant `TEND_TICKS` en travail : la
+compression d'urgence court contre l'hémorragie, donc sur l'horloge de la
+plaie ; le pansement, lui, est du travail de colonie. Une ligne de code
+(`self.scaled(HEMOSTASIS_TICKS)` redevient `HEMOSTASIS_TICKS`) et une ligne de
+`docs/time.md`. **À mesurer avant d'appliquer** : la même campagne à K = 30,
+en attendant la colonne « blessures » aux alentours de 9 % et les colonies
+vivantes au-dessus de 13/30.
+
+L'autre issue — reclasser le saignement en travail — est rejetée ici : elle
+ferait saigner une plaie pendant vingt minutes réelles, ce qui contredit la
+raison d'être de l'échelle (un raid se joue en secondes réelles).
+
+### 15.5 Le second déséquilibre : la pluie n'éteint plus les incendies
+
+Les départs de feu **par jour de jeu** sont bien tenus (112 → 95 : les
+dénominateurs `LIGHTNING_DEN` et `CAMPFIRE_SPARK_DEN` sont mis à l'échelle,
+voir `docs/time.md`), mais **la surface brûlée fait presque le double** :
+1 987 cases à K = 1, 3 003 à K = 10, **3 593 à K = 30**. Par incendie : 17,7
+cases à K = 1, **37,8 à K = 30**.
+
+Le mécanisme est un croisement de familles, comme le précédent. Le feu est
+**physique** (`FIRE_BURN_TICKS` = 900, propagation à cadence fixe) ; la météo
+est **en jours** (une période dure d'un quart de jour à un jour). À K = 1, une
+période de temps sec dure 3 600 à 14 400 ticks, c'est-à-dire l'ordre de
+grandeur de la vie d'un incendie : la pluie tombe souvent **pendant** le feu
+et l'étouffe. À K = 30, la même période dure 108 000 à 432 000 ticks :
+**aucun incendie ne voit jamais le temps changer**, il brûle jusqu'à ce que
+les colons ou le manque de combustible l'arrêtent.
+
+C'est visible à contre-jour dans la campagne automne-hiver (§15.6), où il
+pleut et neige presque tout le temps : 42 cases brûlées à K = 1, 37 à K = 30
+— l'écart disparaît quand le temps sec disparaît.
+
+**Proposition, non appliquée.** Ne rien changer aux constantes, et regarder
+d'abord si c'est un défaut : un monde où un incendie d'été est une vraie
+catastrophe, et où c'est la lutte (physique, donc efficace) qui l'arrête au
+lieu d'une averse, est peut-être *meilleur*. Le chiffre à surveiller est le
+maximum par graine, pas la moyenne : le §6 avait fixé le contrat « pas de
+demi-carte qui brûle ». Si le maximum dépasse ce seuil à K = 30, le levier le
+moins arbitraire est de **borner la durée d'un temps sec en ticks réels**
+plutôt que de toucher au feu lui-même.
+
+### 15.6 Automne-hiver : `--day-of-year 30`
+
+Trente jours de jeu à partir du jour 30 de l'année : automne puis hiver, gel,
+tuniques, cultures tuées par le froid.
+
+| | K = 1 (témoin) | K = 30 |
+|---|---|---|
+| colonies vivantes | **12/30** (18 éteintes) | **5/30** (25 éteintes) |
+| colons au jour 10 / 20 | 2,3 / 1,8 | 1,3 / 0,4 |
+| morts au total | 175 | 163 |
+| — raid | 149 (85 %) | 98 (60 %) |
+| — blessures | 18 (10 %) | **57 (34 %)** |
+| — famine | 5 (2 %) | 3 (1 %) |
+| — froid | 3 (1 %) | 4 (2 %) |
+| raids par colonie | 5,2 | 3,9 |
+| jours de vivres | 10,1 | 9,3 |
+| enceintes refermées | 26/30 | 26/30 |
+| incendies : départs / brûlé | 42 / 42 | 37 / 37 |
+| métallurgie : colonies / jour | 9/30 · j 14,7 | 14/30 · j 11,6 |
+
+Même histoire, en plus dur : la colonne « blessures » triple (10 % → 34 %) et
+c'est elle qui fait la différence, pas le froid (4 morts) ni la faim (3). Le
+§15.4 vaut donc aussi ici. À noter que le témoin K = 1 lui-même (12/30
+vivantes, 18 éteintes) est loin des 24/30 éteintes annoncées par la fiche :
+là encore, c'est la base qui a changé depuis le 2026-09-09, pas cette fiche —
+l'identité colonne par colonne avec `fee7d12` a été vérifiée sur cette
+campagne aussi.
+
+### 15.7 Ce que la marche devenue gratuite change
+
+C'est la conséquence assumée de la décision (`docs/PLAN.md` §6), et elle se
+mesure. À K = 30, traverser la carte coûte le même nombre de **secondes** mais
+un trentième de **journée** : la part du temps de travail perdue en
+déplacement s'effondre.
+
+- **La colonie produit beaucoup plus par jour de jeu.** La métallurgie tombe
+  au **jour 9,7** au lieu du jour 19,0, et 17 colonies sur 30 l'obtiennent au
+  lieu de 14 — alors que le coût d'une technologie est bien multiplié par 30
+  (c'est un seuil de travail). Les lingots passent de 78 à 113. La colonie
+  n'est pas devenue plus rapide : elle a cessé de marcher.
+- **Elle mange mieux.** Les vivres en stock passent de **11,9 à 17,5 jours**
+  (+47 %), et aucune colonie vivante n'est sous un jour de réserve. La
+  cueillette et la chasse sont des allers-retours : elles profitent
+  directement de la marche gratuite.
+- **Elle n'est pas plus riche en moyenne** (2 044 → 1 943), mais **les
+  survivantes le sont** : le maximum passe de 4 587 à 5 755. La moyenne est
+  tirée vers le bas par les vingt colonies éteintes.
+- **Les raids ne grossissent pas, ils rétrécissent** : 2,3 têtes par bande à
+  K = 1, 1,9 à K = 30, et 4,6 raids par colonie au lieu de 5,4. Ce n'est pas
+  un effet de l'échelle sur le storyteller (les points de menace sont bien
+  comptés en jours de jeu) : c'est que les colonies ont moins de colons
+  vivants et meurent plus tôt, donc pèsent moins.
+- **Les enceintes ne bougent pas** : 19/30 à K = 1, 18/30 à K = 30, 26/30
+  dans les deux campagnes d'automne. Le joueur scripté paie son enceinte en
+  bois, et le bois se coupe au même rythme par jour de jeu.
+
+Autrement dit : à K = 30 la colonie est **plus productive et mieux nourrie par
+jour de jeu, et elle meurt plus** — et ce qui la tue est le §15.4, pas la faim
+ni la richesse.
+
+### 15.8 Le coût par tick ne dépend pas de l'échelle
+
+`bench --size 128 --ticks 20000`, la référence de perf du projet, deux
+passages de chaque pour donner le bruit :
+
+| scénario | K = 1 | K = 30 |
+|---|---|---|
+| none | 3 458 904 / 3 096 311 ticks/s | 3 006 187 / 3 127 174 |
+| demo | 1 123 545 / 952 243 | 1 187 308 / 1 268 013 |
+| demo+12 | 273 951 / 259 328 | 252 580 / 251 070 |
+
+Sur vingt mille ticks, chaque scénario tient en 5 à 80 ms. **Aucun écart hors
+bruit** : l'échelle du jour n'ajoute rien au tick — elle multiplie des seuils,
+elle ne rajoute pas de travail par tour de boucle.
+
+Un bench plus long (200 000 ticks) donne, lui, un écart trompeur (`demo+12` à
+785 k ticks/s à K = 1 contre 344 k à K = 30) : à K = 1, deux cent mille ticks
+font **quatorze jours de jeu** et la colonie du bench est morte depuis
+longtemps — un sim vide coûte moins cher. À K = 30 les mêmes ticks ne font
+qu'une demi-journée et tout le monde est vivant. À état comparable, le coût
+est le même : `run --scenario none --seed 1 --size 64`, trois colons vivants,
+donne **3,46 à 3,72 M ticks/s à K = 1** et **2,76 à 3,60 M à K = 30**.
+
+La conséquence pour la phase 6 est celle qu'annonçait le plan : **le coût
+serveur ne change pas**, il se compte par seconde réelle. Ce qui change, c'est
+qu'une même seconde réelle achète trente fois moins de temps de jeu.
+
+### 15.9 Proposition de valeur pour le monde — **non appliquée**
+
+La fiche livre le mécanisme et la mesure ; la valeur se décide au vu de ce qui
+précède. Ce que la mesure soutient :
+
+1. **K = 30 est jouable** — 10 colonies sur 30, contre 18 au témoin — **mais
+   pas à adopter tel quel** : un tiers des morts vient d'un croisement de
+   familles corrigible en une ligne (§15.4), pas d'un choix de design.
+2. **L'ordre recommandé** : appliquer le §15.4 (hémostase physique),
+   remesurer la campagne à K = 30, et **seulement alors** trancher la valeur
+   du monde. Si la colonne « blessures » revient vers 10 %, K = 30 devrait
+   rendre entre 14 et 18 colonies sur 30, c'est-à-dire le témoin — et il n'y
+   aura plus rien à régler.
+3. **K = 10 n'est pas un compromis intéressant** : il porte déjà les deux
+   déséquilibres (31 % de morts de blessures, 3 003 cases brûlées) pour un
+   monde trois fois moins lent (jour de 40 minutes, saison de 10 heures,
+   année de 40 heures). Si la correction du §15.4 échouait, K = 10 ne
+   sauverait rien.
+4. **Ce que K = 30 achète**, pour mémoire : jour de jeu en 2 h réelles, saison
+   en 30 h, année en 5 jours, un mur en 75 s, une récolte en 3 h. C'est la
+   cible du plan, et la mesure ne donne aucune raison de la revoir à la
+   baisse.
+
+### 15.10 Ce que la mesure laisse ouvert
+
+- **La cadence du joueur.** `PLAN_INTERVAL` en ticks réels avantage les
+  colonies à grand K (§15.1). Une campagne où le joueur scripté déciderait en
+  **jours de jeu** donnerait la borne basse ; l'écart entre les deux bornes
+  est la place que l'échelle laisse au micro-management, et personne ne l'a
+  mesurée.
+- **Le maximum d'incendie par graine** (§15.5) : la moyenne est mesurée, la
+  distribution non. C'est elle qui dit si le contrat du §6 tient encore.
+- **La tactique du raid.** À K = 30 un raid se règle en une poignée de
+  secondes réelles, dans une journée de deux heures : le joueur n'a
+  matériellement pas le temps de réagir s'il n'est pas devant l'écran. Le plan
+  l'annonçait (« d'où l'IA tactique de la colonie, fiche à venir ») ; rien ici
+  ne la mesure.
+- **Les cadences d'évaluation** (`RETRY_TICKS` = 30, `SPOILAGE_INTERVAL` = 60,
+  `WEALTH_CACHE_TICKS` = 600) tournent trente fois plus souvent par jour de
+  jeu à K = 30. Le §15.8 montre que le tick n'en souffre pas ; personne n'a
+  vérifié que la **précision** de ce qu'elles calculent n'en profite pas
+  indûment — une richesse plus fraîche, par exemple, nourrit des points de
+  menace plus fidèles.
+- **Le client et le serveur** ne connaissent pas encore l'échelle
+  (`start.dayScale`, vitesses ×5 et ×10 du solo, horloge du monde qui perd son
+  `WORLD_HOUR_MS`) : c'est la fiche suivante. En attendant, une partie solo ou
+  multi se joue toujours à K = 1.

@@ -209,11 +209,14 @@ impl Sim {
         let me = self.pawns[i].id;
         let from = self.pawns[i].tile();
         // Un sociable renoue plus vite : c'est le seul trait qui joue ici.
-        let cooldown = u64::from(if self.pawns[i].has_trait(Trait::Sociable) {
+        // La dispute et la rixe se tirent **par bavardage** : le délai entre
+        // deux conversations suit donc l'échelle du jour, sinon un jour de jeu
+        // en compterait K fois plus (voir `docs/time.md`).
+        let cooldown = u64::from(self.scaled(if self.pawns[i].has_trait(Trait::Sociable) {
             CHAT_COOLDOWN / 2
         } else {
             CHAT_COOLDOWN
-        });
+        }));
         let mut best: Option<(u32, u32, usize)> = None;
         for k in 0..self.pawns.len() {
             let p = &self.pawns[k];
@@ -246,15 +249,16 @@ impl Sim {
         };
         // Les deux s'arrêtent et se font face : plus un pas jusqu'au bout de
         // la conversation.
+        let chat = self.scaled(CHAT_TICKS);
         self.pawns[i].path.clear();
         self.pawns[i].job = Job::Chat {
             with: partner,
-            ticks: CHAT_TICKS,
+            ticks: chat,
         };
         self.pawns[k].path.clear();
         self.pawns[k].job = Job::Chat {
             with: me,
-            ticks: CHAT_TICKS,
+            ticks: chat,
         };
         true
     }
@@ -301,13 +305,16 @@ impl Sim {
             QUARREL_CHANCE_DEN
         };
         let quarrel = self.rng.chance(1, den);
+        // Souvenirs d'humeur : une journée, quelle que soit l'échelle.
+        let social = self.scaled(SOCIAL_TICKS);
+        let quarrel_memory = self.scaled(QUARREL_TICKS);
         self.pawns[i].job = Job::Idle;
         self.pawns[k].job = Job::Idle;
         if !quarrel {
             self.pawns[i].remember(b, CHAT_OPINION, tick);
             self.pawns[k].remember(a, CHAT_OPINION, tick);
-            self.pawns[i].social_ticks = SOCIAL_TICKS;
-            self.pawns[k].social_ticks = SOCIAL_TICKS;
+            self.pawns[i].social_ticks = social;
+            self.pawns[k].social_ticks = social;
             return;
         }
         // « Déjà » : l'inimitié qui déclenche la rixe est celle d'avant la
@@ -316,8 +323,8 @@ impl Sim {
             && self.pawns[k].opinion_of(a) <= BRAWL_OPINION;
         self.pawns[i].remember(b, QUARREL_OPINION, tick);
         self.pawns[k].remember(a, QUARREL_OPINION, tick);
-        self.pawns[i].quarrel_ticks = QUARREL_TICKS;
-        self.pawns[k].quarrel_ticks = QUARREL_TICKS;
+        self.pawns[i].quarrel_ticks = quarrel_memory;
+        self.pawns[k].quarrel_ticks = quarrel_memory;
         self.push_event(EventKind::Quarrel, a.min(b));
         if !rivals {
             return;

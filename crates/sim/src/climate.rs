@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::map::Feature;
 use crate::weather::Weather;
-use crate::{DAY_START_OFFSET, EventKind, Sim, TICKS_PER_DAY};
+use crate::{EventKind, Sim, TICKS_PER_DAY, day_start_offset};
 
 /// Jours d'une année de jeu : quatre saisons de `SEASON_DAYS`.
 pub const YEAR_DAYS: u32 = 60;
@@ -87,6 +87,7 @@ pub const CROP_KILL_TEMP: i32 = -50;
 pub const CROP_KILL_CHANCE: u32 = 600;
 /// Un buisson récolté ne repousse pas sous le gel : sa repousse est repoussée
 /// de deux heures, jamais annulée.
+/// (À l'échelle 1 : le sim lit `Sim::scaled(FROST_REGROW_DELAY)`.)
 pub const FROST_REGROW_DELAY: u32 = TICKS_PER_DAY / 12;
 
 /// En dessous, le colon a froid : l'humeur baisse.
@@ -248,11 +249,14 @@ impl Default for Climate {
     }
 }
 
-/// Jour de l'année d'un tick donné. Même décalage que `Sim::time_of_day` :
-/// la partie commence le matin du premier jour du printemps.
+/// Jour de l'année d'un tick donné, pour une journée de `ticks_per_day` ticks
+/// (voir `Sim::ticks_per_day` : l'échelle du jour est passée, pas devinée).
+/// Même décalage que `Sim::time_of_day` : la partie commence le matin du
+/// premier jour du printemps.
 #[inline]
-pub fn day_of_tick(tick: u64) -> u32 {
-    ((tick + u64::from(DAY_START_OFFSET)) / u64::from(TICKS_PER_DAY) % u64::from(YEAR_DAYS)) as u32
+pub fn day_of_tick(tick: u64, ticks_per_day: u32) -> u32 {
+    ((tick + u64::from(day_start_offset(ticks_per_day))) / u64::from(ticks_per_day)
+        % u64::from(YEAR_DAYS)) as u32
 }
 
 /// Saison d'un jour de l'année.
@@ -285,7 +289,7 @@ impl Sim {
     /// à la main (voir `tick_climate`).
     #[inline]
     fn day_of_year_at(&self, tick: u64) -> u32 {
-        (day_of_tick(tick) + self.calendar_offset_days) % YEAR_DAYS
+        (day_of_tick(tick, self.ticks_per_day()) + self.calendar_offset_days) % YEAR_DAYS
     }
 
     pub fn season(&self) -> Season {
@@ -300,7 +304,7 @@ impl Sim {
     /// même raccourci que `tick_climate` sur `frost_announced`.
     pub fn set_calendar(&mut self, day_of_year: u32) {
         let target = day_of_year % YEAR_DAYS;
-        let raw = day_of_tick(self.tick());
+        let raw = day_of_tick(self.tick(), self.ticks_per_day());
         let before = self.season();
         self.calendar_offset_days = (target + YEAR_DAYS - raw) % YEAR_DAYS;
         let after = self.season();
@@ -317,7 +321,7 @@ impl Sim {
         // Les modulos sur la longueur des tables épargnent deux contrôles de
         // bornes dans un chemin joué à chaque tick.
         let day = self.day_of_year() as usize % YEAR_CURVE.len();
-        let hour = (self.time_of_day() * 24 / TICKS_PER_DAY) as usize % DAY_CURVE.len();
+        let hour = (self.time_of_day() / (self.ticks_per_day() / 24)) as usize % DAY_CURVE.len();
         // En `i64` : un snapshot abîmé pourrait porter un climat démesuré, et
         // une multiplication qui déborde serait une panique.
         let seasonal =
@@ -374,7 +378,8 @@ impl Sim {
     /// suffit le reste de l'année.
     pub(crate) fn tick_climate(&mut self, outdoor: i32) {
         let tick = self.tick();
-        if (tick + u64::from(DAY_START_OFFSET)) % u64::from(TICKS_PER_DAY) == 0 && tick > 0 {
+        let day = self.ticks_per_day();
+        if (tick + u64::from(day_start_offset(day))) % u64::from(day) == 0 && tick > 0 {
             // Le décalage de `Command::SetCalendar` s'ajoute aux deux jours
             // comparés : il ne change rien à *quand* la saison bascule (les
             // jours d'un an de jeu, pas ceux du calendrier), seulement à
@@ -410,7 +415,8 @@ impl Sim {
         // comprises : un troupeau se nourrit (voir `livestock`), il ne
         // grelotte pas et ne retire pas d'habit qu'il ne porte jamais.
         if self.pawns[i].is_colonist() {
-            if comfort < HYPOTHERMIA_TEMP && self.tick() % HYPOTHERMIA_INTERVAL == 0 {
+            if comfort < HYPOTHERMIA_TEMP && self.tick() % self.scaled64(HYPOTHERMIA_INTERVAL) == 0
+            {
                 // Rester dehors par −5 °C se paie, manteau ou pas : l'habit
                 // remonte le ressenti, il ne rend pas invulnérable. L'atteinte
                 // guérit comme les autres une fois au chaud.
@@ -433,7 +439,7 @@ impl Sim {
             return;
         }
         self.pawns[i].heat_ticks += 1;
-        if self.pawns[i].heat_ticks < UNDRESS_TICKS {
+        if self.pawns[i].heat_ticks < self.scaled(UNDRESS_TICKS) {
             return;
         }
         self.pawns[i].heat_ticks = 0;

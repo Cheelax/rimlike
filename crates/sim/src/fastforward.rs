@@ -49,7 +49,8 @@ impl Sim {
     /// Au-delà de `MAX_FAST_FORWARD`, l'avance est tronquée ; à 0, rien ne
     /// bouge (pas même un événement).
     pub fn fast_forward(&mut self, ticks: u32) {
-        let ticks = ticks.min(MAX_FAST_FORWARD);
+        // Soixante jours de jeu, à l'échelle de cette partie.
+        let ticks = ticks.min(self.scaled(MAX_FAST_FORWARD));
         if ticks == 0 {
             return;
         }
@@ -101,7 +102,7 @@ impl Sim {
         // comme si la carte avait tourné (voir `factions::FADE_PER_DAY`) : deux
         // mois d'oubli valent une réputation remontée à zéro. Le franchissement
         // d'un seuil est annoncé, comme en temps normal.
-        self.fade_grudges(ticks / TICKS_PER_DAY);
+        self.fade_grudges(ticks / self.ticks_per_day());
         // La bande qui campait là est partie avec le reste (`raiders_leave`),
         // mais personne n'a rien repoussé : le drapeau retombe sans annonce ni
         // récompense.
@@ -114,7 +115,8 @@ impl Sim {
         // inchangé ici), et le tick vient de bondir. Restent à remettre à jour
         // les valeurs recopiées dans les pawns.
         self.refresh_comfort();
-        self.push_event(EventKind::FastForwarded, ticks / TICKS_PER_DAY);
+        let days = ticks / self.ticks_per_day();
+        self.push_event(EventKind::FastForwarded, days);
     }
 
     /// Les plants poussent du temps écoulé et mûrissent. Le bonus de pluie
@@ -126,15 +128,14 @@ impl Sim {
     fn grow_plants(&mut self, ticks: u32) {
         // Le quart de pousse de `Tech::Agriculture`, compté d'un coup.
         let ticks = research::crop_growth_ticks(ticks, self.research.is_done(Tech::Agriculture));
+        // La maturité est en jours (voir `tick_crops`).
+        let ripe = self.scaled(farm::GROW_TICKS);
         for k in 0..self.crops.len() {
-            if self.crops[k].growth >= farm::GROW_TICKS {
+            if self.crops[k].growth >= ripe {
                 continue;
             }
-            self.crops[k].growth = self.crops[k]
-                .growth
-                .saturating_add(ticks)
-                .min(farm::GROW_TICKS);
-            if self.crops[k].growth == farm::GROW_TICKS {
+            self.crops[k].growth = self.crops[k].growth.saturating_add(ticks).min(ripe);
+            if self.crops[k].growth == ripe {
                 let (x, y) = (self.crops[k].x, self.crops[k].y);
                 if self.map.feature(x, y) == Feature::Crop {
                     self.map.set_feature(x, y, Feature::CropRipe);
@@ -185,7 +186,7 @@ impl Sim {
         // Une blessure gagne un point de cicatrisation par `HEAL_INTERVAL`,
         // deux si elle est pansée : exactement le rythme de `tick_injuries`,
         // en une seule opération.
-        let healed = ticks / HEAL_INTERVAL as u32;
+        let healed = ticks / self.scaled(HEAL_INTERVAL as u32);
         // Même règle que `Sim::tick_injuries` : la médecine accélère la
         // cicatrisation des plaies pansées.
         let tended_points = research::tended_heal_points(self.research.is_done(Tech::Medicine));

@@ -28,6 +28,28 @@ pub(crate) fn check_size(size: u32) -> Result<(), CliError> {
     Ok(())
 }
 
+/// `--day-scale K` : l'échelle du jour de la partie (voir `docs/time.md`), 1
+/// par défaut. Hors bornes, on refuse plutôt que de retomber en silence sur 1
+/// comme le fait la relecture d'un snapshot : ici quelqu'un a tapé un chiffre,
+/// il doit savoir qu'il n'a pas mesuré ce qu'il croyait.
+pub(crate) fn parse_day_scale(opts: &Options) -> Result<u32, CliError> {
+    let scale = opts.u32_or("day-scale", 1)?;
+    if !(sim::DAY_SCALE_MIN..=sim::DAY_SCALE_MAX).contains(&scale) {
+        return Err(CliError::new(format!(
+            "--day-scale doit être entre {} et {}, reçu {scale}",
+            sim::DAY_SCALE_MIN,
+            sim::DAY_SCALE_MAX
+        )));
+    }
+    Ok(scale)
+}
+
+/// Sim neuve à l'échelle demandée, biome tempéré : ce que faisait `Sim::new`
+/// avant l'échelle du jour, et exactement `Sim::new` quand K vaut 1.
+pub(crate) fn new_sim(seed: u64, size: u32, day_scale: u32) -> Sim {
+    Sim::new_scaled(seed, size, size, sim::Biome::default(), day_scale)
+}
+
 /// Colons vivants, pillards vivants, objets au sol, chantiers en cours.
 /// La faune ne compte dans aucune des deux colonnes : elle n'est ni de la
 /// colonie ni du raid (voir `sim::animals`). Le marchand de passage non plus
@@ -60,7 +82,7 @@ const RUN_HELP: &str = "\
 rimlike-sim run — exécute la simulation et affiche des rapports périodiques
 
 USAGE :
-    rimlike-sim run --seed N --size W --ticks T [--scenario none|demo] [--report-every K]
+    rimlike-sim run --seed N --size W --ticks T [--scenario none|demo] [--report-every K] [--day-scale K]
 
 OPTIONS :
     --seed N            graine du générateur aléatoire (entier)
@@ -68,6 +90,7 @@ OPTIONS :
     --ticks T           nombre de ticks à exécuter
     --scenario S         none (défaut) ou demo (rejoue scripted_commands)
     --report-every K     une ligne de rapport tous les K ticks (défaut 1000)
+    --day-scale K        échelle du jour, 1 à 120 (défaut 1 : le jour de 14 400 ticks)
 ";
 
 pub fn run(args: &[String]) -> u8 {
@@ -83,24 +106,32 @@ pub fn run(args: &[String]) -> u8 {
 
 fn run_inner(args: &[String]) -> Result<u8, CliError> {
     let opts = Options::parse(args)?;
-    opts.forbid_unknown(&["seed", "size", "ticks", "scenario", "report-every"])?;
+    opts.forbid_unknown(&[
+        "seed",
+        "size",
+        "ticks",
+        "scenario",
+        "report-every",
+        "day-scale",
+    ])?;
     let seed = opts.require_u64("seed")?;
     let size = opts.require_u32("size")?;
     check_size(size)?;
     let ticks = opts.require_u64("ticks")?;
     let scenario = parse_scenario(&opts)?;
+    let day_scale = parse_day_scale(&opts)?;
     let report_every = opts.u64_or("report-every", 1000)?;
     if report_every == 0 {
         return Err(CliError::new("--report-every doit être un entier positif"));
     }
 
     println!(
-        "run : carte {size}x{size}, {ticks} ticks, seed {seed}, scénario {}",
+        "run : carte {size}x{size}, {ticks} ticks, seed {seed}, scénario {}, échelle du jour {day_scale}",
         scenario.name_str()
     );
     println!("tick, ms, ticks/s, colons, pillards, objets, chantiers, hash");
 
-    let mut sim = Sim::new(seed, size, size);
+    let mut sim = new_sim(seed, size, day_scale);
     let start = Instant::now();
     for t in 0..ticks {
         let cmds = scenario.commands(&sim, t);
@@ -124,6 +155,10 @@ fn run_inner(args: &[String]) -> Result<u8, CliError> {
     println!("  durée totale      : {} ms", elapsed.as_millis());
     println!("  ticks/s moyens    : {:.1}", ticks_per_sec(ticks, elapsed));
     println!("  hash final        : {:016x}", sim.state_hash());
+    println!(
+        "  jours de jeu      : {}",
+        sim.tick() / u64::from(sim.ticks_per_day())
+    );
     println!("  snapshot (octets) : {}", sim.snapshot().len());
     let events = sim.events();
     println!("  événements ({}) :", events.len());
@@ -140,13 +175,14 @@ const VERIFY_HELP: &str = "\
 rimlike-sim verify — compare deux sims indépendantes nourries des mêmes entrées
 
 USAGE :
-    rimlike-sim verify --seed N --size W --ticks T [--scenario none|demo]
+    rimlike-sim verify --seed N --size W --ticks T [--scenario none|demo] [--day-scale K]
 
 OPTIONS :
     --seed N            graine du générateur aléatoire (entier)
     --size W            carte carrée W x W
     --ticks T           nombre de ticks à exécuter
     --scenario S         none (défaut) ou demo (rejoue scripted_commands)
+    --day-scale K        échelle du jour, 1 à 120 (défaut 1)
 
 Affiche OK et sort en 0 si les hashes sont identiques tous les 500 ticks et à
 la fin ; sinon affiche le premier tick divergent et sort en 1.
@@ -165,15 +201,16 @@ pub fn verify(args: &[String]) -> u8 {
 
 fn verify_inner(args: &[String]) -> Result<u8, CliError> {
     let opts = Options::parse(args)?;
-    opts.forbid_unknown(&["seed", "size", "ticks", "scenario"])?;
+    opts.forbid_unknown(&["seed", "size", "ticks", "scenario", "day-scale"])?;
     let seed = opts.require_u64("seed")?;
     let size = opts.require_u32("size")?;
     check_size(size)?;
     let ticks = opts.require_u64("ticks")?;
     let scenario = parse_scenario(&opts)?;
+    let day_scale = parse_day_scale(&opts)?;
 
-    let mut a = Sim::new(seed, size, size);
-    let mut b = Sim::new(seed, size, size);
+    let mut a = new_sim(seed, size, day_scale);
+    let mut b = new_sim(seed, size, day_scale);
     for t in 0..ticks {
         // Les commandes ne sont calculées qu'une fois : les deux sims reçoivent
         // exactement la même liste, comme le ferait le lockstep.
@@ -275,11 +312,13 @@ const BENCH_HELP: &str = "\
 rimlike-sim bench — mesure les ticks/s de plusieurs scénarios
 
 USAGE :
-    rimlike-sim bench --size W --ticks T
+    rimlike-sim bench --size W --ticks T [--day-scale K]
 
 OPTIONS :
-    --size W   carte carrée W x W
-    --ticks T  nombre de ticks à exécuter par scénario
+    --size W       carte carrée W x W
+    --ticks T      nombre de ticks à exécuter par scénario
+    --day-scale K  échelle du jour, 1 à 120 (défaut 1). Le coût **par tick** ne
+                   doit pas en dépendre : c'est le jour qui s'allonge, pas le tick.
 
 Mesure trois scénarios sur une graine fixe : none (aucune commande), demo
 (scripted_commands) et demo+12 (demo avec 12 colons de plus spawnés au tick 1).
@@ -299,12 +338,15 @@ pub fn bench(args: &[String]) -> u8 {
 
 fn bench_inner(args: &[String]) -> Result<u8, CliError> {
     let opts = Options::parse(args)?;
-    opts.forbid_unknown(&["size", "ticks"])?;
+    opts.forbid_unknown(&["size", "ticks", "day-scale"])?;
     let size = opts.require_u32("size")?;
     check_size(size)?;
     let ticks = opts.require_u64("ticks")?;
+    let day_scale = parse_day_scale(&opts)?;
 
-    println!("bench : carte {size}x{size}, {ticks} ticks, seed {BENCH_SEED:#x}");
+    println!(
+        "bench : carte {size}x{size}, {ticks} ticks, seed {BENCH_SEED:#x}, échelle du jour {day_scale}"
+    );
     println!("{:<10} {:>14} {:>12}", "scénario", "ticks/s", "durée (ms)");
 
     let scenarios: [(&str, Scenario, u32); 3] = [
@@ -313,7 +355,7 @@ fn bench_inner(args: &[String]) -> Result<u8, CliError> {
         ("demo+12", Scenario::Demo, BENCH_EXTRA_PAWNS),
     ];
     for (label, scenario, extra_pawns) in scenarios {
-        let mut sim = Sim::new(BENCH_SEED, size, size);
+        let mut sim = new_sim(BENCH_SEED, size, day_scale);
         let start = Instant::now();
         for t in 0..ticks {
             let cmds = scenario.commands(&sim, t);
@@ -337,7 +379,7 @@ const FUZZ_HELP: &str = "\
 rimlike-sim fuzz — bombarde deux sims de commandes aléatoires et compare
 
 USAGE :
-    rimlike-sim fuzz --seed N --size W --ticks T [--commands-per-tick K] [--runs R] [--snapshot-every S]
+    rimlike-sim fuzz --seed N --size W --ticks T [--commands-per-tick K] [--runs R] [--snapshot-every S] [--day-scale K]
 
 OPTIONS :
     --seed N               graine de base (le run r utilise la graine N + r)
@@ -346,6 +388,7 @@ OPTIONS :
     --commands-per-tick K   commandes aléatoires générées par tick (défaut 2)
     --runs R                nombre de runs indépendants (défaut 1)
     --snapshot-every S      aller-retour snapshot/restore tous les S ticks (défaut 1500)
+    --day-scale K           échelle du jour, 1 à 120 (défaut 1)
 
 Pour chaque run, deux sims indépendantes de même graine et de même taille
 reçoivent exactement les mêmes commandes, tirées parmi toutes les variantes
@@ -428,9 +471,16 @@ fn reconstruct_pre_state(
     run_seed: u64,
     size: u32,
     commands_per_tick: u64,
+    day_scale: u32,
     target_tick: u64,
 ) -> Sim {
-    let mut sim = Sim::new_in_biome(run_seed, size, size, fuzzgen::biome_for_run(run_seed));
+    let mut sim = Sim::new_scaled(
+        run_seed,
+        size,
+        size,
+        fuzzgen::biome_for_run(run_seed),
+        day_scale,
+    );
     let mut cmd_rng = Rng::new(run_seed);
     for _ in 0..target_tick {
         let mut cmds = Vec::with_capacity(commands_per_tick as usize);
@@ -527,13 +577,14 @@ fn fuzz_one_run(
     ticks: u64,
     commands_per_tick: u64,
     snapshot_every: u64,
+    day_scale: u32,
     variant_counts: &mut [u64; fuzzgen::VARIANT_COUNT],
 ) -> FuzzOutcome {
     // Un biome par run (voir `fuzzgen::biome_for_run`) : le fuzz éprouve toutes
     // les compositions de carte, pas seulement la tempérée.
     let biome = fuzzgen::biome_for_run(run_seed);
-    let mut a = Sim::new_in_biome(run_seed, size, size, biome);
-    let mut b = Sim::new_in_biome(run_seed, size, size, biome);
+    let mut a = Sim::new_scaled(run_seed, size, size, biome, day_scale);
+    let mut b = Sim::new_scaled(run_seed, size, size, biome, day_scale);
     let mut cmd_rng = Rng::new(run_seed);
     let mut recent = RecentCommands::new();
     let mut total_commands = 0u64;
@@ -551,7 +602,7 @@ fn fuzz_one_run(
         if let Err(payload) =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.step(&cmds)))
         {
-            let pre_state = reconstruct_pre_state(run_seed, size, commands_per_tick, t);
+            let pre_state = reconstruct_pre_state(run_seed, size, commands_per_tick, day_scale, t);
             return FuzzOutcome::Problem(panic_report(
                 run_seed, t, &cmds, &recent, &*payload, &pre_state,
             ));
@@ -559,7 +610,7 @@ fn fuzz_one_run(
         if let Err(payload) =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| b.step(&cmds)))
         {
-            let pre_state = reconstruct_pre_state(run_seed, size, commands_per_tick, t);
+            let pre_state = reconstruct_pre_state(run_seed, size, commands_per_tick, day_scale, t);
             return FuzzOutcome::Problem(panic_report(
                 run_seed, t, &cmds, &recent, &*payload, &pre_state,
             ));
@@ -611,6 +662,7 @@ fn fuzz_inner(args: &[String]) -> Result<u8, CliError> {
         "commands-per-tick",
         "runs",
         "snapshot-every",
+        "day-scale",
     ])?;
     let seed = opts.require_u64("seed")?;
     let size = opts.require_u32("size")?;
@@ -627,9 +679,10 @@ fn fuzz_inner(args: &[String]) -> Result<u8, CliError> {
             "--snapshot-every doit être un entier positif",
         ));
     }
+    let day_scale = parse_day_scale(&opts)?;
 
     println!(
-        "fuzz : carte {size}x{size}, {ticks} ticks, {runs} runs, seed de base {seed}, {commands_per_tick} commandes/tick, snapshot tous les {snapshot_every} ticks"
+        "fuzz : carte {size}x{size}, {ticks} ticks, {runs} runs, seed de base {seed}, {commands_per_tick} commandes/tick, snapshot tous les {snapshot_every} ticks, échelle du jour {day_scale}"
     );
 
     // Rendu silencieux le temps du fuzz : les paniques attrapées sont
@@ -652,6 +705,7 @@ fn fuzz_inner(args: &[String]) -> Result<u8, CliError> {
             ticks,
             commands_per_tick,
             snapshot_every,
+            day_scale,
             &mut variant_counts,
         ) {
             FuzzOutcome::Ok {
