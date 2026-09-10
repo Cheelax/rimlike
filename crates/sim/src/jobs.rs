@@ -249,6 +249,10 @@ impl Sim {
         // ci-dessus : un colon qui range du bois pendant que le toit brûle n'a
         // aucun sens. Court-circuité par `Map::fire_count` (voir `fire`).
         self.drop_work_for_fire(i, salvo);
+        // Et la bande annoncée fait lâcher le travail pour la même raison :
+        // un bûcheron à vingt cases des murs ne rentrera jamais si personne
+        // ne lui dit de poser sa hache (voir `combat::Stance`).
+        self.drop_work_for_raid(i);
         self.break_if_desperate(i);
         match self.pawns[i].job.clone() {
             Job::Idle => self.find_job(i, salvo),
@@ -508,6 +512,18 @@ impl Sim {
             return;
         }
         if self.try_start_tend(i, false) {
+            return;
+        }
+        // Une bande est annoncée et la colonie a des murs : on rejoint son
+        // poste — le seuil de la porte si le rapport de force est favorable,
+        // l'intérieur sinon — et **plus rien ne se travaille** jusqu'à ce
+        // qu'elle soit réglée (voir `combat::Stance`).
+        //
+        // Placé ici, après les besoins critiques, le feu, le pansement et le
+        // secours, et avant tout travail : on ne laisse pas un colon mourir
+        // de faim ni saigner à côté d'un blessé pour tenir une porte, mais on
+        // ne va plus bûcheronner pendant qu'une bande approche.
+        if self.take_post(i) {
             return;
         }
         // S'armer passe avant le travail : un colon désarmé qui part couper du
@@ -1218,7 +1234,7 @@ impl Sim {
     ///
     /// **Sans état ajouté** : `idle_ticks`, le tick et l'identité sont déjà là
     /// et déjà sérialisés. Rien de plus au snapshot, donc rien de plus au hash.
-    fn job_retry_due(&self, i: usize) -> bool {
+    pub(crate) fn job_retry_due(&self, i: usize) -> bool {
         self.pawns[i].idle_ticks == 0
             || (self.tick + u64::from(self.pawns[i].id)) % RETRY_TICKS == 0
     }

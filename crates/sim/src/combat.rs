@@ -214,6 +214,99 @@ pub const TRAP_SEVERITY: u32 = 250;
 /// l'entretien.
 pub const REARM_TICKS: u32 = 100;
 
+// ----------------------------------------------------------------------
+// La décision tactique : tenir la porte, ou veiller
+// ----------------------------------------------------------------------
+
+/// Ce que la colonie fait d'une bande annoncée. Décidé **à la volée**, à
+/// chaque fois qu'on le demande : c'est une fonction pure de l'état
+/// (`Sim::raid_stance`), pas un champ. Rien n'est ajouté au snapshot ni au
+/// hash, et une bande qui perd la moitié des siens fait basculer la colonie
+/// dans l'autre posture sans qu'on ait à y penser.
+///
+/// Les valeurs ne sont **pas** un contrat avec le client : rien ne les
+/// traverse la frontière WASM, aucun tampon ne les porte.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Stance {
+    /// Rien à décider : pas de bande sur la carte, ou pas d'enceinte. Chacun
+    /// se bat où il est, comme avant cette fiche.
+    #[default]
+    Free,
+    /// **Tenir la porte** : le rapport de force est favorable. Les colons se
+    /// rassemblent côté intérieur de l'entrée et frappent ce qui s'y
+    /// présente — y compris sur le seuil. Ils ne courent plus après un
+    /// pillard resté dehors.
+    Hold,
+    /// **La veille** : le rapport de force est défavorable et il y a une
+    /// enceinte. Tout le monde rentre, personne ne sort, le travail s'arrête
+    /// jusqu'à ce que la bande soit réglée. On ne frappe que ce qui est entré
+    /// ou ce qui est au contact.
+    Watch,
+}
+
+/// Rapport de force, en pourcentage, à partir duquel la colonie **tient la
+/// porte** au lieu de veiller : à 100, il lui faut porter autant de coups que
+/// la bande.
+///
+/// **Mesuré, pas deviné** (`crates/sim/tests/balance_threat.rs`,
+/// `measure_le_seuil_de_la_decision_tactique`, et `CAMPAIGN-FINDINGS.md`
+/// §17). Le seuil retenu est celui qui maximise la survie du joueur **absent**
+/// sans rien coûter au joueur **présent**.
+pub const HOLD_RATIO_PERCENT: u32 = 100;
+
+/// Rayon du balayage qui cherche l'abri de la colonie autour de son
+/// barycentre. Une pièce tient en `map::ROOM_MAX_TILES` (200) cases et
+/// l'enceinte du joueur scripté fait treize cases de côté : seize cases
+/// autour du barycentre couvrent l'une comme l'autre, même quand la moitié
+/// des colons bûcheronne dehors et tire le barycentre avec elle.
+///
+/// Le balayage est **borné** et **court-circuité** par `Map::indoor_count`
+/// (aucune pièce, aucun balayage), et il ne tourne qu'une fois par
+/// `jobs::RETRY_TICKS` et par colon, et seulement pendant qu'une bande est
+/// là : c'est la règle de `AGENTS.md` sur les recherches, appliquée ici.
+const SHELTER_RANGE: i32 = 16;
+
+/// À cette distance du poste, un colon est **en place**. Tenir une porte ne
+/// veut pas dire se marcher dessus : deux cases suffisent pour que la
+/// première bande qui franchit le seuil trouve tout le monde en face.
+const POST_REACH: u32 = 2;
+
+/// Ce qu'un pawn porte comme coup, en points de dégât moyen par frappe : la
+/// moyenne de ses dégâts nus, corrigée par son arme et sa compétence de
+/// mêlée, exactement comme `Sim::melee_strike` la calcule au moment de
+/// frapper. C'est la monnaie du rapport de force.
+///
+/// **Ce que le modèle ne dit pas**, et qu'il assume : un archer y compte pour
+/// son arc **au corps à corps** (`ItemKind::melee_percent`, 80 %), c'est-à-dire
+/// moins qu'un poing nu. Tirer de loin sans être touché ne se chiffre pas en
+/// dégâts par frappe, et la décision porte sur une mêlée de porte. C'est le
+/// **seuil** qui absorbe l'écart, et le seuil est mesuré.
+pub fn strike_power(p: &Pawn) -> u32 {
+    // L'espèce décide avant la faction, comme dans `melee_strike`.
+    let beast = p.species.is_some();
+    let (lo, hi) = if beast {
+        BOAR_DAMAGE
+    } else {
+        match p.faction {
+            Faction::Colony => COLONIST_DAMAGE,
+            Faction::Raider | Faction::Trader => RAIDER_DAMAGE,
+            Faction::Animal => BOAR_DAMAGE,
+        }
+    };
+    // `Rng::range_i32(lo, hi)` tire dans `lo..hi` : la moyenne entière est
+    // `(lo + hi - 1) / 2`.
+    let base = ((lo + hi - 1) / 2).max(1) as u32;
+    if beast {
+        return base;
+    }
+    let mut percent =
+        p.weapon.map_or(100, |w| w.melee_percent()) * melee_skill_percent(p.melee.level) / 100;
+    if p.has_trait(Trait::Brawler) {
+        percent = percent * traits::BRAWLER_MELEE_PERCENT / 100;
+    }
+    (base * percent / 100).max(1)
+}
+
 /// Ce qu'a donné un tour d'approche-et-frappe (`Sim::engage`). L'appelant
 /// décide quoi faire d'un échec : un pillard repart, un chasseur abandonne son
 /// gibier, un sanglier détale.
@@ -538,8 +631,272 @@ impl Sim {
         let Some(id) = self.nearest_reachable_enemy(i, DEFEND_RADIUS) else {
             return false;
         };
+        // Une colonie qui a des murs ne les quitte pas pour aller chercher un
+        // pillard dans les bois : voir `Sim::may_engage`.
+        if !self.may_engage(i, id) {
+            return false;
+        }
         self.abandon_job(i);
         self.pawns[i].job = Job::Attack { target: id };
+        true
+    }
+
+    // ------------------------------------------------------------------
+    // La décision tactique
+    // ------------------------------------------------------------------
+
+    /// Ce que la colonie peut mettre en ligne : la somme des coups de ses
+    /// colons **debout et non couards**. Un couard ne se défend jamais
+    /// (`Trait::Coward`), il ne compte donc pas dans ce qu'on peut aligner ;
+    /// un colon à terre non plus. Les bêtes de la colonie, même agressives,
+    /// n'y sont pas : le rapport de force est une affaire de colons, et un
+    /// sanglier apprivoisé qui charge est un bonus, pas un plan.
+    pub fn colony_line_power(&self) -> u32 {
+        self.pawns
+            .iter()
+            .filter(|p| {
+                p.is_colonist() && p.is_alive() && !p.is_downed() && !p.has_trait(Trait::Coward)
+            })
+            .map(strike_power)
+            .sum()
+    }
+
+    /// Ce que la bande annoncée porte comme coups. Pendant la prévenance elle
+    /// est déjà sur la carte, immobile à son point d'entrée
+    /// (`storyteller::RAID_WARNING_DIVISOR`) : sa taille et son armement se
+    /// lisent donc directement, sans que le storyteller ait rien à ranger
+    /// quelque part.
+    pub fn raid_line_power(&self) -> u32 {
+        self.pawns
+            .iter()
+            .filter(|p| p.is_alive() && p.is_raider_like() && !p.is_downed())
+            .map(strike_power)
+            .sum()
+    }
+
+    /// La posture de la colonie, **recalculée à la demande**. Trois cas, dans
+    /// cet ordre : pas de bande ou pas d'enceinte → rien ne change ; rapport
+    /// favorable → on tient la porte ; sinon → veille.
+    ///
+    /// « Enceinte » se lit ici sur `Map::indoor_count` — la même mesure que
+    /// la colonne `enclosed` de la campagne. Limite assumée : une cabane
+    /// isolée compte comme un abri. `Sim::raid_post` tranche ensuite pour de
+    /// bon, en cherchant une pièce **autour de la colonie** ; s'il n'en
+    /// trouve pas, le travail reprend.
+    pub fn raid_stance(&self) -> Stance {
+        if !self.raider_alive() || self.map.indoor_count() == 0 {
+            return Stance::Free;
+        }
+        let theirs = self.raid_line_power();
+        if theirs == 0 {
+            return Stance::Hold;
+        }
+        let mine = self.colony_line_power();
+        if mine.saturating_mul(100) >= theirs.saturating_mul(HOLD_RATIO_PERCENT) {
+            Stance::Hold
+        } else {
+            Stance::Watch
+        }
+    }
+
+    /// Un colon peut-il courir sur cette cible, ou reste-t-il derrière ses
+    /// murs ? Hors raid et sans enceinte (`Stance::Free`), rien ne change.
+    /// Sinon on ne frappe de soi-même que ce qui est **au contact**, ce qui
+    /// est **entré** (une case couverte), et — seulement quand on tient la
+    /// porte — ce qui se tient **sur le seuil**. Un ordre du joueur
+    /// (`Command::Attack`) ne passe pas par ici : il pose `Job::Attack` et
+    /// prime.
+    fn may_engage(&self, i: usize, target: u32) -> bool {
+        let stance = self.raid_stance();
+        if stance == Stance::Free {
+            return true;
+        }
+        let Some(t) = self.pawns.iter().find(|p| p.id == target) else {
+            return true;
+        };
+        let them = t.tile();
+        chebyshev(self.pawns[i].tile(), them) <= 1
+            || self.map.room(them.0, them.1) != 0
+            || (stance == Stance::Hold && self.map.feature(them.0, them.1).is_door())
+    }
+
+    /// Le poste de repli de la colonie, et la pièce à laquelle il appartient.
+    /// `None` : aucune pièce autour du barycentre des colons — il n'y a pas
+    /// d'enceinte à tenir, la colonie fait comme avant.
+    ///
+    /// - `Stance::Watch` : la case couverte la plus proche du barycentre. On
+    ///   rentre, c'est tout ; se coller à la porte n'apporterait qu'un coup
+    ///   de plus à encaisser.
+    /// - `Stance::Hold` : la case **intérieure** qui touche une porte, la
+    ///   plus proche de la bande — le seuil par lequel elle entrera.
+    ///
+    /// Deux balayages bornés à `SHELTER_RANGE`, court-circuités par
+    /// `Map::indoor_count`, et appelés au plus une fois par
+    /// `jobs::RETRY_TICKS` et par colon (voir `Sim::take_post`).
+    pub(crate) fn raid_post(&self, stance: Stance) -> Option<(u8, (u32, u32))> {
+        if self.map.indoor_count() == 0 {
+            return None;
+        }
+        let center = self.colony_center()?;
+        let shelter = self.nearest_tile_around(center, |s, x, y| s.map.room(x, y) != 0, center)?;
+        let room = self.map.room(shelter.0, shelter.1);
+        if stance != Stance::Hold {
+            return Some((room, shelter));
+        }
+        // Le seuil : parmi les cases de la pièce qui touchent une porte, la
+        // plus proche de la bande. Une enceinte sans porte n'en a pas — on se
+        // rassemble alors comme en veille.
+        let threat = self.nearest_raider_tile(center).unwrap_or(center);
+        let gate = self.nearest_tile_around(
+            center,
+            |s, x, y| s.map.room(x, y) == room && s.touches_door(x, y),
+            threat,
+        );
+        Some((room, gate.unwrap_or(shelter)))
+    }
+
+    /// La case retenue par `keep` la plus proche de `from`, cherchée dans le
+    /// carré de `SHELTER_RANGE` autour de `around`. Départage par
+    /// `(distance, x, y)` : l'ordre est total, donc identique partout.
+    fn nearest_tile_around(
+        &self,
+        around: (u32, u32),
+        keep: impl Fn(&Sim, u32, u32) -> bool,
+        from: (u32, u32),
+    ) -> Option<(u32, u32)> {
+        let mut best: Option<(u32, u32, u32)> = None;
+        for dy in -SHELTER_RANGE..=SHELTER_RANGE {
+            for dx in -SHELTER_RANGE..=SHELTER_RANGE {
+                let (x, y) = (around.0 as i32 + dx, around.1 as i32 + dy);
+                if !self.map.in_bounds(x, y) {
+                    continue;
+                }
+                let (x, y) = (x as u32, y as u32);
+                if !keep(self, x, y) {
+                    continue;
+                }
+                let cand = (chebyshev(from, (x, y)), x, y);
+                if best.is_none_or(|b| cand < b) {
+                    best = Some(cand);
+                }
+            }
+        }
+        best.map(|(_, x, y)| (x, y))
+    }
+
+    /// La case touche-t-elle une porte par l'un de ses quatre côtés ? Une
+    /// porte est franchissable : c'est par là que la bande entre.
+    fn touches_door(&self, x: u32, y: u32) -> bool {
+        [(0i32, -1i32), (0, 1), (-1, 0), (1, 0)]
+            .iter()
+            .any(|&(dx, dy)| {
+                let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                self.map.in_bounds(nx, ny) && self.map.feature(nx as u32, ny as u32).is_door()
+            })
+    }
+
+    /// Case du pillard vivant le plus proche de `from`, départagée par
+    /// `(distance, x, y)`.
+    fn nearest_raider_tile(&self, from: (u32, u32)) -> Option<(u32, u32)> {
+        self.pawns
+            .iter()
+            .filter(|p| p.is_alive() && p.is_raider_like())
+            .map(|p| {
+                let (x, y) = p.tile();
+                (chebyshev(from, (x, y)), x, y)
+            })
+            .min()
+            .map(|(_, x, y)| (x, y))
+    }
+
+    /// Une bande annoncée fait **lâcher le travail**, comme le feu
+    /// (`Sim::drop_work_for_fire`) : sans cela un bûcheron finirait son arbre
+    /// à vingt cases des murs pendant que la bande traverse la carte —
+    /// `find_job` ne rappelle personne, il ne parle qu'aux colons déjà
+    /// inoccupés.
+    ///
+    /// Ce qui n'est **pas** lâché : les besoins (manger, dormir), l'urgence
+    /// (le feu, le pansement, le secours), le combat déjà engagé, la crise,
+    /// et un ordre du joueur. Autrement dit, exactement ce que `find_job`
+    /// place avant `Sim::take_post`.
+    pub(crate) fn drop_work_for_raid(&mut self, i: usize) {
+        // Sortie immédiate du cas courant : pas de bande sur la carte.
+        if !self.pawns[i].enemy_present {
+            return;
+        }
+        let droppable = matches!(
+            self.pawns[i].job,
+            Job::Work { .. }
+                | Job::Haul { .. }
+                | Job::Deliver { .. }
+                | Job::Build { .. }
+                | Job::Farm { .. }
+                | Job::Cook { .. }
+                | Job::Craft { .. }
+                | Job::Equip { .. }
+                | Job::Hunt { .. }
+                | Job::Butcher { .. }
+                | Job::Bury { .. }
+                | Job::Research { .. }
+                | Job::Chat { .. }
+                | Job::RearmTrap { .. }
+                | Job::Tame { .. }
+                | Job::Slaughter { .. }
+        );
+        if !droppable || self.raid_stance() == Stance::Free {
+            return;
+        }
+        self.abandon_job(i);
+    }
+
+    /// Rejoindre son poste, et n'en plus bouger tant que la bande est là.
+    /// Renvoie vrai quand la posture a pris le colon en charge : `find_job`
+    /// s'arrête alors là, et le travail attend.
+    ///
+    /// Rien n'est téléporté et personne n'est rendu invulnérable : c'est une
+    /// marche, avec le chemin d'un colon (portes franchies, pièges
+    /// contournés). Un colon qu'aucun chemin ne ramène reste dehors — c'est un
+    /// cas du rapport, pas un cas à masquer.
+    pub(crate) fn take_post(&mut self, i: usize) -> bool {
+        // Sortie immédiate du cas courant : pas de bande sur la carte. Le
+        // drapeau est recopié à chaque tick par `Sim::tick_pawn`.
+        if !self.pawns[i].enemy_present {
+            return false;
+        }
+        let stance = self.raid_stance();
+        if stance == Stance::Free {
+            return false;
+        }
+        if self.pawns[i].is_moving() {
+            return true;
+        }
+        // Même cadence que les autres recherches sans garantie d'aboutir
+        // (`jobs::RETRY_TICKS`, phase décalée par colon) : entre deux essais,
+        // ni les murs ni la bande n'ont bougé assez pour changer la réponse.
+        if !self.job_retry_due(i) {
+            self.pawns[i].idle_ticks += 1;
+            return true;
+        }
+        let Some((room, post)) = self.raid_post(stance) else {
+            return false;
+        };
+        let me = self.pawns[i].tile();
+        let inside = self.map.room(me.0, me.1) == room;
+        let settled = match stance {
+            Stance::Watch => inside,
+            _ => inside && chebyshev(me, post) <= POST_REACH,
+        };
+        if settled {
+            self.pawns[i].idle_ticks += 1;
+            return true;
+        }
+        match self.colonist_path(me, post) {
+            Some(p) if !p.is_empty() => {
+                self.pawns[i].set_path(p);
+                self.pawns[i].job = Job::Move { manual: false };
+            }
+            _ => self.pawns[i].idle_ticks += 1,
+        }
         true
     }
 
