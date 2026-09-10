@@ -628,12 +628,24 @@ est un joueur de plus, présent partout.
   la veille en campagne avec un joueur scripté absent la moitié du temps sur trente graines, et
   les cas limites du repli (un colon à terre dehors quand les portes se ferment). Un bouclier
   explicite à construire (objet avec un coût) n'est pas retenu à ce stade : l'enceinte suffit.
-- **Le taux de temps du monde** (avant l'étape 1). Aujourd'hui une carte tourne à 60 ticks/s
-  et le monde à `WORLD_HOUR_MS` (30 s l'heure). Un monde continu impose une seule horloge :
-  soit le monde adopte le tick des cartes (un jour de jeu = 4 min réelles, une année de 60
-  jours = 4 h : rapide pour une colonie qu'on ne regarde pas), soit les cartes ralentissent.
-  Le §7 disait déjà « 1 jour de jeu ≈ 20-30 min réel » : c'est à mesurer contre le confort
-  de jeu en solo, où x1-x3 restent possibles.
+- ~~**Le taux de temps du monde** (avant l'étape 1)~~ **Tranché le 2026-09-10 : l'échelle du
+  jour, pas la vitesse du monde.** Le tick reste à 60 par seconde partout (la marche à 4 cases
+  par seconde, un coup par seconde, la fuite, les flammes : ce qui se voit à l'écran garde son
+  rythme). C'est **la longueur du jour** qui s'étire : un facteur `K` (échelle du jour), fixé à la
+  création de la partie comme le biome, sérialisé et dans le hash, multiplie les ticks par jour
+  (14 400 × K) **et** les durées de travail écrites en ticks (bâtir, couper, miner, fabriquer,
+  fondre, soigner, dépecer, chercher) ; tout ce qui est déjà en jours (faim, pousse, raids,
+  saisons, périssabilité, gestation, cadence des hardes) suit tout seul. Conséquence assumée :
+  le déplacement devient relativement gratuit et un raid se règle en secondes réelles, d'où
+  l'IA tactique de la colonie (fiche à venir). **Cible de mesure : K = 30** — un jour de jeu en
+  2 h réelles, une saison en 30 h, une année en 5 jours, un mur en 75 s, une récolte en 3 h ;
+  K = 60 donnerait la demi-semaine par saison. **C'est un levier d'équilibrage fort** (Thomas,
+  2026-09-10) : la valeur se mesure en campagne, à K = 1 (bit-identique à aujourd'hui, prouvé
+  par les empreintes) puis à K = 30, et se règle si les résultats en jours de jeu divergent.
+  Le solo reçoit le même K, avec des vitesses x5 et x10 en plus. Le monde perd son horloge à
+  part (`WORLD_HOUR_MS`) : une heure de jeu vaut `ticks_par_jour / 24` ticks, les caravanes
+  suivent. Le coût serveur de la phase 6 ne change pas (il est par seconde réelle). Fiche
+  `echelle-du-jour`.
 - **La subdivision du globe** (avant l'étape 2) : 4 (2 562 cases) ou 5 (10 242), selon la
   mémoire mesurée à l'étape 1 et le nombre de joueurs visé.
 - **Hébergement** : le VPS devient un serveur de calcul avec état ; sauvegarde et restauration
@@ -655,6 +667,20 @@ est un joueur de plus, présent partout.
 | Phase 6 : la colonie meurt pendant que son joueur dort | Règle tranchée le 2026-09-10 : l'absence coûte, elle ne tue pas — enceinte comme bouclier, veille (repli automatique derrière les murs quand un raid est annoncé sans le propriétaire), prévenance longue, factions alliées ; à mesurer en campagne avec un joueur absent avant l'étape 1 |
 
 ## 8. Journal des décisions
+
+- 2026-09-10 (suite) : **le temps du monde se règle par l'échelle du jour, pas par la vitesse.**
+  Thomas veut un monde lent « mais pas trop » : les saisons assez longues pour tenir une colonie
+  sans être connecté (une demi-semaine par saison évoquée), les réserves pour l'hiver comme
+  cœur du jeu, la colonie jouée par son IA quand le joueur est absent, **mais pas de colons au
+  ralenti**. Rejeté : baisser les ticks par seconde (un colon à 14 s la case, tout le monde au
+  ralenti). Retenu : un facteur `K` d'échelle du jour, fixé à la création, qui multiplie les
+  ticks par jour et les durées de travail en ticks, et laisse la marche, le combat, la fuite et
+  le feu à leur rythme. Deux familles de constantes, classées une à une avec la raison écrite
+  (`docs/time.md`) ; K = 1 bit-identique à aujourd'hui. Cible de mesure **K = 30** (jour 2 h,
+  saison 30 h, année 5 jours), **levier d'équilibrage fort** : rien n'est réglé avant la
+  campagne à K = 1 et K = 30 — la marche devenue gratuite avantage la colonie, ça se mesure.
+  Fiche `echelle-du-jour` ; la fiche « la colonie tient seule » (IA tactique : tenir la porte ou
+  se replier selon le rapport de force) vient après, sur le même banc.
 
 - 2026-09-10 (nuit) : **la parité natif / WASM est prouvée, et le hash de référence était celui
   d'une copie périmée** (phase 6, étape 1, PR #14, sous-agent Opus sur la fiche
