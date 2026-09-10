@@ -238,6 +238,27 @@ pub const FIRST_RAID_POINTS: u32 = 2 * POINTS_PER_RAIDER;
 /// Un assiégeant patiente ce temps-là à son point d'entrée avant de charger.
 pub const SIEGE_TICKS: u64 = 1_200;
 
+/// **La prévenance.** Une bande repérée ne fond pas sur la colonie : elle se
+/// masse à son point d'entrée et se met en marche une **heure de jeu** plus
+/// tard. Ce diviseur est le nombre d'heures d'un jour : le délai vaut
+/// `Sim::ticks_per_day() / RAID_WARNING_DIVISOR` (voir
+/// `Sim::raid_warning_ticks`).
+///
+/// **C'est un délai de jeu, pas de physique** (`docs/time.md`, famille
+/// « jours ») : il suit `ticks_per_day` et donc l'échelle du jour. 600 ticks
+/// à K = 1, 18 000 à K = 30 — dix secondes réelles d'un côté, cinq minutes de
+/// l'autre. Ce qu'il mesure, c'est le temps qu'il faut à un colon parti
+/// bûcheronner pour rentrer derrière ses murs : une heure de jeu, quelle que
+/// soit la longueur de l'heure.
+///
+/// Le genre `RaidKind::Siege` **ajoute** son attente à celle-ci : la
+/// prévenance dit « ils arrivent », le siège dit « ils s'installent ».
+///
+/// Elle ne s'applique qu'aux bandes du **récit** : un raid forcé
+/// (`Command::TriggerRaid`, `Sim::trigger_raid_of`) entre sur-le-champ, comme
+/// il ignore déjà le plafond de la première bande et les alliances.
+pub const RAID_WARNING_DIVISOR: u32 = 24;
+
 /// Représailles d'une tribu qui vient de basculer du côté hostile
 /// (`factions::HOSTILE_GOODWILL`) : le prochain raid est avancé à un tick tiré
 /// dans cette fourchette, soit une demi-journée à deux jours. Il passe par
@@ -661,6 +682,13 @@ impl Sim {
         }
     }
 
+    /// Le délai de prévenance, en ticks : une heure de jeu
+    /// (`RAID_WARNING_DIVISOR`). Il suit l'échelle du jour parce que c'est un
+    /// délai **de jeu** — le temps de rentrer, pas le temps de courir.
+    pub fn raid_warning_ticks(&self) -> u64 {
+        u64::from(self.ticks_per_day() / RAID_WARNING_DIVISOR)
+    }
+
     /// Fait entrer une bande de pillards d'un genre tiré au sort : la charge
     /// six fois sur dix, les archers un quart du temps, le siège le reste.
     /// Renvoie le nombre de pillards apparus. C'est le chemin **naturel**,
@@ -765,7 +793,34 @@ impl Sim {
             return 0;
         };
         let spots = self.ring_tiles(entry, roster.len(), true);
-        let until = self.tick + SIEGE_TICKS;
+        // **La prévenance** : quel que soit le genre, une bande annoncée par le
+        // récit se masse à son point d'entrée et ne se met en marche qu'une
+        // heure de jeu plus tard (`RAID_WARNING_DIVISOR`). Elle est donc
+        // **visible** pendant ce temps-là — c'est ce qui rend la décision
+        // tactique possible sans rien ranger nulle part : la colonie lit sa
+        // taille et son armement sur la carte (`Sim::raid_stance`). Le siège
+        // **ajoute** son attente à celle-là : « ils arrivent », puis « ils
+        // s'installent ».
+        //
+        // Aucun état de plus dans `Sim` : le délai vit dans le `Job::Wait` de
+        // chaque pillard, déjà sérialisé — le mécanisme du siège, étendu à
+        // tout le monde.
+        //
+        // Un raid **forcé** n'a pas de prévenance, comme il n'a ni plafond de
+        // première bande ni égard pour les alliances : `Command::TriggerRaid`
+        // pose la bande devant vous, c'est un outil de débogage. La
+        // prévenance est ce que le récit accorde, pas ce qu'une commande de
+        // test simule — et les bancs d'équilibrage qui déclenchent leur raid
+        // à la main continuent donc de mesurer ce qu'ils mesuraient.
+        let warning = if forced { 0 } else { self.raid_warning_ticks() };
+        let until = self.tick
+            + warning
+            + if kind == RaidKind::Siege {
+                SIEGE_TICKS
+            } else {
+                0
+            };
+        let waits = warning > 0 || kind == RaidKind::Siege;
         let mut spawned = 0;
         for (rank, &(x, y)) in spots.iter().enumerate() {
             let kit = roster[rank];
@@ -775,7 +830,7 @@ impl Sim {
             self.pawns[k].rest = NEED_MAX;
             self.pawns[k].weapon = kit.weapon;
             self.pawns[k].apparel = kit.apparel;
-            if kind == RaidKind::Siege {
+            if waits {
                 self.pawns[k].job = Job::Wait { until };
             }
             spawned += 1;
