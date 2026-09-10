@@ -123,6 +123,14 @@ pub const TEND_TICKS: u32 = 240;
 /// c'est ce qui fait cicatriser. Un soignant seul arrête donc quatre
 /// hémorragies dans le temps qu'il met à finir un pansement (constat n°5 de
 /// `CAMPAIGN-FINDINGS.md`).
+///
+/// **Durée physique**, contrairement à `TEND_TICKS` qui est du travail : la
+/// compression court contre une hémorragie qui, elle, ne ralentit pas
+/// (`BLEED_INTERVAL` est physique). L'étirer par l'échelle du jour ferait
+/// arriver le garrot après que le blessé se soit vidé — c'est le déséquilibre
+/// mesuré au §15.4 de `CAMPAIGN-FINDINGS.md`. Même couple que battre les
+/// flammes contre un feu qui ne ralentit pas (`fire::EXTINGUISH_TICKS`). Voir
+/// `docs/time.md`.
 pub const HEMOSTASIS_TICKS: u32 = TEND_TICKS / 4;
 /// Vitesse de soin, en centièmes de tick. Neutre : le soin n'a pas de
 /// `WorkType` (en ajouter un changerait `WORK_TYPES` et les tampons de

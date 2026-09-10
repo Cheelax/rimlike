@@ -766,10 +766,22 @@ impl Sim {
     /// Sim sur une carte fournie, à une échelle du jour imposée (tests de
     /// l'échelle, cartes ASCII de `testmap`).
     pub fn from_map_scaled(seed: u64, map: Map, day_scale: u32) -> Sim {
+        Sim::from_map_scaled_with_climate(seed, map, Climate::default(), day_scale)
+    }
+
+    /// Sim sur une carte, un climat et une échelle du jour imposés : le banc
+    /// du feu compare deux échelles sous le même ciel
+    /// (`crates/sim/tests/balance_fire.rs`).
+    pub fn from_map_scaled_with_climate(
+        seed: u64,
+        map: Map,
+        climate: Climate,
+        day_scale: u32,
+    ) -> Sim {
         Sim::with_map_in_biome(
             Rng::new(seed),
             map,
-            Climate::default(),
+            climate,
             Biome::default(),
             DayScale::new(day_scale),
         )

@@ -76,8 +76,23 @@ fn pen_wall(x: u32, y: u32) -> bool {
 }
 
 /// Bosquet de `SIDE`×`SIDE` arbres sur une carte de terre nue, enclos des
-/// colons au centre, climat et météo imposés.
-fn grove(seed: u64, base_temperature: i32, weather: Weather) -> Sim {
+/// colons au centre, climat imposé.
+///
+/// `weather` impose un temps qui ne change jamais (`Some`) — c'est ce que
+/// font les quatre mesures d'équilibrage, pour que la distribution soit celle
+/// du feu et pas celle du ciel — ou laisse le ciel tourner tout seul dès le
+/// premier tick (`None`), ce dont a besoin le relevé d'échelle : la durée
+/// d'une période météo est en jours, donc c'est **elle** que K étire.
+///
+/// Le ciel libre demande de raccourcir la période de départ : `Sim` accorde
+/// d'office une demi-journée à une journée de beau temps « le temps de
+/// s'installer », et un feu de bosquet dure moins que ça — il ne verrait
+/// jamais le ciel tourner, à aucune échelle. `force_weather(Clear, 0)` fait
+/// tirer la première période au premier tick, sans rien ajouter au sim.
+///
+/// `scale` est l'échelle du jour (`docs/time.md`) : 1 partout sauf dans le
+/// relevé.
+fn grove(seed: u64, base_temperature: i32, weather: Option<Weather>, scale: u32) -> Sim {
     let rows: Vec<String> = (0..HEIGHT)
         .map(|y| {
             (0..WIDTH)
@@ -94,16 +109,23 @@ fn grove(seed: u64, base_temperature: i32, weather: Weather) -> Sim {
         })
         .collect();
     let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
-    let mut s =
-        Sim::from_map_with_climate(seed, map_from(&refs), Climate::new(base_temperature, 0));
-    s.force_weather(weather, u64::MAX);
+    let mut s = Sim::from_map_scaled_with_climate(
+        seed,
+        map_from(&refs),
+        Climate::new(base_temperature, 0),
+        scale,
+    );
+    match weather {
+        Some(w) => s.force_weather(w, u64::MAX),
+        None => s.force_weather(Weather::Clear, 0),
+    }
     s
 }
 
 /// Allume le cœur du bosquet et laisse faire jusqu'à extinction complète.
 /// Renvoie le nombre d'arbres consumés.
-fn burn_grove(seed: u64, base_temperature: i32, weather: Weather) -> u32 {
-    let mut s = grove(seed, base_temperature, weather);
+fn burn_grove(seed: u64, base_temperature: i32, weather: Option<Weather>, scale: u32) -> u32 {
+    let mut s = grove(seed, base_temperature, weather, scale);
     // Les colons sont dans l'enclos : leur barycentre ne peut pas s'approcher
     // du bosquet de plus de la moitié du côté de l'enclos.
     let center = s.colony_center().expect("colonie éteinte");
@@ -153,8 +175,17 @@ fn burn_grove(seed: u64, base_temperature: i32, weather: Weather) -> u32 {
 
 /// Les vingt mesures triées, et leur médiane.
 fn distribution(base_temperature: i32, weather: Weather) -> (Vec<u32>, u32) {
+    scaled_distribution(base_temperature, Some(weather), 1)
+}
+
+/// La même, à une échelle du jour et sous un ciel donnés.
+fn scaled_distribution(
+    base_temperature: i32,
+    weather: Option<Weather>,
+    scale: u32,
+) -> (Vec<u32>, u32) {
     let mut v: Vec<u32> = (1..=SEEDS)
-        .map(|seed| burn_grove(seed, base_temperature, weather))
+        .map(|seed| burn_grove(seed, base_temperature, weather, scale))
         .collect();
     v.sort_unstable();
     let median = (v[v.len() / 2 - 1] + v[v.len() / 2]) / 2;
@@ -281,4 +312,45 @@ fn rain_still_kills_a_wildfire_in_the_egg() {
         snow_median <= 2 && snow[snow.len() - 1] < BAND_LOW,
         "la neige laisse passer un incendie : {snow:?}"
     );
+}
+
+// ----------------------------------------------------------------------
+// Relevé : ce que l'échelle du jour fait au feu
+// ----------------------------------------------------------------------
+
+/// **Un relevé, pas un critère** — d'où le `#[ignore]` : il imprime des
+/// distributions, il n'en juge aucune. À lancer à la main quand on touche au
+/// feu ou à l'échelle :
+///
+/// ```sh
+/// cargo test -p sim --test balance_fire --release -- --ignored --nocapture
+/// ```
+///
+/// Ce qu'il a montré à la fiche `echelle-hemostase-pluie` (§15.11 de
+/// `CAMPAIGN-FINDINGS.md`) :
+///
+/// - **sous un ciel imposé, l'échelle ne change pas le régime du feu** :
+///   médiane 112 arbres à K = 1, 107 à K = 30, mêmes extrêmes. Aucune
+///   constante du feu n'est mise à l'échelle ; les vecteurs ne sont pas
+///   identiques graine à graine pour autant, parce que K change ce que font
+///   les colons (la faim tombe un tick sur K) et donc la suite des tirages ;
+/// - **sous un ciel libre, l'échelle joue — dans l'autre sens que la
+///   campagne**. À K = 30 la période météo dure trente fois plus de ticks :
+///   le ciel du départ décide de tout (onze graines sur vingt sont noyées
+///   avant de prendre, aux deux échelles), mais **le vent ne tourne plus**.
+///   Or c'est lui qui rend le feu dirigé : à K = 1 un virage de vent rouvre
+///   le panache et la pire graine monte à 345 arbres (86 %), à K = 30 elle
+///   plafonne à 166 (41 %). Sur un bosquet isolé, l'échelle **borne** donc
+///   l'incendie au lieu de l'aggraver.
+#[test]
+#[ignore = "relevé de mesure, pas un critère : voir CAMPAIGN-FINDINGS.md §15.11"]
+fn releve_de_l_echelle_du_jour() {
+    for scale in [1, 30] {
+        let (v, median) = scaled_distribution(HOT, Some(Weather::Clear), scale);
+        report(&format!("ciel imposé, 30 °C, K = {scale}"), &v, median);
+    }
+    for scale in [1, 30] {
+        let (v, median) = scaled_distribution(HOT, None, scale);
+        report(&format!("ciel libre,   30 °C, K = {scale}"), &v, median);
+    }
 }

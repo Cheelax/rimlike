@@ -4136,9 +4136,12 @@ l'écran : la marche, les coups, la fuite, les flammes gardent leur rythme. Le
 classement complet — quelle durée s'étire, laquelle ne bouge pas, et pourquoi
 — est dans **`docs/time.md`** ; il n'est pas recopié ici.
 
-Cette section **mesure, elle ne règle rien** : aucune constante de jeu n'a été
-touchée pour l'écrire. Les deux déséquilibres qu'elle trouve (§15.4 et §15.5)
-portent chacun une proposition chiffrée, **non appliquée**.
+Les §15.1 à §15.10 **mesurent, elles ne règlent rien** : aucune constante de
+jeu n'a été touchée pour les écrire. Les deux déséquilibres qu'elles trouvent
+(§15.4 et §15.5) portent chacun une proposition chiffrée, non appliquée. Le
+**§15.11** (fiche suivante, `echelle-hemostase-pluie`) applique la première,
+tranche la seconde par la mesure — en ne la réglant pas — et propose enfin la
+valeur du monde.
 
 ### 15.1 Protocole
 
@@ -4264,6 +4267,10 @@ L'autre issue — reclasser le saignement en travail — est rejetée ici : elle
 ferait saigner une plaie pendant vingt minutes réelles, ce qui contredit la
 raison d'être de l'échelle (un raid se joue en secondes réelles).
 
+> **Appliquée le 2026-09-10, et mesurée : voir §15.11.** Blessures 33 % → 13 %
+> des morts, colonies vivantes 10/30 → 15/30 ; en automne-hiver 34 % → 12 % et
+> 5/30 → 11/30. La prédiction ci-dessus (« 14 à 18 sur 30 ») est tenue.
+
 ### 15.5 Le second déséquilibre : la pluie n'éteint plus les incendies
 
 Les départs de feu **par jour de jeu** sont bien tenus (112 → 95 : les
@@ -4293,6 +4300,15 @@ maximum par graine, pas la moyenne : le §6 avait fixé le contrat « pas de
 demi-carte qui brûle ». Si le maximum dépasse ce seuil à K = 30, le levier le
 moins arbitraire est de **borner la durée d'un temps sec en ticks réels**
 plutôt que de toucher au feu lui-même.
+
+> **Tranché le 2026-09-10 par la mesure : rien n'est changé au feu (§15.11).**
+> La piste « consommation à l'échelle » rouvre le régime de la demi-carte
+> (14 905 cases brûlées à K = 30, pire graine à 59 % de la carte) et est
+> éliminée. La pire graine sans rien changer vaut 32 % de la carte à K = 30 —
+> mais **24 % à K = 1 sur la même base** : le contrat du §6 a glissé
+> indépendamment de l'échelle. Le banc ajoute un mécanisme que ce paragraphe
+> n'avait pas vu : à grand K le **vent** ne tourne plus non plus, et cela
+> **borne** l'incendie au lieu de l'étendre.
 
 ### 15.6 Automne-hiver : `--day-of-year 30`
 
@@ -4428,3 +4444,290 @@ précède. Ce que la mesure soutient :
   (`start.dayScale`, vitesses ×5 et ×10 du solo, horloge du monde qui perd son
   `WORLD_HOUR_MS`) : c'est la fiche suivante. En attendant, une partie solo ou
   multi se joue toujours à K = 1.
+
+### 15.11 L'hémostase corrigée, le feu laissé tel quel (2026-09-10)
+
+**Ce que cette sous-section fait**, et que le §15 s'interdisait : elle **règle**
+le premier des deux déséquilibres qu'il avait trouvés, et elle **tranche par la
+mesure** le second — en ne le réglant pas. Fiche
+`docs/tasks/echelle-hemostase-pluie.md`, arbre de travail
+`task/echelle-hemostase-pluie`, base **`ce5f7b0`** (le `main` du jour).
+
+Une seule ligne de sim a changé :
+
+```rust
+// crates/sim/src/jobs.rs, do_tend
+- if progress >= self.scaled(HEMOSTASIS_TICKS) * 100 {
++ if progress >= HEMOSTASIS_TICKS * 100 {
+```
+
+`HEMOSTASIS_TICKS` passe de **travail** à **physique** dans `docs/time.md`
+(travail 24 → 23 lignes, physique 18 → 19). `TEND_TICKS` reste du travail : le
+pansement complet ne court contre rien, la compression si. Rien d'autre n'a
+bougé — ni le feu, ni la météo, ni le réglage du 2026-09-05 (hémostase au quart
+du geste, triage par temps de saignement).
+
+Les deux binaires comparés sortent du **même arbre**, avec et sans cette ligne :
+aucun autre réglage ne s'invite dans l'écart. Les campagnes ayant tourné deux à
+la fois sur la même machine, la colonne de temps réel n'est pas comparable d'un
+tableau à l'autre et n'est pas reportée.
+
+#### Le mécanisme, en un test
+
+`crates/sim/tests/day_scale.rs::l_hemostase_ne_s_etire_pas_mais_le_pansement_si`
+mesure au chevet, en **ticks de travail effectif** (ceux où la barre du
+pansement avance) :
+
+| | K = 1 | K = 4 |
+|---|---|---|
+| sang arrêté après | **60 ticks** de soin, au **tick 76** | **60 ticks**, au **tick 76** |
+| plaie bandée après | 239 ticks de soin | **959 ticks** (× 4,01) |
+
+La marche jusqu'au chevet étant physique elle aussi, l'hémostase tombe au même
+tick de la partie aux deux échelles : c'est exactement ce qu'il fallait, la
+compression et l'hémorragie lisent désormais la même horloge.
+
+#### Avant → après à K = 30, campagne normale
+
+`campaign --seeds 30 --days 30 --size 64 [--day-scale 30]`, forêt tempérée,
+difficulté normale.
+
+| | K = 1 (témoin) | K = 30 **avant** | K = 30 **après** |
+|---|---|---|---|
+| colonies vivantes | **18/30** | **10/30** | **15/30** |
+| colons vivants en fin (moyenne) | 1,9 | 0,7 | 1,4 |
+| colons au jour 10 / 20 | 2,4 / 1,9 | 1,5 / 1,0 | 2,1 / 1,4 |
+| morts au total | 173 | 179 | 175 |
+| — raid | 151 (87 %) | 110 (61 %) | **149 (85 %)** |
+| — **blessures** | **17 (9 %)** | **60 (33 %)** | **23 (13 %)** |
+| — famine | 4 (2 %) | 3 (1 %) | 3 (1 %) |
+| — maladie / feu | 1 / 0 | 5 / 1 | 0 / 0 |
+| raids reçus par colonie | 5,4 | 4,6 | 4,9 |
+| têtes par bande | 2,3 | 1,9 | 2,4 |
+| richesse finale (moyenne / max) | 2044 / 4587 | 1943 / 5755 | 2319 / 6355 |
+| jours de vivres en stock | 11,9 | 17,5 | 20,1 |
+| technologies acquises | 1,6 | 1,7 | 1,8 |
+| métallurgie : colonies / jour moyen | 14/30 · j 19,0 | 17/30 · j 9,7 | 18/30 · j 8,7 |
+| lingots / épées | 78 / 18 | 113 / 21 | 167 / 38 |
+| enceintes refermées | 19/30 | 18/30 | 17/30 |
+| incendies : départs / cases brûlées | 112 / 1987 | 95 / 3593 | 93 / 3411 |
+| humeur finale | 57,7 % | 56,8 % | 52,4 % |
+
+**Les deux critères de la fiche sur la survie sont tenus.** Les morts de
+blessures reviennent de **33 % à 13 %** (le seuil était « sous 15 % », le témoin
+K = 1 est à 9 %), et les colonies vivantes passent de **10/30 à 15/30** (le
+seuil était « ≥ 14/30 », le témoin est à 18/30). Le raid retrouve sa place :
+85 % des morts, comme les 87 % de K = 1. Une colonie de K = 30 meurt de nouveau
+**sous les coups** et non plus **après**.
+
+Le reste bouge dans le sens attendu quand des colons survivent : plus de raids
+subis et de plus grosses bandes (la richesse suit les vivants), plus de forges
+et d'épées, deux fois plus de lingots. **L'humeur baisse** (56,8 → 52,4 %) — un
+survivant blessé et endeuillé pèse dans une moyenne où, avant, il était mort.
+
+#### Automne-hiver, `--day-of-year 30`
+
+| | K = 1 (témoin) | K = 30 **avant** | K = 30 **après** |
+|---|---|---|---|
+| colonies vivantes | **12/30** | **5/30** | **11/30** |
+| colons au jour 10 / 20 | 2,3 / 1,8 | 1,3 / 0,4 | 1,7 / 1,0 |
+| morts au total | 175 | 163 | 163 |
+| — raid | 149 (85 %) | 98 (60 %) | 133 (81 %) |
+| — **blessures** | **18 (10 %)** | **57 (34 %)** | **20 (12 %)** |
+| — famine | 5 (2 %) | 3 (1 %) | 6 (3 %) |
+| — froid | 3 (1 %) | 4 (2 %) | 3 (1 %) |
+| raids par colonie | 5,2 | 3,9 | 4,4 |
+| jours de vivres | 10,1 | 9,3 | 17,9 |
+| enceintes refermées | 26/30 | 26/30 | 26/30 |
+| métallurgie : colonies / jour | 9/30 · j 14,7 | 14/30 · j 11,6 | 14/30 · j 9,1 |
+| incendies : départs / brûlé | 42 / 42 | 37 / 37 | 41 / 41 |
+
+C'est la mesure la plus nette des deux : **5/30 → 11/30**, contre 12/30 au
+témoin. L'automne-hiver à K = 30 n'est plus « le même jeu en plus dur », c'est
+le même jeu. Et là non plus ce n'est ni le froid (3 morts) ni la faim (6) qui
+faisait la différence : c'étaient les plaies.
+
+#### Le feu : deux pistes, mesurées, et celle qu'on garde
+
+La fiche imposait de **mesurer avant de choisir** entre (a) mettre la
+**consommation** d'un feu à l'échelle (`FIRE_BURN_TICKS × K`, la propagation
+restant physique) et (b) ne rien changer au feu, à condition que le contrat du
+§6 (« pas de demi-carte qui brûle ») tienne à K = 30.
+
+**Le banc d'abord** (`crates/sim/tests/balance_fire.rs`, relevé `#[ignore]`
+`releve_de_l_echelle_du_jour`, vingt graines, bosquet de 400 arbres, arbres
+consumés) :
+
+| bosquet, 30 °C | médiane | min | max | dans 15-60 % |
+|---|---|---|---|---|
+| ciel imposé, K = 1 | 112 (28 %) | 1 | 168 (42 %) | 17/20 |
+| ciel imposé, K = 30 | 107 (26 %) | 1 | 150 (37 %) | 16/20 |
+| ciel libre, K = 1 | 0 | 0 | **345 (86 %)** | 8/20 |
+| ciel libre, K = 30 | 0 | 0 | **166 (41 %)** | 6/20 |
+| ciel imposé, K = 30, **piste (a)** | **400 (100 %)** | **400** | **400** | **0/20** |
+| ciel libre, K = 30, **piste (a)** | 0 | 0 | **400 (100 %)** | 0/20 |
+
+Deux choses que le banc dit, et qu'on ne devinait pas :
+
+1. **Sous un ciel imposé, l'échelle ne change pas le régime du feu** (112 contre
+   107). C'était attendu — aucune constante du feu n'est mise à l'échelle — mais
+   ce n'était pas prouvé. Les vecteurs ne sont pas identiques graine à graine
+   pour autant : K change ce que font les colons (la faim tombe un tick sur K),
+   donc la suite des tirages.
+2. **Sous un ciel libre, l'échelle borne l'incendie au lieu de l'aggraver.** Le
+   pire cas tombe de 345 arbres (86 %) à 166 (41 %). La raison n'est pas la
+   pluie, c'est **le vent** : `fire::wind_direction` lit le bruit de température
+   de la période météo, donc à K = 30 le vent **ne tourne plus** pendant la vie
+   d'un feu, et le panache reste dirigé. À K = 1, un virage de vent rouvre
+   l'incendie dans une direction neuve et c'est ce qui fait les pires graines.
+   Le §15.5 avait vu la pluie qui ne tombe plus ; il n'avait pas vu le vent qui
+   ne tourne plus, et les deux jouent en sens contraire.
+
+**La piste (a) est éliminée par le banc**, sans appel : à K = 30 elle brûle
+**les 400 arbres, sur les vingt graines**, dès que le bosquet prend. C'est
+exactement le régime « trois cases ou la moitié de la carte » que le §6 a passé
+une journée à casser. Le mécanisme est arithmétique : une case propage entre
+`SPREAD_MIN` (150 ticks) et sa fin de vie, soit 750 ticks à K = 1 et **26 850 à
+K = 30** — trente-six fois plus de tirages de propagation par case. « La
+consommation suit l'échelle, la propagation reste physique » n'est pas
+réalisable ainsi : la seconde se paie en durée de la première.
+
+**En campagne, même verdict.** `campaign --seeds 30 --days 30 --size 64
+--day-scale 30`, les deux pistes portant par ailleurs la correction de
+l'hémostase :
+
+| K = 30 | départs | cases brûlées | par feu | médiane par graine | **pire graine** | colonies touchées |
+|---|---|---|---|---|---|---|
+| K = 1 (témoin) | 112 | 1 987 | 17,7 | 11,5 | **1 000 (24 % de la carte)** | 26/30 |
+| avant la fiche | 95 | 3 593 | 37,8 | 5,5 | **1 322 (32 %)** | 28/30 |
+| **piste (b), retenue** | 93 | 3 411 | **36,7** | 4,5 | **1 322 (32 %)** | 27/30 |
+| piste (a) | 98 | **14 905** | **152,1** | 5,0 | **2 434 (59 %)** | 27/30 |
+
+Cases brûlées par graine, triées, campagne normale à K = 30 :
+
+```
+piste (b) : 0 0 0 1 1 1 1 1 2 3 3 4 4 4 4 5 7 8 17 18 27 32 42 52 96 105 114 | 619 918 1322
+piste (a) : 0 0 0 1 1 1 1 2 3 3 4 4 4 4 5 5 12 14 18 25 48 51 | 1217 1285 1332 1557 2176 2339 2359 2434
+```
+
+La piste (a) rouvre le trou du §6 : **six graines au-dessus de 1 200 cases**,
+c'est-à-dire six cartes remises à zéro. La piste (b) en a trois au-dessus de
+600, et la queue de sa distribution est celle de K = 1 décalée, pas une autre
+loi.
+
+**Donc (b) : rien n'est changé au feu.** C'est la piste qui tient le mieux le
+contrat du §6 avec **zéro** changement de code, et la fiche disait de garder
+celle-là. L'écart de surface moyenne — **36,7 cases par feu à K = 30 contre 17,7
+à K = 1** — est accepté et écrit comme **un effet de K** : à K = 30 un incendie
+d'été ne voit plus jamais l'averse, c'est la lutte des colons qui l'arrête, et
+un monde où le feu est une vraie catastrophe d'été n'est pas moins bon qu'un
+monde où la pluie fait le travail.
+
+**Mais le critère chiffré de la fiche sur ce point n'est pas atteint, et il faut
+le dire :** elle demandait la surface par feu à K = 30 « dans ±50 % de K = 1 »,
+soit 8,9 à 26,6 cases ; la mesure donne **36,7**, soit **+107 %**. Aucune des
+deux pistes ne la ramène dans la bande — la piste (a) la multiplie par 8,6. Les
+départs par jour, eux, sont bien tenus (112 → 93, comme les 95 d'avant la
+fiche).
+
+#### Le troisième écart, que la fiche demandait de rapporter sans le régler
+
+**Le contrat du §6 n'est plus tenu à K = 1 non plus.** Le §6 avait fixé, le
+2026-09-05, « pire graine ≤ 13 % de la carte » et l'avait mesuré à 534 cases.
+Sur la base d'aujourd'hui (`ce5f7b0`), la même campagne à **K = 1** donne une
+pire graine à **1 000 cases, soit 24 % de la carte** — le double du contrat,
+sans que l'échelle du jour y soit pour rien. À K = 30 elle vaut 1 322 (32 %).
+
+Autrement dit : le glissement du feu ne vient pas de `K`, il est **déjà dans
+`main`**, et il a eu lieu entre le 2026-09-05 et aujourd'hui (la banquise, le
+gibier, le scénario de référence unifié, le joueur scripté corrigé — la même
+dérive de base que celle notée au §15.2 pour la survie). L'échelle l'aggrave
+d'un tiers ; elle ne le crée pas. **Rien n'est réglé ici** : la fiche
+l'interdisait, et le lever demanderait de rejouer le §6 en entier sur la base
+courante. C'est le constat le plus utile de cette sous-section pour la suite.
+
+Si un réglage devient nécessaire, le levier le moins arbitraire reste celui que
+le §15.5 avait nommé — **borner la durée d'une période météo en ticks réels**
+plutôt que de toucher au feu — mais le banc ci-dessus ajoute une raison de s'en
+méfier : à K = 30 c'est le **vent** qui ne tourne plus, et le déplafonner
+rouvrirait les pires graines de K = 1 (345 arbres sur le banc) autant qu'il
+ferait tomber la pluie.
+
+#### K = 1 reste l'identité, prouvée quatre fois
+
+1. **Les empreintes.** `sim::scenario::DEMO_HASH` vaut toujours
+   `e42d5ed14b0cdc69` (`rimlike-sim run --seed 1 --size 64 --ticks 10000
+   --scenario demo`), `TUNDRA_IDLE_HASH` et les empreintes de
+   `crates/sim/tests/biomes.rs` n'ont pas bougé — `cargo test --workspace`
+   passe sans qu'une constante ait été retouchée.
+2. **La campagne.** `campaign --seeds 30 --days 30 --size 64` avant et après
+   donne le **même fichier**, colonne par colonne, graine par graine ; seule
+   diffère la ligne de perf (du temps réel). Idem pour la campagne
+   automne-hiver.
+3. **Le WASM.** `pnpm build:wasm && pnpm test:client` vert, dont
+   `parity.test.ts`.
+4. **Le fuzz.** `fuzz --seed 1 --size 24 --ticks 20000 --runs 3
+   --commands-per-tick 6` : trois runs OK, et le même à `--day-scale 30`
+   également OK.
+
+C'est attendu et c'est le point : à K = 1, `self.scaled(x)` **était** `x`. La
+ligne changée ne peut rien changer à l'échelle 1, et la campagne le vérifie
+plutôt que de le supposer.
+
+#### Proposition de valeur pour le monde — **non appliquée**
+
+C'est la question que le §15.9 laissait ouverte en attendant cette mesure.
+Après correction :
+
+| | K = 1 | K = 30 | rapport |
+|---|---|---|---|
+| colonies vivantes, normal | 18/30 | **15/30** | 0,83 |
+| colonies vivantes, automne-hiver | 12/30 | **11/30** | 0,92 |
+| part des morts par blessures | 9 % / 10 % | 13 % / 12 % | — |
+| jours de vivres | 11,9 | 20,1 | 1,69 |
+| métallurgie, jour moyen | 19,0 | 8,7 | 0,46 |
+
+**La proposition est `WORLD_DAY_SCALE = 30`.** Trois raisons, dans l'ordre de
+force :
+
+1. **La survie à K = 30 est celle de K = 1**, à trois colonies près en normal et
+   à une en automne-hiver — là où le §15 mesurait 10/30 et 5/30. Le §15.9
+   annonçait « entre 14 et 18 sur 30 si la colonne blessures revient vers 10 % » :
+   elle revient à 13 %, et la survie tombe à 15/30, dans la fourchette annoncée.
+   Il n'y a plus de raison mesurée de descendre la cible.
+2. **Ce que K = 30 achète est ce que le monde demande** (plan §6) : un jour de
+   jeu en 2 h réelles, une saison en 30 h, une année en 5 jours — la longueur
+   qui permet à une colonie de tenir pendant que son joueur dort, et qui donne
+   son sens aux réserves d'hiver. Un K plus petit rend le monde plus rapide que
+   ce que la phase 6 vise ; un K plus grand n'a pas été mesuré.
+3. **Ce qu'il coûte est connu et borné** : la marche reste relativement gratuite
+   (§15.7 — vivres +69 %, métallurgie au jour 8,7 au lieu de 19), et le feu
+   d'été brûle deux fois plus de cases par incendie qu'à K = 1. Le premier est
+   la conséquence assumée de la décision ; le second est mesuré, écrit, et sa
+   pire graine reste du même ordre qu'à K = 1 (32 % contre 24 % de la carte).
+
+**Deux réserves à porter dans la fiche `echelle-client-serveur`**, qui appliquera
+la valeur : le joueur scripté décide toujours en ticks réels, donc à K = 30 il
+micro-gère trente fois plus par jour de jeu (§15.1) — **15/30 est une borne
+haute** ; et un raid se règle en une poignée de secondes réelles dans une journée
+de deux heures, ce qui rend l'IA tactique de la colonie plus urgente à K = 30
+qu'à K = 1.
+
+**K = 10 reste sans intérêt**, pour la même raison qu'au §15.9 : trois fois moins
+de monde lent pour les mêmes effets de bord.
+
+#### Ce que la mesure laisse ouvert
+
+- **Le contrat du §6 à K = 1** (24 % de la carte au lieu de 13 %) : constaté
+  ci-dessus, non réglé, et c'est le premier candidat pour une fiche à part.
+- **Le vent qui ne tourne plus** à grand K : découvert sur le banc, pas mesuré
+  en campagne. C'est un effet de l'échelle sur le feu qui va dans le sens
+  inverse de la pluie qui ne tombe plus, et personne ne sait lequel domine sur
+  une vraie carte.
+- **Le pire incendie contre la pire graine.** Ce qui est mesuré ici est le total
+  brûlé **par graine** sur trente jours (la colonne `brûlé`, comme au §6), pas la
+  plus grande surface d'un incendie unique. Les deux se confondent quand une
+  graine ne connaît qu'un ou deux feux (c'est le cas des pires), pas ailleurs.
+  Le distinguer demanderait un compteur de plus dans `campaign`.
+- **La cadence du joueur scripté**, **la tactique du raid** et **les cadences
+  d'évaluation** : inchangés depuis le §15.10, rien ici ne les mesure.

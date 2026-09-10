@@ -882,7 +882,14 @@ impl Sim {
         // que la plaie soit bandée — c'est ce qui sauve. La blessure reste
         // « non pansée » pour autant : la séance continue jusqu'au bandage,
         // qui seul fait cicatriser plus vite.
-        if progress >= self.scaled(HEMOSTASIS_TICKS) * 100 {
+        //
+        // Ce premier quart est **physique** : il n'est pas mis à l'échelle du
+        // jour, alors que le pansement complet ci-dessous l'est. La compression
+        // court contre un saignement qui ne ralentit pas, exactement comme
+        // battre les flammes court contre un feu qui ne ralentit pas
+        // (`fire::EXTINGUISH_TICKS`). Voir `docs/time.md` et le §15.4 de
+        // `CAMPAIGN-FINDINGS.md`.
+        if progress >= HEMOSTASIS_TICKS * 100 {
             for inj in &mut self.pawns[k].injuries {
                 inj.close();
             }
