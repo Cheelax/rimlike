@@ -45,7 +45,11 @@ pnpm dev:server       # relais + serveur monde sur :8787 (GET /health, GET /worl
                       # env : PORT, WORLD_SEED (1), WORLD_SUBDIVISIONS (4),
                       # WORLD_STATE_FILE (apps/server/data/world-state.json ; vide = mémoire),
                       # WORLD_PERSIST=0 pour désactiver la persistance,
-                      # WORLD_HOUR_MS (30000 : une heure de jeu = 30 s), CARAVAN_TICK_MS (5000),
+                      # WORLD_DAY_SCALE (30 : échelle du jour imposée à toutes les salles ;
+                      #   un jour de jeu = 432 000 ticks = 2 h réelles, une heure de jeu = 5 min.
+                      #   C'est la seule horloge du monde : l'heure de jeu en dérive),
+                      # WORLD_HOUR_MS (dérivé = 10 000 × K ; le définir force l'heure de jeu,
+                      #   réservé aux tests d'intégration), CARAVAN_TICK_MS (5000),
                       # WORLD_MERCHANTS (2 caravanes marchandes PNJ ; 0 désactive), MERCHANT_STAY_HOURS (24),
                       # limites : MAX_MESSAGE_BYTES, MAX_SNAPSHOT_BYTES, MAX_MESSAGES_PER_SECOND,
                       # MAX_CONNECTIONS_PER_IP, MAX_ROOMS, MAX_PLAYERS_PER_ROOM, TRUST_PROXY
@@ -167,7 +171,7 @@ Les valeurs numériques des enums sont un contrat, à modifier des deux côtés 
 | `ItemKind` 16 minerai / 17 lingot / 18 épée (3 lingots par épée depuis le 2026-09-06 ; `COUNT` = 19 : `stored_totals`, `craft_targets`, `buy_prices`), `Feature::OreRock = 19` / `Forge = 20`, `BuildKind::Forge = 9` (20 pierre, refusée sans `Tech::Metallurgy = 5`, `TECH_COUNT` = 6 : `research_state()` renvoie 19 entiers), job 30 fond le métal ; lingot annoncé par `ItemCrafted`, épée par `WeaponCrafted` | `ITEM_NAMES`, `ITEM_COLORS`, `WEAPON_NAMES`, `FEATURE` 19/20, `BUILD_KIND.Forge`, `TECHS` à 6, `JOB_LABELS[30]` |
 | `biome::Biome` (0 océan, 1 banquise, 2 toundra, 3 forêt boréale, 4 forêt tempérée, 5 prairie, 6 désert, 7 savane, 8 jungle, 9 montagne : alignés sur `packages/world/src/biomes.ts`), fixé à la création (`Sim::new_in_biome`, pas de `Command::SetBiome` ; `new` = tempéré), `Terrain::Snow = 8` | `WasmSim.new_in_biome(seed, w, h, biome)`, `biome()` ; `TERRAIN.Snow`, `TERRAIN_COLORS[8]` ; le serveur envoie `start.biome` (salle `tile-N`, absent = 4) et `snapshot.biome` (réouverture, informatif), tous les clients construisent par `new_in_biome`, `frame.biome` et `rpc("biome")` |
 | `sim::scenario` : `demo_commands` (le scénario de référence, source unique de `tests/determinism.rs` et de `rimlike-sim --scenario demo`), `DEMO_HASH` / `DEMO_SEED` / `DEMO_SIZE` / `DEMO_TICKS`, `TUNDRA_IDLE_HASH` / `TUNDRA_IDLE_SEED` / `TUNDRA_IDLE_SIZE` / `TUNDRA_IDLE_DAYS` | `WasmSim.step_demo(n)` (commandes du scénario puis un pas, comme en natif ; sim neuve seulement) et les statiques `demo_hash()`, `demo_seed()`, `demo_size()`, `demo_ticks()`, `tundra_idle_hash()`, `tundra_idle_seed()`, `tundra_idle_size()`, `tundra_idle_days()` ; `apps/client/test/parity.test.ts` **lit** ces constantes à travers la frontière, il ne les recopie jamais |
-| **échelle du jour** : `Sim::day_scale` (`DayScale`, 1..=120, `DAY_SCALE_MIN`/`DAY_SCALE_MAX`), fixée à la création comme le biome — pas de commande pour la changer ; `Sim::new_scaled(seed, w, h, biome, K)` et `new_scaled_with_climate` ; `Sim::ticks_per_day()` = `TICKS_PER_DAY × K` ; `Sim::scaled(ticks)` pour un seuil de travail ; `Sim::needs_step()` pour un pas de besoin. Classement de **toutes** les durées en ticks dans `docs/time.md` : une durée nouvelle s'y range avant d'être écrite. À K = 1 le champ n'écrit **aucun octet** (postcard, `serialize_unit`) : le snapshot et le hash sont ceux d'avant l'échelle, un snapshot d'avant se relit à K = 1, une valeur hors bornes aussi | `WasmSim.new_scaled(seed, w, h, biome, dayScale)`, `day_scale()`, `ticks_per_day()` (**mis à l'échelle**), `research_state()` (coût **mis à l'échelle** ; la statique `tech_cost` reste celle de K = 1). `sim-cli` : `--day-scale K` sur `run`, `verify`, `bench`, `campaign`, `fuzz` |
+| **échelle du jour** : `Sim::day_scale` (`DayScale`, 1..=120, `DAY_SCALE_MIN`/`DAY_SCALE_MAX`), fixée à la création comme le biome — pas de commande pour la changer ; `Sim::new_scaled(seed, w, h, biome, K)` et `new_scaled_with_climate` ; `Sim::ticks_per_day()` = `TICKS_PER_DAY × K` ; `Sim::scaled(ticks)` pour un seuil de travail ; `Sim::needs_step()` pour un pas de besoin. Classement de **toutes** les durées en ticks dans `docs/time.md` : une durée nouvelle s'y range avant d'être écrite. À K = 1 le champ n'écrit **aucun octet** (postcard, `serialize_unit`) : le snapshot et le hash sont ceux d'avant l'échelle, un snapshot d'avant se relit à K = 1, une valeur hors bornes aussi | `WasmSim.new_scaled(seed, w, h, biome, dayScale)`, `day_scale()`, `ticks_per_day()` (**mis à l'échelle**), `research_state()` (coût **mis à l'échelle** ; la statique `tech_cost` reste celle de K = 1). `sim-cli` : `--day-scale K` sur `run`, `verify`, `bench`, `campaign`, `fuzz`. Côté client et serveur : le serveur impose `WORLD_DAY_SCALE` (30) dans `start.dayScale` (**toute** salle, case ou nommée ; omis à 1) et `snapshot.dayScale` (informatif), `PROTOCOL_VERSION` = 3 refuse un vieux client ; `SimHandle.create({…, dayScale})` → `new_scaled`, `SimHandle.dayScale()`, `LockstepState.dayScale`, solo mémorisé par `soloDayScale.ts` avec les vitesses `SOLO_SPEEDS` = ×1 ×2 ×3 ×5 ×10 ; **une seule horloge du monde** : `worldHourMsFor(K)` = 10 000 × K (`WORLD_HOUR_MS` en dérive, `frozenTicksForHours(h, K)`, `roomDay(tick, K)`). Le HUD lit toujours `frame.ticksPerDay`, jamais `TICKS_PER_DAY` |
 | `pawn::Job::code()` | `terrain.ts` (`JOB_LABELS`) |
 | `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, `PRIORITY_STRIDE` = 8, `SKILL_STRIDE` = 15, `HEALTH_STRIDE` = 4, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |
 
@@ -235,15 +239,28 @@ pour tester `bad_token`. Détails : `docs/protocol.md` §11.2.
 
 Même serveur que le multi. URL : `http://localhost:5173/?server=ws://localhost:8787&name=alice&world=1`
 (ou l'accueil, bouton « Monde partagé »). Le globe se charge depuis `GET /world`, jamais
-regénéré côté client. Pour les caravanes, lancer le serveur avec une horloge rapide :
-`WORLD_HOUR_MS=1000 CARAVAN_TICK_MS=500 WORLD_PERSIST=0 pnpm dev:server`. Séquence console
-sans souris (deux onglets, deux noms = deux joueurs) :
+regénéré côté client.
+
+Le serveur tourne par défaut à l'**échelle du jour du monde** (`WORLD_DAY_SCALE=30`) :
+un jour de jeu dure 432 000 ticks, soit deux heures réelles, et une heure de jeu —
+l'unité des caravanes — cinq minutes. Aucune caravane n'arrive pendant une session
+d'essai à ce rythme. L'horloge rapide de test **n'est plus une horloge à part** : c'est
+la même variable qu'avant, `WORLD_HOUR_MS`, qui ne sert plus qu'à ça et qui court-circuite
+la dérivation le temps de l'essai. Lancer donc :
+`WORLD_HOUR_MS=1000 CARAVAN_TICK_MS=500 WORLD_PERSIST=0 pnpm dev:server` — l'échelle
+reste 30 (les colonies gardent leur rythme, `frame.ticksPerDay` vaut bien 432 000), seule
+l'horloge du globe est accélérée. Pour éprouver une partie au rythme d'origine, c'est
+`WORLD_DAY_SCALE=1` qu'il faut passer, et le solo a son sélecteur « partie rapide ».
+
+Séquence console sans souris (deux onglets, deux noms = deux joueurs) :
 
 ```js
 const w = window.__rimlike.world;      // state, select(tile), tile(id), freeLand(n), settle(), visit(), abandon(), back()
 const [tile] = w.freeLand(1); w.select(tile); w.settle();          // → salle tile-<id>, graine imposée
 await window.__rimlike.rpc("lockstep.startGame", 0, 128, 128);    // l'hôte démarre
 window.__rimlike.frame.tick;                                       // progresse
+window.__rimlike.frame.ticksPerDay;                                // 432 000 à l échelle 30
+await window.__rimlike.rpc("dayScale");                            // 30, imposé par le serveur
 window.__rimlike.world.back(); window.__rimlike.world.state.settlements;
 // caravane vers la colonie de l'autre onglet (case B) : un colon, sans marchandises
 const p = await window.__rimlike.rpc("pawns");

@@ -37,6 +37,12 @@ export type InitMessage =
       readonly difficulty: number;
       /** Biome choisi à l'accueil solo ; en multi, il vient du serveur. */
       readonly biome: number;
+      /**
+       * Échelle du jour choisie à l'accueil solo (`soloDayScale.ts`) :
+       * l'échelle du monde par défaut, 1 pour une « partie rapide ». En multi,
+       * elle vient du serveur (`start.dayScale`) et ce champ n'existe pas.
+       */
+      readonly dayScale: number;
     }
   | {
       readonly type: "init";

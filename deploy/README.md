@@ -33,6 +33,7 @@ docker run -d \
   -p 8787:8787 \
   -v rimlike-world-data:/data \
   -e WORLD_SUBDIVISIONS=5 \
+  -e WORLD_DAY_SCALE=30 \
   --restart unless-stopped \
   rimlike-server
 ```
@@ -40,6 +41,34 @@ docker run -d \
 Ou `docker compose up -d` (voir `docker-compose.yml`, qui documente en
 commentaire chaque variable et son défaut). Le service écoute sur le port
 `8787`, et un volume nommé (`rimlike-world-data`) porte l'état du monde.
+
+### Le rythme du monde : `WORLD_DAY_SCALE`
+
+`WORLD_DAY_SCALE` (30 par défaut, bornes 1 à 120) est **l'échelle du jour** :
+elle multiplie la longueur d'un jour de jeu et les durées de travail du sim,
+jamais la marche ni le combat (`docs/time.md`). Le serveur l'impose à toutes
+ses salles (`start.dayScale`), et **toute l'horloge du monde en découle** :
+
+| K | jour de jeu | heure de jeu | saison (15 j) | année (60 j) | une case de forêt (8 h) |
+|---|---|---|---|---|---|
+| 1 | 4 min | 10 s | 1 h | 4 h | 1 min 20 |
+| **30** | **2 h** | **5 min** | **30 h** | **5 jours** | **40 min** |
+
+Il n'y a plus de `WORLD_HOUR_MS` à régler : la variable existe encore mais
+n'est là que pour les **tests d'intégration** (faire voyager une caravane en
+quelques secondes), pas pour un serveur qui héberge de vrais joueurs.
+
+⚠️ **À décider avant la première colonie.** Un monde déjà peuplé qui redémarre
+à une autre échelle garde ses colonies conservées à l'échelle avec laquelle
+elles ont été créées (elle est dans leur snapshot), tandis que l'horloge du
+globe suit la nouvelle. Pour changer l'échelle d'un monde en production, la
+seule voie propre est celle de « Changer le globe » plus bas : repartir d'un
+état vide.
+
+⚠️ **Les clients doivent être à jour.** L'échelle du jour a fait passer
+`PROTOCOL_VERSION` à 3 : un client publié avant est refusé à `join`
+(`version_mismatch`). Republier `apps/client/dist` fait partie de la mise à
+jour du serveur.
 
 ## Vérifier que ça tourne
 

@@ -6,12 +6,21 @@ import {
   bytesToBase64,
   CLIMATE_AMPLITUDE_MAX,
   CLIMATE_BASE_MIN,
+  DAY_SCALE_MAX,
+  DAY_SCALE_MIN,
+  DEFAULT_DAY_SCALE,
   DEFAULT_GOODWILL,
   FACTION_COUNT,
   GOODWILL_MAX,
   GOODWILL_MIN,
   clampGoodwill,
   frozenTicksForHours,
+  maxFrozenTicks,
+  ticksPerDay,
+  ticksPerHour,
+  worldHourMsFor,
+  WORLD_DAY_SCALE,
+  WORLD_HOUR_MS,
   MAX_FROZEN_TICKS,
   MAX_PENDING_TRADERS,
   decodeClientMessage,
@@ -670,6 +679,60 @@ describe("marchands itinérants", () => {
       expect(validateServerMessage({ type: "start", seed: 1, width: 8, height: 8, tick: 0, pendingTraders })).toBeNull();
       expect(validateServerMessage({ type: "snapshot", tick: 1, data: "AQID", pendingTraders })).toBeNull();
     }
+  });
+});
+
+describe("échelle du jour", () => {
+  it("borne dayScale sur les bornes du sim, sur start comme sur snapshot", () => {
+    expect([DAY_SCALE_MIN, DAY_SCALE_MAX]).toEqual([1, 120]);
+    for (const dayScale of [DAY_SCALE_MIN, 30, DAY_SCALE_MAX]) {
+      expect(validateServerMessage({ type: "start", seed: 1, width: 8, height: 8, tick: 0, dayScale })).not.toBeNull();
+      expect(validateServerMessage({ type: "snapshot", tick: 1, data: "AQID", dayScale })).not.toBeNull();
+    }
+    for (const dayScale of [0, -1, 1.5, DAY_SCALE_MAX + 1, "30", null]) {
+      expect(validateServerMessage({ type: "start", seed: 1, width: 8, height: 8, tick: 0, dayScale })).toBeNull();
+      expect(validateServerMessage({ type: "snapshot", tick: 1, data: "AQID", dayScale })).toBeNull();
+    }
+  });
+
+  it("fait l'aller-retour sur le fil et laisse passer un start sans le champ", () => {
+    const start = encodeMessage({ type: "start", seed: 1, width: 8, height: 8, tick: 0, dayScale: 30 });
+    const back = decodeServerMessage(start);
+    expect(back).toEqual({ type: "start", seed: 1, width: 8, height: 8, tick: 0, dayScale: 30 });
+    // Absent : c'est `DEFAULT_DAY_SCALE`, le rythme d'origine — le message
+    // d'un serveur d'avant l'échelle reste lisible tel quel.
+    const plain = decodeServerMessage(encodeMessage({ type: "start", seed: 1, width: 8, height: 8, tick: 0 }));
+    expect(plain).toEqual({ type: "start", seed: 1, width: 8, height: 8, tick: 0 });
+    expect(DEFAULT_DAY_SCALE).toBe(1);
+  });
+
+  it("dérive l'heure du monde de l'échelle, et rien d'autre", () => {
+    // Une seule horloge (docs/PLAN.md §6) : `ticks_par_jour / 24` ticks à
+    // `TICK_RATE` par seconde. À K = 30 : 5 min réelles l'heure de jeu, 2 h le
+    // jour de jeu, 30 h la saison (15 jours), 5 jours l'année (60 jours).
+    expect(ticksPerDay(WORLD_DAY_SCALE)).toBe(432_000);
+    expect(ticksPerHour(WORLD_DAY_SCALE)).toBe(18_000);
+    expect(worldHourMsFor(WORLD_DAY_SCALE)).toBe(300_000);
+    expect(worldHourMsFor(WORLD_DAY_SCALE) * 24).toBe(7_200_000);
+    expect(WORLD_HOUR_MS).toBe(worldHourMsFor(WORLD_DAY_SCALE));
+    // À K = 1, tout retombe sur les valeurs d'origine du sim.
+    expect(ticksPerDay()).toBe(TICKS_PER_DAY);
+    expect(ticksPerHour()).toBe(TICKS_PER_HOUR);
+    expect(worldHourMsFor()).toBe(10_000);
+    // Une échelle absurde retombe sur 1, comme le fait le sim lui-même.
+    expect(ticksPerDay(0)).toBe(TICKS_PER_DAY);
+    expect(ticksPerDay(1000)).toBe(TICKS_PER_DAY);
+  });
+
+  it("met le temps gelé et sa borne à l'échelle", () => {
+    // Cinq heures de jeu à K = 30 : 5 × 18 000 ticks de carte.
+    expect(frozenTicksForHours(5, 30)).toBe(90_000);
+    // Toujours soixante jours **de jeu** au plus, comme `sim::MAX_FAST_FORWARD`
+    // que le sim met lui aussi à l'échelle.
+    expect(maxFrozenTicks(30)).toBe(MAX_FROZEN_TICKS * 30);
+    expect(frozenTicksForHours(24 * 365, 30)).toBe(maxFrozenTicks(30));
+    // Sans échelle, le comportement d'avant, au tick près.
+    expect(frozenTicksForHours(5)).toBe(frozenTicksForHours(5, 1));
   });
 });
 

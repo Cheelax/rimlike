@@ -10,7 +10,13 @@
 
 import { describe, expect, it } from "vitest";
 
-import { CARAVAN_HISTORY_HOURS, WORLD_HOUR_MS, type CaravanSummary } from "@rimlike/protocol";
+import {
+  CARAVAN_HISTORY_HOURS,
+  WORLD_DAY_SCALE,
+  WORLD_HOUR_MS,
+  worldHourMsFor,
+  type CaravanSummary,
+} from "@rimlike/protocol";
 import { findRoute, movementCost } from "@rimlike/world";
 
 import { CaravanRegistry } from "../src/caravans.js";
@@ -79,9 +85,27 @@ describe("horloge du monde", () => {
     expect(clock.worldStartedAt).toBe(1_000_000);
   });
 
-  it("vaut 30 s par heure de jeu par défaut", () => {
-    expect(new WorldClock().hourMs).toBe(WORLD_HOUR_MS);
-    expect(WORLD_HOUR_MS).toBe(30_000);
+  it("dérive l'heure de jeu de l'échelle du jour, sans horloge à part", () => {
+    // Une seule horloge (docs/PLAN.md §6) : une heure de jeu vaut
+    // `ticks_par_jour / 24` ticks joués à 60 par seconde, donc 10 000 × K ms.
+    const clock = new WorldClock();
+    expect(clock.dayScale).toBe(WORLD_DAY_SCALE);
+    expect(clock.hourMs).toBe(WORLD_HOUR_MS);
+    expect(WORLD_HOUR_MS).toBe(300_000);
+    expect(WORLD_HOUR_MS).toBe(worldHourMsFor(WORLD_DAY_SCALE));
+    // La dérivation, en toutes lettres : 14 400 × 30 / 24 ticks à 60 ticks/s.
+    expect(WORLD_HOUR_MS).toBe(((14_400 * WORLD_DAY_SCALE) / 24 / 60) * 1000);
+    // Un jour de monde à l'échelle 30 : 24 × 5 min = 2 h réelles.
+    expect(24 * WORLD_HOUR_MS).toBe(2 * 3_600_000);
+    // À l'échelle 1, le rythme d'origine du sim : 10 s l'heure, 4 min le jour.
+    expect(new WorldClock({ dayScale: 1 }).hourMs).toBe(10_000);
+    expect(worldHourMsFor(1) * 24).toBe(240_000);
+  });
+
+  it("refuse une échelle du jour hors des bornes du sim", () => {
+    expect(() => new WorldClock({ dayScale: 0 })).toThrow(RangeError);
+    expect(() => new WorldClock({ dayScale: 121 })).toThrow(RangeError);
+    expect(() => new WorldClock({ dayScale: 1.5 })).toThrow(RangeError);
   });
 
   it("ne vieillit pas pendant que le serveur est éteint", () => {

@@ -14,8 +14,14 @@
  * devenir un jeton (`WorldJoinMessage.token`, `docs/protocol.md` §11.2) : la
  * forme de `world_welcome`, `world_players`, `Settlement` et `Caravan` a
  * changé (clé de joueur en plus du nom, ou à sa place).
+ *
+ * Passé à 3 avec l'**échelle du jour** (`start.dayScale`, `docs/protocol.md`
+ * §3.2) : un client d'avant ignorerait le champ, construirait son sim à
+ * l'échelle 1 et divergerait au premier tick — une désync silencieuse, le pire
+ * des échecs. La montée de version le fait refuser proprement à `join`
+ * (`version_mismatch`) au lieu de le laisser entrer.
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** Ticks de simulation par seconde. Contrat partagé par tous les clients. */
 export const TICK_RATE = 60;
@@ -26,29 +32,116 @@ export const BUNDLE_TICKS = 3;
 /** Période d'émission d'un bundle, en millisecondes réelles. */
 export const BUNDLE_INTERVAL_MS = (1000 / TICK_RATE) * BUNDLE_TICKS;
 
-/** Un client envoie son hash d'état tous les N ticks. */
+/**
+ * Un client envoie son hash d'état tous les N ticks (5 s réelles).
+ *
+ * Comme `BUNDLE_TICKS`, `SNAPSHOT_EVERY_TICKS`, `RESYNC_COOLDOWN_TICKS` et
+ * `MAX_HISTORY_BUNDLES`, cette constante est en **temps réel** : elle compte
+ * des ticks joués à 60 par seconde, quelle que soit l'échelle du jour de la
+ * partie. Elle ne se met donc jamais à l'échelle — à K = 30, un hash toutes
+ * les 5 s réelles reste toutes les 5 s réelles, même si cela ne fait plus
+ * qu'un instant de jeu.
+ */
 export const HASH_EVERY_TICKS = 300;
 
 /**
- * Ticks d'une **journée de jeu** sur une carte (`sim::TICKS_PER_DAY`) : quatre
- * minutes réelles à 60 ticks/s. Contrat avec le sim, à changer des deux côtés.
+ * Ticks d'une **journée de jeu** sur une carte à l'échelle 1
+ * (`sim::TICKS_PER_DAY`) : quatre minutes réelles à 60 ticks/s. Contrat avec
+ * le sim, à changer des deux côtés. Ce n'est **pas** la longueur d'un jour :
+ * une partie porte une échelle du jour `K` qui la multiplie, voir
+ * `ticksPerDay(dayScale)` et `docs/time.md`.
  */
 export const TICKS_PER_DAY = 14_400;
 
 /**
- * Ticks d'une **heure de jeu du monde** : `TICKS_PER_DAY / 24`. C'est le taux
- * de change entre l'horloge du globe (en heures de jeu, `WORLD_HOUR_MS`) et
- * les ticks d'une carte — il ne sert qu'à ça : convertir le temps qu'une
- * colonie a passé gelée en ticks d'avance rapide (`frozenTicks`, §11.6).
+ * Ticks d'une **heure de jeu du monde** à l'échelle 1 : `TICKS_PER_DAY / 24`.
+ * Comme `TICKS_PER_DAY`, c'est l'unité de K = 1 ; l'heure d'une partie
+ * d'échelle `K` vaut `ticksPerHour(K)`.
  */
 export const TICKS_PER_HOUR = TICKS_PER_DAY / 24;
 
+// --- Échelle du jour (`docs/time.md`, `docs/PLAN.md` §6) ---
+
 /**
- * Avance rapide maximale d'une colonie gelée, en ticks : 60 jours de jeu.
- * Même borne que `sim::MAX_FAST_FORWARD` — au-delà, le sim tronquerait de
- * toute façon, autant ne pas transporter un nombre qui ment.
+ * Bornes de l'échelle du jour, le contrat de `sim::DayScale`
+ * (`DAY_SCALE_MIN`/`DAY_SCALE_MAX`) : au-delà, le sim retomberait
+ * silencieusement sur 1 et la frontière réseau ne laisse pas passer une
+ * valeur dont elle ne peut pas garantir l'effet.
+ */
+export const DAY_SCALE_MIN = 1;
+export const DAY_SCALE_MAX = 120;
+
+/**
+ * Échelle d'une partie dont personne n'impose l'échelle : 1, le rythme
+ * d'origine (un jour de jeu en quatre minutes réelles). C'est ce que vaut un
+ * `start` **sans** `dayScale` — donc toute salle simple servie par un serveur
+ * qui ne connaît pas le champ.
+ */
+export const DEFAULT_DAY_SCALE = 1;
+
+/**
+ * Échelle du **monde partagé** : 30 (mesurée en campagne, `docs/PLAN.md` §6 et
+ * §8 du 2026-09-10). Un jour de jeu y dure 14 400 × 30 = 432 000 ticks, soit
+ * 2 h réelles à 60 ticks/s ; une heure de jeu, 5 minutes ; une saison, 30 h ;
+ * une année, 5 jours. Le serveur la lit dans `WORLD_DAY_SCALE` et l'impose à
+ * toutes ses salles (`start.dayScale`).
+ */
+export const WORLD_DAY_SCALE = 30;
+
+/** Vrai si `value` est une échelle du jour acceptable (`DAY_SCALE_MIN..=MAX`). */
+export function isDayScale(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= DAY_SCALE_MIN &&
+    value <= DAY_SCALE_MAX
+  );
+}
+
+/**
+ * Ticks d'une journée de jeu d'une partie d'échelle `dayScale`
+ * (`Sim::ticks_per_day()`). Une échelle absurde retombe sur 1, comme le fait
+ * le sim lui-même.
+ *
+ * Le client n'appelle **pas** cette fonction pour son HUD : il lit
+ * `ticks_per_day()` dans le sim (`frame.ticksPerDay`), seule source qui ne
+ * puisse pas mentir. Elle sert au serveur, qui n'a pas de sim.
+ */
+export function ticksPerDay(dayScale: number = DEFAULT_DAY_SCALE): number {
+  return TICKS_PER_DAY * (isDayScale(dayScale) ? dayScale : DEFAULT_DAY_SCALE);
+}
+
+/** Ticks d'une heure de jeu d'une partie d'échelle `dayScale` : `ticksPerDay / 24`. */
+export function ticksPerHour(dayScale: number = DEFAULT_DAY_SCALE): number {
+  return ticksPerDay(dayScale) / 24;
+}
+
+/**
+ * **Une seule horloge** (`docs/PLAN.md` §6) : la durée réelle d'une heure de
+ * jeu du monde se **déduit** de l'échelle du jour, elle ne se règle plus à
+ * part. Une heure de jeu vaut `ticksPerHour(K)` ticks, joués à `TICK_RATE`
+ * ticks par seconde — soit 10 000 × K millisecondes.
+ *
+ * À l'échelle du monde (30) : 300 000 ms, cinq minutes réelles par heure de
+ * jeu, deux heures réelles par jour de monde.
+ */
+export function worldHourMsFor(dayScale: number = DEFAULT_DAY_SCALE): number {
+  return (ticksPerHour(dayScale) / TICK_RATE) * 1000;
+}
+
+/**
+ * Avance rapide maximale d'une colonie gelée à l'échelle 1, en ticks : 60
+ * jours de jeu. Même borne que `sim::MAX_FAST_FORWARD` — au-delà, le sim
+ * tronquerait de toute façon, autant ne pas transporter un nombre qui ment.
+ * Le sim la met à l'échelle (`self.scaled(MAX_FAST_FORWARD)`), donc
+ * `maxFrozenTicks(K)` ici aussi.
  */
 export const MAX_FROZEN_TICKS = TICKS_PER_DAY * 60;
+
+/** Les mêmes 60 jours de jeu, à l'échelle `dayScale`. */
+export function maxFrozenTicks(dayScale: number = DEFAULT_DAY_SCALE): number {
+  return ticksPerDay(dayScale) * 60;
+}
 
 /**
  * Jours d'une année de jeu sur une carte (`sim::climate::YEAR_DAYS`) : quatre
@@ -77,14 +170,18 @@ export function worldDayOfYear(worldHours: number): number {
 /**
  * Convertit un temps gelé, en **heures de jeu du monde**, en ticks d'avance
  * rapide : arrondi au tick, jamais négatif (une horloge qui recule ne fait pas
- * remonter le temps d'une colonie), et borné à `MAX_FROZEN_TICKS`. Une entrée
- * non finie donne 0. C'est le calcul de `snapshot.frozenTicks` (§11.6).
+ * remonter le temps d'une colonie), et borné à `maxFrozenTicks(dayScale)`. Une
+ * entrée non finie donne 0. C'est le calcul de `snapshot.frozenTicks` (§11.6).
+ *
+ * `dayScale` est l'échelle du jour de la salle : une heure de jeu vaut
+ * `ticksPerHour(K)` ticks de carte, et la borne des 60 jours suit la même
+ * échelle que `sim::MAX_FAST_FORWARD`. Omise, l'échelle 1 s'applique.
  */
-export function frozenTicksForHours(elapsedHours: number): number {
+export function frozenTicksForHours(elapsedHours: number, dayScale: number = DEFAULT_DAY_SCALE): number {
   if (!Number.isFinite(elapsedHours) || elapsedHours <= 0) {
     return 0;
   }
-  return Math.min(MAX_FROZEN_TICKS, Math.round(elapsedHours * TICKS_PER_HOUR));
+  return Math.min(maxFrozenTicks(dayScale), Math.round(elapsedHours * ticksPerHour(dayScale)));
 }
 
 /**
@@ -92,6 +189,9 @@ export function frozenTicksForHours(elapsedHours: number): number {
  * conservation tous les N ticks (1800 ticks = 30 s à 60 ticks/s). Ce snapshot
  * ne sert personne en particulier : il est stocké pour rouvrir la colonie plus
  * tard. Sans effet dans une salle hors monde.
+ *
+ * En **temps réel** comme `HASH_EVERY_TICKS` : 30 s réelles entre deux
+ * sauvegardes, à toute échelle du jour.
  */
 export const SNAPSHOT_EVERY_TICKS = 1800;
 
@@ -118,15 +218,21 @@ export const HEARTBEAT_TIMEOUT_MS = 15000;
 export const MAX_PLAYERS = 4;
 
 /**
- * Durée réelle d'une **heure de jeu** du monde, en millisecondes : 30 s, donc
- * un jour de monde en 12 min. C'est l'unité de l'horloge du globe, celle qui
- * fait avancer les caravanes (`docs/protocol.md` §12) — sans rapport avec les
- * ticks d'une salle, qui numérotent la simulation d'une carte.
+ * Durée réelle d'une **heure de jeu** du monde, en millisecondes, à l'échelle
+ * du monde : `worldHourMsFor(WORLD_DAY_SCALE)` = 300 000, soit cinq minutes
+ * réelles par heure de jeu et deux heures réelles par jour de monde.
  *
- * Le serveur la lit dans `WORLD_HOUR_MS` ; un client qui veut animer une
- * caravane entre deux `world_caravans` a besoin de la même valeur.
+ * Ce n'est plus une valeur libre mais une **dérivée** : le monde n'a plus
+ * d'horloge à part de l'échelle du jour (`docs/PLAN.md` §6, « une seule
+ * horloge »). La variable d'environnement `WORLD_HOUR_MS` existe encore côté
+ * serveur, mais **pour les tests d'intégration seulement** : elle sert à
+ * voyager vite, jamais à régler le rythme d'un vrai monde — c'est
+ * `WORLD_DAY_SCALE` qui le fait.
+ *
+ * Un client qui veut animer une caravane entre deux `world_caravans` a besoin
+ * de la même valeur : il la déduit de l'échelle reçue dans `start.dayScale`.
  */
-export const WORLD_HOUR_MS = 30_000;
+export const WORLD_HOUR_MS = worldHourMsFor(WORLD_DAY_SCALE);
 
 /**
  * Période du tick du monde : le serveur fait avancer les caravanes et diffuse
@@ -704,6 +810,23 @@ export interface ServerStartMessage {
    */
   readonly biome?: number;
   /**
+   * **Échelle du jour** de la partie (`sim::DayScale`, `DAY_SCALE_MIN..=MAX`),
+   * imposée par le serveur à **toute** salle — « case » comme nommée
+   * (`docs/protocol.md` §3.2). Elle multiplie la longueur du jour et les
+   * durées de travail, jamais la marche ni le combat (`docs/time.md`).
+   *
+   * Même règle que `biome`, et pour la même raison : elle se fixe à la
+   * **construction** du sim (`WasmSim.new_scaled`), il n'existe pas de
+   * commande pour la changer — après le premier tick, ce serait une autre
+   * partie. Tous les clients d'une salle la lisent ici et construisent avec ;
+   * un seul qui l'ignorerait divergerait au premier tick, d'où la montée de
+   * `PROTOCOL_VERSION` à 3.
+   *
+   * Absente : `DEFAULT_DAY_SCALE` (1). Le serveur l'omet quand elle vaut 1,
+   * ce qui laisse le message d'une partie « rapide » identique à celui d'avant.
+   */
+  readonly dayScale?: number;
+  /**
    * Marchands itinérants arrivés sur la case pendant que la colonie était
    * **fermée** (`docs/protocol.md` §13), au plus `MAX_PENDING_TRADERS`. L'hôte,
    * et lui seul, émet autant de `Command::TriggerTraderVisit` après ce `start`,
@@ -788,6 +911,14 @@ export interface ServerSnapshotMessage {
    * déclenche aucune commande. Absent en salle simple.
    */
   readonly biome?: number;
+  /**
+   * Échelle du jour de la salle, comme `start.dayScale` — et ici, exactement
+   * comme `biome`, **purement informative** : le sim que `data` restaure porte
+   * déjà son échelle (elle est dans le snapshot, `docs/time.md`). Le champ
+   * sert au HUD et au diagnostic, il ne déclenche aucune commande et aucune
+   * construction. Absente : `DEFAULT_DAY_SCALE` (1).
+   */
+  readonly dayScale?: number;
 }
 
 /**

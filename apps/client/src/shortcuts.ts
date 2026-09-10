@@ -5,7 +5,7 @@
  * par le gestionnaire de `keydown` dans `App.tsx`) — jamais recopié à la
  * main, pour que l'aide ne puisse pas diverger des vrais raccourcis.
  *
- * `Q`/`E` (rotation caméra), `1`/`2`/`3` (vitesse), `Échap` et `Espace`
+ * `Q`/`E` (rotation caméra), `1` à `5` (vitesse), `Échap` et `Espace`
  * restent des littéraux ici comme dans `App.tsx` : ce sont des conventions
  * d'interface stables, pas des bascules de panneau susceptibles de changer de
  * lettre au fil des phases (contrairement à `TOOLS` et `KEY`, seuls sujets à
@@ -64,7 +64,9 @@ export const SHORTCUTS: ShortcutEntry[] = [
   { keys: `${KEY.help} / ${KEY.helpAlt}`, action: "Cette aide", group: "panneaux" },
   // --- Partie ---
   { keys: "Espace", action: "Pause (solo uniquement)", group: "partie" },
-  { keys: "1 / 2 / 3", action: "Vitesse de jeu ×1 / ×2 / ×3 (solo uniquement)", group: "partie" },
+  // ×5 et ×10 sont arrivées avec l'échelle du jour : à K = 30, un jour de jeu
+  // dure deux heures réelles (`docs/PLAN.md` §6). Les touches vont par rang.
+  { keys: "1 à 5", action: "Vitesse de jeu ×1 / ×2 / ×3 / ×5 / ×10 (solo uniquement)", group: "partie" },
 ];
 
 /** Clé `localStorage` du rappel de première partie (voir `App.tsx`). */

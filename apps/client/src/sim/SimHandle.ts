@@ -1,3 +1,5 @@
+import { DEFAULT_BIOME, DEFAULT_DAY_SCALE } from "@rimlike/protocol";
+
 import type { SimLike } from "../net/SimLike";
 import init, { WasmSim, type InitOutput } from "../wasm/sim.js";
 
@@ -50,18 +52,33 @@ export class SimHandle implements SimLike {
    * — il n'y a pas de `Command::SetBiome`, la composition d'une carte ne change
    * pas après le premier tick. Omis (salle simple), le constructeur
    * ordinaire du sim s'applique : la forêt tempérée.
+   *
+   * `dayScale` (`sim::DayScale`, 1 à 120) suit exactement le même chemin, et
+   * pour la même raison : l'échelle du jour se fige à la construction, il n'y
+   * a pas de `Command::SetDayScale`. Elle vient de `start.dayScale`
+   * (`docs/protocol.md` §3.2) en multi, du choix de l'accueil en solo. Omise :
+   * 1, le rythme d'origine. `new_scaled(…, DEFAULT_BIOME, 1)` rend exactement
+   * ce que rend le constructeur ordinaire — au bit près, c'est le contrat de
+   * `docs/time.md`.
    */
   static async create(opts: {
     seed: bigint;
     width: number;
     height: number;
     biome?: number;
+    dayScale?: number;
   }): Promise<SimHandle> {
     const wasm = await initOnce();
     const inner =
-      opts.biome === undefined
+      opts.biome === undefined && opts.dayScale === undefined
         ? new WasmSim(opts.seed, opts.width, opts.height)
-        : WasmSim.new_in_biome(opts.seed, opts.width, opts.height, opts.biome);
+        : WasmSim.new_scaled(
+            opts.seed,
+            opts.width,
+            opts.height,
+            opts.biome ?? DEFAULT_BIOME,
+            opts.dayScale ?? DEFAULT_DAY_SCALE,
+          );
     return new SimHandle(wasm, inner);
   }
 
@@ -469,8 +486,22 @@ export class SimHandle implements SimLike {
     return this.inner.tick();
   }
 
+  /**
+   * Ticks d'une journée de jeu de **cette** partie : `TICKS_PER_DAY × K`, déjà
+   * mis à l'échelle par le sim. La seule source du HUD, du Journal et de tout
+   * ce qui affiche un jour ou une heure — jamais la constante du protocole.
+   */
   ticksPerDay(): number {
     return this.inner.ticks_per_day();
+  }
+
+  /**
+   * Échelle du jour de cette partie (`sim::DayScale`, 1 à 120). Fixée à la
+   * construction (voir `create`) et portée par le snapshot : constante pour la
+   * vie du sim, y compris après un chargement.
+   */
+  dayScale(): number {
+    return this.inner.day_scale();
   }
 
   timeOfDay(): number {

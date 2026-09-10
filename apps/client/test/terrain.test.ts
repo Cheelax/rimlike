@@ -343,6 +343,18 @@ describe("formatTraderLeaves", () => {
     expect(formatTraderLeaves(900)).toBe("2 h"); // 1,5 h arrondi au-dessus
     expect(formatTraderLeaves(14400)).toBe("24 h");
   });
+
+  it("suit la longueur du jour de la partie, pas une constante", () => {
+    // À l'échelle 30, une heure de jeu vaut 18 000 ticks : les mêmes 600 ticks
+    // ne sont plus une heure mais un instant.
+    const scaled = 14_400 * 30;
+    expect(formatTraderLeaves(600, scaled)).toBe("moins d'une heure");
+    expect(formatTraderLeaves(18_000, scaled)).toBe("1 h");
+    // La visite d'un marchand dure un jour de jeu, à toute échelle.
+    expect(formatTraderLeaves(scaled, scaled)).toBe("24 h");
+    expect(sickHoursRemaining(18_000, scaled)).toBe(1);
+    expect(sickHoursRemaining(1, scaled)).toBe(1); // jamais « 0 h »
+  });
 });
 
 describe("DIFFICULTY_LABELS", () => {

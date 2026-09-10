@@ -146,6 +146,11 @@ const SIM_API: ReadonlySet<string> = new Set([
   // depuis l'accueil solo ou la case du globe. Exposé ici pour le crochet de
   // debug (`rpc("biome")`) ; il voyage aussi dans le `frame` (voir `SimRunner`).
   "biome",
+  // Échelle du jour (`crates/sim/src/lib.rs`, `docs/time.md`) : fixée à la
+  // construction comme le biome, imposée par `start.dayScale` en multi.
+  // `ticksPerDay` ci-dessus la porte déjà en ticks ; celle-ci rend K brut,
+  // pour le crochet de debug (`rpc("dayScale")`).
+  "dayScale",
   // Climat, saisons et température (`crates/sim/src/climate.rs`).
   "setClimate",
   "setCalendar",
@@ -271,6 +276,10 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
       width: message.width,
       height: message.height,
       biome: message.biome,
+      // Échelle du jour choisie à l'accueil (`soloDayScale.ts`) : l'échelle du
+      // monde par défaut, 1 pour une « partie rapide ». Comme le biome, elle
+      // part au constructeur et ne bouge plus.
+      dayScale: message.dayScale,
     });
     // Choisie à l'accueil (voir `App.tsx`) : Normal est déjà le défaut du sim,
     // inutile de pousser une commande de plus pour ne rien y changer.
@@ -290,12 +299,16 @@ async function init(message: Extract<MainToWorker, { type: "init" }>): Promise<v
       // colonie hérite de sa case du globe. Il ne passe pas par une commande,
       // contrairement au climat et au calendrier — le sim le fige à la
       // construction. Absent (salle simple), le sim prend la forêt tempérée.
-      createSim: (seed, width, height, biome) =>
+      // `dayScale` vient de `start.dayScale` par le même chemin et pour la
+      // même raison : le serveur l'impose à toute la salle, le sim la fige à
+      // la construction. Le client n'en choisit jamais une en multi.
+      createSim: (seed, width, height, biome, dayScale) =>
         SimHandle.create({
           seed: BigInt(seed),
           width,
           height,
           ...(biome === undefined ? {} : { biome }),
+          ...(dayScale === undefined ? {} : { dayScale }),
         }),
       restoreSim: (bytes) => SimHandle.restore(bytes),
       onState: (state) => post({ type: "net", state }),

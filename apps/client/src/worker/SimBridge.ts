@@ -42,6 +42,12 @@ export type SimSession =
       readonly difficulty: number;
       /** Biome fondable choisi à l'accueil, fixé à la création de la carte. */
       readonly biome: number;
+      /**
+       * Échelle du jour choisie à l'accueil (`soloDayScale.ts`), fixée à la
+       * création de la carte comme le biome : l'échelle du monde par défaut,
+       * 1 pour une « partie rapide ».
+       */
+      readonly dayScale: number;
     }
   | {
       readonly mode: "multi";
@@ -78,6 +84,7 @@ export class SimBridge {
             height: session.height,
             difficulty: session.difficulty,
             biome: session.biome,
+            dayScale: session.dayScale,
           }
         : { type: "init", mode: "multi", server: session.server, room: session.room, name: session.name };
     this.post(message);

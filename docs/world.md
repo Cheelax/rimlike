@@ -298,6 +298,27 @@ ne quitte pas son continent. C'est une décision de périmètre, pas une contrai
 modèle : ajouter un coût maritime et une condition « la caravane a un navire » ne
 touchera que `MOVEMENT_COSTS` et la signature de `findRoute`.
 
+### Ce que ces heures durent vraiment
+
+Une heure de jeu n'a pas de durée en soi : elle vaut `ticks_par_jour / 24` ticks, joués
+à 60 ticks par seconde, donc **10 000 × K millisecondes réelles** où `K` est l'échelle du
+jour du monde (`WORLD_DAY_SCALE`, `docs/protocol.md` §12.1, `docs/PLAN.md` §6). Les
+coûts ci-dessus ne changent pas ; c'est l'unité qui s'étire.
+
+À l'échelle du monde partagé, **K = 30**, une heure de jeu fait cinq minutes réelles :
+
+| trajet | heures de jeu | durée réelle à K = 30 | à K = 1 |
+|---|---|---|---|
+| une case de prairie | 4 | 20 min | 40 s |
+| une case de forêt tempérée | 8 | **40 min** | 1 min 20 |
+| une case de montagne | 24 | 2 h | 4 min |
+| dix cases de forêt tempérée | 80 | **6 h 40** | 13 min |
+
+C'est le rythme voulu : un monde qu'on **ne regarde pas en continu**. Une caravane
+qu'on expédie le matin arrive dans l'après-midi ; on la lance et on va vivre. À K = 1,
+la même traversée durait le temps d'aller chercher un café, et le globe n'était qu'un
+menu de téléportation déguisé.
+
 ## 5. Itinéraires
 
 `findRoute(world, fromId, toId)` : A* sur le graphe des voisins, tas binaire maison

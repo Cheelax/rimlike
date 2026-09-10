@@ -26,8 +26,20 @@ export interface SimLike {
  * changer, après le premier tick ce serait une autre carte. `undefined` en
  * salle simple : la fabrique prend alors le biome par défaut du sim
  * (`DEFAULT_BIOME`, la forêt tempérée).
+ *
+ * `dayScale` vient de `start.dayScale`, par le même chemin et pour la même
+ * raison : l'échelle du jour se fixe à la construction (`WasmSim.new_scaled`),
+ * il n'y a pas de commande pour la changer. `undefined` : `DEFAULT_DAY_SCALE`
+ * (1), le rythme d'origine. En multi, **aucun client ne la choisit** — un seul
+ * qui construirait à une autre échelle divergerait au premier tick.
  */
-export type CreateSim = (seed: number, width: number, height: number, biome?: number) => Promise<SimLike>;
+export type CreateSim = (
+  seed: number,
+  width: number,
+  height: number,
+  biome?: number,
+  dayScale?: number,
+) => Promise<SimLike>;
 
 /** Rebâtit un sim depuis le snapshot du host (rejoint en cours). */
 export type RestoreSim = (bytes: Uint8Array) => Promise<SimLike>;

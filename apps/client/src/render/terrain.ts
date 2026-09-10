@@ -1,3 +1,4 @@
+import { TICKS_PER_DAY } from "@rimlike/protocol";
 import type { TileClimate } from "@rimlike/world";
 import { factionDative, factionGenitive, factionName, relationLabel } from "../factions";
 import { TECHS } from "../research";
@@ -345,23 +346,35 @@ export function formatWealth(n: number): string {
 }
 
 /**
- * Heures de maladie restantes, à partir des ticks de `sim-wasm::pawn_sick`
- * (600 ticks = 1 heure de jeu, `TICKS_PER_DAY` valant 24 h). Arrondi au-dessus
- * pour ne jamais afficher « 0 h » tant qu'il reste des ticks à purger.
+ * Ticks d'une heure de jeu d'après la longueur du jour de la partie
+ * (`frame.ticksPerDay`, déjà mis à l'échelle par le sim) : `ticksPerDay / 24`.
+ * 600 à l'échelle 1, 18 000 à l'échelle 30 — jamais une constante en dur, la
+ * durée d'un jour appartient à la partie (`docs/time.md`).
  */
-export function sickHoursRemaining(ticks: number): number {
-  return ticks > 0 ? Math.ceil(ticks / 600) : 0;
+function hourTicks(ticksPerDay: number): number {
+  return Number.isFinite(ticksPerDay) && ticksPerDay > 0 ? ticksPerDay / 24 : TICKS_PER_DAY / 24;
+}
+
+/**
+ * Heures de maladie restantes, à partir des ticks de `sim-wasm::pawn_sick`.
+ * Arrondi au-dessus pour ne jamais afficher « 0 h » tant qu'il reste des ticks
+ * à purger. `ticksPerDay` vient de la frame : une maladie se compte en jours
+ * de jeu, elle suit donc l'échelle.
+ */
+export function sickHoursRemaining(ticks: number, ticksPerDay: number = TICKS_PER_DAY): number {
+  return ticks > 0 ? Math.ceil(ticks / hourTicks(ticksPerDay)) : 0;
 }
 
 /**
  * Temps avant que le marchand ne reprenne la route, en français, à partir des
- * ticks de `sim-wasm::trader_leaves_in` (600 ticks = 1 heure de jeu). Arrondi
- * à l'heure la plus proche, sauf sous une heure entière où l'arrondi donnerait
- * « 0 h » : « moins d'une heure » à la place.
+ * ticks de `sim-wasm::trader_leaves_in`. Arrondi à l'heure la plus proche,
+ * sauf sous une heure entière où l'arrondi donnerait « 0 h » : « moins d'une
+ * heure » à la place. Même remarque sur `ticksPerDay` que ci-dessus.
  */
-export function formatTraderLeaves(ticks: number): string {
-  if (ticks < 600) return "moins d'une heure";
-  const hours = Math.round(ticks / 600);
+export function formatTraderLeaves(ticks: number, ticksPerDay: number = TICKS_PER_DAY): string {
+  const perHour = hourTicks(ticksPerDay);
+  if (ticks < perHour) return "moins d'une heure";
+  const hours = Math.round(ticks / perHour);
   return `${hours} h`;
 }
 

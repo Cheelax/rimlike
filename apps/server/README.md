@@ -69,8 +69,9 @@ Au redémarrage, les salles sauvées sont gelées, sans hôte ni horloge, et
 figurent dans `GET /rooms` avec `state: "running"` et zéro joueur. Le premier
 `join` reçoit `welcome` puis `snapshot`, sans nouveau `start`, et devient
 hôte. `frozenTicks` compte le temps réel depuis l'arrêt (ou le dernier
-checkpoint en cas de crash), jusqu'à ce `join`, converti selon `WORLD_HOUR_MS`
-et borné à 60 jours de jeu. Une salle vidée se gèle au dernier départ.
+checkpoint en cas de crash), jusqu'à ce `join`, converti selon l'heure de jeu
+du monde (dérivée de `WORLD_DAY_SCALE`) et borné à 60 jours de jeu, eux aussi
+mis à l'échelle. Une salle vidée se gèle au dernier départ.
 Le client sait déjà appliquer cette avance rapide en lockstep : rien à changer.
 
 Une salle sans présence depuis `ROOM_TTL_HOURS` (72 h) est oubliée ; un arrêt
@@ -96,7 +97,8 @@ explicites).
 | `WORLD_PERSIST` | (non défini) | `0` désactive la persistance, quel que soit `WORLD_STATE_FILE`. |
 | `ROOM_PERSIST_MS` | `30000` | Intervalle minimal entre checkpoints automatiques quand des salles nommées sont conservées, en ms. |
 | `ROOM_TTL_HOURS` | `72` | Oublie une salle nommée après cette durée sans présence, en heures réelles. |
-| `WORLD_HOUR_MS` | `30000` | Durée réelle d'une heure de jeu du monde, en ms (30 000 = un jour de monde en 12 min réelles). |
+| `WORLD_DAY_SCALE` | `30` | **Échelle du jour** imposée à toutes les salles de ce serveur (1 à 120, `sim::DayScale`), envoyée dans `start.dayScale`. Un jour de jeu dure `14 400 × K` ticks : à 30, deux heures réelles (une saison en 30 h, une année en 5 jours). C'est aussi **la seule horloge du monde** — la durée d'une heure de jeu, les caravanes, les marchands et le temps gelé en découlent. Se décide **avant la première colonie** : la changer sur un monde peuplé laisse les sims conservés à leur ancienne échelle. |
+| `WORLD_HOUR_MS` | (dérivé : `10 000 × WORLD_DAY_SCALE`, soit 300 000) | **Tests d'intégration seulement.** Force la durée réelle d'une heure de jeu du monde, en ms, au lieu de la déduire de `WORLD_DAY_SCALE` — utile pour faire voyager une caravane en quelques secondes. Un vrai monde ne la définit pas. |
 | `CARAVAN_TICK_MS` | `5000` | Période du tick du monde : avancement des caravanes en route **et des marchands itinérants**, diffusion aux joueurs connectés. |
 | `WORLD_MERCHANTS` | `2` | Marchands itinérants PNJ entretenus sur le globe (`docs/protocol.md` §13) : ils circulent de colonie en colonie et préviennent l'hôte de celle où ils s'arrêtent. `0` n'en fait circuler aucun. |
 | `MERCHANT_STAY_HOURS` | `24` | Heures de jeu qu'un marchand passe sur une colonie avant de repartir vers la suivante (24 = un jour de monde). |
