@@ -1,8 +1,8 @@
 ---
 slug: echelle-client-serveur
-status: open
-claimed_by:
-claimed_at:
+status: claimed
+claimed_by: Claude Fable (session orchestrateur)
+claimed_at: 2026-09-10
 layer: client + serveur
 scope:
   - packages/protocol/src/messages.ts (start.dayScale, constantes en ticks re-documentées en durées)

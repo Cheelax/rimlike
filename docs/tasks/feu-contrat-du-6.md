@@ -1,8 +1,8 @@
 ---
 slug: feu-contrat-du-6
-status: open
-claimed_by:
-claimed_at:
+status: claimed
+claimed_by: Claude Fable (session orchestrateur)
+claimed_at: 2026-09-10
 layer: sim
 scope:
   - crates/sim/src/fire.rs, crates/sim/src/weather.rs (seulement si la cause est là)
