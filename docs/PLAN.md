@@ -668,6 +668,24 @@ est un joueur de plus, présent partout.
 
 ## 8. Journal des décisions
 
+- 2026-09-10 (nuit, fin) : **le monde tourne à l'échelle 30, et il n'a plus qu'une horloge**
+  (PR #17, sous-agent Opus, fiche `echelle-client-serveur`). Le serveur impose `WORLD_DAY_SCALE`
+  (défaut **30**, la valeur mesurée) à toutes ses salles par `start.dayScale` ; l'heure de jeu du
+  monde est **dérivée** de l'échelle (10 000 × K ms, 5 min réelles à K = 30 ; `WORLD_HOUR_MS` ne
+  survit que comme surcharge de tests d'intégration), caravanes, marchands itinérants et gel
+  suivent. Pour un joueur : un jour de jeu = 2 h réelles, une saison 30 h, une année 5 jours,
+  une case de forêt tempérée en caravane 40 min. Le solo joue à l'échelle du monde par défaut,
+  avec ×5 et ×10 (touches 1 à 5) et un sélecteur « Rythme » (« Monde » / « Partie rapide » à
+  l'échelle 1), mémorisé comme le biome ; le multi ne change pas de vitesse. **Protocole 2 → 3** :
+  un client d'avant construirait à l'échelle 1 et divergerait au premier tick — il est refusé à
+  `join` plutôt que laissé désynchroniser. Les constantes du protocole en ticks gardent leur
+  valeur (elles sont en temps réel). Vérifié : quatre suites vertes (508 tests client dont la
+  parité), serveur réel à K = 30, solo en navigateur, monde à deux clients et caravane livrée à
+  l'heure contre le vrai serveur en mémoire. Limite écrite : changer l'échelle d'un monde déjà
+  peuplé n'est pas neutre (les colonies conservées gardent la leur) — repartir d'un état vide ou
+  une fiche de migration. Il reste que la survie à K = 30 est de 15/30 contre 18/30 :
+  `colonie-tient-seule` est la prochaine fiche.
+
 - 2026-09-10 (nuit, suite) : **l'hémostase est physique, le feu ne bouge pas, K = 30 est proposé
   pour le monde** (PR #16, sous-agent Opus, fiche `echelle-hemostase-pluie`). Une ligne de sim :
   la compression qui arrête le sang n'est plus mise à l'échelle — elle court contre un

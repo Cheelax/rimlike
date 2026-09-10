@@ -1,6 +1,6 @@
 ---
 slug: echelle-client-serveur
-status: claimed
+status: done
 claimed_by: Claude Fable (session orchestrateur)
 claimed_at: 2026-09-10
 layer: client + serveur
@@ -21,7 +21,7 @@ acceptance:
   - le solo joue à l échelle du monde par défaut avec les vitesses x1, x2, x3, x5, x10 ; une sauvegarde solo porte son échelle
   - le monde n a plus d horloge à part : WORLD_HOUR_MS disparaît ou devient dérivé de l échelle (une heure de jeu = ticks_par_jour / 24 ticks à 60 ticks/s) ; les caravanes, les marchands itinérants et frozenTicksForHours suivent ; test serveur qui le prouve
   - essai à deux onglets (AGENTS.md « Essayer le monde partagé ») : même hash des deux côtés à l échelle 30, une caravane arrive au temps prévu
-done_in:
+done_in: a5cb76a (PR #17)
 ---
 
 # L'échelle du jour arrive au client et au serveur
