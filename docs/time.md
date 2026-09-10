@@ -144,6 +144,7 @@ entière, et l'identité à K = 1 puisque `tick % 1 == 0` est toujours vrai.
 | `RETRY_TICKS` = 30 | calcul | **cas tranché** : c'est une borne de latence, pas une durée de jeu. Un colon sans travail réessaie une demi-seconde plus tard, à K = 1 comme à K = 30 ; l'étirer ferait attendre 15 s à un colon devant un tas de bois |
 | `PATH_ATTEMPTS` = 6, budgets d'A\* | calcul | des candidats, pas des ticks |
 | `BREAK_WANDER_INTERVAL` = 30 | physique | l'errance d'une crise est un déplacement (la crise, elle, dure `BREAK_TICKS`) |
+| flânerie d'un colon sans travail (90 ticks, `idle_wander`) | physique | un colon qui traîne fait un pas de temps en temps : c'est du mouvement |
 | `SPOILAGE_INTERVAL` = 60 | calcul | cadence d'évaluation : la perte est `elapsed / durée de vie`, et la durée de vie est en jours — le total par jour est le même à toutes les échelles |
 | repousse d'un buisson (`self.tick + TICKS_PER_DAY`) | jours | un jour |
 
@@ -204,12 +205,33 @@ entière, et l'identité à K = 1 puisque `tick % 1 == 0` est toujours vrai.
 
 ## Compte
 
-| famille | entrées |
+| famille | entrées de la table |
 |---|---|
 | travail (× K) | 24 |
-| physique (inchangée) | 17 |
+| physique (inchangée) | 18 |
 | jours (suit par construction) | 30 |
 | calcul (inchangée, vérifiée) | 13 |
+
+Les entrées comptent des **lignes de la table**, pas des constantes : une
+ligne comme `BuildKind::work_ticks` en porte dix à elle seule.
+
+## Ce que la mesure a trouvé aux frontières
+
+Deux croisements de familles se voient à la campagne (`CAMPAIGN-FINDINGS.md`
+§15.4 et §15.5), et il faut les connaître avant de ranger une durée nouvelle :
+
+- **l'hémostase contre le saignement** : `HEMOSTASIS_TICKS` est du travail, le
+  saignement est physique. À K = 30, la compression arrive après que le blessé
+  se soit vidé, et les morts de blessures passent de 9 % à 33 %. Le §15.4
+  propose de reclasser `HEMOSTASIS_TICKS` en physique — **non appliqué**.
+- **la météo contre le feu** : une période de temps sec est en jours, un
+  incendie est physique. À K = 30, aucune averse ne tombe plus pendant la vie
+  d'un feu, et la surface brûlée double. Le §15.5 laisse le constat ouvert —
+  **rien n'est appliqué**.
+
+La leçon générale : quand une durée d'une famille **court contre** une durée
+de l'autre, l'échelle change le vainqueur. Un classement isolément défendable
+peut être faux en couple.
 
 ## Ce que l'échelle ne touche pas, et pourquoi c'est voulu
 
