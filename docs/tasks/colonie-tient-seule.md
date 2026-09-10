@@ -1,8 +1,8 @@
 ---
 slug: colonie-tient-seule
-status: open
-claimed_by:
-claimed_at:
+status: claimed
+claimed_by: Claude Fable (session orchestrateur)
+claimed_at: 2026-09-10
 layer: sim
 scope:
   - crates/sim/src/combat.rs (décision tactique à l annonce d un raid)
