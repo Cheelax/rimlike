@@ -90,7 +90,7 @@ entière, et l'identité à K = 1 puisque `tick % 1 == 0` est toujours vrai.
 | constante | famille | raison |
 |---|---|---|
 | `TEND_TICKS` = 240 | **travail** | panser est un geste de soignant ; c'est le seul de la santé qui soit du travail au sens strict |
-| `HEMOSTASIS_TICKS` = `TEND_TICKS / 4` | **travail** | fraction de `TEND_TICKS`, elle le suit |
+| `HEMOSTASIS_TICKS` = `TEND_TICKS / 4` | **physique** | **cas tranché le 2026-09-10, mesuré** : c'est une fraction de `TEND_TICKS`, mais elle ne le suit pas. La compression court contre une hémorragie physique (`BLEED_INTERVAL`) : étirée par K, elle arrive après que le blessé se soit vidé — 9 % → 33 % des morts à K = 30 (`CAMPAIGN-FINDINGS.md` §15.4). Même couple que `EXTINGUISH_TICKS` contre les flammes. Le pansement, lui (`TEND_TICKS`), reste du travail : il ne court contre rien |
 | `BLEED_TICKS` = `TICKS_PER_DAY / 6` | **physique** | **cas tranché** : une plaie coule le temps d'un combat, et c'est en ticks qu'elle tue (`BLEED_INTERVAL`). L'étirer d'un facteur 30 rendrait mortelle la moindre égratignure ; la garder physique laisse la plaie se refermer au rythme du raid qui l'a faite |
 | `BLEED_INTERVAL` = 100, `BLOOD_REGEN_INTERVAL` = 40 | **physique** | l'hémorragie et le sang qui se refait sont l'autre moitié du même cas : ils restent avec le combat |
 | `STARVE_DAMAGE_INTERVAL` = 28 | **travail** | **cas tranché** : mourir de faim prend deux jours de jeu, pas 28 ticks. Non étirée, la famine tuerait en 1/30 de jour à K = 30 — c'est une attrition, pas un coup |
@@ -207,8 +207,8 @@ entière, et l'identité à K = 1 puisque `tick % 1 == 0` est toujours vrai.
 
 | famille | entrées de la table |
 |---|---|
-| travail (× K) | 24 |
-| physique (inchangée) | 18 |
+| travail (× K) | 23 |
+| physique (inchangée) | 19 |
 | jours (suit par construction) | 30 |
 | calcul (inchangée, vérifiée) | 13 |
 
@@ -218,16 +218,27 @@ ligne comme `BuildKind::work_ticks` en porte dix à elle seule.
 ## Ce que la mesure a trouvé aux frontières
 
 Deux croisements de familles se voient à la campagne (`CAMPAIGN-FINDINGS.md`
-§15.4 et §15.5), et il faut les connaître avant de ranger une durée nouvelle :
+§15.4, §15.5 et §15.11), et il faut les connaître avant de ranger une durée
+nouvelle :
 
-- **l'hémostase contre le saignement** : `HEMOSTASIS_TICKS` est du travail, le
-  saignement est physique. À K = 30, la compression arrive après que le blessé
-  se soit vidé, et les morts de blessures passent de 9 % à 33 %. Le §15.4
-  propose de reclasser `HEMOSTASIS_TICKS` en physique — **non appliqué**.
+- **l'hémostase contre le saignement** : `HEMOSTASIS_TICKS` était du travail, le
+  saignement est physique. À K = 30, la compression arrivait après que le blessé
+  se soit vidé, et les morts de blessures passaient de 9 % à 33 %.
+  **Réglé le 2026-09-10** : `HEMOSTASIS_TICKS` est **physique**, `TEND_TICKS`
+  reste du travail. Mesuré à K = 30 : blessures 33 % → 13 % des morts, colonies
+  vivantes 10/30 → 15/30 (témoin K = 1 : 9 % et 18/30). C'est **la** correction
+  que ce fichier a rendue possible : la ligne était défendable isolément, elle
+  était fausse en couple.
 - **la météo contre le feu** : une période de temps sec est en jours, un
   incendie est physique. À K = 30, aucune averse ne tombe plus pendant la vie
-  d'un feu, et la surface brûlée double. Le §15.5 laisse le constat ouvert —
-  **rien n'est appliqué**.
+  d'un feu, et la surface brûlée par incendie double (17,7 → 36,7 cases).
+  **Mesuré le 2026-09-10, et laissé tel quel** (§15.11) : mettre la
+  consommation du feu à l'échelle rend une case propageante trente-six fois
+  plus longtemps et rase la carte (pire graine à 59 % contre 32 %). L'écart de
+  surface est donc accepté comme un effet de K. À savoir avant de ranger une
+  durée du feu : à grand K, le **vent** ne tourne plus non plus (il se lit dans
+  le bruit de la période météo), ce qui joue en sens inverse et **borne**
+  l'incendie.
 
 La leçon générale : quand une durée d'une famille **court contre** une durée
 de l'autre, l'échelle change le vainqueur. Un classement isolément défendable

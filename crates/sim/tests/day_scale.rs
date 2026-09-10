@@ -5,12 +5,16 @@
 //! - **travail** : un chantier prend K fois plus de ticks ;
 //! - **physique** : la marche prend le même nombre de ticks ;
 //! - **jours** : la faim tombe au même point du jour ;
+//! - **la frontière des deux premières** : l'hémostase ne s'étire pas (elle
+//!   court contre une hémorragie qui ne ralentit pas) alors que le pansement
+//!   complet, lui, s'étire ;
 //! - **snapshot** : l'échelle voyage avec l'état, et un tampon d'avant se relit
 //!   à l'échelle 1.
 
+use sim::health::{HEMOSTASIS_TICKS, TEND_TICKS};
 use sim::pawn::HUNGRY;
 use sim::testmap::map_from;
-use sim::{Biome, BuildKind, Command, ItemKind, Material, Sim, WorkType};
+use sim::{Biome, BodyPart, BuildKind, Command, ItemKind, Job, Material, Sim, Weather, WorkType};
 
 /// Clairière sans buisson ni arbre : rien à manger, rien à couper. Les colons
 /// n'y font que ce qu'on leur demande.
@@ -163,6 +167,118 @@ fn la_faim_tombe_au_meme_point_du_jour_a_toutes_les_echelles() {
         one, four,
         "la faim est en jours : elle doit tomber au même point du jour \
          ({one} ‰ contre {four} ‰)"
+    );
+}
+
+// ----------------------------------------------------------------------
+// La frontière des familles : l'hémostase est physique, le pansement travail
+// ----------------------------------------------------------------------
+
+/// Ce qu'un soin coûte en **ticks de travail effectif** à l'échelle donnée :
+/// ceux où la barre du pansement avance, et eux seuls. Deux jalons y sont
+/// relevés — le moment où le sang s'arrête (l'hémostase, `HEMOSTASIS_TICKS`)
+/// et celui où la plaie est bandée (`TEND_TICKS`) — plus le tick absolu de
+/// l'hémostase, parce que c'est lui que le blessé oppose à son hémorragie.
+///
+/// La météo est figée au beau fixe : sa durée est en jours, donc l'échelle
+/// décale ses tirages, et deux échelles ne joueraient plus la même partie.
+fn tend_marks(scale: u32) -> (u64, u64, u64) {
+    let mut s = bare(scale);
+    s.force_weather(Weather::Clear, u64::MAX);
+    // De quoi ne jamais interrompre un soin pour aller manger.
+    s.spawn_item(ItemKind::Berries, 200, 1, 1);
+    let patient = s
+        .pawns()
+        .iter()
+        .filter(|p| p.is_colonist())
+        .map(|p| p.id)
+        .nth(2)
+        .expect("il faut trois colons");
+    s.inflict_injury(patient, BodyPart::Torso, 300);
+    assert!(
+        s.pawns().iter().any(|p| p.id == patient && p.is_bleeding()),
+        "la scène ne saigne pas à l'échelle {scale}"
+    );
+
+    let bleeding = |s: &Sim| s.pawns().iter().any(|p| p.id == patient && p.is_bleeding());
+    let tended = |s: &Sim| {
+        s.pawns()
+            .iter()
+            .find(|p| p.id == patient)
+            .is_some_and(|p| !p.injuries.is_empty() && p.injuries.iter().all(|i| i.tended))
+    };
+    let progress = |s: &Sim| {
+        s.pawns()
+            .iter()
+            .find_map(|p| match p.job {
+                Job::Tend { target, progress } if target == patient => Some(progress),
+                _ => None,
+            })
+            .unwrap_or(0)
+    };
+
+    let mut worked = 0;
+    let mut before = 0;
+    let mut hemostasis = (0, 0);
+    for _ in 0..40 * u64::from(s.ticks_per_day()) {
+        if !bleeding(&s) && hemostasis == (0, 0) {
+            hemostasis = (worked, s.tick());
+        }
+        if tended(&s) {
+            assert!(hemostasis != (0, 0), "le sang ne s'est jamais arrêté");
+            return (hemostasis.0, hemostasis.1, worked);
+        }
+        s.step(&[]);
+        let now = progress(&s);
+        if now > before {
+            worked += 1;
+        }
+        before = now;
+    }
+    panic!("le soin ne s'est jamais achevé à l'échelle {scale}");
+}
+
+#[test]
+fn l_hemostase_ne_s_etire_pas_mais_le_pansement_si() {
+    let (one_stop, one_tick, one_full) = tend_marks(1);
+    let (four_stop, four_tick, four_full) = tend_marks(4);
+    assert!(one_stop > 0, "aucun tick de soin mesuré à l'échelle 1");
+    println!(
+        "K = 1 : sang arrêté après {one_stop} ticks de soin (tick {one_tick}), \
+         pansé après {one_full} — K = 4 : {four_stop} (tick {four_tick}), {four_full}"
+    );
+
+    // L'hémostase est **physique** : le même nombre de ticks de compression,
+    // et — la marche jusqu'au chevet étant physique elle aussi — au même tick
+    // de la partie. C'est ce qui la fait gagner contre une hémorragie qui,
+    // elle, ne ralentit pas.
+    assert_eq!(
+        one_stop, four_stop,
+        "l'hémostase est physique : elle doit coûter le même travail \
+         ({one_stop} contre {four_stop} ticks)"
+    );
+    assert_eq!(
+        one_tick, four_tick,
+        "l'hémostase doit tomber au même tick de la partie \
+         ({one_tick} contre {four_tick})"
+    );
+    assert!(
+        one_stop <= u64::from(HEMOSTASIS_TICKS) + 1,
+        "l'hémostase a coûté {one_stop} ticks pour {HEMOSTASIS_TICKS} attendus"
+    );
+
+    // Le pansement complet, lui, reste du travail : quatre fois plus long.
+    let ratio = four_full * 1000 / one_full;
+    assert!(
+        (3_900..=4_100).contains(&ratio),
+        "le pansement complet doit coûter quatre fois plus à K = 4 : \
+         {four_full} contre {one_full}, soit {ratio} millièmes"
+    );
+    // Un tick de marge de chaque côté : le dernier pas de la barre déborde le
+    // seuil, et il n'est pas compté deux fois.
+    assert!(
+        one_full + 1 >= u64::from(TEND_TICKS),
+        "le soin complet a coûté {one_full} ticks pour {TEND_TICKS} attendus"
     );
 }
 
