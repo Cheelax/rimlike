@@ -668,6 +668,23 @@ est un joueur de plus, présent partout.
 
 ## 8. Journal des décisions
 
+- 2026-09-10 (nuit, fin) : **le contrat du feu n'était pas cassé, il était mal mesuré** (PR #18,
+  sous-agent Opus, fiche `feu-contrat-du-6`). Bissection de la campagne de référence sur onze
+  révisions : la « pire graine » saute de 94 à 605 sur des commits qui ne touchent pas au feu, et
+  passe à 1 000 cases à la chasse à mains nues (PR #13) — mais sur 200 graines les deux
+  révisions ont la même loi : la chasse rebat les tirages, elle n'allume rien. **La pire graine est
+  toujours une carte abandonnée** (colonie morte au jour 3-5, incendie de 993 cases dix jours
+  plus tard, plus personne pour éteindre) ; sur les colonies debout le pire feu fait 87 cases,
+  2 % de la carte à K = 1, 0,8 % à K = 30. Le feu ne tue personne (5 morts sur 200 graines).
+  Décision : **aucune constante du feu ne bouge** ; la campagne gagne le compteur « pire feu »
+  (incendie unique, additif) et sépare colonies vivantes et éteintes ; le contrat du §6 est révisé
+  par écrit — sous 13 % sur une carte habitée, « pas de demi-carte » sur une carte abandonnée
+  (24 % contre 57 % avant le vent). Écartés : toucher au feu, rouvrir la chasse, arrêter la
+  campagne à l'extinction, borner la météo. Sujet ouvert pour la phase 6 : ce que devient une
+  case abandonnée qui brûle — c'est une question de monde continu, pas de feu. Leçon de méthode :
+  un maximum sur 30 graines n'est pas un indicateur ; lire le pire feu des colonies vivantes sur
+  cent graines.
+
 - 2026-09-10 (nuit, fin) : **le monde tourne à l'échelle 30, et il n'a plus qu'une horloge**
   (PR #17, sous-agent Opus, fiche `echelle-client-serveur`). Le serveur impose `WORLD_DAY_SCALE`
   (défaut **30**, la valeur mesurée) à toutes ses salles par `start.dayScale` ; l'heure de jeu du

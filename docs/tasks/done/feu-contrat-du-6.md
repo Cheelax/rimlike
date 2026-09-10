@@ -1,6 +1,6 @@
 ---
 slug: feu-contrat-du-6
-status: claimed
+status: done
 claimed_by: Claude Fable (session orchestrateur)
 claimed_at: 2026-09-10
 layer: sim
@@ -16,7 +16,7 @@ acceptance:
   - cargo run -p sim-cli --release -- campaign --seeds 30 --days 30 --size 64 → pire graine ≤ 13 % de la carte (≤ 532 cases sur 4 096), départs de feu par jour inchangés, survie inchangée à ±1 colonie
   - même campagne --day-scale 30 → pire graine rapportée (référence : 1 322 cases, 32 %)
   - DEMO_HASH mis à jour dans le même commit si et seulement si le sim change, avec la raison ; parity.test.ts vert
-done_in:
+done_in: 0cc85d4 (PR #18)
 ---
 
 # Le feu ne tient plus son contrat du §6, et ce n'est pas l'échelle du jour
