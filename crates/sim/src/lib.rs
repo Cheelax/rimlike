@@ -38,6 +38,7 @@ pub mod pawn;
 pub mod regions;
 pub mod research;
 pub mod rng;
+pub mod scenario;
 pub mod social;
 pub mod storyteller;
 pub mod testmap;

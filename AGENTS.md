@@ -61,7 +61,10 @@ aléatoires et aberrantes, deux sims comparées, paniques attrapées ; bilan dan
 `crates/sim-cli/FUZZ-FINDINGS.md`), `campaign` (N graines × D jours avec un joueur scripté,
 causes de mort, raids, vivres, technologies, bétail, feux ; constats dans
 `crates/sim-cli/CAMPAIGN-FINDINGS.md` : tout réglage d'équilibrage part de là). Après tout changement du sim, relancer une campagne
-de fuzz courte. Référence mesurée le
+de fuzz courte. Depuis le 2026-09-10, le scénario `demo` de `run`, `verify` et `bench` est
+**le scénario de référence du sim** (`sim::scenario::demo_commands`, celui du test de
+déterminisme) et non plus une copie figée au climat : ses ticks/s et son hash ne se
+comparent pas à ceux d'avant cette date. Référence mesurée le
 2026-09-05 sur carte 128×128 en release : ~2,2 M ticks/s à vide, ~0,6 M en pleine
 activité, ~0,2 M avec 15 colons. Toute régression nette sur ces chiffres se justifie.
 
@@ -118,6 +121,17 @@ Ils sont imposés par les lints là où c'est possible, et par le test de déter
   `first_raid_is_dangerous_but_survivable`), jamais à l'intuition.
 - **Ajouter une variante de `Command` en fin d'enum** : postcard encode l'index, les
   manifestes et snapshots existants en dépendent.
+- **Le hash du scénario de référence est épinglé**, dans `crates/sim/src/scenario.rs` et
+  nulle part ailleurs : `DEMO_HASH` (graine 1, 64×64, 10 000 tours de boucle, `Sim::new`,
+  `demo_commands` appliqué avant chaque `step`) et `TUNDRA_IDLE_HASH` (toundra, graine 5,
+  48×48, six jours, sans une seule commande).
+  `crates/sim/tests/determinism.rs::demo_hash_is_pinned` les vérifie en **natif** et
+  `apps/client/test/parity.test.ts` en **WASM**, contre la même constante lue à travers la
+  frontière : natif = constante et WASM = constante, donc natif = WASM. C'est la seule
+  preuve que le serveur (natif) et le navigateur (WASM) simulent la même partie ; ne pas la
+  contourner en recopiant une valeur côté TypeScript. Ces hashes **changent quand le sim
+  change** : celui qui change le sim met la constante à jour dans le même commit et écrit
+  pourquoi (même règle que les empreintes de `tests/biomes.rs`).
 
 ## Contrats entre Rust et TypeScript
 
@@ -152,6 +166,7 @@ Les valeurs numériques des enums sont un contrat, à modifier des deux côtés 
 | `factions::NpcFaction` : 0 Clan des Cendres, 1 Fraternité du Fer (pillards), 2 Guilde des Colporteurs (marchands) ; réputation −100..=100 (hostile < −50, allié ≥ 50) ; `Command::Gift { faction, kind, count }` ; `EventKind` 41 raid repoussé (`arg` = tribu) / 42 tribut / 43 relation changée (`arg` = faction) | `goodwill()` (3 valeurs), statiques `faction_name(id)` et `faction_kind(id)` (0 pillards, 1 guilde, −1), `last_raid_faction()` (−1 si aucun), `gift`, `encode_gift` ; `trader_offers()` renvoie le prix déjà remisé (110 % si Guilde alliée) |
 | `ItemKind` 16 minerai / 17 lingot / 18 épée (3 lingots par épée depuis le 2026-09-06 ; `COUNT` = 19 : `stored_totals`, `craft_targets`, `buy_prices`), `Feature::OreRock = 19` / `Forge = 20`, `BuildKind::Forge = 9` (20 pierre, refusée sans `Tech::Metallurgy = 5`, `TECH_COUNT` = 6 : `research_state()` renvoie 19 entiers), job 30 fond le métal ; lingot annoncé par `ItemCrafted`, épée par `WeaponCrafted` | `ITEM_NAMES`, `ITEM_COLORS`, `WEAPON_NAMES`, `FEATURE` 19/20, `BUILD_KIND.Forge`, `TECHS` à 6, `JOB_LABELS[30]` |
 | `biome::Biome` (0 océan, 1 banquise, 2 toundra, 3 forêt boréale, 4 forêt tempérée, 5 prairie, 6 désert, 7 savane, 8 jungle, 9 montagne : alignés sur `packages/world/src/biomes.ts`), fixé à la création (`Sim::new_in_biome`, pas de `Command::SetBiome` ; `new` = tempéré), `Terrain::Snow = 8` | `WasmSim.new_in_biome(seed, w, h, biome)`, `biome()` ; `TERRAIN.Snow`, `TERRAIN_COLORS[8]` ; le serveur envoie `start.biome` (salle `tile-N`, absent = 4) et `snapshot.biome` (réouverture, informatif), tous les clients construisent par `new_in_biome`, `frame.biome` et `rpc("biome")` |
+| `sim::scenario` : `demo_commands` (le scénario de référence, source unique de `tests/determinism.rs` et de `rimlike-sim --scenario demo`), `DEMO_HASH` / `DEMO_SEED` / `DEMO_SIZE` / `DEMO_TICKS`, `TUNDRA_IDLE_HASH` / `TUNDRA_IDLE_SEED` / `TUNDRA_IDLE_SIZE` / `TUNDRA_IDLE_DAYS` | `WasmSim.step_demo(n)` (commandes du scénario puis un pas, comme en natif ; sim neuve seulement) et les statiques `demo_hash()`, `demo_seed()`, `demo_size()`, `demo_ticks()`, `tundra_idle_hash()`, `tundra_idle_seed()`, `tundra_idle_size()`, `tundra_idle_days()` ; `apps/client/test/parity.test.ts` **lit** ces constantes à travers la frontière, il ne les recopie jamais |
 | `pawn::Job::code()` | `terrain.ts` (`JOB_LABELS`) |
 | `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, `PRIORITY_STRIDE` = 8, `SKILL_STRIDE` = 15, `HEALTH_STRIDE` = 4, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |
 

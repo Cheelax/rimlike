@@ -159,6 +159,73 @@ impl WasmSim {
         self.refresh_buffers();
     }
 
+    /// Rejoue le **scénario de référence** du sim sur `n` tours de boucle :
+    /// pour chaque `t` de 0 à `n`, `sim::scenario::demo_commands(&sim, t)`
+    /// puis un pas — l'ordre exact de la boucle native
+    /// (`rimlike-sim run --scenario demo` et le test `demo_hash_is_pinned`).
+    ///
+    /// Sert à prouver la parité natif/WASM (`apps/client/test/parity.test.ts`)
+    /// et rien d'autre. Le numéro de tick vient du compteur de boucle et non
+    /// de `sim.tick()` — le scénario avance la carte de 3 000 ticks d'un coup
+    /// au tour 8 000 —, donc la méthode n'a de sens que sur une sim neuve.
+    /// Les commandes en attente, s'il y en a, partent avec le premier tour.
+    ///
+    /// Zéro logique ici : le scénario vit dans `sim::scenario`.
+    pub fn step_demo(&mut self, n: u32) {
+        for t in 0..u64::from(n) {
+            let mut cmds = core::mem::take(&mut self.pending);
+            cmds.extend(sim::scenario::demo_commands(&self.inner, t));
+            self.inner.step(&cmds);
+        }
+        self.refresh_buffers();
+    }
+
+    /// Hash épinglé de la partie que joue `step_demo` (`scenario::DEMO_HASH`),
+    /// au **même format** que `hash()`. La constante n'est écrite qu'une fois,
+    /// en Rust : le test de parité la lit à travers la frontière plutôt que
+    /// d'en garder une copie.
+    pub fn demo_hash() -> String {
+        format!("{:016x}", sim::scenario::DEMO_HASH)
+    }
+
+    /// Graine de la partie de `demo_hash()`.
+    pub fn demo_seed() -> u64 {
+        sim::scenario::DEMO_SEED
+    }
+
+    /// Côté de la carte carrée de la partie de `demo_hash()`.
+    pub fn demo_size() -> u32 {
+        sim::scenario::DEMO_SIZE
+    }
+
+    /// Tours de boucle à passer à `step_demo` pour retomber sur `demo_hash()`.
+    pub fn demo_ticks() -> u32 {
+        sim::scenario::DEMO_TICKS as u32
+    }
+
+    /// Hash épinglé de la seconde partie de référence : toundra, **sans
+    /// aucune commande** (`scenario::TUNDRA_IDLE_HASH`), au format de
+    /// `hash()`. Ses paramètres : `tundra_idle_seed()`, `tundra_idle_size()`,
+    /// `tundra_idle_days()` jours de `ticks_per_day()` ticks.
+    pub fn tundra_idle_hash() -> String {
+        format!("{:016x}", sim::scenario::TUNDRA_IDLE_HASH)
+    }
+
+    /// Graine de la partie de `tundra_idle_hash()`.
+    pub fn tundra_idle_seed() -> u64 {
+        sim::scenario::TUNDRA_IDLE_SEED
+    }
+
+    /// Côté de la carte carrée de la partie de `tundra_idle_hash()`.
+    pub fn tundra_idle_size() -> u32 {
+        sim::scenario::TUNDRA_IDLE_SIZE
+    }
+
+    /// Jours de jeu joués par la partie de `tundra_idle_hash()`.
+    pub fn tundra_idle_days() -> u32 {
+        sim::scenario::TUNDRA_IDLE_DAYS as u32
+    }
+
     // --- Commandes (appliquées au prochain tick) ---
 
     pub fn move_to(&mut self, pawn: u32, x: u32, y: u32) {
