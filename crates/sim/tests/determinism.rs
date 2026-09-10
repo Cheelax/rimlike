@@ -57,6 +57,51 @@ fn same_seed_same_commands_same_hash() {
     );
 }
 
+/// Le même test à l'**échelle du jour 30** (la cible de mesure de la phase 6,
+/// voir `docs/time.md`) : deux sims, les mêmes commandes, le même hash. Le
+/// scénario y joue plus vite en jours de jeu qu'à l'échelle 1 — c'est le but —
+/// mais le déterminisme, lui, ne dépend pas de l'échelle.
+///
+/// Le marchand est poussé à la main comme ci-dessus ; l'avance rapide du
+/// scénario reste en ticks réels, elle saute donc trente fois moins de jours.
+#[test]
+fn same_seed_same_commands_same_hash_at_scale_30() {
+    let mut a = Sim::new_scaled(0xDEAD_BEEF, 64, 64, sim::Biome::default(), 30);
+    let mut b = Sim::new_scaled(0xDEAD_BEEF, 64, 64, sim::Biome::default(), 30);
+    assert_eq!(a.day_scale(), 30);
+    assert_eq!(a.ticks_per_day(), 30 * TICKS_PER_DAY);
+    for t in 0..TICKS {
+        let cmds = demo_commands(&a, t);
+        a.step(&cmds);
+        b.step(&cmds);
+        if t == TRADER_AT {
+            a.trigger_trader_visit();
+            b.trigger_trader_visit();
+        }
+        if t % 1000 == 0 {
+            assert_eq!(a.state_hash(), b.state_hash(), "désync au tick {t}");
+        }
+    }
+    assert_eq!(a.state_hash(), b.state_hash());
+    assert_eq!(a, b);
+    // Dix mille ticks à l'échelle 30 ne font que 2 % d'une journée de jeu :
+    // contrairement au test ci-dessus, **rien n'est produit** (couper un arbre
+    // en demande 7 200 à lui seul, et le scénario change de désignation toutes
+    // les 500). Les plans posés, eux, sont bien là.
+    assert!(
+        !a.blueprints().is_empty(),
+        "le scénario n'a posé aucun plan à l'échelle 30"
+    );
+    // Une partie à l'échelle 30 n'est pas la même partie : si elle rendait le
+    // hash de l'échelle 1, l'échelle ne serait câblée nulle part.
+    let mut plain = Sim::new(0xDEAD_BEEF, 64, 64);
+    for t in 0..TICKS {
+        let cmds = demo_commands(&plain, t);
+        plain.step(&cmds);
+    }
+    assert_ne!(a.state_hash(), plain.state_hash());
+}
+
 /// L'empreinte épinglée du scénario de référence, jouée en natif : graine 1,
 /// 64×64, 10 000 tours de boucle, `Sim::new`, commandes avant `step` — la
 /// partie que décrit `scenario::DEMO_HASH` et que rejoue
