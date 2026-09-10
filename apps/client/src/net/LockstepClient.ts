@@ -13,6 +13,7 @@
  */
 
 import {
+  DEFAULT_DAY_SCALE,
   HASH_EVERY_TICKS,
   PROTOCOL_VERSION,
   decodeServerMessage,
@@ -116,6 +117,24 @@ export interface LockstepState {
    * première frame.
    */
   readonly biome: number | null;
+  /**
+   * Échelle du jour imposée par le serveur à la salle, reçue par
+   * `start.dayScale` ou `snapshot.dayScale` (`docs/protocol.md` §3.2).
+   * `DEFAULT_DAY_SCALE` (1) tant qu'aucun `start` n'a été reçu, et pour un
+   * serveur qui ne connaît pas le champ.
+   *
+   * Comme `biome`, elle **ne se consomme pas** : ce n'est pas une consigne à
+   * émettre mais une valeur déjà appliquée — passée au constructeur du sim
+   * (`createSim(seed, width, height, biome, dayScale)`) sur un `start`, déjà
+   * portée par le sim restauré sur un `snapshot`. Elle reste lisible pour le
+   * HUD. La source qui fait foi reste le sim (`SimHandle.ticksPerDay()`,
+   * porté par le `frame`) ; ce champ n'en est qu'un avant-goût.
+   *
+   * Contrairement à `biome`, elle n'est jamais `null` : hors salle « case »
+   * comme en salle « case », le serveur impose un rythme, et « pas de champ »
+   * veut dire 1, pas « je ne sais pas ».
+   */
+  readonly dayScale: number;
   /**
    * Marchands itinérants arrivés sur notre case pendant que la colonie était
    * fermée (`docs/protocol.md` §13.5), reçus par `start.pendingTraders`
@@ -280,6 +299,8 @@ export class LockstepClient {
   private dayOfYearValue: number | null = null;
   /** Voir `LockstepState.biome` : jamais consommé, seulement remplacé. */
   private biomeValue: number | null = null;
+  /** Voir `LockstepState.dayScale` : jamais consommée, seulement remplacée. */
+  private dayScaleValue: number = DEFAULT_DAY_SCALE;
   /** Voir `LockstepState.pendingTraders` et `consumePendingTraders`. */
   private pendingTradersValue = 0;
   /** Voir `LockstepState.goodwill` et `consumeGoodwill`. */
@@ -672,7 +693,17 @@ export class LockstepClient {
         // n'a pas de `SetBiome`, la composition d'une carte ne change pas après
         // le premier tick — et reste lisible pour le HUD.
         this.biomeValue = message.biome ?? null;
-        this.adopt(this.createSim(message.seed, message.width, message.height, message.biome));
+        // Échelle du jour (§3.2) : du même bois que le biome — au
+        // constructeur, jamais en commande. Le serveur l'impose à tous les
+        // clients de la salle ; aucun ne la choisit, sous peine de désync au
+        // premier tick.
+        // Le champ part tel quel à la fabrique, absent compris : c'est le sim
+        // qui porte son défaut, comme pour le biome — un `start` sans échelle
+        // construit exactement ce que construisait le client d'avant.
+        this.dayScaleValue = message.dayScale ?? DEFAULT_DAY_SCALE;
+        this.adopt(
+          this.createSim(message.seed, message.width, message.height, message.biome, message.dayScale),
+        );
         this.emit();
         return;
       case "snapshot":
@@ -695,6 +726,11 @@ export class LockstepClient {
         // porte déjà sa carte, le champ ne fait que la nommer pour le HUD avant
         // la première frame. Rien à passer à `restoreSim`, qui relit tout.
         this.biomeValue = message.biome ?? null;
+        // Échelle du jour, informative comme le biome sur ce chemin : le sim
+        // restauré la porte déjà (elle est dans le snapshot, `docs/time.md`).
+        // Un `snapshot` relayé par l'hôte à un rejoignant n'en porte pas : on
+        // garde alors la valeur reçue au `start`, qui n'a pas changé.
+        if (message.dayScale !== undefined) this.dayScaleValue = message.dayScale;
         this.adopt(this.restoreSim(message.data));
         this.emit();
         return;
@@ -880,6 +916,7 @@ export class LockstepClient {
       climate: this.climateValue,
       dayOfYear: this.dayOfYearValue,
       biome: this.biomeValue,
+      dayScale: this.dayScaleValue,
       pendingTraders: this.pendingTradersValue,
       goodwill: this.goodwillValue,
       traderArrivals: this.traderArrivalsValue,

@@ -437,12 +437,17 @@ export class SimRunner {
     if (this.pausedFlag) return 0; // accumulateur gelé
     this.acc += dt;
     const tickMs = BASE_TICK_MS / this.speedValue;
+    // Le plafond suit la vitesse : à x1 il laisse huit fois le temps réel de
+    // marge, il doit en laisser autant à x10 — sinon la vitesse maximale
+    // serait le plafond lui-même (huit ticks par intervalle de 16 ms), pas
+    // celle que le joueur a demandée.
+    const budget = Math.ceil(this.maxTicksPerStep * this.speedValue);
     // Une division plutôt qu'une soustraction en boucle : `floor(dt / tickMs)`
     // exactement, sans le grain de sable de soixantièmes accumulés.
-    const ticks = Math.min(Math.floor(this.acc / tickMs), this.maxTicksPerStep);
+    const ticks = Math.min(Math.floor(this.acc / tickMs), budget);
     this.acc -= ticks * tickMs;
     // Trop de retard : on lâche le temps en trop au lieu de le rattraper sans fin.
-    if (this.acc > tickMs * this.maxTicksPerStep) this.acc = 0;
+    if (this.acc > tickMs * budget) this.acc = 0;
     if (ticks > 0) sim.step(ticks);
     return ticks;
   }

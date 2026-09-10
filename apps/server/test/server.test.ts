@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 
+import { WORLD_DAY_SCALE } from "@rimlike/protocol";
 import { movementCost } from "@rimlike/world";
 
 import { startServer, type RunningServer } from "../src/server.js";
@@ -105,8 +106,15 @@ describe("découverte des salles (GET /rooms)", () => {
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
     expect(response.headers.get("cache-control")).toBe("no-store");
 
-    const body = (await response.json()) as { rooms: Array<Record<string, unknown>>; truncated: boolean };
+    const body = (await response.json()) as {
+      rooms: Array<Record<string, unknown>>;
+      truncated: boolean;
+      dayScale: number;
+    };
     expect(body.truncated).toBe(false);
+    // L'échelle du jour est annoncée au niveau du corps : un client en a
+    // besoin pour dater une salle (« jour N ») avant même de la rejoindre.
+    expect(body.dayScale).toBe(WORLD_DAY_SCALE);
     // Lobbies d'abord malgré l'ordre alphabétique inverse des deux noms.
     expect(body.rooms.map((r) => r.name)).toEqual(["aaa-en-attente", "zzz-en-jeu"]);
 
@@ -218,13 +226,17 @@ describe("lobby et lockstep", () => {
 
     alice.send({ type: "start", seed: 12345, width: 96, height: 96 });
     await Promise.all([alice.next("start"), bob.next("start")]);
+    // Une salle **nommée** reçoit l'échelle du jour du serveur comme une
+    // salle « case » : le rythme est celui du monde partout (§3.2).
     expect(alice.ofType("start")[0]).toEqual({
       type: "start",
       seed: 12345,
       width: 96,
       height: 96,
       tick: 0,
+      dayScale: WORLD_DAY_SCALE,
     });
+    expect(bob.ofType("start")[0]).toEqual(alice.ofType("start")[0]);
 
     alice.send({ type: "command", payload: bytes(11) });
     bob.send({ type: "command", payload: bytes(21) });

@@ -117,7 +117,13 @@ export class RoomPersistence {
     this.saved.set(name, { ...entry, data: bytesToBase64(report.data) });
   }
 
-  restore(name: string, hourMs: number): RoomRestore | undefined {
+  /**
+   * `hourMs` est la durée réelle d'une heure de jeu et `dayScale` l'échelle du
+   * jour de la salle : les deux viennent de la **même** horloge du monde
+   * (`WorldClock.hourMs`, `WorldClock.dayScale`), l'une pour compter les
+   * heures écoulées, l'autre pour les convertir en ticks de carte.
+   */
+  restore(name: string, hourMs: number, dayScale?: number): RoomRestore | undefined {
     const entry = this.saved.get(name);
     if (entry === undefined) {
       return undefined;
@@ -125,14 +131,16 @@ export class RoomPersistence {
     return {
       seed: entry.seed, tick: entry.tick, data: base64ToBytes(entry.data)!,
       width: entry.width, height: entry.height,
-      frozenTicks: this.frozenTicksFor(name, hourMs),
+      frozenTicks: this.frozenTicksFor(name, hourMs, dayScale),
     };
   }
 
   /** Calcul seul : ne redécode pas un snapshot à chaque consultation du temps gelé. */
-  frozenTicksFor(name: string, hourMs: number): number {
+  frozenTicksFor(name: string, hourMs: number, dayScale?: number): number {
     const entry = this.saved.get(name);
-    return entry === undefined ? 0 : frozenTicksForHours((this.now() - entry.frozenAt) / hourMs);
+    return entry === undefined
+      ? 0
+      : frozenTicksForHours((this.now() - entry.frozenAt) / hourMs, dayScale);
   }
 
   /** Les salles occupées ne vieillissent jamais vers le TTL. */

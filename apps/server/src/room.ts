@@ -22,6 +22,9 @@
 import {
   BUNDLE_TICKS,
   BundleHistory,
+  DAY_SCALE_MAX,
+  DAY_SCALE_MIN,
+  DEFAULT_DAY_SCALE,
   HashLedger,
   MAX_HISTORY_BUNDLES,
   MAX_PLAYERS,
@@ -32,6 +35,7 @@ import {
   Scheduler,
   TICK_RATE,
   encodeMessage,
+  isDayScale,
   type ClientMessage,
   type ErrorCode,
   type PlayerId,
@@ -151,6 +155,16 @@ export interface RoomOptions {
   /** Défaut : `setInterval` non bloquant pour le processus. */
   readonly startClock?: ClockStarter;
   readonly log?: (line: string) => void;
+  /**
+   * Échelle du jour imposée par le serveur à cette salle (`sim::DayScale`,
+   * `DAY_SCALE_MIN..=MAX`) : elle part dans le `start` diffusé au démarrage et
+   * dans le `snapshot` d'une réouverture (`docs/protocol.md` §3.2). Elle vaut
+   * pour **toute** salle, « case » ou nommée — contrairement au climat, au
+   * calendrier et au biome, elle n'appartient pas à une case du globe mais au
+   * monde entier, d'où sa place ici et non dans `TileRoom`. Défaut :
+   * `DEFAULT_DAY_SCALE` (1), le rythme d'origine.
+   */
+  readonly dayScale?: number;
   /** Présent pour une salle adossée à une case du globe. */
   readonly tile?: TileRoom;
   /** Rouvre depuis un snapshot ; exige `tile` ou `restore.seed`. */
@@ -200,6 +214,8 @@ export class Room {
   private readonly startClock: ClockStarter;
   private readonly log: (line: string) => void;
   private readonly tile: TileRoom | null;
+  /** Échelle du jour de la salle (voir `RoomOptions.dayScale`). */
+  private readonly dayScaleValue: number;
   private readonly onSnapshot: ((snapshot: RoomSnapshotReport) => void) | null;
   private readonly onHostReady: ((hostId: PlayerId) => void) | null;
   private readonly takePendingTraders: (() => number) | null;
@@ -257,6 +273,10 @@ export class Room {
     this.startClock = options.startClock ?? defaultClock;
     this.log = options.log ?? ((line) => console.log(line));
     this.tile = options.tile ?? null;
+    this.dayScaleValue = options.dayScale ?? DEFAULT_DAY_SCALE;
+    if (!isDayScale(this.dayScaleValue)) {
+      throw new RangeError(`dayScale doit être un entier dans [${DAY_SCALE_MIN}, ${DAY_SCALE_MAX}]`);
+    }
     this.onSnapshot = options.onSnapshot ?? null;
     this.onHostReady = options.onHostReady ?? null;
     this.takePendingTraders = options.takePendingTraders ?? null;
@@ -294,6 +314,11 @@ export class Room {
   /** Case du globe portée par la salle, `null` pour une salle simple. */
   get tileId(): number | null {
     return this.tile?.id ?? null;
+  }
+
+  /** Échelle du jour imposée à cette salle (voir `RoomOptions.dayScale`). */
+  get dayScale(): number {
+    return this.dayScaleValue;
   }
 
   /** Prochain tick que le serveur planifiera. 0 tant que la salle est en lobby. */
@@ -402,6 +427,11 @@ export class Room {
           // `data` restaure porte déjà sa carte — mais il évite au HUD
           // d'attendre la première frame pour nommer le biome.
           ...(this.tile?.biome !== undefined ? { biome: this.tile.biome } : {}),
+          // Informative aussi : le sim que `data` restaure porte déjà son
+          // échelle (elle est dans le snapshot, `docs/time.md`). Elle voyage
+          // pour que le HUD et le diagnostic sachent à quel rythme la partie
+          // tourne sans attendre la première frame.
+          ...(this.dayScaleValue === DEFAULT_DAY_SCALE ? {} : { dayScale: this.dayScaleValue }),
         });
         player.synced = true;
         this.restore = null;
@@ -593,6 +623,11 @@ export class Room {
       // Le biome, lui, n'est pas une consigne à émettre : chaque client
       // construit son sim avec (docs/protocol.md §3.2), hôte comme invité.
       ...(this.tile?.biome !== undefined ? { biome: this.tile.biome } : {}),
+      // L'échelle du jour est du même bois que le biome — construite, pas
+      // commandée — mais elle vaut pour **toute** salle, pas seulement une
+      // case du globe. Omise à 1 : le message d'une partie rapide reste celui
+      // d'avant l'échelle.
+      ...(this.dayScaleValue === DEFAULT_DAY_SCALE ? {} : { dayScale: this.dayScaleValue }),
       ...(pendingTraders > 0 ? { pendingTraders } : {}),
       ...(this.tile?.goodwill !== undefined ? { goodwill: this.tile.goodwill } : {}),
     });

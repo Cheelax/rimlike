@@ -9,7 +9,7 @@
  * de Vite, un `fetch` direct suffit même hors de l'origine du serveur.
  */
 
-import { TICKS_PER_DAY } from "@rimlike/protocol";
+import { DEFAULT_DAY_SCALE, isDayScale, ticksPerDay } from "@rimlike/protocol";
 
 import { httpBaseFromWs } from "./worldFetch";
 
@@ -48,6 +48,13 @@ export interface RoomInfo {
 export interface RoomsResponse {
   readonly rooms: readonly RoomInfo[];
   readonly truncated: boolean;
+  /**
+   * Échelle du jour de ce serveur (`WORLD_DAY_SCALE`) : la même pour toutes
+   * ses salles, d'où sa place ici et non par salle. Elle sert à traduire le
+   * `tick` d'une salle en jour de jeu (`roomDay`) **avant** de la rejoindre.
+   * `DEFAULT_DAY_SCALE` (1) si le serveur ne l'annonce pas.
+   */
+  readonly dayScale: number;
 }
 
 /** Filtres facultatifs de `GET /rooms` (`?state=`, `?q=`), encodés dans l'URL. */
@@ -115,14 +122,16 @@ export async function fetchRooms(serverUrl: string, opts: FetchRoomsOptions = {}
   if (body === null || typeof body !== "object") {
     throw new Error("réponse de /rooms inattendue : un objet était attendu");
   }
-  const { rooms, truncated } = body as Record<string, unknown>;
+  const { rooms, truncated, dayScale } = body as Record<string, unknown>;
   if (!Array.isArray(rooms) || !rooms.every(isRoomInfo)) {
     throw new Error("réponse de /rooms inattendue : `rooms` doit être un tableau de salles valides");
   }
   if (typeof truncated !== "boolean") {
     throw new Error("réponse de /rooms inattendue : `truncated` doit être un booléen");
   }
-  return { rooms, truncated };
+  // Un serveur d'avant l'échelle du jour n'annonce rien : c'est 1. Une valeur
+  // aberrante n'est pas une raison de jeter la liste — c'est un affichage.
+  return { rooms, truncated, dayScale: isDayScale(dayScale) ? dayScale : DEFAULT_DAY_SCALE };
 }
 
 /**
@@ -151,8 +160,14 @@ export function roomStateLabel(state: RoomState): string {
 
 /**
  * Jour de jeu affiché pour une salle, à partir de son `tick` (même formule
- * qu'`App.tsx` pour `Stats.day` : `TICKS_PER_DAY` fait le contrat avec le sim).
+ * qu'`App.tsx` pour `Stats.day`).
+ *
+ * `dayScale` est l'échelle du jour du serveur (`RoomsResponse.dayScale`) : un
+ * tick est un soixantième de seconde partout, mais un jour de jeu en compte
+ * `TICKS_PER_DAY × K`. Sans elle, une colonie du monde afficherait trente
+ * fois trop de jours. Omise : l'échelle 1, celle d'un serveur qui ne l'annonce
+ * pas.
  */
-export function roomDay(tick: number): number {
-  return Math.floor(tick / TICKS_PER_DAY) + 1;
+export function roomDay(tick: number, dayScale: number = DEFAULT_DAY_SCALE): number {
+  return Math.floor(tick / ticksPerDay(dayScale)) + 1;
 }

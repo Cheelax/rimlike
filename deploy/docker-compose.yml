@@ -33,9 +33,17 @@ services:
       # tester), 5 = 10 242 cases (recommandé en production). 6 va au-delà
       # mais alourdit sensiblement `GET /world` et la mémoire du serveur.
       - WORLD_SUBDIVISIONS=4
-      # Durée réelle d'une heure de jeu du monde, en millisecondes (30000 =
-      # 30 s par défaut, soit un jour de monde en 12 minutes réelles).
-      - WORLD_HOUR_MS=30000
+      # Échelle du jour imposée à toutes les salles (1 à 120, 30 par défaut).
+      # C'est LE réglage du rythme du monde : à 30, un jour de jeu dure
+      # 14 400 x 30 = 432 000 ticks, soit deux heures réelles ; une heure de
+      # jeu vaut cinq minutes, une saison trente heures, une année cinq jours.
+      # L'horloge du monde (caravanes, marchands, temps gelé) en découle : il
+      # n'y a plus de WORLD_HOUR_MS à régler. À décider AVANT la première
+      # colonie — les sims déjà conservés gardent leur échelle.
+      - WORLD_DAY_SCALE=30
+      # WORLD_HOUR_MS : surcharge de l'heure de jeu réservée aux tests
+      # d'intégration (voir apps/server/README.md). Ne pas la définir ici.
+      # - WORLD_HOUR_MS=300000
       # Dé-commenter pour changer le port d'écoute interne (PORT) ou
       # l'interface (HOST) ; garder cohérent avec le mappage `ports:` ci-dessus.
       # - PORT=8787

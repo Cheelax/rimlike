@@ -18,13 +18,17 @@ import { gzipSync } from "node:zlib";
 
 import {
   CARAVAN_TICK_MS,
+  DAY_SCALE_MAX,
+  DAY_SCALE_MIN,
   DEFAULT_BIOME,
   HEARTBEAT_MS,
   HEARTBEAT_TIMEOUT_MS,
   MAX_PLAYERS,
+  WORLD_DAY_SCALE,
   decodeClientMessage,
   encodeMessage,
   isCompatibleProtocol,
+  isDayScale,
   worldDayOfYear,
   type Caravan,
   type ClientMessage,
@@ -60,12 +64,34 @@ export interface ServerOptions {
   /** Options passées à chaque salle créée (horloge injectable, tailles). */
   readonly roomOptions?: Omit<
     RoomOptions,
-    "name" | "log" | "tile" | "restore" | "onSnapshot" | "onHostReady" | "createdAt" | "frozenTicks"
+    | "name"
+    | "log"
+    | "tile"
+    | "restore"
+    | "onSnapshot"
+    | "onHostReady"
+    | "createdAt"
+    | "frozenTicks"
+    // L'échelle du jour ne se règle pas salle par salle : `worldDayScale`
+    // l'impose au serveur entier (docs/protocol.md §3.2).
+    | "dayScale"
   >;
   /**
-   * Durée réelle d'une heure de jeu du monde, en millisecondes. Défaut :
-   * `WORLD_HOUR_MS` (30 s). `index.ts` la résout depuis `WORLD_HOUR_MS` ; les
-   * tests la raccourcissent pour voyager vite.
+   * **Échelle du jour** imposée par ce serveur à toutes ses salles
+   * (`sim::DayScale`, `DAY_SCALE_MIN..=MAX`), envoyée dans `start.dayScale` et
+   * dans le `snapshot` d'une réouverture. Défaut : `WORLD_DAY_SCALE` (30).
+   * `index.ts` la résout depuis `WORLD_DAY_SCALE`.
+   *
+   * C'est **la seule horloge** du monde (`docs/PLAN.md` §6) : la durée réelle
+   * d'une heure de jeu en découle (`worldHourMsFor`), les caravanes, les
+   * marchands itinérants et le temps gelé suivent.
+   */
+  readonly worldDayScale?: number;
+  /**
+   * Surcharge explicite de la durée réelle d'une heure de jeu du monde, en
+   * millisecondes — **pour les tests d'intégration seulement** : elle sert à
+   * voyager vite. Défaut : dérivée de `worldDayScale`. `index.ts` la résout
+   * depuis `WORLD_HOUR_MS`, qui n'est plus le réglage du rythme du monde.
    */
   readonly worldHourMs?: number;
   /**
@@ -196,6 +222,12 @@ export interface RunningServer {
   readonly port: number;
   readonly url: string;
   readonly roomCount: number;
+  /**
+   * Échelle du jour imposée à toutes les salles de ce serveur
+   * (`WORLD_DAY_SCALE`), et donc la seule horloge du monde : `world.clock.hourMs`
+   * en dérive.
+   */
+  readonly dayScale: number;
   /** État du monde : colonies et derniers snapshots connus. */
   readonly world: WorldState;
   /** État de la persistance disque : le même contenu que `GET /health`. */
@@ -467,12 +499,20 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   // Horloge de jeu du globe : c'est elle qui fait voyager les caravanes. Elle
   // reprend son compte au redémarrage (`WorldClock`), le monde ne vieillit pas
   // serveur éteint.
+  // L'échelle du jour est la seule horloge : la durée d'une heure de jeu en
+  // découle (`WorldClock`), et toute salle de ce serveur la reçoit dans son
+  // `start` (docs/PLAN.md §6, docs/protocol.md §3.2).
+  const worldDayScale = options.worldDayScale ?? WORLD_DAY_SCALE;
+  if (!isDayScale(worldDayScale)) {
+    throw new RangeError(`worldDayScale doit être un entier dans [${DAY_SCALE_MIN}, ${DAY_SCALE_MAX}]`);
+  }
   const worldHourMs = options.worldHourMs;
   const caravanTickMs = options.caravanTickMs ?? CARAVAN_TICK_MS;
   // Options de l'état du monde : l'horloge de jeu et les réglages des marchands
   // itinérants (§13). Les mêmes pour un état neuf et pour un état rechargé —
   // rien de tout cela n'est dans le fichier, ce sont des options du serveur.
   const clockOptions = {
+    dayScale: worldDayScale,
     ...(worldHourMs === undefined ? {} : { hourMs: worldHourMs }),
     ...(options.worldNow === undefined ? {} : { now: options.worldNow }),
     ...(options.merchantCount === undefined ? {} : { merchantCount: options.merchantCount }),
@@ -670,7 +710,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
     });
 
-    const body = JSON.stringify({ rooms: listed, truncated });
+    // `dayScale` est au niveau du corps, pas par salle : ce serveur n'a qu'une
+    // échelle du jour, et un client qui affiche « jour N » depuis un `tick` en
+    // a besoin **avant** de rejoindre (`roomDay`, docs/protocol.md §2).
+    const body = JSON.stringify({ rooms: listed, truncated, dayScale: worldDayScale });
     response.writeHead(200, {
       "content-type": "application/json; charset=utf-8",
       "Access-Control-Allow-Origin": "*",
@@ -1371,12 +1414,14 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     const tileId = tileFromRoomName(name);
     if (tileId === null) {
       const saved = savedRooms.get(name);
-      const restore = savedRooms.restore(name, worldState.clock.hourMs);
+      const restore = savedRooms.restore(name, worldState.clock.hourMs, worldDayScale);
       const room = new Room({
-        name, log, now: wallNow, ...options.roomOptions,
+        // Une salle nommée reçoit la même échelle qu'une salle « case » : le
+        // serveur impose un seul rythme (docs/protocol.md §3.2).
+        name, log, now: wallNow, ...options.roomOptions, dayScale: worldDayScale,
         ...(restore === undefined ? {} : {
           restore, createdAt: saved!.createdAt,
-          frozenTicks: () => savedRooms.frozenTicksFor(name, worldState.clock.hourMs),
+          frozenTicks: () => savedRooms.frozenTicksFor(name, worldState.clock.hourMs, worldDayScale),
         }),
         ...(store === null ? {} : {
           onSnapshot: (report) => {
@@ -1430,6 +1475,9 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       name,
       log,
       ...options.roomOptions,
+      // Échelle du jour du monde : la même pour toutes les salles de ce
+      // serveur, case ou nommée (docs/protocol.md §3.2, docs/PLAN.md §6).
+      dayScale: worldDayScale,
       tile: { id: tileId, seed: settlement.seed, climate, dayOfYear, biome, goodwill },
       ...(snapshot !== undefined
         ? {
@@ -1677,6 +1725,9 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     },
     get roomCount(): number {
       return rooms.size;
+    },
+    get dayScale(): number {
+      return worldDayScale;
     },
     room(name: string): Room | undefined {
       return rooms.get(name);

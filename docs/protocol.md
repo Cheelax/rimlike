@@ -30,20 +30,25 @@ Constantes partagées (`packages/protocol/src/messages.ts`) :
 
 | Constante | Valeur | Rôle |
 |---|---|---|
-| `PROTOCOL_VERSION` | 2 | Incrémentée à chaque changement incompatible (2 : identité par jeton, §11.2) |
+| `PROTOCOL_VERSION` | 3 | Incrémentée à chaque changement incompatible (3 : échelle du jour, §3.2 ; 2 : identité par jeton, §11.2) |
 | `TICK_RATE` | 60 | Ticks de sim par seconde |
 | `BUNDLE_TICKS` | 3 | Ticks par bundle, donc 20 bundles/s |
 | `BUNDLE_INTERVAL_MS` | 50 | Période d'émission d'un bundle |
-| `HASH_EVERY_TICKS` | 300 | Période d'envoi du hash d'état (5 s) |
-| `TICKS_PER_DAY` | 14400 | Ticks d'une journée de jeu sur une carte (contrat avec le sim) |
-| `TICKS_PER_HOUR` | 600 | Ticks d'une **heure de jeu du monde** : le taux de change du temps gelé (§11.6) |
-| `MAX_FROZEN_TICKS` | 864000 | Avance rapide maximale d'une colonie gelée : 60 jours |
+| `HASH_EVERY_TICKS` | 300 | Période d'envoi du hash d'état (5 s **réelles**) |
+| `TICKS_PER_DAY` | 14400 | Ticks d'une journée de jeu sur une carte **à l'échelle 1** (contrat avec le sim) |
+| `TICKS_PER_HOUR` | 600 | Ticks d'une heure de jeu **à l'échelle 1** |
+| `DAY_SCALE_MIN` / `DAY_SCALE_MAX` | 1 / 120 | Bornes de l'échelle du jour (`sim::DayScale`) |
+| `DEFAULT_DAY_SCALE` | 1 | Échelle d'une partie dont personne n'impose l'échelle (`start` sans `dayScale`) |
+| `WORLD_DAY_SCALE` | 30 | Échelle du monde partagé : un jour de jeu en 2 h réelles (`docs/PLAN.md` §6) |
+| `ticksPerDay(K)` / `ticksPerHour(K)` | 14400 × K / 600 × K | La journée et l'heure d'une partie d'échelle K |
+| `worldHourMsFor(K)` | 10 000 × K | Durée réelle d'une heure de jeu : `ticksPerHour(K) / TICK_RATE` (§12.1) |
+| `MAX_FROZEN_TICKS` | 864000 | Avance rapide maximale d'une colonie gelée : 60 jours **à l'échelle 1** (`maxFrozenTicks(K)` sinon) |
 | `SNAPSHOT_EVERY_TICKS` | 1800 | Période du snapshot de conservation d'une case (30 s) |
 | `MAX_HISTORY_BUNDLES` | 2000 | Historique conservé par salle (100 s) |
 | `HEARTBEAT_MS` | 5000 | Période du `ping` serveur |
 | `HEARTBEAT_TIMEOUT_MS` | 15000 | Silence toléré avant fermeture |
 | `MAX_PLAYERS` | 4 | Joueurs par salle |
-| `WORLD_HOUR_MS` | 30000 | Durée réelle d'une **heure de jeu** du monde (§12.1) |
+| `WORLD_HOUR_MS` | 300000 | Durée réelle d'une **heure de jeu** du monde, **dérivée** : `worldHourMsFor(WORLD_DAY_SCALE)` (§12.1) |
 | `CARAVAN_TICK_MS` | 5000 | Période du tick du monde et du `world_caravans` |
 | `CARAVAN_HISTORY_HOURS` | 24 | Heures de jeu pendant lesquelles une caravane livrée reste listée |
 | `MERCHANT_COUNT` | 2 | Marchands itinérants entretenus sur le globe (§13) |
@@ -295,6 +300,35 @@ Chaque client le lit donc dans ce `start` et construit son sim avec, hôte comme
 invité. Absent en salle simple : le sim y prend le biome de son constructeur
 ordinaire, la forêt tempérée (`DEFAULT_BIOME`, 4).
 
+`dayScale` est l'**échelle du jour** de la partie (`sim::DayScale`, un entier de
+`DAY_SCALE_MIN` à `DAY_SCALE_MAX`, soit 1 à 120) : elle multiplie la longueur du
+jour et les durées de travail, jamais la marche ni le combat (`docs/time.md`).
+Elle suit exactement la règle du `biome` — pas de commande, elle se fixe à la
+**construction** du sim (`WasmSim.new_scaled`) — avec deux différences :
+
+- elle n'est **pas** propre à une case du globe mais au serveur entier : elle
+  apparaît dans le `start` de **toute** salle, « case » comme nommée. Le
+  serveur la lit dans `WORLD_DAY_SCALE` (§13.7) et l'impose ;
+- elle est **omise quand elle vaut 1** : le `start` d'une partie au rythme
+  d'origine est mot pour mot celui d'avant l'échelle. Absente veut donc dire
+  `DEFAULT_DAY_SCALE` (1), jamais « je ne sais pas ».
+
+Tous les clients d'une salle construisent avec la même valeur, hôte comme
+invité ; un seul qui l'ignorerait divergerait au premier tick. C'est pour cette
+raison que `PROTOCOL_VERSION` est passée à 3 : un client d'avant annonce `2`
+dans son `join` et **se fait refuser proprement** (`error version_mismatch`,
+§3.1) plutôt que d'entrer et de désyncher en silence. Le choix est
+délibéré — l'autre option, « un vieux client reçoit l'échelle 1 », donnerait
+deux clients d'une même salle sur deux longueurs de jour, ce que le hash
+détecterait trop tard.
+
+> **Limite connue.** Un serveur redémarré avec une **autre** `WORLD_DAY_SCALE`
+> rouvre ses colonies conservées telles quelles : le sim restauré garde
+> l'échelle avec laquelle il a été créé (elle est dans son snapshot), tandis que
+> le temps gelé et l'horloge du monde suivent la nouvelle valeur. Changer
+> l'échelle d'un monde déjà peuplé n'est donc pas une opération neutre ; elle se
+> décide avant la première colonie.
+
 `pendingTraders` est facultatif lui aussi et compte les **marchands itinérants**
 passés sur la case pendant que la colonie était fermée (§13), au plus
 `MAX_PENDING_TRADERS`. Même règle que ci-dessus : l'hôte, et lui seul, émet
@@ -320,6 +354,7 @@ Même règle que les autres : l'hôte, et lui seul, émet `Command::SetGoodwill`
   "climate": { "baseTemperature": -340, "amplitude": 200 },
   "dayOfYear": 1,
   "biome": 2,
+  "dayScale": 30,
   "goodwill": [-20, -20, 10]
 }
 ```
@@ -373,8 +408,14 @@ pendant que celle-ci dormait.
 `biome` accompagne les réouvertures de colonie pour une raison plus modeste :
 **l'affichage seul**. Le sim que `data` restaure porte déjà sa carte, donc
 aucun client n'a rien à en faire — mais le HUD peut nommer le biome sans
-attendre la première frame. C'est le seul champ de `snapshot` qui ne déclenche
-aucune commande.
+attendre la première frame. `dayScale` l'accompagne pour exactement la même
+raison, et avec la même règle d'omission à 1 : le sim restauré porte déjà son
+échelle (elle est dans le snapshot, `docs/time.md`). Ce sont les deux seuls
+champs de `snapshot` qui ne déclenchent aucune commande.
+
+Un `snapshot` **relayé par l'hôte** à un rejoignant en cours de partie (§8) ne
+porte ni l'un ni l'autre : le client garde alors ce que son `start` lui avait
+dit.
 
 ```json
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=" }
@@ -382,6 +423,7 @@ aucune commande.
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000, "pendingTraders": 1 }
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000, "goodwill": [-45, 12, 55] }
 { "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 3000, "biome": 2 }
+{ "type": "snapshot", "tick": 1806, "data": "8QIAAAcAAAA=", "frozenTicks": 90000, "biome": 2, "dayScale": 30 }
 ```
 
 **`desync`** — premier écart de hash constaté. Les clés de `hashes` sont des
@@ -462,7 +504,8 @@ Détails de la vie d'une salle :
   `GET /rooms`) ; le premier `join` devient hôte et reçoit `welcome` puis
   `snapshot`, sans nouveau `start`, avec `frozenTicks` calculé jusqu'à sa visite
   depuis l'arrêt ou le dernier départ (dernier checkpoint en cas de crash), selon
-  `WORLD_HOUR_MS` et la borne de 60 jours (§11.6). Aucun message ni changement
+  l'heure de jeu du monde (dérivée de `WORLD_DAY_SCALE`, §12.1) et la borne de
+  60 jours **de jeu**, elle aussi mise à l'échelle (§11.6). Aucun message ni changement
   client : l'hôte émet déjà l'avance rapide en lockstep. Une salle sans présence
   depuis `ROOM_TTL_HOURS` (72 heures réelles) est oubliée ; une salle occupée
   n'expire pas, une sauvegarde sans visite ne renouvelle pas le TTL. Les salles
@@ -1472,13 +1515,28 @@ Les caravanes ne comptent ni en millisecondes ni en ticks de salle, mais en
 
 | notion | unité | qui la porte |
 |---|---|---|
-| tick | 1/60 s de jeu sur **une carte** | la salle (§1) |
-| heure de jeu | `WORLD_HOUR_MS` = 30 s réelles | le serveur monde |
+| tick | 1/60 s réelle, sur **une carte** | la salle (§1) |
+| heure de jeu | `ticksPerDay(K) / 24` ticks, soit 10 000 × K ms réelles | le serveur monde |
 
-Une heure de jeu vaut 30 s réelles par défaut (`WORLD_HOUR_MS`, réglable par
-la variable d'environnement du même nom), soit un jour de monde en 12 minutes.
+**Une seule horloge** (`docs/PLAN.md` §6). Le monde n'a plus de rythme à lui :
+une heure de jeu vaut exactement le vingt-quatrième d'une journée de carte,
+jouée à 60 ticks par seconde. C'est l'**échelle du jour** (`WORLD_DAY_SCALE`,
+§3.2) qui règle tout, et `worldHourMsFor(K)` qui en déduit la milliseconde :
+
+| échelle | ticks par jour | heure de jeu | jour de monde | saison (15 j) | année (60 j) |
+|---|---|---|---|---|---|
+| 1 | 14 400 | 10 s | 4 min | 1 h | 4 h |
+| **30** (défaut) | **432 000** | **5 min** | **2 h** | **30 h** | **5 jours** |
+
+La variable d'environnement `WORLD_HOUR_MS` existe toujours, mais elle est
+**réservée aux tests d'intégration** : elle force la durée d'une heure de jeu
+pour ne pas attendre cinq minutes par heure, et un vrai monde ne la règle pas —
+il règle `WORLD_DAY_SCALE`.
+
 Les coûts de déplacement de `packages/world` sont déjà dans cette unité : 4 h
-pour traverser une prairie, 24 h pour une montagne (`docs/world.md` §4).
+pour traverser une prairie, 24 h pour une montagne (`docs/world.md` §4). À
+l'échelle 30, cela fait 20 minutes réelles pour la prairie et deux heures pour
+la montagne.
 
 `worldHours()` est le nombre d'heures de jeu écoulées **depuis la création du
 monde**. L'horloge est continue tant que le serveur tourne — pas de pause en
@@ -1527,7 +1585,7 @@ côté de `clock`.
         │  caravan_cancel  (< 50 % du trajet seulement)                │
         ├────────────────────────────────▶│  demi-tour : `returning`   │
         │                                 │                            │
-        │              … le temps passe, au rythme de WORLD_HOUR_MS …  │
+        │       … le temps passe, à l'heure de WORLD_DAY_SCALE …       │
         │                                 │                            │
         │                                 │  now >= arrivesAt          │
         │                                 │  → `arrived`               │
@@ -1842,9 +1900,9 @@ client qui l'ignore ne perd rien.
 - poser la caravane sur `currentTile`, ou interpoler entre
   `route[i]` et `route[i + 1]` avec `progress` pour un déplacement continu ;
 - afficher `ownerName` (« caravane de bob ») et `summary` (« 3 colons,
-  40 bois ») et le temps restant : `(arrivesAt − now) × WORLD_HOUR_MS`
+  40 bois ») et le temps restant : `(arrivesAt − now) × worldHourMsFor(K)`
   millisecondes réelles, `now` étant l'heure de jeu estimée depuis le dernier
-  message ;
+  message et `K` l'échelle du jour reçue dans `start.dayScale` (§3.2) ;
 - distinguer les statuts : `returning` rentre, `arrived` attend qu'on ouvre la
   colonie d'arrivée — c'est une notification à afficher, pas une erreur ;
 - proposer `caravan_cancel` tant que `progress < 0.5` et que `caravan.owner`

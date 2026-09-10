@@ -3,7 +3,7 @@ import { Icon } from "./ui/Icon";
 import { StockPanel } from "./ui/StockPanel";
 import { isTextEntry, nextPanel, type DockAction, type PanelId } from "./ui/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_BIOME, TICKS_PER_DAY, type SettledMessage } from "@rimlike/protocol";
+import { DEFAULT_BIOME, DEFAULT_DAY_SCALE, TICKS_PER_DAY, type SettledMessage } from "@rimlike/protocol";
 import { BIOME_NAMES, findRoute, type World } from "@rimlike/world";
 import { CaravanPanel, type CaravanColonist, type CaravanDestination } from "./CaravanPanel";
 import { ColonistBar, type ColonistBadge } from "./ColonistBar";
@@ -46,6 +46,14 @@ import { acquireGl, type SharedGl } from "./render/gl";
 import { AUTO_PAUSE_EVENTS, loadAutoPause, saveAutoPause, shouldAutoPause, type AutoPauseSettings } from "./autoPause";
 import { DEFAULT_GRAPHICS, effectivePixelRatio, loadGraphics, saveGraphics, type GraphicsSettings } from "./settings";
 import { isSoloBiome, loadSoloBiome, saveSoloBiome, SOLO_BIOMES, type SoloBiome } from "./soloBiome";
+import {
+  isSoloDayScale,
+  loadSoloDayScale,
+  saveSoloDayScale,
+  SOLO_DAY_SCALES,
+  SOLO_DAY_SCALE_LABELS,
+  type SoloDayScale,
+} from "./soloDayScale";
 import {
   ANIMAL_FLAG,
   ANIMAL_STRIDE,
@@ -160,6 +168,15 @@ const BLOCKING_FEATURES = new Set<number>([
 const DEFAULT_SERVER = "ws://localhost:8787";
 const DEFAULT_SEED = 42;
 const MAP_SIZE = 128;
+/**
+ * Vitesses de la partie, **solo seulement** : le multi n'en change jamais,
+ * l'horloge du serveur ne s'arrête ni ne s'accélère (décision du 2026-09-04).
+ *
+ * ×5 et ×10 sont arrivées avec l'échelle du jour (`docs/PLAN.md` §6) : à K = 30
+ * un jour de jeu dure 2 h réelles, il faut pouvoir regarder pousser un champ
+ * sans y passer l'après-midi. Les touches 1 à 5 les choisissent par rang.
+ */
+const SOLO_SPEEDS: readonly number[] = [1, 2, 3, 5, 10];
 /** Période de sondage de `GET /rooms` tant que l'accueil est affiché (§2 du protocole). */
 const ROOMS_POLL_MS = 5000;
 /** Attente avant de resonder `GET /rooms` après un changement d'adresse de serveur. */
@@ -530,7 +547,7 @@ interface Toast {
  * le clic et l'effet qui démarre le Worker (voir `HomeScreen`).
  */
 type Session =
-  | { mode: "solo"; difficulty: number; biome: SoloBiome }
+  | { mode: "solo"; difficulty: number; biome: SoloBiome; dayScale: SoloDayScale }
   | { mode: "multi"; server: string; room: string; name: string };
 
 /**
@@ -754,11 +771,15 @@ export function App() {
   /** Dose de menace choisie à l'accueil, pour la prochaine partie solo. */
   const [homeDifficulty, setHomeDifficulty] = useState<number>(DIFFICULTY.Normal);
   const [homeBiome, setHomeBiome] = useState(loadSoloBiome);
+  /** Échelle du jour de la prochaine partie solo, mémorisée comme le biome. */
+  const [homeDayScale, setHomeDayScale] = useState(loadSoloDayScale);
   /** Dose de menace choisie par l'hôte dans le lobby, pour la prochaine partie multi. */
   const [multiDifficulty, setMultiDifficulty] = useState<number>(DIFFICULTY.Normal);
   // --- Salles ouvertes : sondage de `GET /rooms`, tant que l'accueil est affiché ---
   const [rooms, setRooms] = useState<readonly RoomInfo[]>([]);
   const [roomsTruncated, setRoomsTruncated] = useState(false);
+  /** Échelle du jour annoncée par `GET /rooms` : sert à dater les salles listées. */
+  const [roomsDayScale, setRoomsDayScale] = useState(DEFAULT_DAY_SCALE);
   /** Message d'erreur bref (serveur injoignable), jamais un toast répété à chaque sondage. */
   const [roomsError, setRoomsError] = useState<string | null>(null);
   const [roomFilter, setRoomFilter] = useState("");
@@ -963,6 +984,9 @@ export function App() {
           if (cancelled) return;
           setRooms(res.rooms);
           setRoomsTruncated(res.truncated);
+          // Le rythme du serveur : sans lui, le « jour N » d'une colonie du
+          // monde serait compté à l'échelle 1 (§2, `roomDay`).
+          setRoomsDayScale(res.dayScale);
           setRoomsError(null);
         },
         (e: unknown) => {
@@ -1443,7 +1467,10 @@ export function App() {
         // confirmera ensuite le compte exact de jours depuis le tampon d'events.
         if (state.frozenTicks > 0 && state.frozenTicks !== lastFrozenTicksNotified) {
           lastFrozenTicksNotified = state.frozenTicks;
-          const days = Math.floor(state.frozenTicks / TICKS_PER_DAY);
+          // Des jours **de jeu** : `frozenTicks` est en ticks de carte, donc
+          // à l'échelle du jour de la salle (`start.dayScale`, §3.2). Diviser
+          // par la constante d'échelle 1 annoncerait trente fois trop de jours.
+          const days = Math.floor(state.frozenTicks / (TICKS_PER_DAY * state.dayScale));
           pushToast(`Colonie rouverte : ${days} jour${days > 1 ? "s" : ""} ont passé`);
         }
         // On n'est plus déviant : la réparation (manuelle ou automatique) a
@@ -1493,7 +1520,7 @@ export function App() {
       session.mode === "solo"
         ? {
             mode: "solo", seed: DEFAULT_SEED, width: MAP_SIZE, height: MAP_SIZE,
-            difficulty: session.difficulty, biome: session.biome,
+            difficulty: session.difficulty, biome: session.biome, dayScale: session.dayScale,
           }
         : { mode: "multi", server: session.server, room: session.room, name: session.name },
     );
@@ -2011,14 +2038,21 @@ export function App() {
         case "E":
           renderer.rotate(1);
           break;
+        // Les touches 1 à 5 choisissent la n-ième vitesse de `SOLO_SPEEDS`
+        // (×1, ×2, ×3, ×5, ×10) : le rang, pas le multiplicateur — « 5 » pour
+        // ×10 tient sur une rangée de chiffres, « 10 » non.
         case "1":
         case "2":
         case "3":
-          if (!isMulti) {
-            speed = Number(k);
+        case "4":
+        case "5": {
+          const chosen = SOLO_SPEEDS[Number(k) - 1];
+          if (!isMulti && chosen !== undefined) {
+            speed = chosen;
             bridge.setSpeed(speed);
           }
           break;
+        }
         case "ESCAPE":
           // L'aide se ferme en tout premier (elle recouvre le reste), puis le
           // menu Options : ni l'un ni l'autre n'a bougé l'outil ou la
@@ -2247,7 +2281,7 @@ export function App() {
             ? selectedCombat
             : { meleeLevel: 0, meleeXp: 0, rangedLevel: 0, rangedXp: 0 }),
           comfort: selectedComfortId === id ? selectedComfort : 0,
-          sickHours: selectedSickId === id ? sickHoursRemaining(selectedSick) : 0,
+          sickHours: selectedSickId === id ? sickHoursRemaining(selectedSick, f.ticksPerDay) : 0,
           animal: isAnimal,
           species,
           hunted: (flags & ANIMAL_FLAG.Hunted) !== 0,
@@ -2840,7 +2874,14 @@ export function App() {
             setHomeBiome(biome);
             saveSoloBiome(biome);
           }}
-          onSolo={() => setSession({ mode: "solo", difficulty: homeDifficulty, biome: homeBiome })}
+          dayScale={homeDayScale}
+          onDayScaleChange={(scale) => {
+            setHomeDayScale(scale);
+            saveSoloDayScale(scale);
+          }}
+          onSolo={() =>
+            setSession({ mode: "solo", difficulty: homeDifficulty, biome: homeBiome, dayScale: homeDayScale })
+          }
           onJoin={() => setSession({ mode: "multi", ...form })}
           onWorld={() => {
             setInitialWorldTile(null);
@@ -2848,6 +2889,7 @@ export function App() {
           }}
           rooms={rooms}
           roomsTruncated={roomsTruncated}
+          roomsDayScale={roomsDayScale}
           roomsError={roomsError}
           roomFilter={roomFilter}
           onRoomFilterChange={setRoomFilter}
@@ -2886,7 +2928,7 @@ export function App() {
             <div className="colony-calendar"><strong>Jour {stats.day}<span>{stats.hour}</span></strong><span>{SEASON_LABELS[stats.season] ?? "?"} · {dayInSeason}/{seasonDays} · {formatTemperature(stats.temperature)} · {WEATHER_LABELS[stats.weather] ?? "?"} · {BIOME_NAMES[stats.biome as keyof typeof BIOME_NAMES] ?? "?"}</span></div>
             <div className="time-controls" aria-label="Vitesse de la partie">
               <button className={stats.paused ? "active" : ""} aria-label={stats.paused ? "Reprendre la partie" : "Mettre en pause"} title={multi ? "Le temps est partagé en multijoueur" : "Pause / reprise · Espace"} disabled={multi} onClick={() => actionsRef.current?.togglePause()}><Icon name={stats.paused ? "play" : "pause"} size={17} /></button>
-              {[1, 2, 3].map((speed) => <button key={speed} aria-label={`Vitesse ×${speed}`} aria-pressed={!stats.paused && stats.speed === speed} disabled={multi} onClick={() => actionsRef.current?.changeSpeed(speed)}>×{speed}</button>)}
+              {SOLO_SPEEDS.map((speed) => <button key={speed} aria-label={`Vitesse ×${speed}`} aria-pressed={!stats.paused && stats.speed === speed} disabled={multi} onClick={() => actionsRef.current?.changeSpeed(speed)}>×{speed}</button>)}
             </div>
             <button className="header-menu icon-button" aria-label="Ouvrir les options" onClick={() => setShowOptions((v) => !v)}><Icon name="menu" /></button>
           </header>
@@ -2899,7 +2941,7 @@ export function App() {
             {stats.blueprints > 0 && <span>{stats.blueprints} chantiers</span>}
             {stats.hostiles > 0 && <span className="danger">{stats.hostiles} ennemis</span>}
             {stats.fireCount > 0 && <span className="danger">Incendie · {stats.fireCount} cases</span>}
-            {stats.traderPresent >= 0 && <button onClick={() => setShowTrade(true)}>Marchand · {formatTraderLeaves(stats.traderLeavesIn)}</button>}
+            {stats.traderPresent >= 0 && <button onClick={() => setShowTrade(true)}>Marchand · {formatTraderLeaves(stats.traderLeavesIn, stats.ticksPerDay)}</button>}
             {currentTechInfo && <button onClick={() => setShowResearch(true)}>{TECHS[currentTechInfo.tech]?.name} · {researchPercent(currentTechInfo.progress, currentTechInfo.cost)} %</button>}
           </div>
           {activePanel === "stock" && <StockPanel stored={stats.stored} freshness={stats.foodFreshness} onClose={closePanel} />}
@@ -3413,11 +3455,14 @@ function HomeScreen({
   onDifficultyChange,
   biome,
   onBiomeChange,
+  dayScale,
+  onDayScaleChange,
   onSolo,
   onJoin,
   onWorld,
   rooms,
   roomsTruncated,
+  roomsDayScale,
   roomsError,
   roomFilter,
   onRoomFilterChange,
@@ -3432,12 +3477,17 @@ function HomeScreen({
   onDifficultyChange: (v: number) => void;
   biome: SoloBiome;
   onBiomeChange: (v: SoloBiome) => void;
+  /** Échelle du jour de la prochaine partie solo (`soloDayScale.ts`), défaut : celle du monde. */
+  dayScale: SoloDayScale;
+  onDayScaleChange: (v: SoloDayScale) => void;
   onSolo: () => void;
   onJoin: () => void;
   onWorld: () => void;
   /** Dernière liste reçue de `GET /rooms` (`docs/protocol.md` §2), non filtrée. */
   rooms: readonly RoomInfo[];
   roomsTruncated: boolean;
+  /** Échelle du jour du serveur listé (`RoomsResponse.dayScale`), pour dater les salles. */
+  roomsDayScale: number;
   /** Message bref si le sondage échoue ; `null` tant que tout va bien. */
   roomsError: string | null;
   roomFilter: string;
@@ -3480,6 +3530,20 @@ function HomeScreen({
             >
               {SOLO_BIOMES.map((value) => (
                 <option key={value} value={value}>{BIOME_NAMES[value]}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Rythme
+            <select
+              value={dayScale}
+              onChange={(e) => {
+                const value = Number(e.target.value);
+                if (isSoloDayScale(value)) onDayScaleChange(value);
+              }}
+            >
+              {SOLO_DAY_SCALES.map((value) => (
+                <option key={value} value={value}>{SOLO_DAY_SCALE_LABELS[value]}</option>
               ))}
             </select>
           </label>
@@ -3556,7 +3620,7 @@ function HomeScreen({
                       <b>{roomDisplayName(room)}</b>
                       <div className="help">
                         {roomStateLabel(room.state)} · {room.players}/{room.maxPlayers} joueurs · jour{" "}
-                        {roomDay(room.tick)}
+                        {roomDay(room.tick, roomsDayScale)}
                       </div>
                     </div>
                     <button className="small" disabled={full} onClick={() => onJoinRoom(room)}>

@@ -8,7 +8,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { MAX_FROZEN_TICKS } from "@rimlike/protocol";
+import { MAX_FROZEN_TICKS, WORLD_DAY_SCALE, maxFrozenTicks, ticksPerHour } from "@rimlike/protocol";
 import { movementCost } from "@rimlike/world";
 
 import {
@@ -211,13 +211,28 @@ describe("temps gelé d'une colonie", () => {
     // Snapshot pris à l'instant : rien à rattraper.
     expect(world.frozenTicksFor(room)).toBe(0);
 
-    // Cinq heures de jeu sans personne sur la case : 5 × 600 ticks.
+    // Cinq heures de jeu sans personne sur la case. L'heure de jeu vaut
+    // `ticksPerHour(K)` ticks de carte — la même échelle que celle imposée
+    // aux salles (docs/PLAN.md §6, « une seule horloge »).
     advance(5000);
-    expect(world.frozenTicksFor(room)).toBe(3000);
+    expect(world.frozenTicksFor(room)).toBe(5 * ticksPerHour(WORLD_DAY_SCALE));
+    expect(world.frozenTicksFor(room)).toBe(90_000);
 
-    // Une colonie oubliée un an ne rattrape que soixante jours.
+    // Une colonie oubliée un an ne rattrape que soixante jours **de jeu**,
+    // eux aussi mis à l'échelle (comme `sim::MAX_FAST_FORWARD`).
     advance(10_000_000);
-    expect(world.frozenTicksFor(room)).toBe(MAX_FROZEN_TICKS);
+    expect(world.frozenTicksFor(room)).toBe(maxFrozenTicks(WORLD_DAY_SCALE));
+    expect(maxFrozenTicks(WORLD_DAY_SCALE)).toBe(MAX_FROZEN_TICKS * WORLD_DAY_SCALE);
+  });
+
+  it("compte les ticks gelés à l'échelle 1 pour un monde à l'échelle 1", () => {
+    let real = 10_000;
+    const world = new WorldState({ world: globe, now: () => real, hourMs: 1000, dayScale: 1 });
+    world.settle(landTile, "alice");
+    const room = `tile-${landTile}`;
+    world.saveSnapshot(room, { tick: 1800, data: new Uint8Array([1]), width: 64, height: 64 });
+    real += 5000;
+    expect(world.frozenTicksFor(room)).toBe(3000);
   });
 
   it("ne rattrape rien sans snapshot, ni pour un snapshot d'avant cette tranche", () => {

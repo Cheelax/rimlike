@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MAX_FROZEN_TICKS, decodeClientMessage, decodeServerMessage, encodeMessage, type ServerMessage } from "@rimlike/protocol";
+import { MAX_FROZEN_TICKS, WORLD_DAY_SCALE, decodeClientMessage, decodeServerMessage, encodeMessage, ticksPerHour, type ServerMessage } from "@rimlike/protocol";
 
 import { WorldStore, resolveWorldStateFile, type ScheduleTimeout, type WorldStateFile } from "../src/persistence.js";
 import { Room } from "../src/room.js";
@@ -119,7 +119,15 @@ describe("salles nommées après redémarrage", () => {
     expect(await bob.nth("welcome")).toMatchObject({
       state: "running", isHost: true, seed: 4242, width: 96, height: 48, tick: 9,
     });
-    expect(await bob.nth("snapshot")).toEqual({ type: "snapshot", tick: 9, data: bytes(0, 1, 254, 255), frozenTicks: 4200 });
+    // Sept heures de jeu de gel (`worldHourMs: 1000` dans ce test), converties
+    // à l'échelle du jour du serveur : 7 × 600 × K ticks de carte. La salle
+    // rouverte porte aussi son `dayScale`, purement informatif ici — le sim
+    // que `data` restaure connaît déjà le sien.
+    expect(await bob.nth("snapshot")).toEqual({
+      type: "snapshot", tick: 9, data: bytes(0, 1, 254, 255),
+      frozenTicks: 7 * ticksPerHour(WORLD_DAY_SCALE), dayScale: WORLD_DAY_SCALE,
+    });
+    expect(7 * ticksPerHour(WORLD_DAY_SCALE)).toBe(126_000);
     expect(bob.ofType("start")).toEqual([]);
     second.tick(); second.tick();
     await bob.nth("bundle", 1);
@@ -171,7 +179,7 @@ describe("salles nommées après redémarrage", () => {
     expect((await disk()).rooms![0]!.frozenAt).toBe(origin);
     const third = await boot();
     const bob = await enter(third.server);
-    expect((await bob.nth("snapshot")).frozenTicks).toBe(1200);
+    expect((await bob.nth("snapshot")).frozenTicks).toBe(2 * ticksPerHour(WORLD_DAY_SCALE));
   });
 
   it("oublie les salles expirées au démarrage et au join, sans prolonger le TTL par une sauvegarde", async () => {

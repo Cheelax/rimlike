@@ -50,14 +50,18 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import {
+  DAY_SCALE_MAX,
+  DAY_SCALE_MIN,
   DEFAULT_GOODWILL,
   FACTION_COUNT,
   MAX_PENDING_TRADERS,
-  WORLD_HOUR_MS,
+  WORLD_DAY_SCALE,
   base64ToBytes,
   bytesToBase64,
   clampGoodwill,
   frozenTicksForHours,
+  isDayScale,
+  worldHourMsFor,
   type GoodwillValues,
   type Settlement,
 } from "@rimlike/protocol";
@@ -179,7 +183,19 @@ export interface WorldClockJson {
 }
 
 export interface WorldClockOptions {
-  /** Durée réelle d'une heure de jeu. Défaut : `WORLD_HOUR_MS` (30 s). */
+  /**
+   * Échelle du jour du monde (`sim::DayScale`), dont l'horloge **dérive** :
+   * une heure de jeu vaut `worldHourMsFor(dayScale)` millisecondes réelles
+   * (`docs/PLAN.md` §6, « une seule horloge »). Défaut : `WORLD_DAY_SCALE`
+   * (30), donc 5 min réelles par heure de jeu.
+   */
+  readonly dayScale?: number;
+  /**
+   * Surcharge explicite de la durée réelle d'une heure de jeu, **pour les
+   * tests d'intégration seulement** : elle sert à voyager vite sans attendre
+   * cinq minutes par heure de jeu. Un vrai monde ne la règle pas — il règle
+   * son échelle du jour, et l'horloge suit. Défaut : la dérivation ci-dessus.
+   */
   readonly hourMs?: number;
   /** Horloge murale, injectable pour les tests. Défaut : `Date.now`. */
   readonly now?: () => number;
@@ -208,7 +224,13 @@ export interface WorldClockOptions {
  * l'horloge, justement parce que le temps d'arrêt ne compte pas.
  */
 export class WorldClock {
-  /** Durée réelle d'une heure de jeu, en millisecondes. */
+  /**
+   * Échelle du jour du monde : la seule chose qui se règle vraiment. C'est
+   * elle qui donne `hourMs`, et elle que les salles reçoivent dans
+   * `start.dayScale`.
+   */
+  readonly dayScale: number;
+  /** Durée réelle d'une heure de jeu, en millisecondes. Dérivée de `dayScale`. */
   readonly hourMs: number;
   /** Date réelle de création du monde, en millisecondes epoch. */
   readonly worldStartedAt: number;
@@ -218,7 +240,11 @@ export class WorldClock {
   private readonly sessionStartedAt: number;
 
   constructor(options: WorldClockOptions = {}) {
-    this.hourMs = options.hourMs ?? WORLD_HOUR_MS;
+    this.dayScale = options.dayScale ?? WORLD_DAY_SCALE;
+    if (!isDayScale(this.dayScale)) {
+      throw new RangeError(`dayScale doit être un entier dans [${DAY_SCALE_MIN}, ${DAY_SCALE_MAX}]`);
+    }
+    this.hourMs = options.hourMs ?? worldHourMsFor(this.dayScale);
     if (!Number.isFinite(this.hourMs) || this.hourMs <= 0) {
       throw new RangeError("hourMs doit être un nombre strictement positif");
     }
@@ -337,7 +363,9 @@ export interface WorldStateOptions {
   readonly now?: () => number;
   /** Horloge de jeu du monde. Défaut : une horloge neuve sur `now`. */
   readonly clock?: WorldClock;
-  /** Durée réelle d'une heure de jeu, si `clock` n'est pas fourni. */
+  /** Échelle du jour du monde, si `clock` n'est pas fourni. Défaut : `WORLD_DAY_SCALE`. */
+  readonly dayScale?: number;
+  /** Surcharge de test de la durée réelle d'une heure de jeu, si `clock` n'est pas fourni. */
   readonly hourMs?: number;
   /** Marchands itinérants entretenus. Défaut : `MERCHANT_COUNT` ; 0 en supprime tout. */
   readonly merchantCount?: number;
@@ -376,6 +404,7 @@ export class WorldState {
       options.clock ??
       new WorldClock({
         now: this.now,
+        ...(options.dayScale !== undefined ? { dayScale: options.dayScale } : {}),
         ...(options.hourMs !== undefined ? { hourMs: options.hourMs } : {}),
       });
     this.caravans = new CaravanRegistry({
@@ -548,8 +577,13 @@ export class WorldState {
   /**
    * Ticks d'avance rapide dus à une salle « case » qui rouvre : le temps
    * passé sans personne, en heures de jeu du monde, converti en ticks de carte
-   * (`frozenTicksForHours`, borné à 60 jours). Vaut 0 sans snapshot conservé,
-   * et 0 pour un snapshot d'avant cette tranche, qui n'a pas d'heure d'origine.
+   * (`frozenTicksForHours`, borné à 60 jours de jeu). Vaut 0 sans snapshot
+   * conservé, et 0 pour un snapshot d'avant cette tranche, qui n'a pas
+   * d'heure d'origine.
+   *
+   * La conversion suit l'**échelle du jour du monde** : une heure de jeu vaut
+   * `ticksPerHour(K)` ticks de carte, la même heure que celle de l'horloge
+   * (`docs/PLAN.md` §6, « une seule horloge »).
    *
    * Le serveur ne fait que **calculer** ce nombre : c'est l'hôte qui, après
    * avoir restauré l'état, émet `FastForward` en lockstep (§11.6).
@@ -559,7 +593,7 @@ export class WorldState {
     if (snapshot?.savedAtHours === undefined) {
       return 0;
     }
-    return frozenTicksForHours(this.clock.hours() - snapshot.savedAtHours);
+    return frozenTicksForHours(this.clock.hours() - snapshot.savedAtHours, this.clock.dayScale);
   }
 
   dropSnapshot(room: string): void {
@@ -781,6 +815,7 @@ export class WorldState {
       options.clock ??
       new WorldClock({
         now: options.now ?? Date.now,
+        ...(options.dayScale !== undefined ? { dayScale: options.dayScale } : {}),
         ...(options.hourMs !== undefined ? { hourMs: options.hourMs } : {}),
         ...(json.clock !== undefined
           ? { worldStartedAt: json.clock.worldStartedAt, hoursOffset: json.clock.hoursOffset }

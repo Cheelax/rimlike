@@ -63,6 +63,18 @@ describe("fetchRooms", () => {
     expect(result.rooms).toEqual([SIMPLE_ROOM, TILE_ROOM]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe("http://localhost:8787/rooms");
+    // Un serveur qui n'annonce pas son échelle joue à l'échelle 1.
+    expect(result.dayScale).toBe(1);
+  });
+
+  it("relit l'échelle du jour du serveur, et retombe sur 1 si elle est absurde", async () => {
+    for (const [sent, expected] of [[30, 30], [1, 1], [120, 120], [0, 1], [30.5, 1], ["30", 1], [undefined, 1]] as const) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(jsonResponse({ rooms: [], truncated: false, dayScale: sent })),
+      );
+      expect((await fetchRooms("ws://localhost:8787")).dayScale).toBe(expected);
+    }
   });
 
   it("signale une réponse dont `rooms` n'est pas un tableau", async () => {
@@ -130,5 +142,15 @@ describe("libellé d'une salle", () => {
     expect(roomDay(0)).toBe(1);
     expect(roomDay(14_400)).toBe(2);
     expect(roomDay(1806)).toBe(1);
+  });
+
+  it("compte les jours à l'échelle du serveur, pas à l'échelle 1", () => {
+    // Une colonie du monde au tick 432 000 en est au jour 2, pas au jour 31.
+    expect(roomDay(432_000, 30)).toBe(2);
+    expect(roomDay(14_400, 30)).toBe(1);
+    expect(roomDay(431_999, 30)).toBe(1);
+    // Échelle absurde ou absente : l'échelle 1, le comportement d'avant.
+    expect(roomDay(14_400, 0)).toBe(2);
+    expect(roomDay(14_400)).toBe(2);
   });
 });

@@ -11,7 +11,8 @@
  * | `WORLD_PERSIST` | (non défini) | `0` désactive la persistance, quel que soit `WORLD_STATE_FILE` |
  * | `ROOM_PERSIST_MS` | 30 000 | intervalle minimal des checkpoints des salles nommées |
  * | `ROOM_TTL_HOURS` | 72 | expiration des salles sans visite, en heures réelles |
- * | `WORLD_HOUR_MS` | 30 000 | durée réelle d'une heure de jeu du monde (30 s = un jour de monde en 12 min) |
+ * | `WORLD_DAY_SCALE` | 30 | échelle du jour imposée à toutes les salles (1 à 120) ; 30 = un jour de jeu en 2 h réelles |
+ * | `WORLD_HOUR_MS` | dérivé | **tests d'intégration seulement** : force la durée réelle d'une heure de jeu, au lieu de la déduire de `WORLD_DAY_SCALE` |
  * | `CARAVAN_TICK_MS` | 5 000 | période du tick du monde : avancement des caravanes et des marchands, diffusion |
  * | `WORLD_MERCHANTS` | 2 | marchands itinérants entretenus sur le globe ; `0` n'en fait circuler aucun |
  * | `MERCHANT_STAY_HOURS` | 24 | heures de jeu qu'un marchand passe sur une colonie avant de repartir |
@@ -31,10 +32,13 @@
 
 import {
   CARAVAN_TICK_MS,
+  DAY_SCALE_MAX,
+  DAY_SCALE_MIN,
   MAX_PLAYERS,
   MERCHANT_COUNT,
   MERCHANT_STAY_HOURS,
-  WORLD_HOUR_MS,
+  WORLD_DAY_SCALE,
+  worldHourMsFor,
 } from "@rimlike/protocol";
 
 import { ROOM_PERSIST_MS, ROOM_TTL_HOURS } from "./room-persistence.js";
@@ -66,9 +70,17 @@ function readInteger(name: string, fallback: number, min: number, max: number): 
 const port = readInteger("PORT", 8787, 0, 65535);
 const worldSeed = readInteger("WORLD_SEED", DEFAULT_WORLD_SEED, 0, Number.MAX_SAFE_INTEGER);
 const worldSubdivisions = readInteger("WORLD_SUBDIVISIONS", DEFAULT_WORLD_SUBDIVISIONS, 0, 6);
-// Une heure de jeu ne descend pas sous la milliseconde, et une journée de
-// monde reste sous la journée réelle : au-delà, c'est une erreur de saisie.
-const worldHourMs = readInteger("WORLD_HOUR_MS", WORLD_HOUR_MS, 1, 3_600_000);
+// L'échelle du jour : le seul réglage du rythme du monde (docs/PLAN.md §6).
+// Bornes du sim (`sim::DayScale`) ; 30 est la valeur mesurée en campagne.
+const worldDayScale = readInteger("WORLD_DAY_SCALE", WORLD_DAY_SCALE, DAY_SCALE_MIN, DAY_SCALE_MAX);
+// Surcharge de l'heure de jeu, **pour les tests d'intégration seulement** :
+// non définie, l'heure se déduit de l'échelle du jour. Une heure de jeu ne
+// descend pas sous la milliseconde, et une journée de monde reste sous la
+// journée réelle : au-delà, c'est une erreur de saisie.
+const worldHourMs =
+  process.env.WORLD_HOUR_MS === undefined || process.env.WORLD_HOUR_MS === ""
+    ? undefined
+    : readInteger("WORLD_HOUR_MS", worldHourMsFor(worldDayScale), 1, 3_600_000);
 const caravanTickMs = readInteger("CARAVAN_TICK_MS", CARAVAN_TICK_MS, 10, 600_000);
 // Marchands itinérants (`docs/protocol.md` §13). 0 les désactive complètement ;
 // la borne haute n'est là que pour attraper une faute de frappe — un globe à
@@ -96,7 +108,8 @@ const server = await startServer({
   worldStateFile,
   roomPersistMs,
   roomTtlHours,
-  worldHourMs,
+  worldDayScale,
+  ...(worldHourMs === undefined ? {} : { worldHourMs }),
   caravanTickMs,
   merchantCount,
   merchantStayHours,
@@ -118,7 +131,14 @@ console.log(
     : `[serveur] persistance du monde : ${worldStateFile}`,
 );
 console.log(
-  `[serveur] horloge du monde : 1 h de jeu = ${worldHourMs} ms réelles, tick des caravanes toutes les ${caravanTickMs} ms`,
+  `[serveur] échelle du jour : K = ${worldDayScale} — 1 jour de jeu = ${14_400 * worldDayScale} ticks, ` +
+    // ticks → secondes (60 ticks/s) → heures réelles.
+    `soit ${((14_400 * worldDayScale) / 60 / 3600).toFixed(1)} h réelles`,
+);
+console.log(
+  `[serveur] horloge du monde : 1 h de jeu = ${server.world.clock.hourMs} ms réelles` +
+    `${worldHourMs === undefined ? " (dérivée de l'échelle)" : " (WORLD_HOUR_MS, surcharge de test)"}, ` +
+    `tick des caravanes toutes les ${caravanTickMs} ms`,
 );
 console.log(
   merchantCount === 0

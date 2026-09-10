@@ -15,8 +15,10 @@ import {
   DEFAULT_BIOME,
   DEFAULT_GOODWILL,
   NO_PLAYER,
-  TICKS_PER_HOUR,
+  PROTOCOL_VERSION,
+  WORLD_DAY_SCALE,
   WORLD_HOUR_MS,
+  ticksPerHour,
   type Caravan,
   type CaravanSummary,
 } from "@rimlike/protocol";
@@ -388,9 +390,68 @@ describe("salle d'une case", () => {
         climate,
         dayOfYear: 0,
         biome: globe.tiles[landTile]!.biome,
+        // Tous les clients de la salle reçoivent la **même** échelle du jour,
+        // hôte comme invité : c'est le serveur qui la fixe (§3.2).
+        dayScale: WORLD_DAY_SCALE,
         goodwill: DEFAULT_GOODWILL,
       });
     }
+  });
+
+  it("impose la même échelle du jour à une salle « case » et à une salle nommée", async () => {
+    // Le serveur n'a qu'un rythme : la valeur mesurée (30) par défaut, la
+    // valeur demandée sinon — et elle vaut pour toute salle (§3.2).
+    const scaled = await startServer({ port: 0, log: () => {}, worldSubdivisions: SUBDIVISIONS, worldDayScale: 12 });
+    try {
+      expect(scaled.dayScale).toBe(12);
+      // Une seule horloge : l'heure de jeu du monde en découle.
+      expect(scaled.world.clock.hourMs).toBe(120_000);
+
+      const alice = await joinWorld("alice", scaled);
+      alice.send({ type: "settle", tile: landTile });
+      const settled = await alice.next("settled");
+      alice.send({ type: "join", room: settled.room, name: "alice" });
+      await alice.nth("welcome");
+      alice.send({ type: "start", seed: 1, width: 64, height: 64 });
+      expect((await alice.nth("start")).dayScale).toBe(12);
+
+      const bob = await joinWorld("bob", scaled);
+      bob.send({ type: "join", room: "salle nommée", name: "bob" });
+      await bob.nth("welcome");
+      bob.send({ type: "start", seed: 7, width: 64, height: 64 });
+      expect((await bob.nth("start")).dayScale).toBe(12);
+    } finally {
+      await scaled.close();
+    }
+  });
+
+  it("omet dayScale à l'échelle 1 : le start d'une partie rapide est celui d'avant", async () => {
+    const plain = await startServer({ port: 0, log: () => {}, worldSubdivisions: SUBDIVISIONS, worldDayScale: 1 });
+    try {
+      expect(plain.world.clock.hourMs).toBe(10_000);
+      const alice = await joinWorld("alice", plain);
+      alice.send({ type: "join", room: "rapide", name: "alice" });
+      await alice.nth("welcome");
+      alice.send({ type: "start", seed: 3, width: 64, height: 64 });
+      const start = await alice.nth("start");
+      expect(start.dayScale).toBeUndefined();
+      expect(start).toEqual({ type: "start", seed: 3, width: 64, height: 64, tick: 0 });
+    } finally {
+      await plain.close();
+    }
+  });
+
+  it("refuse proprement un client d'un protocole d'avant l'échelle du jour", async () => {
+    // Un client v2 ignorerait `start.dayScale`, construirait son sim à
+    // l'échelle 1 et divergerait au premier tick. La montée de version le
+    // renvoie à `join` plutôt que de le laisser désyncher en silence.
+    expect(PROTOCOL_VERSION).toBe(3);
+    const client = await connect();
+    client.send({ type: "join", room: "démo", name: "vieux", protocol: 2 });
+    const error = await client.next("error");
+    expect(error.code).toBe("version_mismatch");
+    // Et il n'est jamais entré dans la salle.
+    expect(client.ofType("welcome")).toEqual([]);
   });
 
   it("porte le climat de la case dans le start, à base négative sur une case polaire", async () => {
@@ -915,6 +976,8 @@ describe("conservation du snapshot d'une colonie", () => {
         data: bytes(1, 2, 3, 4),
         goodwill: DEFAULT_GOODWILL,
         biome: globe.tiles[landTile]!.biome,
+        // Informative comme `biome` : le sim restauré porte déjà son échelle.
+        dayScale: WORLD_DAY_SCALE,
       });
 
       // Puis les bundles reprennent à ce tick, sans rejeu de l'historique.
@@ -961,7 +1024,9 @@ describe("conservation du snapshot d'une colonie", () => {
       alice.close();
       await until("salle détruite", () => fast.roomCount === 0);
       worldNow += 5 * WORLD_HOUR_MS;
-      expect(fast.world.frozenTicksFor(settled.room)).toBe(5 * TICKS_PER_HOUR);
+      // Cinq heures de jeu, converties par la **même** heure que l'horloge du
+      // monde : `ticks_par_jour / 24` à l'échelle du serveur (§11.6).
+      expect(fast.world.frozenTicksFor(settled.room)).toBe(5 * ticksPerHour(WORLD_DAY_SCALE));
 
       const bob = await joinWorld("bob", fast);
       bob.send({ type: "visit", tile: landTile });
@@ -975,7 +1040,8 @@ describe("conservation du snapshot d'une colonie", () => {
       const snapshot = await bob.nth("snapshot");
       expect(snapshot.tick).toBe(tick);
       expect(snapshot.data).toEqual(bytes(1, 2, 3, 4));
-      expect(snapshot.frozenTicks).toBe(3000);
+      expect(snapshot.frozenTicks).toBe(90_000);
+      expect(snapshot.dayScale).toBe(WORLD_DAY_SCALE);
     } finally {
       await fast.close();
     }

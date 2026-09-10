@@ -22,6 +22,7 @@ import {
   NO_PLAYER,
   PROTOCOL_VERSION,
   YEAR_DAYS,
+  isDayScale,
   type Bundle,
   type Caravan,
   type CaravanStatus,
@@ -771,6 +772,9 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       if (value.biome !== undefined && !isBiome(value.biome)) {
         return null;
       }
+      if (value.dayScale !== undefined && !isDayScale(value.dayScale)) {
+        return null;
+      }
       if (value.pendingTraders !== undefined && !isPendingTraders(value.pendingTraders)) {
         return null;
       }
@@ -791,6 +795,7 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
         ...(climate === undefined ? {} : { climate }),
         ...(value.dayOfYear === undefined ? {} : { dayOfYear: value.dayOfYear }),
         ...(value.biome === undefined ? {} : { biome: value.biome }),
+        ...(value.dayScale === undefined ? {} : { dayScale: value.dayScale }),
         ...(value.pendingTraders === undefined ? {} : { pendingTraders: value.pendingTraders }),
         ...(goodwill === undefined ? {} : { goodwill }),
       };
@@ -821,6 +826,9 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
       if (value.biome !== undefined && !isBiome(value.biome)) {
         return null;
       }
+      if (value.dayScale !== undefined && !isDayScale(value.dayScale)) {
+        return null;
+      }
       let restored: GoodwillValues | undefined;
       if (value.goodwill !== undefined) {
         const parsed = asGoodwill(value.goodwill);
@@ -837,6 +845,7 @@ export function validateServerMessage(value: unknown): ServerMessage | null {
         ...(value.pendingTraders === undefined ? {} : { pendingTraders: value.pendingTraders }),
         ...(restored === undefined ? {} : { goodwill: restored }),
         ...(value.biome === undefined ? {} : { biome: value.biome }),
+        ...(value.dayScale === undefined ? {} : { dayScale: value.dayScale }),
       };
     }
     case "desync": {
