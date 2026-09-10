@@ -22,7 +22,7 @@ use crate::items::ItemKind;
 use crate::map::{Map, chebyshev};
 use crate::path::Tile;
 use crate::pawn::{Faction, Job, NEED_MAX, Pawn};
-use crate::{EventKind, Sim, TICKS_PER_DAY};
+use crate::{EventKind, Sim};
 
 /// Espèce d'un animal. Les valeurs sont un contrat avec le client (tampon
 /// `animals` de `sim-wasm`, `arg` de `EventKind::AnimalHunted`).
@@ -300,7 +300,8 @@ impl Sim {
     /// sur un biome à gibier dense (`BiomeTable::game_density`), qui divise le
     /// délai **après** le tirage.
     pub(crate) fn schedule_first_herd(&mut self) {
-        let delay = u64::from(TICKS_PER_DAY) + u64::from(self.rng.below(TICKS_PER_DAY));
+        let day = self.ticks_per_day();
+        let delay = u64::from(day) + u64::from(self.rng.below(day));
         self.next_herd_at = self.biome.table().herd_delay(delay);
     }
 

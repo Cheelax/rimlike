@@ -253,9 +253,21 @@ impl ResearchState {
         self.progress[tech as usize] / PROGRESS_SCALE
     }
 
-    /// La technologie en cours a-t-elle atteint son coût ?
+    /// La technologie en cours a-t-elle atteint son coût ? (À l'échelle du
+    /// jour 1 ; le sim passe par `reached_at_scale`.)
     pub fn reached(&self, tech: Tech) -> bool {
-        self.progress[tech as usize] >= tech.cost().saturating_mul(PROGRESS_SCALE)
+        self.reached_at_scale(tech, 1)
+    }
+
+    /// Même chose à une échelle du jour donnée : le coût est un seuil de
+    /// travail, il se multiplie par `day_scale` comme celui d'un chantier
+    /// (voir `docs/time.md`).
+    pub fn reached_at_scale(&self, tech: Tech, day_scale: u32) -> bool {
+        self.progress[tech as usize]
+            >= tech
+                .cost()
+                .saturating_mul(PROGRESS_SCALE)
+                .saturating_mul(day_scale)
     }
 
     /// Acquiert une technologie d'un trait. **Pour les tests et les

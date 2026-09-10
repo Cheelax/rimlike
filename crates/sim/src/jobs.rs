@@ -24,7 +24,7 @@ use crate::pawn::{
 use crate::research::{self, RESEARCH_SESSION};
 use crate::traits::{self, Trait};
 use crate::work::{self, WorkType};
-use crate::{EventKind, Sim, TICKS_PER_DAY, Tech, Weather};
+use crate::{EventKind, Sim, Tech, Weather};
 
 /// Nombre maximal de candidats pour lesquels on tente un A* par recherche.
 pub(crate) const PATH_ATTEMPTS: usize = 6;
@@ -344,7 +344,7 @@ impl Sim {
             return;
         }
         self.abandon_job(i);
-        let until = self.tick + u64::from(BREAK_TICKS);
+        let until = self.tick + u64::from(self.scaled(BREAK_TICKS));
         self.pawns[i].job = Job::Break { until };
         let id = self.pawns[i].id;
         self.push_event(EventKind::ColonistBreak, id);
@@ -355,7 +355,7 @@ impl Sim {
         if self.tick >= until {
             self.pawns[i].path.clear();
             self.pawns[i].job = Job::Idle;
-            self.pawns[i].relief_ticks = RELIEF_TICKS;
+            self.pawns[i].relief_ticks = self.scaled(RELIEF_TICKS);
             return;
         }
         if self.pawns[i].is_moving() {
@@ -380,6 +380,11 @@ impl Sim {
     }
 
     fn decay_needs(&mut self, i: usize) {
+        // Un pas de besoin tous les K ticks, du montant de l'échelle 1 : voir
+        // `Sim::needs_step`. À K = 1, c'est tous les ticks, comme avant.
+        if !self.needs_step() {
+            return;
+        }
         let p = &self.pawns[i];
         let sleeping = matches!(p.job, Job::Sleep { .. }) && !p.is_moving();
         let in_bed = matches!(p.job, Job::Sleep { in_bed: true });
@@ -415,8 +420,9 @@ impl Sim {
     /// (`Pawn::is_night`) puisque `Pawn::work_step` ne voit que le pawn.
     fn is_night(&self) -> bool {
         let t = self.time_of_day();
-        let day_start = TICKS_PER_DAY * traits::DAY_START_HOUR / 24;
-        let day_end = TICKS_PER_DAY * traits::DAY_END_HOUR / 24;
+        let hour = self.ticks_per_day() / 24;
+        let day_start = hour * traits::DAY_START_HOUR;
+        let day_end = hour * traits::DAY_END_HOUR;
         !(day_start..day_end).contains(&t)
     }
 
@@ -876,12 +882,12 @@ impl Sim {
         // que la plaie soit bandée — c'est ce qui sauve. La blessure reste
         // « non pansée » pour autant : la séance continue jusqu'au bandage,
         // qui seul fait cicatriser plus vite.
-        if progress >= HEMOSTASIS_TICKS * 100 {
+        if progress >= self.scaled(HEMOSTASIS_TICKS) * 100 {
             for inj in &mut self.pawns[k].injuries {
                 inj.close();
             }
         }
-        if progress < TEND_TICKS * 100 {
+        if progress < self.scaled(TEND_TICKS) * 100 {
             self.pawns[i].job = Job::Tend { target, progress };
             return;
         }
@@ -1706,7 +1712,7 @@ impl Sim {
         }
         let progress = progress + self.pawns[i].work_step(WorkType::Designated);
         self.gain_xp(i, WorkType::Designated);
-        if progress < kind.work_ticks() * 100 {
+        if progress < self.scaled(kind.work_ticks()) * 100 {
             self.pawns[i].job = Job::Work {
                 kind,
                 x,
@@ -1725,7 +1731,7 @@ impl Sim {
                 self.regrow.push(Regrow {
                     x,
                     y,
-                    ready_at: self.tick + u64::from(TICKS_PER_DAY),
+                    ready_at: self.tick + u64::from(self.ticks_per_day()),
                 });
             }
             Designation::None => {}
@@ -1931,7 +1937,8 @@ impl Sim {
         let masonry = self.research.is_done(Tech::Masonry);
         self.blueprints[k].progress += self.pawns[i].work_step(WorkType::Build);
         self.gain_xp(i, WorkType::Build);
-        if self.blueprints[k].progress < kind.work_ticks_with(material, masonry) * 100 {
+        if self.blueprints[k].progress < self.scaled(kind.work_ticks_with(material, masonry)) * 100
+        {
             return;
         }
         self.complete_blueprint(k);
@@ -2058,7 +2065,7 @@ impl Sim {
         }
         let progress = progress + self.pawns[i].work_step(WorkType::Build);
         self.gain_xp(i, WorkType::Build);
-        if progress < combat::REARM_TICKS * 100 {
+        if progress < self.scaled(combat::REARM_TICKS) * 100 {
             self.pawns[i].job = Job::RearmTrap { at, progress };
             return;
         }
@@ -2215,7 +2222,7 @@ impl Sim {
         }
         let progress = progress + self.pawns[i].work_step(WorkType::Cook);
         self.gain_xp(i, WorkType::Cook);
-        if progress < farm::COOK_TICKS * 100 {
+        if progress < self.scaled(farm::COOK_TICKS) * 100 {
             self.pawns[i].job = Job::Cook {
                 campfire,
                 item,
@@ -2532,7 +2539,7 @@ impl Sim {
                 }
                 let progress = progress + self.pawns[i].work_step(WorkType::Build);
                 self.gain_xp(i, WorkType::Build);
-                if progress < r.work_ticks * 100 {
+                if progress < self.scaled(r.work_ticks) * 100 {
                     self.pawns[i].job = Job::Craft {
                         spot,
                         recipe,
@@ -3035,7 +3042,7 @@ impl Sim {
         }
         let progress = progress + self.pawns[i].work_step(WorkType::Cook);
         self.gain_xp(i, WorkType::Cook);
-        if progress < craft::BUTCHER_TICKS * 100 {
+        if progress < self.scaled(craft::BUTCHER_TICKS) * 100 {
             self.pawns[i].job = Job::Butcher {
                 spot,
                 item,
@@ -3121,7 +3128,11 @@ impl Sim {
         let k = tech as usize;
         self.research.progress[k] = self.research.progress[k].saturating_add(points);
         self.gain_xp(i, WorkType::Research);
-        if self.research.reached(tech) {
+        // Le coût d'une technologie est un seuil de travail comme celui d'un
+        // chantier : il se multiplie par l'échelle du jour (voir
+        // `docs/time.md`), sans quoi une colonie chercherait tout en un
+        // trentième de journée.
+        if self.research.reached_at_scale(tech, self.day_scale()) {
             self.research.done[k] = true;
             self.research.current = research::NO_TECH;
             self.push_event(EventKind::ResearchDone, tech as u32);
@@ -3131,7 +3142,7 @@ impl Sim {
         // Fin de séance : le colon lâche l'établi (quitte à le reprendre au
         // tick suivant), ses besoins et son tableau de travail sont réévalués,
         // et un camarade peut prendre la place.
-        if self.tick % u64::from(RESEARCH_SESSION) == 0 {
+        if self.tick % self.scaled64(u64::from(RESEARCH_SESSION)) == 0 {
             self.abandon_job(i);
         }
     }
@@ -3207,9 +3218,9 @@ impl Sim {
         let progress = progress + self.pawns[i].work_step(WorkType::Farm);
         self.gain_xp(i, WorkType::Farm);
         let needed = if sow {
-            farm::SOW_TICKS * 100
+            self.scaled(farm::SOW_TICKS) * 100
         } else {
-            farm::HARVEST_TICKS * 100
+            self.scaled(farm::HARVEST_TICKS) * 100
         };
         if progress < needed {
             self.pawns[i].job = Job::Farm {
@@ -3243,6 +3254,9 @@ impl Sim {
         }
         let wet = self.weather.is_wet();
         let tick = self.tick;
+        // La maturité est en jours : elle suit l'échelle, le pas de pousse non
+        // (un pas par tick, voir `docs/time.md`).
+        let ripe = self.scaled(farm::GROW_TICKS);
         // Lu une fois pour toutes les cases : la recherche ne change pas en
         // cours de tick.
         let agriculture = self.research.is_done(Tech::Agriculture);
@@ -3257,13 +3271,11 @@ impl Sim {
                 self.crops.remove(k);
                 continue;
             }
-            if self.crops[k].growth < farm::GROW_TICKS {
+            if self.crops[k].growth < ripe {
                 let step = climate::growth_step(temperature, wet, tick);
                 let step = research::crop_growth_step(step, agriculture, tick);
-                self.crops[k].growth = (self.crops[k].growth + step).min(farm::GROW_TICKS);
-                if self.crops[k].growth == farm::GROW_TICKS
-                    && self.map.feature(x, y) == Feature::Crop
-                {
+                self.crops[k].growth = (self.crops[k].growth + step).min(ripe);
+                if self.crops[k].growth == ripe && self.map.feature(x, y) == Feature::Crop {
                     self.map.set_feature(x, y, Feature::CropRipe);
                 }
             }
@@ -3305,7 +3317,10 @@ impl Sim {
         let preservation = self.research.is_done(Tech::Preservation);
         let mut k = 0;
         while k < self.items.len() {
-            let Some(life) = self.items[k].kind.shelf_life() else {
+            // La durée de vie est en jours : elle suit l'échelle. Le pas
+            // (`elapsed`) reste en ticks réels — le total perdu par jour de
+            // jeu ne dépend donc pas de l'échelle.
+            let Some(life) = self.items[k].kind.shelf_life().map(|l| self.scaled(l)) else {
                 k += 1;
                 continue;
             };
@@ -3353,7 +3368,7 @@ impl Sim {
         }
         let spoil_at = kind
             .shelf_life()
-            .map_or(u64::MAX, |life| self.tick + u64::from(life));
+            .map_or(u64::MAX, |life| self.tick + u64::from(self.scaled(life)));
         // Fraîche à la création ; `u32::MAX` si le genre ne périme pas
         // (voir `ItemStack::freshness`).
         let freshness = if kind.shelf_life().is_some() {
@@ -3401,7 +3416,8 @@ impl Sim {
             if self.regrow[k].ready_at <= now {
                 let (x, y) = (self.regrow[k].x, self.regrow[k].y);
                 if outdoor + self.indoor_bonus(x, y) < climate::FREEZING {
-                    self.regrow[k].ready_at = now + u64::from(climate::FROST_REGROW_DELAY);
+                    self.regrow[k].ready_at =
+                        now + u64::from(self.scaled(climate::FROST_REGROW_DELAY));
                     k += 1;
                     continue;
                 }

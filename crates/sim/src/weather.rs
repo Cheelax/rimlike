@@ -5,8 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::Sim;
 use crate::climate::{FREEZING, RAIN_CHILL, STORM_CHILL, WEATHER_NOISE};
-use crate::{Sim, TICKS_PER_DAY};
 
 /// Temps courant. Les valeurs sont un contrat avec
 /// `apps/client/src/render/terrain.ts` (`WEATHER_LABELS`).
@@ -81,7 +81,10 @@ impl Sim {
             } else {
                 Weather::Storm
             };
-            let duration = TICKS_PER_DAY / 4 + self.rng.below(3 * TICKS_PER_DAY / 4);
+            // Du quart de jour au jour : la météo est en jours, elle suit
+            // l'échelle (voir `docs/time.md`).
+            let day = self.ticks_per_day();
+            let duration = day / 4 + self.rng.below(3 * (day / 4));
             self.weather_until = self.tick + u64::from(duration);
             self.weather_noise = self.rng.range_i32(-WEATHER_NOISE, WEATHER_NOISE + 1);
         }

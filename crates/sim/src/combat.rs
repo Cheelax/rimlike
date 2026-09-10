@@ -251,7 +251,9 @@ impl Sim {
         if !sick {
             self.pawns[i].illness_tended = false;
         }
-        if self.pawns[i].hunger == 0 && self.tick % STARVE_DAMAGE_INTERVAL == 0 {
+        // La famine se compte en jours (deux, à toutes les échelles) : son
+        // intervalle suit l'échelle du jour, contrairement au saignement.
+        if self.pawns[i].hunger == 0 && self.tick % self.scaled64(STARVE_DAMAGE_INTERVAL) == 0 {
             // La famine n'entame plus les PV directement : elle affaiblit le torse.
             self.pawns[i].starve_torso();
         }
@@ -280,7 +282,7 @@ impl Sim {
         // les plaies, et c'est ce qui rend l'hypothermie dangereuse — sans
         // cela, une atteinte de `COLD_SEVERITY` toutes les
         // `HYPOTHERMIA_INTERVAL` guérirait plus vite qu'elle ne s'aggrave.
-        let heals = self.tick % HEAL_INTERVAL_BED == 0
+        let heals = self.tick % self.scaled64(HEAL_INTERVAL_BED) == 0
             && !self.pawns[i].is_starving()
             && self.pawns[i].comfort >= crate::climate::HYPOTHERMIA_TEMP
             && self.tick % self.heal_interval(i) == 0;
@@ -308,15 +310,17 @@ impl Sim {
     }
 
     /// Un blessé allongé — endormi ou à terre — cicatrise deux fois plus vite.
+    /// La convalescence se compte en jours de lit : l'intervalle suit
+    /// l'échelle du jour (voir `docs/time.md`).
     fn heal_interval(&self, i: usize) -> u64 {
         let (x, y) = self.pawns[i].tile();
         let in_bed = matches!(self.pawns[i].job, Job::Sleep { in_bed: true } | Job::Downed)
             && !self.pawns[i].is_moving()
             && self.map.feature(x, y) == Feature::Bed;
         if in_bed {
-            HEAL_INTERVAL_BED
+            self.scaled64(HEAL_INTERVAL_BED)
         } else {
-            HEAL_INTERVAL
+            self.scaled64(HEAL_INTERVAL)
         }
     }
 
@@ -1003,16 +1007,17 @@ impl Sim {
                             // Ceux qui l'aimaient (voir `social`) le pleurent
                             // deux fois plus longtemps.
                             let mut friends: Vec<u32> = Vec::new();
+                            // Le deuil est en jours : lu avant la boucle, qui
+                            // emprunte les pawns.
+                            let grief = self.scaled(GRIEF_TICKS);
+                            let max_grief = self.scaled(social::MAX_GRIEF_TICKS);
                             for q in &mut self.pawns {
                                 if !q.is_colonist() {
                                     continue;
                                 }
-                                q.grief_ticks = GRIEF_TICKS;
+                                q.grief_ticks = grief;
                                 if q.opinion_of(p.id) >= social::FRIEND_OPINION {
-                                    q.grief_ticks = q
-                                        .grief_ticks
-                                        .saturating_mul(2)
-                                        .min(social::MAX_GRIEF_TICKS);
+                                    q.grief_ticks = q.grief_ticks.saturating_mul(2).min(max_grief);
                                     friends.push(q.id);
                                 }
                             }

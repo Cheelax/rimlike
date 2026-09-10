@@ -412,7 +412,11 @@ impl Sim {
     /// La faim d'une bête de la colonie, et ce qu'elle mange. Le chemin d'une
     /// bête repue est de deux comparaisons : la faim décline, et c'est tout.
     fn livestock_needs(&mut self, i: usize) {
-        self.pawns[i].hunger = self.pawns[i].hunger.saturating_sub(LIVESTOCK_HUNGER_DECAY);
+        // Même règle que la faim des colons : le montant de l'échelle 1, un
+        // tick sur K (voir `Sim::needs_step`).
+        if self.needs_step() {
+            self.pawns[i].hunger = self.pawns[i].hunger.saturating_sub(LIVESTOCK_HUNGER_DECAY);
+        }
         if self.pawns[i].hunger >= LIVESTOCK_FEED_AT || self.tick % FEED_INTERVAL != 0 {
             return;
         }
@@ -606,7 +610,7 @@ impl Sim {
                 self.breed_at[k] = 0;
                 continue;
             }
-            let period = u64::from(species.breed_days()) * u64::from(TICKS_PER_DAY);
+            let period = u64::from(species.breed_days()) * u64::from(self.ticks_per_day());
             if self.breed_at[k] == 0 {
                 self.breed_at[k] = self.tick + period;
                 continue;
@@ -826,7 +830,7 @@ impl Sim {
         }
         let progress = progress + self.pawns[i].work_step(WorkType::Farm);
         self.gain_xp(i, WorkType::Farm);
-        if progress < TAME_TICKS * 100 {
+        if progress < self.scaled(TAME_TICKS) * 100 {
             self.pawns[i].job = Job::Tame {
                 animal,
                 item,
@@ -899,7 +903,7 @@ impl Sim {
             self.push_event(EventKind::Tamed, species as u32);
             return;
         }
-        self.pawns[k].tame_retry_at = self.tick + u64::from(TAME_RETRY);
+        self.pawns[k].tame_retry_at = self.tick + u64::from(self.scaled(TAME_RETRY));
         if species.aggressive() && self.rng.chance(1, BOAR_BACKLASH_CHANCE) {
             // La riposte existante : `animal_hit` sur une bête agressive pose
             // `Job::Attack` et annonce la charge.
@@ -993,7 +997,7 @@ impl Sim {
         self.pawns[i].path.clear();
         let progress = progress + self.pawns[i].work_step(WorkType::Farm);
         self.gain_xp(i, WorkType::Farm);
-        if progress < SLAUGHTER_TICKS * 100 {
+        if progress < self.scaled(SLAUGHTER_TICKS) * 100 {
             self.pawns[i].job = Job::Slaughter { animal, progress };
             return;
         }

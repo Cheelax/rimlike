@@ -665,7 +665,11 @@ impl Sim {
         if self.weather != Weather::Storm
             || self.map.width() == 0
             || self.map.height() == 0
-            || !self.rng.chance(LIGHTNING_NUM, LIGHTNING_DEN)
+            // Le contrat de ce dénominateur est en jours (« un impact par
+            // orage ») : il se multiplie par l'échelle, sans quoi une journée
+            // trente fois plus longue compterait trente fois plus d'impacts.
+            // Le tirage reste unique, dans le même ordre.
+            || !self.rng.chance(LIGHTNING_NUM, self.scaled(LIGHTNING_DEN))
         {
             return;
         }
@@ -690,7 +694,11 @@ impl Sim {
         if self.map.campfire_count() == 0
             || self.weather.is_wet()
             || outdoor <= CAMPFIRE_SPARK_TEMP
-            || !self.rng.chance(CAMPFIRE_SPARK_NUM, CAMPFIRE_SPARK_DEN)
+            // Même règle que la foudre : « un départ par cinq jours » est un
+            // contrat en jours.
+            || !self
+                .rng
+                .chance(CAMPFIRE_SPARK_NUM, self.scaled(CAMPFIRE_SPARK_DEN))
         {
             return;
         }
