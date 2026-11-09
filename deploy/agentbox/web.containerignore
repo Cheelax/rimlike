@@ -1,0 +1,16 @@
+# Exclusions du build de l'image web (Containerfile.web, `--ignorefile`).
+# Le .dockerignore du dépôt sert l'image serveur et exclut crates/ et
+# apps/client/ : ici on en a besoin, on n'exclut que le généré et l'inutile.
+.git
+.github
+target/
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+apps/client/src/wasm/
+apps/server/
+docs/
+deploy/
+.DS_Store
+*.log

@@ -1,0 +1,7 @@
+# Service utilisateur (rimlike) : archive quotidienne du volume du monde.
+[Unit]
+Description=Sauvegarde quotidienne du monde rimlike
+
+[Service]
+Type=oneshot
+ExecStart=/srv/rimlike/deploy/bin/rimlike-ctl backup quotidienne

@@ -1,0 +1,21 @@
+# Caddy : client compilé + relais vers le serveur (Containerfile.web, Caddyfile).
+[Unit]
+Description=rimlike — client + reverse proxy (Caddy)
+Wants=rimlike-server.service
+After=rimlike-server.service
+
+[Container]
+ContainerName=rimlike-web
+Image=localhost/rimlike-web:current
+Pull=never
+Pod=rimlike.pod
+ReadOnly=true
+Tmpfs=/data
+Tmpfs=/config
+
+[Service]
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

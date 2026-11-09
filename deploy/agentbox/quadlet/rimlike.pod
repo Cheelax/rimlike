@@ -1,0 +1,13 @@
+# Pod de l'hébergement de test agentbox (podman sans root, utilisateur rimlike).
+# Seul Caddy (rimlike-web, :8080) est publié, et seulement sur la boucle
+# locale de l'hôte : cloudflared s'y connecte, rien n'écoute sur le réseau.
+# Le serveur (127.0.0.1:8787 dans le pod) n'est jamais publié.
+[Unit]
+Description=rimlike — pod de test (serveur + client)
+
+[Pod]
+PodName=rimlike
+PublishPort=127.0.0.1:8790:8080
+
+[Install]
+WantedBy=default.target

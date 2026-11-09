@@ -1,0 +1,61 @@
+# Caddy de l'hébergement de test agentbox (image rimlike-web, voir
+# Containerfile.web). Une seule origine pour tout le jeu :
+#
+#   - upgrade WebSocket, /health, /world, /rooms  → apps/server (127.0.0.1:8787,
+#     même pod, jamais publié sur l'hôte) ;
+#   - tout le reste                               → le client compilé.
+#
+# Devant : cloudflared (tunnel sortant) → 127.0.0.1:8790 sur l'hôte → :8080 ici.
+# Le TLS et l'authentification (Cloudflare Access) sont posés par Cloudflare ;
+# ce serveur ne parle que HTTP en clair, sur la boucle locale.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:8080 {
+	log {
+		output stdout
+		format json
+	}
+
+	@server {
+		path /health /world /rooms
+	}
+	@websocket {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+
+	# Adresse du joueur pour le compteur par IP du serveur (TRUST_PROXY=1) :
+	# CF-Connecting-IP est posé par le bord Cloudflare et ne peut pas venir du
+	# client, contrairement au premier élément de X-Forwarded-For, que
+	# Cloudflare complète sans le remplacer. Hors tunnel (essai local), l'en-tête
+	# est vide et le serveur retombe sur l'adresse de la socket.
+	handle @websocket {
+		reverse_proxy 127.0.0.1:8787 {
+			header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+		}
+	}
+	handle @server {
+		reverse_proxy 127.0.0.1:8787 {
+			header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+		}
+	}
+
+	handle {
+		root * /srv/client
+		encode zstd gzip
+		header {
+			X-Content-Type-Options nosniff
+			Referrer-Policy same-origin
+		}
+		# Fichiers Vite empreintés : cache long. La page, elle, est revalidée.
+		@hashed path /assets/*
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		@page path / /index.html
+		header @page Cache-Control "no-cache"
+		file_server
+	}
+}

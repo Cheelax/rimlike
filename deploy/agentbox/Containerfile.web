@@ -1,0 +1,59 @@
+# Image « web » de l'hébergement de test agentbox : le client (apps/client)
+# compilé, servi par Caddy, qui relaie aussi vers le serveur (même pod).
+#
+# Contexte de build = la RACINE du dépôt (le checkout déployé), fichier
+# d'exclusion dédié (le .dockerignore du dépôt sert l'image serveur et exclut
+# justement crates/ et apps/client/), et le dossier deploy/agentbox comme
+# second contexte nommé pour le Caddyfile :
+#
+#   podman build -f deploy/agentbox/Containerfile.web \
+#     --ignorefile deploy/agentbox/web.containerignore \
+#     --build-context deploy=deploy/agentbox \
+#     -t localhost/rimlike-web:<rev> .
+#
+# Même chaîne que .github/workflows/pages.yml (Rust 1.88 + wasm-pack, puis
+# Vite), à une différence près : VITE_BASE=/ — le client est servi à la racine
+# du nom d'hôte, à côté du serveur, ce qui garde la WebSocket et `GET /world`
+# sur la même origine que la page (cookie Cloudflare Access envoyé, pas de CORS).
+
+ARG RUST_IMAGE=docker.io/library/rust:1.88-bookworm
+ARG NODE_IMAGE=docker.io/library/node:22-bookworm-slim
+ARG CADDY_IMAGE=docker.io/library/caddy:2-alpine
+ARG WASM_PACK_VERSION=0.13.1
+ARG PNPM_VERSION=10.11.0
+
+# --- wasm : le sim compilé en WebAssembly ----------------------------------
+FROM ${RUST_IMAGE} AS wasm
+ARG WASM_PACK_VERSION
+WORKDIR /repo
+# wasm-pack épinglé (cargo install exige un rustc plus récent que 1.88).
+RUN curl -fsSL "https://github.com/rustwasm/wasm-pack/releases/download/v${WASM_PACK_VERSION}/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    | tar -xz -C /usr/local/bin --strip-components=1 "wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack"
+COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+# rustup lit rust-toolchain.toml (1.88.0 + cible wasm32) avant la compilation.
+RUN rustup show active-toolchain || rustup toolchain install
+COPY crates crates
+RUN wasm-pack build crates/sim-wasm --release --target web --out-dir /out/wasm --out-name sim
+
+# --- client : build Vite ----------------------------------------------------
+FROM ${NODE_IMAGE} AS client
+ARG PNPM_VERSION
+WORKDIR /repo
+RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY apps/client/package.json apps/client/package.json
+COPY packages/protocol/package.json packages/protocol/package.json
+COPY packages/world/package.json packages/world/package.json
+RUN pnpm install --frozen-lockfile --filter client...
+COPY apps/client apps/client
+COPY packages/protocol packages/protocol
+COPY packages/world packages/world
+COPY --from=wasm /out/wasm apps/client/src/wasm
+RUN VITE_BASE=/ pnpm --filter client build
+
+# --- runtime : Caddy ---------------------------------------------------------
+FROM ${CADDY_IMAGE} AS runtime
+COPY --from=deploy Caddyfile /etc/caddy/Caddyfile
+COPY --from=client /repo/apps/client/dist /srv/client
+RUN caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+EXPOSE 8080
