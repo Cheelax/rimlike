@@ -592,7 +592,7 @@ est un joueur de plus, présent partout.
 1. **Le serveur simule les colonies.** Sim natif chargé par le serveur, participant permanent
    des salles `tile-N` ; test **natif contre WASM** en CI (même graine, mêmes commandes, même
    hash après N ticks). La parité des scénarios est acquise depuis le 2026-09-10 ;
-   le chantier local du 2026-09-19 ajoute la comparaison avec un vrai processus Rust,
+   le chantier du 2026-09-19 (PR #20) ajoute la comparaison avec un vrai processus Rust,
    une boucle sans joueur et des checkpoints atomiques (voir [le moteur natif](native-sim.md)).
    Restent le branchement dans les salles, la reprise réseau et les mesures sur le VPS.
    Jalon : une colonie continue de vivre quand tous ses joueurs sont partis, et on la
@@ -670,7 +670,17 @@ est un joueur de plus, présent partout.
 
 ## 8. Journal des décisions
 
-- 2026-09-19 (travail local, non fusionné) : **défense autonome rendue effective et
+- 2026-11-09 : **la colonie qui tient seule et le moteur natif sont fusionnés (PR #20)**,
+  avec un écart connu, accepté par Thomas : à K = 30, le troisième critère de la fiche
+  `colonie-tient-seule` (morts de colons après départ, colonies murées, ≤ le tiers d'avant)
+  donne 37 pour une limite de 36,67, un mort de trop. Les deux autres critères passent
+  largement (colonies vivantes en absence 13 → 24) et rien n'a été réglé pour le score.
+  L'écart est repris par la fiche `veille-dernier-mort`. Le protocole passe en version 4 :
+  un client d'avant est refusé. Même jour : hébergement de test sur agentbox fusionné
+  (PR #19, `deploy/agentbox/`). Le dépôt n'a plus qu'un checkout de travail : les worktrees
+  locaux de septembre sont rangés, tout le travail en cours est sur GitHub.
+
+- 2026-09-19 (fusionné le 2026-11-09, PR #20) : **défense autonome rendue effective et
   pillage extérieur**. La branche `task/colonie-tient-seule` est reprise : les pillards
   ne traversent plus les portes en veille, la défense automatique est distincte d'un
   ordre d'attaque et cesse à la sortie de la cible. Les trajets de travail et de besoin
@@ -688,7 +698,7 @@ est un joueur de plus, présent partout.
   snapshot et comparateur automatisé rendent le diagnostic reproductible.
   Résultats et limites : `CAMPAIGN-FINDINGS.md` §17.
 
-- 2026-09-19 (travail local, non fusionné) : **frontière native et boucle autonome
+- 2026-09-19 (fusionné le 2026-11-09, PR #20) : **frontière native et boucle autonome
   testables** pour l'étape 1 de la phase 6. Choix de l'option déjà autorisée par le
   plan : un processus Rust `sim-host` à côté de Node, plutôt qu'un addon natif.
   IPC encadré et borné, commandes postcard opaques, validation d'un lot avant tout tick,

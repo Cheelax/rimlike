@@ -1,6 +1,6 @@
 ---
 slug: moteur-natif-colonies
-status: claimed
+status: done
 claimed_by: Codex (session locale du 2026-09-19)
 claimed_at: 2026-09-19
 layer: serveur
@@ -19,7 +19,7 @@ acceptance:
   - pnpm --filter server typecheck && pnpm --filter server run build:server
   - deux exécutions dev:native successives restaurent le même tick et hash puis avancent
   - benchmark Node/IPC/Rust et mémoire sur plusieurs cartes, avec limites explicites
-done_in:
+done_in: PR #20 (2026-11-09)
 ---
 
 # Moteur natif, horloge sans navigateur et checkpoints

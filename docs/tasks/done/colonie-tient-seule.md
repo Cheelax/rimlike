@@ -1,6 +1,6 @@
 ---
 slug: colonie-tient-seule
-status: claimed
+status: done
 claimed_by: Codex (reprise de la branche réservée par Claude Fable le 2026-09-10)
 claimed_at: 2026-09-10
 layer: sim
@@ -26,7 +26,7 @@ acceptance:
   - même campagne avec --absent-from 8 (le joueur cesse tout ordre au jour 8, la colonie a une enceinte ou pas selon la graine) AVANT et APRÈS : colonies éteintes APRÈS ≤ la moitié de AVANT, et parmi les colonies qui avaient une enceinte fermée au jour 8, morts de colons APRÈS ≤ le tiers de AVANT
   - les pertes d une colonie absente et murée sont des ressources et du bétail dehors, pas des colons : rapporté par graine
   - cargo run -p sim-cli --release -- fuzz --seed 1 --size 24 --ticks 20000 --runs 3 --commands-per-tick 6 → OK
-done_in:
+done_in: PR #20 (2026-11-09)
 ---
 
 # La colonie tient seule : tenir la porte ou se replier
