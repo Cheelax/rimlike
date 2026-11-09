@@ -22,6 +22,9 @@ done_in:
 
 # Les premiers sons
 
+**À réserver après la fusion de `colons-lisibles`** : les deux fiches touchent `App.tsx`, et le
+tableau exige un écrivain par fichier.
+
 ## Constat (bilan de jeu du 2026-11-09)
 
 Le client n'a aucun son : pas d'ambiance, pas de bruit de travail, pas d'alerte de raid. Pour
