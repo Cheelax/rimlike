@@ -23,20 +23,22 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("échelle du jour solo mémorisée", () => {
-  it("propose le rythme du monde et la partie rapide, et rien d'autre", () => {
-    expect([...SOLO_DAY_SCALES]).toEqual([WORLD_DAY_SCALE, DEFAULT_DAY_SCALE]);
+  it("propose la partie rapide puis le rythme du monde, et rien d'autre", () => {
+    expect([...SOLO_DAY_SCALES]).toEqual([DEFAULT_DAY_SCALE, WORLD_DAY_SCALE]);
     for (const scale of SOLO_DAY_SCALES) {
       expect(isSoloDayScale(scale)).toBe(true);
       expect(SOLO_DAY_SCALE_LABELS[scale]).toBeTruthy();
     }
   });
 
-  it("joue au rythme du monde par défaut : le solo n'est pas un autre jeu", () => {
-    expect(DEFAULT_SOLO_DAY_SCALE).toBe(WORLD_DAY_SCALE);
-    expect(loadSoloDayScale()).toBe(30);
-    // Deux heures réelles par jour de jeu, à 60 ticks/s.
-    expect(TICKS_PER_DAY * DEFAULT_SOLO_DAY_SCALE).toBe(432_000);
-    expect((TICKS_PER_DAY * DEFAULT_SOLO_DAY_SCALE) / 60 / 3600).toBe(2);
+  it("joue en partie rapide par défaut : une première partie ne doit pas s'ennuyer", () => {
+    expect(DEFAULT_SOLO_DAY_SCALE).toBe(DEFAULT_DAY_SCALE);
+    expect(loadSoloDayScale()).toBe(1);
+    // Quatre minutes réelles par jour de jeu, à 60 ticks/s.
+    expect(TICKS_PER_DAY * DEFAULT_SOLO_DAY_SCALE).toBe(14_400);
+    expect((TICKS_PER_DAY * DEFAULT_SOLO_DAY_SCALE) / 60 / 60).toBe(4);
+    // Le rythme du monde reste proposé : deux heures réelles par jour de jeu.
+    expect((TICKS_PER_DAY * WORLD_DAY_SCALE) / 60 / 3600).toBe(2);
   });
 
   it("mémorise chaque choix sous la clé versionnée", () => {
@@ -48,7 +50,7 @@ describe("échelle du jour solo mémorisée", () => {
   });
 
   it.each([0, -1, 2, 29, 31, 121, 30.5, "30", null, true, [], {}])(
-    "refuse une préférence invalide (%j) et revient au rythme du monde",
+    "refuse une préférence invalide (%j) et revient à la partie rapide",
     (value) => {
       expect(isSoloDayScale(value)).toBe(false);
       localStorage.setItem(KEY, JSON.stringify(value));

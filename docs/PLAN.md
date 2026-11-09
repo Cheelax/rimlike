@@ -670,6 +670,18 @@ est un joueur de plus, présent partout.
 
 ## 8. Journal des décisions
 
+- 2026-11-09 (suite) : **le solo démarre en partie rapide.** Revient sur le défaut posé le
+  2026-09-10 (PR #17 : « le solo n'est pas un autre jeu que le monde »). Argument nouveau,
+  tiré d'une partie jouée pour le bilan : au rythme du monde, un mur prend 75 s et une
+  récolte 3 h, et même à ×10 un jour dure 12 min ; une première partie s'ennuie avant le
+  premier raid. Le sélecteur « Rythme » propose désormais « Partie rapide (jour de 4 min) »
+  en premier et par défaut, « Monde (jour de 2 h) » reste une option ; une préférence déjà
+  enregistrée est conservée. Le multi et le monde ne changent pas (le serveur impose
+  toujours K = 30). Même PR : le jour du HUD et du Journal change à minuit, comme le
+  calendrier du sim (`gameDay`), et non plus vers 07:12 ; le test épinglé de
+  `raid-parity.test.ts` qui figeait l'ancien comptage est aligné. Décidé avec Thomas, premier
+  point de la feuille de route du bilan (lisibilité, son, objectif ensuite).
+
 - 2026-11-09 : **la colonie qui tient seule et le moteur natif sont fusionnés (PR #20)**,
   avec un écart connu, accepté par Thomas : à K = 30, le troisième critère de la fiche
   `colonie-tient-seule` (morts de colons après départ, colonies murées, ≤ le tiers d'avant)

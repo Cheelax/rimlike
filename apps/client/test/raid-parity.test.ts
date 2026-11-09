@@ -28,8 +28,9 @@ describe("raids : snapshots natifs rejoués en WASM", () => {
         .find((i) => events[i + 2] === 44);
       expect(at).toBeDefined();
       expect(formatEventTime(events[at! + 1]!, day, offset)).toBe("jour 1 08:14");
-      // Minuit civil ne change pas le compteur de jours écoulés du HUD.
-      expect(formatEventTime(day - offset, day, offset)).toBe("jour 1 00:00");
+      // Le jour du HUD change à minuit, comme le calendrier du sim (`gameDay`).
+      expect(formatEventTime(day - offset - 1, day, offset)).toBe("jour 1 23:59");
+      expect(formatEventTime(day - offset, day, offset)).toBe("jour 2 00:00");
       expect(formatEventTime(day, day, offset)).toBe("jour 2 07:12");
     } finally { s.free(); }
   });
