@@ -177,6 +177,11 @@ export class SimHandle implements SimLike {
     return this.inner.wealth();
   }
 
+  /** État de défense calculé par le sim ; voir `raidStatus.ts`. */
+  raidStatus(): Uint32Array {
+    return this.inner.raid_status();
+  }
+
   /**
    * Ticks de maladie restants pour un pawn ; 0 s'il va bien ou si l'id est
    * inconnu. Hors du tampon des pawns, comme `pawnWeapon` : `PAWN_STRIDE` ne

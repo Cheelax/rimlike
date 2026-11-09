@@ -544,6 +544,7 @@ describe("validation", () => {
     expect(isCompatibleProtocol(undefined)).toBe(true);
     expect(isCompatibleProtocol(PROTOCOL_VERSION)).toBe(true);
     expect(isCompatibleProtocol(PROTOCOL_VERSION + 1)).toBe(false);
+    expect(isCompatibleProtocol(3)).toBe(false);
   });
 });
 

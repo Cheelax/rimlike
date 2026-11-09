@@ -3,6 +3,95 @@
 
 use std::process::Command;
 
+#[test]
+fn campaign_exports_a_restorable_snapshot_without_overwriting_or_changing_the_sim() {
+    let directory = (0..100)
+        .find_map(|n| {
+            let path = std::env::temp_dir().join(format!(
+                "rimlike-campaign-export-{}-{n}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).ok().map(|()| path)
+        })
+        .expect("répertoire temporaire unique");
+    let path = directory.join("colony.bin");
+    let args = [
+        "campaign",
+        "--seed",
+        "1",
+        "--seeds",
+        "1",
+        "--days",
+        "1",
+        "--size",
+        "24",
+        "--day-scale",
+        "1",
+        "--json",
+        "--snapshot-out",
+    ];
+    let first = bin().args(args).arg(&path).output().unwrap();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(String::from_utf8_lossy(&first.stdout).starts_with("{"));
+    let bytes = std::fs::read(&path).unwrap();
+    let mut sim = sim::Sim::restore(&bytes).expect("snapshot relisible");
+    assert_eq!(sim.tick(), u64::from(sim::TICKS_PER_DAY));
+    assert_eq!(sim.map().width(), 24);
+    let duplicate = bin().args(args).arg(&path).output().unwrap();
+    assert_eq!(duplicate.status.code(), Some(2));
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "l'export existant est conservé"
+    );
+    let traced_path = directory.join("traced.bin");
+    let traced = bin()
+        .args(args)
+        .arg(&traced_path)
+        .arg("--trace")
+        .output()
+        .unwrap();
+    assert!(traced.status.success());
+    let mut replay = sim::Sim::restore(&std::fs::read(&traced_path).unwrap()).unwrap();
+    assert_eq!(
+        sim.state_hash(),
+        replay.state_hash(),
+        "le diagnostic ne change pas le jeu"
+    );
+    for _ in 0..120 {
+        sim.step(&[]);
+        replay.step(&[]);
+    }
+    assert_eq!(
+        sim.state_hash(),
+        replay.state_hash(),
+        "les exports reprennent à l'identique"
+    );
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(traced_path).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+}
+
+#[test]
+fn campaign_snapshot_requires_one_seed_before_creating_any_file() {
+    let path = std::env::temp_dir().join(format!(
+        "rimlike-no-multi-export-{}.bin",
+        std::process::id()
+    ));
+    let output = bin()
+        .args(["campaign", "--seeds", "2", "--snapshot-out"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("exige --seeds 1"));
+    assert!(!path.exists());
+}
+
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_rimlike-sim"))
 }
@@ -350,11 +439,36 @@ fn campaign_json_is_machine_readable() {
     assert!(stdout.trim_end().ends_with('}'), "JSON tronqué : {stdout}");
     assert!(stdout.contains("\"runs\""), "pas de runs : {stdout}");
     assert!(
+        stdout.contains("\"first_seed\": 1"),
+        "graine initiale absente : {stdout}"
+    );
+    assert!(
+        stdout.contains("\"day_scale\": 1"),
+        "échelle absente : {stdout}"
+    );
+    assert!(
         stdout.contains("\"colonists_end\""),
         "champ manquant : {stdout}"
     );
     // Un mot français dans une sortie machine trahirait un `println!` oublié.
     assert!(!stdout.contains("résumé"), "résumé dans le JSON : {stdout}");
+}
+
+#[test]
+fn campaign_trace_stays_on_stderr() {
+    let output = bin()
+        .args([
+            "campaign", "--seeds", "1", "--days", "1", "--size", "32", "--json", "--trace",
+        ])
+        .output()
+        .expect("le binaire doit s'exécuter");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.trim_start().starts_with('{'));
+    assert!(!stdout.contains("trace "));
+    assert!(stderr.contains("trace seed=1 tick=0 day=0 reason=day"));
+    assert!(stderr.contains("food_by_room_kind="));
 }
 
 #[test]

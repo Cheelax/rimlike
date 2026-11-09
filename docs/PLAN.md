@@ -591,10 +591,12 @@ est un joueur de plus, présent partout.
 
 1. **Le serveur simule les colonies.** Sim natif chargé par le serveur, participant permanent
    des salles `tile-N` ; test **natif contre WASM** en CI (même graine, mêmes commandes, même
-   hash après N ticks — aujourd'hui le test de déterminisme compare deux sims natives, et la
-   parité natif/WASM est un pari, pas une preuve). Mesurer d'abord : mémoire et ticks/s par
-   carte sur le VPS, snapshot périodique par carte. Jalon : une colonie continue de vivre
-   quand tous ses joueurs sont partis, et on la retrouve telle qu'elle a vécu.
+   hash après N ticks). La parité des scénarios est acquise depuis le 2026-09-10 ;
+   le chantier local du 2026-09-19 ajoute la comparaison avec un vrai processus Rust,
+   une boucle sans joueur et des checkpoints atomiques (voir [le moteur natif](native-sim.md)).
+   Restent le branchement dans les salles, la reprise réseau et les mesures sur le VPS.
+   Jalon : une colonie continue de vivre quand tous ses joueurs sont partis, et on la
+   retrouve telle qu'elle a vécu.
 2. **La faune devient une entité du monde.** Les cases sauvages ne sont pas simulées carte par
    carte tant que personne n'y est (leur seul contenu vivant est la faune, la météo et le
    feu) : les hardes circulent de case en case sur le globe comme les caravanes marchandes le
@@ -667,6 +669,43 @@ est un joueur de plus, présent partout.
 | Phase 6 : la colonie meurt pendant que son joueur dort | Règle tranchée le 2026-09-10 : l'absence coûte, elle ne tue pas — enceinte comme bouclier, veille (repli automatique derrière les murs quand un raid est annoncé sans le propriétaire), prévenance longue, factions alliées ; à mesurer en campagne avec un joueur absent avant l'étape 1 |
 
 ## 8. Journal des décisions
+
+- 2026-09-19 (travail local, non fusionné) : **défense autonome rendue effective et
+  pillage extérieur**. La branche `task/colonie-tient-seule` est reprise : les pillards
+  ne traversent plus les portes en veille, la défense automatique est distincte d'un
+  ordre d'attaque et cesse à la sortie de la cible. Les trajets de travail et de besoin
+  restent dans la pièce pendant le raid ; un déplacement manuel prime toujours.
+  Seuil tenir/veille retenu à **150 %**, après comparaison 80/100/120/150 sur trente
+  graines. Les raiders inoffensifs pour une enceinte prennent une charge extérieure
+  (20 unités maximum) et repartent ; mort du porteur = butin rendu, sortie vivante =
+  événement de vol. Aucun dégât, arme ni seuil `FLEE_HP` n'est modifié.
+  Le HUD montre posture, effectif, préavis et permet de cadrer les assaillants.
+  Protocole réseau **4** pour les nouveaux jobs postcard. Le hash demo devient
+  `524b9f04c307cf21` : pillage, déplacements et journal changent ; la référence toundra
+  reste identique. Le retour à l'abri retrouve désormais une enceinte même quand
+  tous les colons se sont éloignés du barycentre : sur la graine 17 à K=30, dix morts
+  de raid deviennent dix survivants, sans modifier les dégâts. Traces, export de
+  snapshot et comparateur automatisé rendent le diagnostic reproductible.
+  Résultats et limites : `CAMPAIGN-FINDINGS.md` §17.
+
+- 2026-09-19 (travail local, non fusionné) : **frontière native et boucle autonome
+  testables** pour l'étape 1 de la phase 6. Choix de l'option déjà autorisée par le
+  plan : un processus Rust `sim-host` à côté de Node, plutôt qu'un addon natif.
+  IPC encadré et borné, commandes postcard opaques, validation d'un lot avant tout tick,
+  erreurs de transport fatales et explicites. `NativeColonies` garde une horloge sans
+  visiteurs, checkpoint par carte, reprise au tick exact et arrêt qui conserve les
+  ordres admis. Le format disque refuse corruption et incompatibilités ; un verrou
+  exclusif empêche deux écrivains sur les mêmes sauvegardes.
+  Comparaisons directes du vrai processus avec WASM sur quatre biomes, deux échelles,
+  une défense et une colonie construite de trente jours. Mesure locale sur 64 copies
+  de cette dernière : p95 de 5,83 ms par lot global de trois ticks, budget de 50 ms ;
+  la boucle complète avec disque monte à 19,02 ms au p95 et 402,25 ms lors du
+  checkpoint simultané des 64 cartes. Échéances à répartir avant le raccordement,
+  aucune extrapolation au VPS. Démonstrateur et runtime Node compilé redémarrés
+  réellement au même tick et hash. **Le relais et le monde partagé ne sont pas encore raccordés** ;
+  snapshots autoritaires, caravanes, déploiement et mesure VPS restent à faire.
+  Contrat, commandes et limites : `docs/native-sim.md`.
+
 
 - 2026-09-10 (nuit, fin) : **le contrat du feu n'était pas cassé, il était mal mesuré** (PR #18,
   sous-agent Opus, fiche `feu-contrat-du-6`). Bissection de la campagne de référence sur onze

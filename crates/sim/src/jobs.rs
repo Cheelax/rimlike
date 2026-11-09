@@ -196,6 +196,7 @@ impl Sim {
             match self.pawns[i].job.clone() {
                 Job::Attack { target } => self.do_attack(i, target),
                 Job::Flee => self.do_flee(i),
+                Job::Pillage { item } => self.do_pillage(i, item),
                 // Un assiégeant patiente à son point d'entrée.
                 Job::Wait { until } => self.do_wait(i, until),
                 _ => self.raider_ai(i),
@@ -240,6 +241,7 @@ impl Sim {
                     | Job::Sleep { .. }
                     | Job::Move { manual: true }
                     | Job::Attack { .. }
+                    | Job::Defend { .. }
             )
             && self.food_available()
         {
@@ -290,6 +292,7 @@ impl Sim {
                 progress,
             } => self.do_cook(i, campfire, item, picked, progress),
             Job::Attack { target } => self.do_attack(i, target),
+            Job::Defend { target } => self.do_defend(i, target),
             Job::Flee => self.do_flee(i),
             Job::Break { until } => self.do_break(i, until),
             Job::Rescue { target, picked } => self.do_rescue(i, target, picked),
@@ -327,7 +330,7 @@ impl Sim {
             Job::Downed => {}
             // Réservé aux assiégeants (traités plus haut) : un colon n'attend
             // jamais. S'il s'en trouvait un, il reprendrait le travail.
-            Job::Wait { .. } => self.pawns[i].job = Job::Idle,
+            Job::Wait { .. } | Job::Pillage { .. } => self.pawns[i].job = Job::Idle,
         }
     }
 
@@ -341,6 +344,7 @@ impl Sim {
                     | Job::Sleep { .. }
                     | Job::Eat { .. }
                     | Job::Attack { .. }
+                    | Job::Defend { .. }
                     | Job::Move { manual: true }
             )
             || !self.rng.chance(1, BREAK_CHANCE)
@@ -485,6 +489,10 @@ impl Sim {
     // ------------------------------------------------------------------
 
     fn find_job(&mut self, i: usize, salvo: &mut crate::fire::Salvo) {
+        let at = self.pawns[i].tile();
+        if self.map.room(at.0, at.1) == 0 && self.take_post(i) {
+            return;
+        }
         if self.pawns[i].is_tired() {
             self.start_sleep(i);
             return;
@@ -927,11 +935,16 @@ impl Sim {
     /// Va manger la meilleure nourriture accessible : repas, puis baies, puis cru.
     fn try_start_eat(&mut self, i: usize) -> bool {
         let from = self.pawns[i].tile();
+        let walker = self.work_walker(from);
         let mut candidates: Vec<(u32, u32, u32, u32, usize)> = self
             .items
             .iter()
             .enumerate()
-            .filter(|(_, s)| s.kind.is_food() && s.reserved_by.is_none())
+            .filter(|(_, s)| {
+                s.kind.is_food()
+                    && s.reserved_by.is_none()
+                    && self.map.passable_for(s.x, s.y, walker)
+            })
             .map(|(k, s)| (s.kind.food_rank(), chebyshev(from, (s.x, s.y)), s.x, s.y, k))
             .collect();
         candidates.sort_unstable();
@@ -1071,10 +1084,29 @@ impl Sim {
     /// connaissent la maison et ne se plantent jamais sur les pointes (voir
     /// `livestock`, et `Sim::spring_trap` qui les épargne aussi).
     pub(crate) fn walker(&self, i: usize) -> Walker {
-        if self.pawns[i].faction == Faction::Colony {
+        if self.pawns[i].is_colonist() && matches!(self.pawns[i].job, Job::Defend { .. }) {
+            self.work_walker(self.pawns[i].tile())
+        } else if self.pawns[i].faction == Faction::Colony {
             Walker::COLONIST
         } else {
-            Walker::ANYONE
+            Walker {
+                avoids_doors: self.pawns[i].is_raider_like()
+                    && self.raid_stance() == crate::combat::Stance::Watch,
+                ..Walker::ANYONE
+            }
+        }
+    }
+
+    /// Les urgences et les besoins restent possibles dans l'abri, sans trajet
+    /// par l'extérieur. Les ordres manuels et le trajet de retour restent libres.
+    pub(crate) fn work_walker(&self, from: (u32, u32)) -> Walker {
+        Walker {
+            confined_room: if self.map.indoor_count() > 0 && self.raider_alive() {
+                self.map.room(from.0, from.1)
+            } else {
+                0
+            },
+            ..Walker::COLONIST
         }
     }
 
@@ -1086,7 +1118,7 @@ impl Sim {
         from: (u32, u32),
         to: (u32, u32),
     ) -> Option<Vec<path::Tile>> {
-        path::find_path_for(&self.map, from, to, Walker::COLONIST)
+        path::find_path_for(&self.map, from, to, self.work_walker(from))
     }
 
     /// Chemin d'un colon vers une voisine de la cible.
@@ -1095,7 +1127,7 @@ impl Sim {
         from: (u32, u32),
         target: (u32, u32),
     ) -> Option<Vec<path::Tile>> {
-        self.path_adjacent_for(from, target, Walker::COLONIST)
+        self.path_adjacent_for(from, target, self.work_walker(from))
     }
 
     /// Chemin vers la cible si elle est franchissable, sinon vers une voisine.

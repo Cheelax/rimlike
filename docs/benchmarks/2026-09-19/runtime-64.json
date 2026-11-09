@@ -1,0 +1,20 @@
+{
+  "maps": 64,
+  "source": "mature-seed1.bin",
+  "ticks_per_map": 3600,
+  "batch_ticks": 3,
+  "start_tick": 12960000,
+  "end_tick": 12963600,
+  "hash": "f39647185fe5bfbc",
+  "restore_ms": 78.37298400000003,
+  "elapsed_ms": 14156.35927,
+  "all_maps_batch_p50_ms": 12.55372699999998,
+  "all_maps_batch_p95_ms": 19.017581000000064,
+  "all_maps_batch_max_ms": 402.25000999999975,
+  "batches_over_50_ms": 1,
+  "periodic_checkpoint_batch_ms": 402.25000999999975,
+  "explicit_all_maps_checkpoint_ms": 368.76854300000014,
+  "node_rss_bytes": 69521408,
+  "directory": "/tmp/rimlike-runtime-bench-crflLk",
+  "note": "Boucle NativeColonies séquentielle réelle, checkpoints fsync inclus. 64 copies, WSL local chargé, avance manuelle sans attente d'horloge ; ni réseau ni mesure VPS."
+}

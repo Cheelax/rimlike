@@ -1,0 +1,6 @@
+{
+  "campaign": {"seeds": 1, "days": 30, "size": 64, "biome": 4, "biome_name": "forêt tempérée", "difficulty": "normal", "climate": null, "day_of_year": 0, "absent_from": 8, "first_seed": 3, "day_scale": 30, "ticks": 12960000, "elapsed_ms": 265427},
+  "runs": [
+    {"seed": 3, "biome": 4, "colonists_end": 9, "colonists_day10": 5, "colonists_day20": 8, "deaths": {"raid": 1, "blessures": 0, "famine": 0, "froid": 0, "maladie": 0, "feu": 0, "rixe": 0, "inconnue": 0}, "raids": 9, "raiders": 42, "raids_repelled": 9, "wealth": 4140, "food_days_tenths": 31, "techs": 3, "livestock": 0, "fires": 4, "burned_tiles": 12, "worst_fire": 9, "mood_percent": 47, "armed": 9, "blueprints_left": 0, "enclosed": true, "forges": 1, "ingots": 8, "swords": 2, "swordsmen": 2, "goodwill": [0, -55, 55], "tributes": 0, "tame_orders": 2, "tamed": 1, "metallurgy_day": 7, "enclosed_at_absence": true, "deaths_absent": 1, "livestock_at_absence": 0, "livestock_lost_absent": 0, "outdoor_stock_at_absence": 0, "outdoor_stock_end": 2, "stolen_units": 56, "stolen_units_absent": 0, "lost_events": 0, "deaths_announced": 1, "elapsed_ms": 265426}
+  ]
+}

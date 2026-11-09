@@ -39,6 +39,10 @@ pub struct Walker {
     /// n'est pas une propriété du marcheur mais un court-circuit, posé par
     /// `find_path_for` quand — et seulement quand — la carte brûle.
     pub avoids_fire: bool,
+    /// Les portes sont fermées à ce marcheur pendant la veille.
+    pub avoids_doors: bool,
+    /// Une besogne automatique reste dans cette pièce (0 : aucune restriction).
+    pub confined_room: u8,
 }
 
 impl Walker {
@@ -47,11 +51,15 @@ impl Walker {
     pub const ANYONE: Walker = Walker {
         avoids_traps: false,
         avoids_fire: false,
+        avoids_doors: false,
+        confined_room: 0,
     };
     /// Un membre de la colonie : il contourne ses propres pièges.
     pub const COLONIST: Walker = Walker {
         avoids_traps: true,
         avoids_fire: false,
+        avoids_doors: false,
+        confined_room: 0,
     };
 }
 
@@ -77,6 +85,7 @@ pub fn find_path_for(
     let walker = Walker {
         avoids_traps: walker.avoids_traps && map.trap_count() > 0,
         avoids_fire: map.fire_count() > 0,
+        ..walker
     };
     if !map.passable_for(to.0, to.1, walker) {
         return None;

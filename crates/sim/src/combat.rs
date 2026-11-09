@@ -224,9 +224,9 @@ pub const REARM_TICKS: u32 = 100;
 /// hash, et une bande qui perd la moitié des siens fait basculer la colonie
 /// dans l'autre posture sans qu'on ait à y penser.
 ///
-/// Les valeurs ne sont **pas** un contrat avec le client : rien ne les
-/// traverse la frontière WASM, aucun tampon ne les porte.
+/// Valeurs du tampon `raid_status` : libre 0, tenir 1, veille 2.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Stance {
     /// Rien à décider : pas de bande sur la carte, ou pas d'enceinte. Chacun
     /// se bat où il est, comme avant cette fiche.
@@ -252,15 +252,15 @@ pub enum Stance {
 /// `measure_le_seuil_de_la_decision_tactique`, et `CAMPAIGN-FINDINGS.md`
 /// §17). Le seuil retenu est celui qui maximise la survie du joueur **absent**
 /// sans rien coûter au joueur **présent**.
-pub const HOLD_RATIO_PERCENT: u32 = 100;
+pub const HOLD_RATIO_PERCENT: u32 = 150;
 
 /// Rayon du balayage qui cherche l'abri de la colonie autour de son
 /// barycentre. Une pièce tient en `map::ROOM_MAX_TILES` (200) cases et
 /// l'enceinte du joueur scripté fait treize cases de côté : seize cases
-/// autour du barycentre couvrent l'une comme l'autre, même quand la moitié
-/// des colons bûcheronne dehors et tire le barycentre avec elle.
+/// autour du barycentre couvrent le cas courant. Si tous les colons sont
+/// partis loin, la couche intérieure entière fournit un refuge de secours.
 ///
-/// Le balayage est **borné** et **court-circuité** par `Map::indoor_count`
+/// Le balayage est **court-circuité** par `Map::indoor_count`
 /// (aucune pièce, aucun balayage), et il ne tourne qu'une fois par
 /// `jobs::RETRY_TICKS` et par colon, et seulement pendant qu'une bande est
 /// là : c'est la règle de `AGENTS.md` sur les recherches, appliquée ici.
@@ -324,6 +324,9 @@ pub(crate) enum EngageOutcome {
 const MELEE_TARGETS: usize = 3;
 /// Nombre de cases de bord testées par un fuyard.
 const FLEE_ATTEMPTS: usize = 6;
+/// Une seule charge extérieure par pillard ; jamais le contenu d'une pièce.
+/// Coût mesuré dans CAMPAIGN-FINDINGS.md §17.
+pub const PILLAGE_CARRY_MAX: u32 = 20;
 /// Tirages de case d'entrée avant d'abandonner un raid.
 const ENTRY_DRAWS: u32 = 12;
 
@@ -624,7 +627,7 @@ impl Sim {
         }
         if matches!(
             self.pawns[i].job,
-            Job::Attack { .. } | Job::Move { manual: true }
+            Job::Attack { .. } | Job::Defend { .. } | Job::Move { manual: true }
         ) {
             return false;
         }
@@ -637,7 +640,11 @@ impl Sim {
             return false;
         }
         self.abandon_job(i);
-        self.pawns[i].job = Job::Attack { target: id };
+        self.pawns[i].job = if !self.pawns[i].is_colonist() || self.raid_stance() == Stance::Free {
+            Job::Attack { target: id }
+        } else {
+            Job::Defend { target: id }
+        };
         true
     }
 
@@ -681,8 +688,8 @@ impl Sim {
     /// « Enceinte » se lit ici sur `Map::indoor_count` — la même mesure que
     /// la colonne `enclosed` de la campagne. Limite assumée : une cabane
     /// isolée compte comme un abri. `Sim::raid_post` tranche ensuite pour de
-    /// bon, en cherchant une pièce **autour de la colonie** ; s'il n'en
-    /// trouve pas, le travail reprend.
+    /// bon, en cherchant d'abord autour de la colonie puis plus loin si
+    /// tous les colons ont quitté les environs de leurs murs.
     pub fn raid_stance(&self) -> Stance {
         if !self.raider_alive() || self.map.indoor_count() == 0 {
             return Stance::Free;
@@ -699,6 +706,46 @@ impl Sim {
         }
     }
 
+    /// État de défense lu par le client, sans aucune règle côté interface :
+    /// posture, hostiles vivants, préavis restant, puissance alliée, puissance
+    /// ennemie, id du premier hostile (u32::MAX si aucun). Le premier ennemi
+    /// déjà en marche termine le préavis ; les corps à terre n'en prolongent pas.
+    pub fn raid_status(&self) -> [u32; 6] {
+        let mut count = 0;
+        let mut warning = u64::MAX;
+        let mut first = u32::MAX;
+        for p in self
+            .pawns
+            .iter()
+            .filter(|p| p.is_alive() && p.is_raider_like())
+        {
+            count += 1;
+            first = first.min(p.id);
+            if !p.is_downed() {
+                let left = match p.job {
+                    Job::Wait { until } => until.saturating_sub(self.tick),
+                    _ => 0,
+                };
+                warning = warning.min(left);
+            }
+        }
+        if count == 0 {
+            return [0, 0, 0, 0, 0, u32::MAX];
+        }
+        [
+            self.raid_stance() as u32,
+            count,
+            if warning == u64::MAX {
+                0
+            } else {
+                warning.min(u64::from(u32::MAX)) as u32
+            },
+            self.colony_line_power(),
+            self.raid_line_power(),
+            first,
+        ]
+    }
+
     /// Un colon peut-il courir sur cette cible, ou reste-t-il derrière ses
     /// murs ? Hors raid et sans enceinte (`Stance::Free`), rien ne change.
     /// Sinon on ne frappe de soi-même que ce qui est **au contact**, ce qui
@@ -707,6 +754,9 @@ impl Sim {
     /// (`Command::Attack`) ne passe pas par ici : il pose `Job::Attack` et
     /// prime.
     fn may_engage(&self, i: usize, target: u32) -> bool {
+        if !self.pawns[i].is_colonist() {
+            return true;
+        }
         let stance = self.raid_stance();
         if stance == Stance::Free {
             return true;
@@ -721,8 +771,8 @@ impl Sim {
     }
 
     /// Le poste de repli de la colonie, et la pièce à laquelle il appartient.
-    /// `None` : aucune pièce autour du barycentre des colons — il n'y a pas
-    /// d'enceinte à tenir, la colonie fait comme avant.
+    /// `None` : aucune case intérieure franchissable. La recherche locale
+    /// se replie sur la couche intérieure si les colons sont loin des murs.
     ///
     /// - `Stance::Watch` : la case couverte la plus proche du barycentre. On
     ///   rentre, c'est tout ; se coller à la porte n'apporterait qu'un coup
@@ -730,15 +780,37 @@ impl Sim {
     /// - `Stance::Hold` : la case **intérieure** qui touche une porte, la
     ///   plus proche de la bande — le seuil par lequel elle entrera.
     ///
-    /// Deux balayages bornés à `SHELTER_RANGE`, court-circuités par
-    /// `Map::indoor_count`, et appelés au plus une fois par
+    /// Deux balayages locaux à `SHELTER_RANGE`, puis une passe sur la couche
+    /// intérieure seulement si l'abri est éloigné ; court-circuités par
+    /// `Map::indoor_count` et appelés au plus une fois par
     /// `jobs::RETRY_TICKS` et par colon (voir `Sim::take_post`).
     pub(crate) fn raid_post(&self, stance: Stance) -> Option<(u8, (u32, u32))> {
         if self.map.indoor_count() == 0 {
             return None;
         }
         let center = self.colony_center()?;
-        let shelter = self.nearest_tile_around(center, |s, x, y| s.map.room(x, y) != 0, center)?;
+        let local = self.nearest_tile_around(center, |s, x, y| s.map.room(x, y) != 0, center);
+        // Des colons dispersés peuvent tirer le barycentre loin de toute
+        // enceinte (campagne K=30, graine 17). Le rayon local est un chemin
+        // rapide, pas une preuve d'absence d'abri. Le repli complet parcourt
+        // la couche intérieure seulement après indoor_count > 0 et au
+        // rythme de job_retry_due ; aucun chemin n'est calculé ici.
+        let shelter = local.or_else(|| {
+            self.map
+                .indoor()
+                .iter()
+                .enumerate()
+                .filter(|(_, room)| **room != 0)
+                .filter_map(|(index, _)| {
+                    let x = index as u32 % self.map.width();
+                    let y = index as u32 / self.map.width();
+                    self.map
+                        .passable_for(x, y, path::Walker::COLONIST)
+                        .then_some((chebyshev(center, (x, y)), x, y))
+                })
+                .min()
+                .map(|(_, x, y)| (x, y))
+        })?;
         let room = self.map.room(shelter.0, shelter.1);
         if stance != Stance::Hold {
             return Some((room, shelter));
@@ -748,7 +820,7 @@ impl Sim {
         // rassemble alors comme en veille.
         let threat = self.nearest_raider_tile(center).unwrap_or(center);
         let gate = self.nearest_tile_around(
-            center,
+            if local.is_some() { center } else { shelter },
             |s, x, y| s.map.room(x, y) == room && s.touches_door(x, y),
             threat,
         );
@@ -772,7 +844,7 @@ impl Sim {
                     continue;
                 }
                 let (x, y) = (x as u32, y as u32);
-                if !keep(self, x, y) {
+                if !keep(self, x, y) || !self.map.passable_for(x, y, path::Walker::COLONIST) {
                     continue;
                 }
                 let cand = (chebyshev(from, (x, y)), x, y);
@@ -843,10 +915,32 @@ impl Sim {
                 | Job::Tame { .. }
                 | Job::Slaughter { .. }
         );
-        if !droppable || self.raid_stance() == Stance::Free {
+        if self.raid_stance() == Stance::Free
+            || matches!(
+                self.pawns[i].job,
+                Job::Attack { .. } | Job::Defend { .. } | Job::Move { manual: true }
+            )
+        {
             return;
         }
-        self.abandon_job(i);
+        let me = self.pawns[i].tile();
+        let room = self.map.room(me.0, me.1);
+        let unsafe_path = self.pawns[i]
+            .path
+            .iter()
+            .any(|&(x, y)| room != 0 && self.map.room(u32::from(x), u32::from(y)) != room);
+        // Dehors, les besoins attendent le retour ; dedans, on garde les
+        // soins, le repas et le sommeil dont le trajet reste dans la pièce.
+        let outside_need =
+            room == 0 && matches!(self.pawns[i].job, Job::Eat { .. } | Job::Sleep { .. });
+        let wandering_outside = matches!(self.pawns[i].job, Job::Move { manual: false })
+            && self.pawns[i]
+                .path
+                .first()
+                .is_some_and(|&(x, y)| self.map.room(u32::from(x), u32::from(y)) == 0);
+        if droppable || unsafe_path || outside_need || wandering_outside {
+            self.abandon_job(i);
+        }
     }
 
     /// Rejoindre son poste, et n'en plus bouger tant que la bande est là.
@@ -904,13 +998,15 @@ impl Sim {
     /// Partagée avec le marchand devenu hostile (voir `trade`) : mêmes coups,
     /// même seuil de décrochage, même sortie de carte.
     pub(crate) fn raider_ai(&mut self, i: usize) {
-        if self.pawns[i].hp < FLEE_HP {
+        if self.pawns[i].hp < FLEE_HP || self.pawns[i].carrying.is_some() {
             self.pawns[i].path.clear();
             self.pawns[i].job = Job::Flee;
             return;
         }
         match self.nearest_reachable_enemy(i, u32::MAX) {
-            // Personne d'atteignable (les murs comptent) : on repart.
+            // Les colons et le troupeau sont à l'abri : on prend une seule
+            // charge dehors, puis on repart. Le marchand furieux ne pille pas.
+            None if self.pawns[i].faction == Faction::Raider && self.try_start_pillage(i) => {}
             None => {
                 self.pawns[i].path.clear();
                 self.pawns[i].job = Job::Flee;
@@ -1002,7 +1098,13 @@ impl Sim {
     fn nearest_reachable_in_rank(&self, i: usize, radius: u32, herd: bool) -> Option<u32> {
         let me = self.pawns[i].tile();
         let faction = self.pawns[i].faction;
-        let walker = self.walker(i);
+        // Le choix de cible doit employer le même confinement que Defend,
+        // même si le colon est encore Idle au moment de la recherche.
+        let walker = if self.pawns[i].is_colonist() {
+            self.work_walker(me)
+        } else {
+            self.walker(i)
+        };
         let mut enemies: Vec<(u32, u32, u32, u32)> = self
             .pawns
             .iter()
@@ -1015,7 +1117,7 @@ impl Sim {
             .filter_map(|p| {
                 let (x, y) = p.tile();
                 let d = chebyshev(me, (x, y));
-                if d > radius {
+                if d > radius || (self.pawns[i].is_colonist() && !self.may_engage(i, p.id)) {
                     return None;
                 }
                 // Le rang, et rien d'autre : la distance vraie reste celle qui
@@ -1074,10 +1176,16 @@ impl Sim {
             return EngageOutcome::Engaged;
         }
         // Le chemin est stocké inversé : `first()` est la destination.
-        let stale = self.pawns[i]
+        let walker = self.walker(i);
+        let blocked = self.pawns[i]
             .path
-            .first()
-            .is_none_or(|&(dx, dy)| chebyshev((u32::from(dx), u32::from(dy)), them) > 1);
+            .iter()
+            .any(|&(x, y)| !self.map.passable_for(u32::from(x), u32::from(y), walker));
+        let stale = blocked
+            || self.pawns[i]
+                .path
+                .first()
+                .is_none_or(|&(dx, dy)| chebyshev((u32::from(dx), u32::from(dy)), them) > 1);
         if stale {
             // Un colon qui charge ne traverse pas ses propres pièges ; un
             // pillard, lui, ne les voit pas venir.
@@ -1089,6 +1197,16 @@ impl Sim {
         }
         self.pawns[i].advance(&self.map);
         EngageOutcome::Engaged
+    }
+
+    /// Une défense automatique réévalue sa cible pendant la poursuite.
+    /// L'attaque manuelle conserve son comportement et reste prioritaire.
+    pub(crate) fn do_defend(&mut self, i: usize, target: u32) {
+        if !self.may_engage(i, target) {
+            self.abandon_job(i);
+            return;
+        }
+        self.do_attack(i, target);
     }
 
     pub(crate) fn do_attack(&mut self, i: usize, target: u32) {
@@ -1214,7 +1332,101 @@ impl Sim {
         }
     }
 
+    /// Une charge par pillard : coût extérieur borné, récupérable tant que
+    /// le porteur n'a pas rejoint le bord. Le choix reste géométrique,
+    /// déterministe et limité à six recherches de chemin.
+    fn try_start_pillage(&mut self, i: usize) -> bool {
+        let from = self.pawns[i].tile();
+        let walker = self.walker(i);
+        let mut candidates: Vec<_> = self
+            .items
+            .iter()
+            .filter(|s| {
+                s.reserved_by.is_none()
+                    && s.kind.haulable()
+                    && !s.kind.is_animal_corpse()
+                    && self.map.room(s.x, s.y) == 0
+                    && self.map.passable_for(s.x, s.y, walker)
+            })
+            .map(|s| (chebyshev(from, (s.x, s.y)), s.x, s.y, s.id))
+            .collect();
+        candidates.sort_unstable();
+        for (_, x, y, item) in candidates.into_iter().take(FLEE_ATTEMPTS) {
+            let Some(path) = path::find_path_for(&self.map, from, (x, y), walker) else {
+                continue;
+            };
+            let Some(stack) = self.items.iter_mut().find(|s| s.id == item) else {
+                continue;
+            };
+            stack.reserved_by = Some(self.pawns[i].id);
+            self.pawns[i].set_path(path);
+            self.pawns[i].job = Job::Pillage { item };
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn do_pillage(&mut self, i: usize, item: u32) {
+        if self.pawns[i].hp < FLEE_HP {
+            self.abandon_job(i);
+            self.pawns[i].job = Job::Flee;
+            return;
+        }
+        // Si un défenseur vient l'intercepter, il se bat à nouveau. Même
+        // cadence physique que les recherches de travail, sans état ajouté.
+        if (self.tick + u64::from(self.pawns[i].id)) % crate::jobs::RETRY_TICKS == 0
+            && let Some(target) = self.nearest_reachable_enemy(i, DEFEND_RADIUS)
+        {
+            self.abandon_job(i);
+            self.pawns[i].job = Job::Attack { target };
+            return;
+        }
+        let Some(k) = self.items.iter().position(|s| s.id == item) else {
+            self.abandon_job(i);
+            return;
+        };
+        let stack = &self.items[k];
+        let walker = self.walker(i);
+        if stack.reserved_by != Some(self.pawns[i].id)
+            || self.map.room(stack.x, stack.y) != 0
+            || self.pawns[i]
+                .path
+                .iter()
+                .any(|&(x, y)| !self.map.passable_for(u32::from(x), u32::from(y), walker))
+        {
+            self.abandon_job(i);
+            return;
+        }
+        if self.pawns[i].is_moving() {
+            self.pawns[i].advance(&self.map);
+            return;
+        }
+        if self.pawns[i].tile() != (stack.x, stack.y) {
+            self.abandon_job(i);
+            return;
+        }
+        let kind = stack.kind;
+        let count = stack.count.min(PILLAGE_CARRY_MAX);
+        self.items[k].count -= count;
+        self.items[k].reserved_by = None;
+        if self.items[k].count == 0 {
+            self.items.remove(k);
+        }
+        self.pawns[i].carrying = Some((kind, count));
+        self.pawns[i].job = Job::Flee;
+    }
+
     pub(crate) fn do_flee(&mut self, i: usize) {
+        // Une porte peut se fermer depuis le calcul du trajet, notamment
+        // quand le rapport de force bascule de tenir à veiller.
+        let walker = self.walker(i);
+        if self.pawns[i]
+            .path
+            .iter()
+            .any(|&(x, y)| !self.map.passable_for(u32::from(x), u32::from(y), walker))
+        {
+            self.pawns[i].path.clear();
+        }
         if self.pawns[i].is_moving() {
             self.pawns[i].advance(&self.map);
             return;
@@ -1324,7 +1536,11 @@ impl Sim {
             }
             let (x, y) = p.tile();
             if let Some((kind, count)) = p.carrying {
-                self.spawn_item(kind, count, x, y);
+                if p.gone && p.hp > 0 && p.faction == Faction::Raider && self.is_edge_tile((x, y)) {
+                    self.push_event(EventKind::LootStolen, (count << 8) | kind as u32);
+                } else {
+                    self.spawn_item(kind, count, x, y);
+                }
             }
             if p.hp == 0 {
                 // L'**espèce** décide, pas la faction : une bête apprivoisée

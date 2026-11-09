@@ -843,6 +843,11 @@ impl WasmSim {
         self.inner.difficulty() as u8
     }
 
+    /// Posture, hostiles, préavis, forces alliées/ennemies, id à observer.
+    pub fn raid_status(&self) -> Vec<u32> {
+        self.inner.raid_status().to_vec()
+    }
+
     /// Richesse de la colonie : ce qui décide de la taille des raids. Valeur
     /// **en cache**, rafraîchie par le sim au plus une fois par 600 ticks : la
     /// lire ne coûte rien et ne change rien à l'état.

@@ -412,6 +412,7 @@ export const JOB_LABELS = [
   // Code 30 (`pawn::Job::code()`) : fabrication de lingot, distinguée du
   // reste de la fabrication (code 18, « fabrique ») comme `Job::Farm` sème/récolte.
   "fond le métal",
+  "pille des ressources",
 ] as const;
 
 /** Contrat avec `sim::EventKind` et `sim-wasm::EVENT_STRIDE`. */
@@ -599,6 +600,8 @@ export function eventLabel(
       const value = goodwill?.[arg];
       return value === undefined ? `${name} : relation changée` : `${name} : relation ${relationLabel(value)}`;
     }
+    case 44:
+      return `Ressources volées : ${arg >>> 8} ${ITEM_NAMES[arg & 255] ?? "objets"}`;
     default:
       return "";
   }
@@ -674,15 +677,20 @@ export function moodIcon(mood: number): "☺" | "─" | "☹" {
  * Horodatage d'une entrée du Journal des événements : « jour J hh:mm » depuis
  * un tick absolu (`sim-wasm::EVENT_STRIDE` : le tick de l'événement, pas celui
  * courant), sur le même calcul que l'horloge du HUD. Jour 1-indexé, comme
- * `stats.day`.
+ * `stats.day`. Le décalage vient de l'heure lue dans le sim, sans recopier
+ * en TypeScript la règle Rust qui fait commencer la partie au matin.
  */
-export function formatEventTime(tick: number, ticksPerDay: number): string {
+export function formatEventTime(tick: number, ticksPerDay: number, clockOffsetTicks: number): string {
   const day = Math.floor(tick / ticksPerDay) + 1;
-  const timeOfDay = (tick % ticksPerDay) / ticksPerDay;
-  const minutes = Math.floor(timeOfDay * 24 * 60);
+  return `jour ${day} ${formatClock(tick + clockOffsetTicks, ticksPerDay)}`;
+}
+
+/** Multiplication entière avant division : 07:12 ne s'arrondit pas en 07:11. */
+export function formatClock(timeOfDayTicks: number, ticksPerDay: number): string {
+  const minutes = Math.floor((timeOfDayTicks % ticksPerDay) * 1440 / ticksPerDay);
   const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
   const mm = String(minutes % 60).padStart(2, "0");
-  return `jour ${day} ${hh}:${mm}`;
+  return `${hh}:${mm}`;
 }
 
 /** Catégorie du filtre du Journal des événements (`App.tsx`). */
@@ -708,6 +716,7 @@ export function eventCategory(kind: number): EventCategory {
     case 37: // FireOut
     case 41: // RaidRepelled
     case 43: // RelationChanged
+    case 44: // LootStolen
       return "threat";
     default:
       return "colony";

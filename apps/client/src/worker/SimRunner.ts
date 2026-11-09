@@ -104,6 +104,8 @@ export interface RunnerSim extends SimLike {
   difficulty(): number;
   /** Richesse de la colonie (`sim::Sim::wealth`), en cache côté sim. */
   wealth(): number;
+  /** [posture, hostiles, préavis, force alliée, force ennemie, id]. */
+  raidStatus(): Uint32Array;
   /** Id du marchand avec qui on peut traiter, −1 s'il n'y en a pas. */
   traderPresent(): number;
   /** Ticks avant que le marchand ne reprenne la route ; 0 s'il n'y en a pas. */
@@ -416,6 +418,7 @@ export class SimRunner {
       tps: this.tpsValue,
       difficulty: sim.difficulty(),
       wealth: sim.wealth(),
+      raidStatus: sim.raidStatus(),
       traderPresent: sim.traderPresent(),
       traderLeavesIn: sim.traderLeavesIn(),
       traderOffers: sim.traderOffers(),

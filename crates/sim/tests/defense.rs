@@ -1042,14 +1042,14 @@ fn un_couard_rentre_mais_ne_se_bat_toujours_pas() {
     assert!(
         !matches!(
             find_pawn(&s, coward).map(|p| p.job.clone()),
-            Some(Job::Attack { .. })
+            Some(Job::Attack { .. } | Job::Defend { .. })
         ),
         "le couard a chargé"
     );
     assert!(
         run_until(&mut s, 600, |s| matches!(
             find_pawn(s, brave).map(|p| p.job.clone()),
-            Some(Job::Attack { .. })
+            Some(Job::Attack { .. } | Job::Defend { .. })
         )) || find_pawn(&s, intruder).is_none(),
         "le brave n'a pas défendu la pièce"
     );

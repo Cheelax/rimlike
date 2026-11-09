@@ -1,0 +1,11 @@
+{
+  "maps": 64,
+  "start_tick": 12963600,
+  "end_tick": 12967344,
+  "ticks_advanced": 3744,
+  "wall_ms": 63000.621599,
+  "skipped_pulses": 7,
+  "hash": "793b3add25bb2d6b",
+  "all_checkpoints_equal": true,
+  "note": "Horloge réelle 63 secondes, 64 copies d'une colonie de 30 jours, checkpoint toutes les 3600 ticks, aucun navigateur ni visiteur, WSL local chargé."
+}

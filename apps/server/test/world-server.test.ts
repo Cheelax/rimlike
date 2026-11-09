@@ -441,13 +441,12 @@ describe("salle d'une case", () => {
     }
   });
 
-  it("refuse proprement un client d'un protocole d'avant l'échelle du jour", async () => {
-    // Un client v2 ignorerait `start.dayScale`, construirait son sim à
-    // l'échelle 1 et divergerait au premier tick. La montée de version le
-    // renvoie à `join` plutôt que de le laisser désyncher en silence.
-    expect(PROTOCOL_VERSION).toBe(3);
+  it.each([2, 3])("refuse proprement le protocole ancien v%i", async (protocol) => {
+    // v2 ignore l'échelle du jour ; v3 ne sait pas relire les jobs de
+    // défense et de pillage. Les deux divergent de la simulation actuelle.
+    expect(PROTOCOL_VERSION).toBe(4);
     const client = await connect();
-    client.send({ type: "join", room: "démo", name: "vieux", protocol: 2 });
+    client.send({ type: "join", room: "démo", name: "vieux", protocol });
     const error = await client.next("error");
     expect(error.code).toBe("version_mismatch");
     // Et il n'est jamais entré dans la salle.

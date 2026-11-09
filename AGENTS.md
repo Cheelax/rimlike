@@ -14,6 +14,9 @@ multijoueur sur un globe partagé. Trois couches indépendantes :
   horloge. Compile en natif (tests, futur serveur) et en WASM (navigateur).
 - `crates/sim-wasm` : frontière wasm-bindgen, seule porte entre Rust et JavaScript.
   Zéro logique dedans : elle expose des méthodes et des tampons plats.
+- `crates/sim-host` : processus natif multi-cartes, protocole local encadré JSON/postcard.
+  Node le pilote via `native-sim.ts` ; `native-colonies.ts` tient l'horloge et les
+  checkpoints. Brique de phase 6 encore séparée de `Room` : voir `docs/native-sim.md`.
 - `apps/client` : Vite + React + Three.js. Lit l'état du sim, envoie des commandes.
   Aucune règle de jeu côté TypeScript.
 
@@ -41,6 +44,12 @@ pnpm test:protocol    # tests du paquet protocole (vitest)
 pnpm test:server      # tests du serveur relais, vrais WebSockets sur port éphémère
 pnpm test:client      # tests du client lockstep contre le vrai serveur en mémoire (vitest)
 pnpm test:world       # tests du globe (géométrie, biomes, itinéraires)
+pnpm test:campaign    # validation des comparaisons de campagnes et des critères
+pnpm build:native     # moteur Rust rimlike-native (test:client et test:server le construisent)
+pnpm test:native      # vrai processus + boucle autonome + checkpoints
+pnpm bench:native --maps 64 --size 128 --ticks 36000 --batch 3
+# Démonstrateur isolé : ne remplace pas encore les salles du monde.
+pnpm dev:native -- --map demo --directory /tmp/rimlike-native-demo --seconds 2
 pnpm dev:server       # relais + serveur monde sur :8787 (GET /health, GET /world)
                       # env : PORT, WORLD_SEED (1), WORLD_SUBDIVISIONS (4),
                       # WORLD_STATE_FILE (apps/server/data/world-state.json ; vide = mémoire),
@@ -131,9 +140,10 @@ Ils sont imposés par les lints là où c'est possible, et par le test de déter
   48×48, six jours, sans une seule commande).
   `crates/sim/tests/determinism.rs::demo_hash_is_pinned` les vérifie en **natif** et
   `apps/client/test/parity.test.ts` en **WASM**, contre la même constante lue à travers la
-  frontière : natif = constante et WASM = constante, donc natif = WASM. C'est la seule
-  preuve que le serveur (natif) et le navigateur (WASM) simulent la même partie ; ne pas la
-  contourner en recopiant une valeur côté TypeScript. Ces hashes **changent quand le sim
+  frontière : natif = constante et WASM = constante, donc natif = WASM. Cette preuve
+  est complétée par `native-process-parity.test.ts` (vrai processus Rust contre WASM,
+  snapshots dans les deux sens) et les fixtures de raid. Ne pas la contourner en
+  recopiant une valeur côté TypeScript. Ces hashes **changent quand le sim
   change** : celui qui change le sim met la constante à jour dans le même commit et écrit
   pourquoi (même règle que les empreintes de `tests/biomes.rs`).
 
@@ -171,7 +181,7 @@ Les valeurs numériques des enums sont un contrat, à modifier des deux côtés 
 | `ItemKind` 16 minerai / 17 lingot / 18 épée (3 lingots par épée depuis le 2026-09-06 ; `COUNT` = 19 : `stored_totals`, `craft_targets`, `buy_prices`), `Feature::OreRock = 19` / `Forge = 20`, `BuildKind::Forge = 9` (20 pierre, refusée sans `Tech::Metallurgy = 5`, `TECH_COUNT` = 6 : `research_state()` renvoie 19 entiers), job 30 fond le métal ; lingot annoncé par `ItemCrafted`, épée par `WeaponCrafted` | `ITEM_NAMES`, `ITEM_COLORS`, `WEAPON_NAMES`, `FEATURE` 19/20, `BUILD_KIND.Forge`, `TECHS` à 6, `JOB_LABELS[30]` |
 | `biome::Biome` (0 océan, 1 banquise, 2 toundra, 3 forêt boréale, 4 forêt tempérée, 5 prairie, 6 désert, 7 savane, 8 jungle, 9 montagne : alignés sur `packages/world/src/biomes.ts`), fixé à la création (`Sim::new_in_biome`, pas de `Command::SetBiome` ; `new` = tempéré), `Terrain::Snow = 8` | `WasmSim.new_in_biome(seed, w, h, biome)`, `biome()` ; `TERRAIN.Snow`, `TERRAIN_COLORS[8]` ; le serveur envoie `start.biome` (salle `tile-N`, absent = 4) et `snapshot.biome` (réouverture, informatif), tous les clients construisent par `new_in_biome`, `frame.biome` et `rpc("biome")` |
 | `sim::scenario` : `demo_commands` (le scénario de référence, source unique de `tests/determinism.rs` et de `rimlike-sim --scenario demo`), `DEMO_HASH` / `DEMO_SEED` / `DEMO_SIZE` / `DEMO_TICKS`, `TUNDRA_IDLE_HASH` / `TUNDRA_IDLE_SEED` / `TUNDRA_IDLE_SIZE` / `TUNDRA_IDLE_DAYS` | `WasmSim.step_demo(n)` (commandes du scénario puis un pas, comme en natif ; sim neuve seulement) et les statiques `demo_hash()`, `demo_seed()`, `demo_size()`, `demo_ticks()`, `tundra_idle_hash()`, `tundra_idle_seed()`, `tundra_idle_size()`, `tundra_idle_days()` ; `apps/client/test/parity.test.ts` **lit** ces constantes à travers la frontière, il ne les recopie jamais |
-| **échelle du jour** : `Sim::day_scale` (`DayScale`, 1..=120, `DAY_SCALE_MIN`/`DAY_SCALE_MAX`), fixée à la création comme le biome — pas de commande pour la changer ; `Sim::new_scaled(seed, w, h, biome, K)` et `new_scaled_with_climate` ; `Sim::ticks_per_day()` = `TICKS_PER_DAY × K` ; `Sim::scaled(ticks)` pour un seuil de travail ; `Sim::needs_step()` pour un pas de besoin. Classement de **toutes** les durées en ticks dans `docs/time.md` : une durée nouvelle s'y range avant d'être écrite. À K = 1 le champ n'écrit **aucun octet** (postcard, `serialize_unit`) : le snapshot et le hash sont ceux d'avant l'échelle, un snapshot d'avant se relit à K = 1, une valeur hors bornes aussi | `WasmSim.new_scaled(seed, w, h, biome, dayScale)`, `day_scale()`, `ticks_per_day()` (**mis à l'échelle**), `research_state()` (coût **mis à l'échelle** ; la statique `tech_cost` reste celle de K = 1). `sim-cli` : `--day-scale K` sur `run`, `verify`, `bench`, `campaign`, `fuzz`. Côté client et serveur : le serveur impose `WORLD_DAY_SCALE` (30) dans `start.dayScale` (**toute** salle, case ou nommée ; omis à 1) et `snapshot.dayScale` (informatif), `PROTOCOL_VERSION` = 3 refuse un vieux client ; `SimHandle.create({…, dayScale})` → `new_scaled`, `SimHandle.dayScale()`, `LockstepState.dayScale`, solo mémorisé par `soloDayScale.ts` avec les vitesses `SOLO_SPEEDS` = ×1 ×2 ×3 ×5 ×10 ; **une seule horloge du monde** : `worldHourMsFor(K)` = 10 000 × K (`WORLD_HOUR_MS` en dérive, `frozenTicksForHours(h, K)`, `roomDay(tick, K)`). Le HUD lit toujours `frame.ticksPerDay`, jamais `TICKS_PER_DAY` |
+| **échelle du jour** : `Sim::day_scale` (`DayScale`, 1..=120, `DAY_SCALE_MIN`/`DAY_SCALE_MAX`), fixée à la création comme le biome — pas de commande pour la changer ; `Sim::new_scaled(seed, w, h, biome, K)` et `new_scaled_with_climate` ; `Sim::ticks_per_day()` = `TICKS_PER_DAY × K` ; `Sim::scaled(ticks)` pour un seuil de travail ; `Sim::needs_step()` pour un pas de besoin. Classement de **toutes** les durées en ticks dans `docs/time.md` : une durée nouvelle s'y range avant d'être écrite. À K = 1 le champ n'écrit **aucun octet** (postcard, `serialize_unit`) : le snapshot et le hash sont ceux d'avant l'échelle, un snapshot d'avant se relit à K = 1, une valeur hors bornes aussi | `WasmSim.new_scaled(seed, w, h, biome, dayScale)`, `day_scale()`, `ticks_per_day()` (**mis à l'échelle**), `research_state()` (coût **mis à l'échelle** ; la statique `tech_cost` reste celle de K = 1). `sim-cli` : `--day-scale K` sur `run`, `verify`, `bench`, `campaign`, `fuzz`. Côté client et serveur : le serveur impose `WORLD_DAY_SCALE` (30) dans `start.dayScale` (**toute** salle, case ou nommée ; omis à 1) et `snapshot.dayScale` (informatif), `PROTOCOL_VERSION` = 4 (3 à l'introduction de l'échelle) refuse un vieux client ; `SimHandle.create({…, dayScale})` → `new_scaled`, `SimHandle.dayScale()`, `LockstepState.dayScale`, solo mémorisé par `soloDayScale.ts` avec les vitesses `SOLO_SPEEDS` = ×1 ×2 ×3 ×5 ×10 ; **une seule horloge du monde** : `worldHourMsFor(K)` = 10 000 × K (`WORLD_HOUR_MS` en dérive, `frozenTicksForHours(h, K)`, `roomDay(tick, K)`). Le HUD lit toujours `frame.ticksPerDay`, jamais `TICKS_PER_DAY` |
 | `pawn::Job::code()` | `terrain.ts` (`JOB_LABELS`) |
 | `sim-wasm` : `PAWN_STRIDE` = 12, `ITEM_STRIDE` = 5, `BLUEPRINT_STRIDE` = 8, `EVENT_STRIDE` = 4, `PRIORITY_STRIDE` = 8, `SKILL_STRIDE` = 15, `HEALTH_STRIDE` = 4, drapeaux | `Renderer.ts` (`PAWN_STRIDE`, `ITEM_STRIDE`, `PAWN_FLAGS`), `terrain.ts` (`BLUEPRINT_STRIDE`, `EVENT_STRIDE`) |
 
@@ -181,6 +191,19 @@ mémoire WASM : à recréer après chaque appel au sim, jamais conservées. `paw
 de travail sont en centièmes de tick dans le sim (l'humeur module la vitesse) ; le tampon des
 chantiers les émet divisés par 100. Le client rebâtit ses meshes quand `map_version` ou
 `overlay_version` change, pas à chaque frame.
+
+Contrats ajoutés le 2026-09-19 :
+- `Job::Defend` et `Job::Pillage` sont ajoutés **en fin** de l'enum postcard.
+  Le tampon pawn garde le code 12 pour Defend (attaque) et ajoute 31 pour Pillage.
+- `EventKind::LootStolen = 44`, `arg = quantité << 8 | ItemKind` : seulement quand
+  un pillard vivant emporte sa charge hors de la carte. `terrain.ts` donne le libellé.
+- `Sim::raid_status()` / `WasmSim.raid_status()` / `SimHandle.raidStatus()` :
+  six u32 = posture (0 libre, 1 tenir, 2 veille), hostiles vivants, préavis en ticks,
+  puissance alliée, puissance ennemie, premier id hostile (u32::MAX si aucun).
+  `frame.raidStatus` est transféré avec les autres tampons. La traduction en texte
+  vit dans `raidStatus.ts` ; aucune décision tactique côté TypeScript.
+- Protocole réseau **4** : v3 ne peut pas relire ces nouveaux jobs. IPC natif **1**,
+  checkpoint natif **1** : versions distinctes, voir `docs/native-sim.md`.
 
 ## Conventions côté client
 
@@ -279,7 +302,7 @@ client lockstep tournent dans un **Web Worker** (`apps/client/src/worker/`) : le
 principal ne fait que rendre et saisir. En mode dev, `window.__rimlike` expose :
 `rpc(method, ...args)` (asynchrone, exécute dans le Worker une méthode de `SimHandle`, ou du
 `LockstepClient` si préfixée `lockstep.`), `issue(bytes)`, `frame` (dernier état reçu :
-`tick`, `hash` un frame sur 30, `lag`, `tps`, tampons), `net`, `renderer`, `setTool`,
+`tick`, `hash` un frame sur 30, `lag`, `tps`, tampons), `net`, `renderer`, `setTool`, `loadSnapshot(bytes)` (solo, sans toucher à localStorage),
 `setMaterial`, `actions`, `paused`, `speed`, `selected`. Exemple reproductible :
 
 ```js

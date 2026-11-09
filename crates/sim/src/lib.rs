@@ -294,6 +294,10 @@ pub enum EventKind {
     /// ou dans l'autre. `arg` : la faction. Le nouveau palier se lit dans
     /// `Sim::goodwill` (voir `factions::Relation`).
     RelationChanged = 43,
+    /// Un pillard a quitté la carte avec des ressources. Le ramassage seul
+    /// n'est pas une perte définitive : tuer le porteur rend sa charge.
+    /// arg = quantité << 8 | ItemKind (8 bits de poids faible).
+    LootStolen = 44,
 }
 
 /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
@@ -946,7 +950,11 @@ impl Sim {
                 let from = self.pawns[i].tile();
                 // Même un ordre du joueur ne fait pas marcher un colon sur un
                 // piège armé : il contourne, ou il n'y va pas.
-                let walker = self.walker(i);
+                let walker = if self.pawns[i].faction == Faction::Colony {
+                    path::Walker::COLONIST
+                } else {
+                    self.walker(i)
+                };
                 if let Some(path) = path::find_path_for(&self.map, from, (x, y), walker) {
                     self.abandon_job(i);
                     self.pawns[i].set_path(path);

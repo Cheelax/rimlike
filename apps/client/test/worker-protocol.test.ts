@@ -77,6 +77,7 @@ function frame(): FrameMessage {
     tps: 60,
     difficulty: 2,
     wealth: 1240,
+    raidStatus: new Uint32Array([2, 6, 600, 24, 120, 7]),
     traderPresent: 9,
     traderLeavesIn: 3600,
     traderOffers: new Int32Array([6, 3, 40, 12, 10, 5]),
@@ -247,13 +248,15 @@ describe("protocole du Worker de simulation", () => {
   it("annonce des tampons distincts, transférables sans copie", () => {
     const original = frame();
     const transfer = transferablesOf(original);
-    // Dix-huit tampons, tous différents : un tampon transféré deux fois lèverait.
-    expect(transfer.length).toBe(18);
-    expect(new Set(transfer).size).toBe(18);
+    // Dix-neuf tampons, tous différents : un tampon transféré deux fois lèverait.
+    expect(transfer.length).toBe(19);
+    expect(new Set(transfer).size).toBe(19);
 
     const clone = structuredClone(original, { transfer });
     expect(Array.from(clone.stored)).toEqual([9, 8, 7, 6, 5, 4, 0, 0, 0]);
     expect(clone.pawns[11]).toBe(1000);
+    expect(Array.from(clone.raidStatus)).toEqual([2, 6, 600, 24, 120, 7]);
+    expect(original.raidStatus.byteLength).toBe(0);
     // Détachés côté émetteur : c'est le prix du transfert, et il est sans
     // conséquence puisque le Worker rebâtit ses tampons à chaque frame.
     expect(original.pawns.byteLength).toBe(0);

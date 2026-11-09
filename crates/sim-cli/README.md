@@ -34,11 +34,10 @@ Argument manquant ou invalide → code de sortie 2 avec message d'aide.
 
 ## Scénario `demo`
 
-Recopie fidèle de `scripted_commands` dans
-`crates/sim/tests/determinism.rs` (`crates/sim-cli/src/scenario.rs`) : zone de
-stockage, désignations tournantes, plans de mur, culture, feu de camp, ordres
-de déplacement, raid déclenché à 6000, annulation à 4000. Toute modification
-du scénario de test doit être reportée dans `scenario.rs`.
+Source partagée dans `crates/sim/src/scenario.rs` : zone de stockage,
+désignations tournantes, plans de mur, culture, feu de camp, ordres de
+déplacement, raid déclenché à 6000, annulation à 4000. Le CLI, les tests
+natifs et le wrapper WASM utilisent ce même scénario et ses empreintes.
 
 ## `fuzz`
 
@@ -108,10 +107,52 @@ La colonne `ms` est une mesure à part entière : le coût par tick varie d'un
 facteur soixante d'une colonie à l'autre, et c'est le premier constat du
 rapport.
 
-## Ligne à ajouter dans `AGENTS.md`
+## Absence, diagnostic et comparaison
 
-Dans la section « Commandes » (non modifié par ce crate — à faire à la main) :
+`--absent-from 8` coupe les commandes du joueur scripté au jour 8 ; le sim
+continue de recevoir des lots vides. L'IA des colons, les raids et le temps
+restent actifs. `--day-scale 30` utilise le rythme du monde partagé.
 
+```bash
+cargo run -p sim-cli --release -- campaign --seed 10 --seeds 1 --days 30 --size 64 --day-scale 30 --absent-from 8 --trace --json > campagne.json 2> diagnostic.log
 ```
-cargo run -p sim-cli --release -- bench --size 128 --ticks 20000   # référence de perf native
+
+`--trace` écrit sur **stderr** un état quotidien et chaque décès : besoins,
+jobs, positions, pièces, stock alimentaire, ennemis et feu. Il n'ajoute aucun
+ordre et ne change pas les ticks. Le JSON sur stdout reste exploitable.
+
+`--snapshot-out FICHIER` exporte l'état postcard final d'une **seule graine**
+(`--seeds 1` requis). Un fichier existant est refusé avant le calcul ; le
+répertoire parent doit déjà exister. Aucun ordre supplémentaire n'est émis.
+
+```bash
+cargo run -p sim-cli --release -- campaign --seed 1 --seeds 1 --days 30 --size 64 --day-scale 30 --snapshot-out /tmp/colonie-jour30.bin --json
+pnpm bench:native -- --maps 64 --ticks 3600 --batch 3 --snapshot /tmp/colonie-jour30.bin
 ```
+
+Le snapshot peut aussi être chargé en solo via le crochet de développement
+`window.__rimlike.loadSnapshot(bytes)` ; cette opération ne modifie pas la
+sauvegarde locale. Les snapshots sont liés à la version courante du sim.
+
+Le JSON distingue `enclosed_at_absence`, `deaths_absent`,
+`livestock_lost_absent` et `stolen_units_absent`. Les vols comptent seulement
+les objets emportés hors carte par un pillard vivant, à la date de l'événement.
+Une charge récupérée sur un pillard abattu n'est pas un vol. La **baisse nette
+du stock extérieur** mêle consommation, rangement, production, feu et pillage :
+ce n'est pas une mesure des vols.
+
+Le comparateur vérifie les graines, la configuration, le jour du départ et
+l'absence d'événements perdus avant de calculer les trois critères de la fiche.
+Il rapporte aussi les décès de la cohorte murée commune aux deux versions.
+
+```bash
+pnpm compare:campaign avant-present.json avant-absent.json apres-present.json apres-absent.json --json
+pnpm test:campaign
+```
+
+Code de sortie : **0** si les trois critères passent, **1** si un critère
+échoue, **2** si les entrées ne sont pas comparables. Pour une ancienne sortie
+sans `campaign.day_scale`, fournir explicitement `--legacy-day-scale K` ;
+cette valeur ne remplace jamais une échelle présente dans le fichier.
+Les mesures du 2026-09-19 et leur provenance sont dans
+[`campaign-results/2026-09-19/`](campaign-results/2026-09-19/README.md).

@@ -1,7 +1,7 @@
 ---
 slug: colonie-tient-seule
 status: claimed
-claimed_by: Claude Fable (session orchestrateur)
+claimed_by: Codex (reprise de la branche réservée par Claude Fable le 2026-09-10)
 claimed_at: 2026-09-10
 layer: sim
 scope:
@@ -11,7 +11,14 @@ scope:
   - crates/sim/src/pawn.rs (variante de Job en fin d enum, s il en faut une)
   - crates/sim/tests/defense.rs, crates/sim/tests/balance_threat.rs (tests et relevés)
   - crates/sim-cli/src/campaign.rs (mode --absent-from J : le joueur ne donne plus d ordre)
-  - crates/sim-cli/CAMPAIGN-FINDINGS.md (§16)
+  - crates/sim-cli/CAMPAIGN-FINDINGS.md (§17 ; le §16 est le rapport sur le feu)
+  - crates/sim-cli/README.md, tests/cli.rs, scripts/, campaign-results/ (diagnostic, export et comparaison)
+  - crates/sim/src/map.rs, path.rs, lib.rs, fire.rs (fermeture des portes, confinement, jobs)
+  - crates/sim-wasm/src/lib.rs, apps/client/src/sim/SimHandle.ts, apps/client/src/worker/
+  - apps/client/src/raidStatus.ts, App.tsx, render/terrain.ts, ui/colony.css (état du raid)
+  - crates/sim/tests/raid_safety.rs, raid_fixtures.rs, fixtures/, examples/raid_fixtures.rs
+  - apps/client/test/raid-parity.test.ts, raidStatus.test.ts et contrats de tampons
+  - packages/protocol/ (version 4), docs/GUIDE.md, docs/protocol.md, AGENTS.md
 acceptance:
   - cargo fmt --all -- --check && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
   - sim::scenario::DEMO_HASH et les empreintes changent seulement si le comportement des colons change sur ces parties ; alors la constante est mise à jour dans le même commit avec la raison, et le test de parité WASM reste vert (pnpm build:wasm && pnpm test:client)
@@ -89,7 +96,30 @@ bases ennemies de RimWorld se défendent sans joueur.
 
 ## Rapport attendu
 
-§16 de `CAMPAIGN-FINDINGS.md` : protocole, le seuil retenu et sa courbe, avant → après avec
+§17 de `CAMPAIGN-FINDINGS.md` : protocole, le seuil retenu et sa courbe, avant → après avec
 joueur présent et joueur absent (par graine pour l'absent : enceinte ou pas, morts, pertes,
 bétail), les cas limites vus (colon à terre dehors, porte piégée, siège), ce que la mesure laisse
 ouvert. Journal du plan par l'orchestrateur à la fusion.
+
+## État local du 19 septembre 2026
+
+Implémentation, interface, tests et §17 terminés localement, sans fusion.
+K=1 satisfait les trois critères chiffrés : colonies vivantes en présence 18 → 28,
+en absence 18 → 25, morts après départ des colonies murées 118 → 27.
+
+À K=30, colonies vivantes en présence 15 → 26, en absence 13 → 24, décès totaux
+en absence 178 → 53. Les deux critères de survie passent. **Le troisième ne passe
+pas : 37 morts après départ pour une limite de 110/3 = 36,67**, soit un décès
+de trop pour atteindre le seuil entier admissible. Sur les 25 graines murées
+communes, la baisse est de 110 à 35, mais cela ne remplace pas le critère initial
+sur les 26 colonies désormais murées.
+
+La correction d'abri éloigné supprime treize morts de raid par rapport à la passe
+de pillage précédente, mais trois famines supplémentaires apparaissent sur la
+graine 26. Le contrat alimentaire et le feu restent à traiter ; aucune constante
+de dégâts, arme, seuil de fuite ni fréquence de raid n'a été ajustée pour le score.
+La fiche reste donc `claimed`, avec ce critère explicitement non satisfait.
+
+Validation : 432 tests Rust, 523 client, 244 serveur, 69 protocole, 88 monde,
+16 comparateur ; format, Clippy, typage et builds verts, fuzz 360 000 commandes.
+Données et reproductibilité : `crates/sim-cli/campaign-results/2026-09-19/`.

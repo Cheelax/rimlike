@@ -21,7 +21,9 @@
  * des échecs. La montée de version le fait refuser proprement à `join`
  * (`version_mismatch`) au lieu de le laisser entrer.
  */
-export const PROTOCOL_VERSION = 3;
+// Version 4 : défense autonome, jobs Defend/Pillage et événement LootStolen.
+// Un client v3 ne sait pas relire ces jobs dans un snapshot.
+export const PROTOCOL_VERSION = 4;
 
 /** Ticks de simulation par seconde. Contrat partagé par tous les clients. */
 export const TICK_RATE = 60;

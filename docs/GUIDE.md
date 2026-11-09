@@ -359,18 +359,33 @@ arme de mêlée du jeu, devant l'épieu et l'arc, mais la plus chère à produir
 
 ### Raids
 
-Trois jours de tranquillité (douze minutes réelles) avant la première bande
-de pillards ; ensuite un raid tous les deux à quatre jours. Sa taille et son
-équipement dépendent de la colonie (nombre de colons, richesse accumulée,
-temps écoulé) : plus la colonie prospère, plus les bandes grossissent et
-s'arment. Une bande charge directement, ou arrive à moitié à l'arc, ou encore
-s'installe un moment près de son point d'entrée avant de charger (le temps de
-fermer une porte) — un toast et une entrée de Journal (« Raid en approche »)
-l'annoncent dès qu'elle apparaît sur la carte, avant qu'elle ne charge. Un
-pillard décroche et fuit sous 65 % de PV. Les colons se défendent seuls contre
-un ennemi à moins de huit cases ; un clic droit sur un ennemi, avec un colon
-sélectionné, ordonne l'attaque. Un tireur à l'arc porte à huit cases, à
-condition d'une ligne de vue dégagée (murs, portes et rochers bloquent).
+Trois jours de jeu de tranquillité avant la première bande de pillards, soit
+six heures réelles à l'échelle du monde K=30 (douze minutes en partie rapide K=1).
+Ensuite, un raid tous les deux à quatre jours. Sa taille et son équipement suivent
+la colonie : plus elle prospère, plus les bandes grossissent et s'arment.
+
+Une bande naturelle attend une heure de jeu avant d'attaquer : cinq minutes
+réelles à K=30, dix secondes à K=1. Un siège ajoute encore son temps d'installation.
+Le journal annonce l'arrivée ; le bandeau de danger indique le nombre d'ennemis,
+le temps restant et la posture de la colonie. Cliquer dessus montre les assaillants.
+
+Avec une enceinte, les colons choisissent seuls leur défense. S'ils ont l'avantage,
+ils tiennent l'entrée du côté intérieur. Sinon, ils se replient et les portes se
+ferment aux pillards. Les repas et le repos à l'abri continuent ; le travail extérieur
+attend la fin du raid. Un colon ne poursuit plus de lui-même une cible hors des murs.
+Sans enceinte, il se défend à proximité comme auparavant. Un déplacement ou une
+attaque ordonnés par le joueur restent prioritaires.
+
+Les murs protègent les réserves intérieures. Les pillards qui ne peuvent atteindre
+les colons peuvent attaquer le bétail dehors ou emporter les piles extérieures :
+jusqu'à vingt unités par porteur. Le butin tombe au sol si le porteur est tué avant
+de sortir ; le journal n'annonce un vol que lorsqu'il quitte la carte vivant.
+Un colon à terre dehors ne rentre pas par magie ; prévoir vivres, cultures et
+protection contre le feu reste nécessaire pendant une absence.
+
+Un pillard décroche sous 65 % de PV. Un clic droit sur un ennemi, avec un colon
+sélectionné, ordonne l'attaque. Un tireur à l'arc porte à huit cases, à condition
+d'une ligne de vue dégagée (murs, portes et rochers bloquent).
 
 Le menu Options (§1) règle la dose de menace du storyteller : Paisible
 supprime les raids (le reste de la vie de la colonie continue sans eux),

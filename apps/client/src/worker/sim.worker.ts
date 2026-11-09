@@ -88,6 +88,7 @@ const SIM_API: ReadonlySet<string> = new Set([
   "attack",
   "setPriority",
   "triggerRaid",
+  "raidStatus",
   "triggerTraderVisit",
   "fastForward",
   "tick",

@@ -42,6 +42,12 @@ import {
 } from "../src/render/terrain";
 
 describe("eventLabel", () => {
+  it("annonce les ressources réellement emportées sans prendre la quantité pour un id", () => {
+    expect(eventLabel(44, (20 << 8) | 0)).toBe("Ressources volées : 20 bois");
+    expect(eventLabel(44, (3 << 8) | 17)).toBe("Ressources volées : 3 métal");
+    expect(eventCategory(44)).toBe("threat");
+    expect(JOB_LABELS[31]).toBe("pille des ressources");
+  });
   it("nomme le colon quand son nom est connu", () => {
     const names = { 3: "Alice" };
     expect(eventLabel(7, 3, names)).toBe("Alice monte en niveau");
@@ -471,12 +477,12 @@ describe("moodIcon", () => {
 describe("formatEventTime", () => {
   it("formate « jour J hh:mm » depuis un tick absolu", () => {
     const ticksPerDay = 14400;
-    expect(formatEventTime(0, ticksPerDay)).toBe("jour 1 00:00");
-    expect(formatEventTime(ticksPerDay / 2, ticksPerDay)).toBe("jour 1 12:00");
+    expect(formatEventTime(0, ticksPerDay, 0)).toBe("jour 1 00:00");
+    expect(formatEventTime(ticksPerDay / 2, ticksPerDay, 0)).toBe("jour 1 12:00");
     // Un tick multiple de `ticksPerDay` bascule au jour suivant, à minuit.
-    expect(formatEventTime(ticksPerDay, ticksPerDay)).toBe("jour 2 00:00");
+    expect(formatEventTime(ticksPerDay, ticksPerDay, 0)).toBe("jour 2 00:00");
     // Jour 4 (1-indexé), 06:00 : trois jours pleins puis un quart de jour.
-    expect(formatEventTime(ticksPerDay * 3 + ticksPerDay / 4, ticksPerDay)).toBe("jour 4 06:00");
+    expect(formatEventTime(ticksPerDay * 3 + ticksPerDay / 4, ticksPerDay, 0)).toBe("jour 4 06:00");
   });
 });
 

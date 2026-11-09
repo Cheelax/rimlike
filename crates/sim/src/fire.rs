@@ -973,6 +973,7 @@ impl Sim {
                     | Job::Sleep { .. }
                     | Job::Move { manual: true }
                     | Job::Attack { .. }
+                    | Job::Defend { .. }
                     | Job::Break { .. }
                     | Job::Downed
                     | Job::Idle

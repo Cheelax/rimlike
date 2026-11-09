@@ -1,0 +1,960 @@
+diff --git a/crates/sim-cli/src/campaign.rs b/crates/sim-cli/src/campaign.rs
+index 7b8f061..6c2947c 100644
+--- a/crates/sim-cli/src/campaign.rs
++++ b/crates/sim-cli/src/campaign.rs
+@@ -1450,12 +1450,15 @@ struct Run {
+     livestock_at_absence: u32,
+     livestock_lost_absent: u32,
+     /// Unités d'objets posées **hors enceinte** (`Map::room` nul) au départ du
+-    /// joueur, puis en fin de partie. Faute d'un compte direct — un pillard ne
+-    /// ramasse pas les piles dans le sim d'aujourd'hui —, c'est la variation
+-    /// de ce stock qui mesure ce que la colonie laisse dehors : le feu le
+-    /// brûle, la péremption le mange, et les colons en rentrent une partie.
++    /// joueur, puis en fin de partie. Cette variation est un solde (feu,
++    /// péremption, rangement, production et pillage), pas une attribution
++    /// aux pillards : les vols effectifs ont leurs propres compteurs.
+     outdoor_stock_at_absence: u32,
+     outdoor_stock_end: u32,
++    /// Unités sorties de la carte dans la charge d'un pillard, selon le
++    /// journal (ni simple ramassage, ni différence de stock).
++    stolen_units: u32,
++    stolen_units_absent: u32,
+     /// Événements annoncés par le sim mais lus trop tard (journal débordé).
+     /// Doit rester à 0 : sinon les comptes de raids sont sous-évalués.
+     lost_events: u32,
+@@ -1511,10 +1514,20 @@ struct Journal {
+     /// **quand** elle tombe est la moitié de la réponse à « la colonie
+     /// forge-t-elle ? ».
+     metallurgy_tick: Option<u64>,
++    /// (tick, quantité) : garde la date exacte, même si drain lit après le départ.
++    loot: Vec<(u64, u32)>,
+     lost: u32,
+ }
+ 
+ impl Journal {
++    fn stolen_since(&self, from: Option<u64>) -> u32 {
++        self.loot
++            .iter()
++            .filter(|(tick, _)| from.is_some_and(|at| *tick >= at))
++            .map(|(_, count)| count)
++            .sum()
++    }
++
+     /// Lit les événements pas encore vus. Un `seq` manquant veut dire que le
+     /// journal a débordé entre deux lectures : compté dans `lost`.
+     fn drain(&mut self, sim: &Sim) {
+@@ -1530,6 +1543,7 @@ impl Journal {
+                     self.raiders += e.arg;
+                 }
+                 EventKind::RaidRepelled => self.raids_repelled += 1,
++                EventKind::LootStolen => self.loot.push((e.tick, e.arg >> 8)),
+                 EventKind::FireStarted => self.fires += 1,
+                 EventKind::FireOut => {
+                     self.burned += e.arg;
+@@ -1596,6 +1610,44 @@ struct Settings {
+     /// `None` : le joueur reste jusqu'au bout, et la campagne est celle
+     /// d'avant, au bit près.
+     absent_from: Option<u64>,
++    /// Diagnostic seul, sur stderr : ne change aucun ordre ni aucun tick.
++    trace: bool,
++}
++
++fn trace_colony(sim: &Sim, seed: u64, reason: &str) {
++    eprintln!(
++        "trace seed={seed} tick={} day={} reason={reason} indoor={} raid={:?} fire={}",
++        sim.tick(),
++        sim.tick() / u64::from(sim.ticks_per_day()),
++        sim.map().indoor_count(),
++        sim.raid_status(),
++        sim.map().fire_count(),
++    );
++    for p in sim
++        .pawns()
++        .iter()
++        .filter(|p| p.is_colonist() || p.is_raider_like())
++    {
++        let (x, y) = p.tile();
++        eprintln!(
++            "  pawn={} faction={:?} tile={x},{y} room={} hp={} hunger={} rest={} job={:?} path={}",
++            p.id,
++            p.faction,
++            sim.map().room(x, y),
++            p.hp,
++            p.hunger,
++            p.rest,
++            p.job,
++            p.path.len()
++        );
++    }
++    let mut food = std::collections::BTreeMap::<(u8, u8), u32>::new();
++    for s in sim.items().iter().filter(|s| s.kind.is_food()) {
++        *food
++            .entry((sim.map().room(s.x, s.y), s.kind as u8))
++            .or_default() += s.count;
++    }
++    eprintln!("  food_by_room_kind={food:?}");
+ }
+ 
+ fn play_seed(seed: u64, s: &Settings) -> Run {
+@@ -1626,6 +1678,9 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
+     let mut cur_herd: Vec<u32> = Vec::new();
+ 
+     for t in 0..total {
++        if s.trace && t % day == 0 {
++            trace_colony(&sim, seed, "day");
++        }
+         // Le joueur est parti dès que le tick du jour J est atteint : le
+         // relevé se fait donc **avant** le premier tick sans ordre.
+         let absent = !player_acts(t, leaves_at);
+@@ -1674,6 +1729,17 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
+         for w in &prev {
+             if !cur.iter().any(|c| c.id == w.id) {
+                 deaths[w.cause() as usize] += 1;
++                if s.trace {
++                    eprintln!(
++                        "trace death seed={seed} tick={} pawn={} cause={} hunger={} hurt={}",
++                        sim.tick(),
++                        w.id,
++                        w.cause().label(),
++                        w.hunger,
++                        w.hurt
++                    );
++                    trace_colony(&sim, seed, "death");
++                }
+                 if absent {
+                     deaths_absent += 1;
+                 }
+@@ -1773,6 +1839,8 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
+         livestock_lost_absent,
+         outdoor_stock_at_absence,
+         outdoor_stock_end: outdoor_stock(&sim),
++        stolen_units: journal.loot.iter().map(|(_, count)| count).sum(),
++        stolen_units_absent: journal.stolen_since(leaves_at),
+         lost_events: journal.lost,
+         deaths_announced: journal.deaths_announced,
+         elapsed_ms: start.elapsed().as_millis(),
+@@ -2213,8 +2281,9 @@ fn print_summary(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Dur
+             let wiped = group.iter().filter(|r| r.colonists_end == 0).count();
+             let herd: u32 = group.iter().map(|r| r.livestock_lost_absent).sum();
+             let stock: u32 = group.iter().map(|r| r.outdoor_stock_lost()).sum();
++            let stolen: u32 = group.iter().map(|r| r.stolen_units_absent).sum();
+             println!(
+-                "  — {label:<19}: {count} graines — éteintes {wiped}/{count}, morts depuis le départ {deaths}, bétail perdu {herd}, stock dehors perdu {stock} unités",
++                "  — {label:<19}: {count} graines — éteintes {wiped}/{count}, morts depuis le départ {deaths}, bétail perdu {herd}, baisse nette du stock dehors {stock} unités, vols confirmés {stolen} unités",
+             );
+         };
+         line("murées au jour J", &walled);
+@@ -2259,7 +2328,9 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
+         None => print!("null"),
+     }
+     println!(
+-        ", \"ticks\": {ticks}, \"elapsed_ms\": {}}},",
++        ", \"first_seed\": {}, \"day_scale\": {}, \"ticks\": {ticks}, \"elapsed_ms\": {}}},",
++        s.first_seed,
++        s.day_scale,
+         elapsed.as_millis()
+     );
+     println!("  \"runs\": [");
+@@ -2271,7 +2342,7 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
+             .collect();
+         let goodwill: Vec<String> = r.goodwill.iter().map(i32::to_string).collect();
+         println!(
+-            "    {{\"seed\": {}, \"biome\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"worst_fire\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"enclosed\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"tame_orders\": {}, \"tamed\": {}, \"metallurgy_day\": {}, \"enclosed_at_absence\": {}, \"deaths_absent\": {}, \"livestock_at_absence\": {}, \"livestock_lost_absent\": {}, \"outdoor_stock_at_absence\": {}, \"outdoor_stock_end\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
++            "    {{\"seed\": {}, \"biome\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"worst_fire\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"enclosed\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"tame_orders\": {}, \"tamed\": {}, \"metallurgy_day\": {}, \"enclosed_at_absence\": {}, \"deaths_absent\": {}, \"livestock_at_absence\": {}, \"livestock_lost_absent\": {}, \"outdoor_stock_at_absence\": {}, \"outdoor_stock_end\": {}, \"stolen_units\": {}, \"stolen_units_absent\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
+             r.seed,
+             r.biome as u8,
+             r.colonists_end,
+@@ -2310,6 +2381,8 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
+             r.livestock_lost_absent,
+             r.outdoor_stock_at_absence,
+             r.outdoor_stock_end,
++            r.stolen_units,
++            r.stolen_units_absent,
+             r.lost_events,
+             r.deaths_announced,
+             r.elapsed_ms,
+@@ -2329,7 +2402,7 @@ rimlike-sim campaign — joue des colonies entières avec un joueur scripté et
+ USAGE :
+     rimlike-sim campaign [--seeds N] [--days D] [--size W] [--difficulty L]
+                          [--biome N] [--climate T] [--day-of-year J] [--seed S]
+-                         [--day-scale K] [--absent-from J] [--json]
++                         [--day-scale K] [--absent-from J] [--json] [--trace]
+ 
+ OPTIONS :
+     --seeds N        nombre de graines jouées (défaut 30)
+@@ -2366,6 +2439,8 @@ OPTIONS :
+                      colons depuis, bêtes de la colonie à ce moment-là, bêtes
+                      perdues depuis, unités de stock perdues dehors
+     --json           sortie machine (drapeau, sans valeur)
++    --trace          état quotidien et à chaque mort sur stderr ; les ordres,
++                     les ticks et la sortie JSON restent identiques
+ 
+ Chaque graine est jouée par le même joueur scripté : zone de stockage et de
+ culture, coupe et récolte, feu de camp, lits, poste de fabrication, enceinte de
+@@ -2401,13 +2476,15 @@ pub fn campaign(args: &[String]) -> u8 {
+ }
+ 
+ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
+-    // `--json` est un drapeau : il n'a pas de valeur, alors que `Options`
+-    // n'accepte que des paires `--nom valeur`. On le retire avant l'analyse.
++    // Les deux drapeaux n'ont pas de valeur ; Options lit des paires.
+     let mut json = false;
++    let mut trace = false;
+     let mut rest: Vec<String> = Vec::with_capacity(args.len());
+     for a in args {
+         if a == "--json" {
+             json = true;
++        } else if a == "--trace" {
++            trace = true;
+         } else {
+             rest.push(a.clone());
+         }
+@@ -2504,6 +2581,7 @@ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
+         biome,
+         day_scale,
+         absent_from,
++        trace,
+     };
+ 
+     let ticks_per_seed = u64::from(TICKS_PER_DAY) * u64::from(day_scale) * days;
+@@ -3110,6 +3188,30 @@ mod tests {
+         assert_eq!(journal.lost, 0, "journal débordé");
+     }
+ 
++    #[test]
++    fn les_vols_se_comptent_a_la_sortie_et_a_la_date_de_l_evenement() {
++        let mut s = clearing();
++        let before = s.tick();
++        for (kind, count) in [(ItemKind::Wood, 7), (ItemKind::Metal, 3)] {
++            let id = s.spawn_pawn(0, 0, Faction::Raider);
++            let p = s.pawn_mut(id).unwrap();
++            p.carrying = Some((kind, count));
++            p.job = sim::Job::Flee;
++            s.step(&[]);
++        }
++        // Lecture volontairement tardive : le premier butin est sorti avant
++        // le départ du joueur, le second exactement à sa frontière.
++        let mut journal = Journal::default();
++        journal.drain(&s);
++        journal.drain(&s);
++        assert_eq!(journal.loot, vec![(before, 7), (before + 1, 3)]);
++        assert_eq!(journal.stolen_since(Some(before)), 10);
++        assert_eq!(journal.stolen_since(Some(before + 1)), 3);
++        assert_eq!(journal.stolen_since(Some(before + 2)), 0);
++        assert_eq!(journal.stolen_since(None), 0);
++        assert_eq!(journal.lost, 0);
++    }
++
+     /// Le total brûlé et le **pire incendie** ne racontent pas la même chose :
+     /// quatre cases, c'est peut-être un feu de quatre, peut-être deux feux de
+     /// deux. Deux épisodes séparés dans le temps — trois cases d'un coup, puis
+@@ -3709,6 +3811,7 @@ mod tests {
+             biome: Biome::TemperateForest,
+             day_scale: 1,
+             absent_from,
++            trace: false,
+         };
+         let present = play_seed(1, &base(None));
+         let absent = play_seed(1, &base(Some(0)));
+diff --git a/crates/sim-cli/tests/cli.rs b/crates/sim-cli/tests/cli.rs
+index 12d402c..9165f33 100644
+--- a/crates/sim-cli/tests/cli.rs
++++ b/crates/sim-cli/tests/cli.rs
+@@ -349,6 +349,14 @@ fn campaign_json_is_machine_readable() {
+     );
+     assert!(stdout.trim_end().ends_with('}'), "JSON tronqué : {stdout}");
+     assert!(stdout.contains("\"runs\""), "pas de runs : {stdout}");
++    assert!(
++        stdout.contains("\"first_seed\": 1"),
++        "graine initiale absente : {stdout}"
++    );
++    assert!(
++        stdout.contains("\"day_scale\": 1"),
++        "échelle absente : {stdout}"
++    );
+     assert!(
+         stdout.contains("\"colonists_end\""),
+         "champ manquant : {stdout}"
+@@ -357,6 +365,23 @@ fn campaign_json_is_machine_readable() {
+     assert!(!stdout.contains("résumé"), "résumé dans le JSON : {stdout}");
+ }
+ 
++#[test]
++fn campaign_trace_stays_on_stderr() {
++    let output = bin()
++        .args([
++            "campaign", "--seeds", "1", "--days", "1", "--size", "32", "--json", "--trace",
++        ])
++        .output()
++        .expect("le binaire doit s'exécuter");
++    assert!(output.status.success());
++    let stdout = String::from_utf8_lossy(&output.stdout);
++    let stderr = String::from_utf8_lossy(&output.stderr);
++    assert!(stdout.trim_start().starts_with('{'));
++    assert!(!stdout.contains("trace "));
++    assert!(stderr.contains("trace seed=1 tick=0 day=0 reason=day"));
++    assert!(stderr.contains("food_by_room_kind="));
++}
++
+ #[test]
+ fn campaign_rejects_an_impossible_difficulty() {
+     let output = bin()
+diff --git a/crates/sim/src/combat.rs b/crates/sim/src/combat.rs
+index c2830eb..6cd692d 100644
+--- a/crates/sim/src/combat.rs
++++ b/crates/sim/src/combat.rs
+@@ -224,9 +224,9 @@ pub const REARM_TICKS: u32 = 100;
+ /// hash, et une bande qui perd la moitié des siens fait basculer la colonie
+ /// dans l'autre posture sans qu'on ait à y penser.
+ ///
+-/// Les valeurs ne sont **pas** un contrat avec le client : rien ne les
+-/// traverse la frontière WASM, aucun tampon ne les porte.
++/// Valeurs du tampon `raid_status` : libre 0, tenir 1, veille 2.
+ #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++#[repr(u8)]
+ pub enum Stance {
+     /// Rien à décider : pas de bande sur la carte, ou pas d'enceinte. Chacun
+     /// se bat où il est, comme avant cette fiche.
+@@ -252,7 +252,7 @@ pub enum Stance {
+ /// `measure_le_seuil_de_la_decision_tactique`, et `CAMPAIGN-FINDINGS.md`
+ /// §17). Le seuil retenu est celui qui maximise la survie du joueur **absent**
+ /// sans rien coûter au joueur **présent**.
+-pub const HOLD_RATIO_PERCENT: u32 = 100;
++pub const HOLD_RATIO_PERCENT: u32 = 150;
+ 
+ /// Rayon du balayage qui cherche l'abri de la colonie autour de son
+ /// barycentre. Une pièce tient en `map::ROOM_MAX_TILES` (200) cases et
+@@ -324,6 +324,9 @@ pub(crate) enum EngageOutcome {
+ const MELEE_TARGETS: usize = 3;
+ /// Nombre de cases de bord testées par un fuyard.
+ const FLEE_ATTEMPTS: usize = 6;
++/// Une seule charge extérieure par pillard ; jamais le contenu d'une pièce.
++/// Coût mesuré dans CAMPAIGN-FINDINGS.md §17.
++pub const PILLAGE_CARRY_MAX: u32 = 20;
+ /// Tirages de case d'entrée avant d'abandonner un raid.
+ const ENTRY_DRAWS: u32 = 12;
+ 
+@@ -624,7 +627,7 @@ impl Sim {
+         }
+         if matches!(
+             self.pawns[i].job,
+-            Job::Attack { .. } | Job::Move { manual: true }
++            Job::Attack { .. } | Job::Defend { .. } | Job::Move { manual: true }
+         ) {
+             return false;
+         }
+@@ -637,7 +640,11 @@ impl Sim {
+             return false;
+         }
+         self.abandon_job(i);
+-        self.pawns[i].job = Job::Attack { target: id };
++        self.pawns[i].job = if !self.pawns[i].is_colonist() || self.raid_stance() == Stance::Free {
++            Job::Attack { target: id }
++        } else {
++            Job::Defend { target: id }
++        };
+         true
+     }
+ 
+@@ -699,6 +706,46 @@ impl Sim {
+         }
+     }
+ 
++    /// État de défense lu par le client, sans aucune règle côté interface :
++    /// posture, hostiles vivants, préavis restant, puissance alliée, puissance
++    /// ennemie, id du premier hostile (u32::MAX si aucun). Le premier ennemi
++    /// déjà en marche termine le préavis ; les corps à terre n'en prolongent pas.
++    pub fn raid_status(&self) -> [u32; 6] {
++        let mut count = 0;
++        let mut warning = u64::MAX;
++        let mut first = u32::MAX;
++        for p in self
++            .pawns
++            .iter()
++            .filter(|p| p.is_alive() && p.is_raider_like())
++        {
++            count += 1;
++            first = first.min(p.id);
++            if !p.is_downed() {
++                let left = match p.job {
++                    Job::Wait { until } => until.saturating_sub(self.tick),
++                    _ => 0,
++                };
++                warning = warning.min(left);
++            }
++        }
++        if count == 0 {
++            return [0, 0, 0, 0, 0, u32::MAX];
++        }
++        [
++            self.raid_stance() as u32,
++            count,
++            if warning == u64::MAX {
++                0
++            } else {
++                warning.min(u64::from(u32::MAX)) as u32
++            },
++            self.colony_line_power(),
++            self.raid_line_power(),
++            first,
++        ]
++    }
++
+     /// Un colon peut-il courir sur cette cible, ou reste-t-il derrière ses
+     /// murs ? Hors raid et sans enceinte (`Stance::Free`), rien ne change.
+     /// Sinon on ne frappe de soi-même que ce qui est **au contact**, ce qui
+@@ -707,6 +754,9 @@ impl Sim {
+     /// (`Command::Attack`) ne passe pas par ici : il pose `Job::Attack` et
+     /// prime.
+     fn may_engage(&self, i: usize, target: u32) -> bool {
++        if !self.pawns[i].is_colonist() {
++            return true;
++        }
+         let stance = self.raid_stance();
+         if stance == Stance::Free {
+             return true;
+@@ -772,7 +822,7 @@ impl Sim {
+                     continue;
+                 }
+                 let (x, y) = (x as u32, y as u32);
+-                if !keep(self, x, y) {
++                if !keep(self, x, y) || !self.map.passable_for(x, y, path::Walker::COLONIST) {
+                     continue;
+                 }
+                 let cand = (chebyshev(from, (x, y)), x, y);
+@@ -843,10 +893,32 @@ impl Sim {
+                 | Job::Tame { .. }
+                 | Job::Slaughter { .. }
+         );
+-        if !droppable || self.raid_stance() == Stance::Free {
++        if self.raid_stance() == Stance::Free
++            || matches!(
++                self.pawns[i].job,
++                Job::Attack { .. } | Job::Defend { .. } | Job::Move { manual: true }
++            )
++        {
+             return;
+         }
+-        self.abandon_job(i);
++        let me = self.pawns[i].tile();
++        let room = self.map.room(me.0, me.1);
++        let unsafe_path = self.pawns[i]
++            .path
++            .iter()
++            .any(|&(x, y)| room != 0 && self.map.room(u32::from(x), u32::from(y)) != room);
++        // Dehors, les besoins attendent le retour ; dedans, on garde les
++        // soins, le repas et le sommeil dont le trajet reste dans la pièce.
++        let outside_need =
++            room == 0 && matches!(self.pawns[i].job, Job::Eat { .. } | Job::Sleep { .. });
++        let wandering_outside = matches!(self.pawns[i].job, Job::Move { manual: false })
++            && self.pawns[i]
++                .path
++                .first()
++                .is_some_and(|&(x, y)| self.map.room(u32::from(x), u32::from(y)) == 0);
++        if droppable || unsafe_path || outside_need || wandering_outside {
++            self.abandon_job(i);
++        }
+     }
+ 
+     /// Rejoindre son poste, et n'en plus bouger tant que la bande est là.
+@@ -904,13 +976,15 @@ impl Sim {
+     /// Partagée avec le marchand devenu hostile (voir `trade`) : mêmes coups,
+     /// même seuil de décrochage, même sortie de carte.
+     pub(crate) fn raider_ai(&mut self, i: usize) {
+-        if self.pawns[i].hp < FLEE_HP {
++        if self.pawns[i].hp < FLEE_HP || self.pawns[i].carrying.is_some() {
+             self.pawns[i].path.clear();
+             self.pawns[i].job = Job::Flee;
+             return;
+         }
+         match self.nearest_reachable_enemy(i, u32::MAX) {
+-            // Personne d'atteignable (les murs comptent) : on repart.
++            // Les colons et le troupeau sont à l'abri : on prend une seule
++            // charge dehors, puis on repart. Le marchand furieux ne pille pas.
++            None if self.pawns[i].faction == Faction::Raider && self.try_start_pillage(i) => {}
+             None => {
+                 self.pawns[i].path.clear();
+                 self.pawns[i].job = Job::Flee;
+@@ -1002,7 +1076,13 @@ impl Sim {
+     fn nearest_reachable_in_rank(&self, i: usize, radius: u32, herd: bool) -> Option<u32> {
+         let me = self.pawns[i].tile();
+         let faction = self.pawns[i].faction;
+-        let walker = self.walker(i);
++        // Le choix de cible doit employer le même confinement que Defend,
++        // même si le colon est encore Idle au moment de la recherche.
++        let walker = if self.pawns[i].is_colonist() {
++            self.work_walker(me)
++        } else {
++            self.walker(i)
++        };
+         let mut enemies: Vec<(u32, u32, u32, u32)> = self
+             .pawns
+             .iter()
+@@ -1015,7 +1095,7 @@ impl Sim {
+             .filter_map(|p| {
+                 let (x, y) = p.tile();
+                 let d = chebyshev(me, (x, y));
+-                if d > radius {
++                if d > radius || (self.pawns[i].is_colonist() && !self.may_engage(i, p.id)) {
+                     return None;
+                 }
+                 // Le rang, et rien d'autre : la distance vraie reste celle qui
+@@ -1074,10 +1154,16 @@ impl Sim {
+             return EngageOutcome::Engaged;
+         }
+         // Le chemin est stocké inversé : `first()` est la destination.
+-        let stale = self.pawns[i]
++        let walker = self.walker(i);
++        let blocked = self.pawns[i]
+             .path
+-            .first()
+-            .is_none_or(|&(dx, dy)| chebyshev((u32::from(dx), u32::from(dy)), them) > 1);
++            .iter()
++            .any(|&(x, y)| !self.map.passable_for(u32::from(x), u32::from(y), walker));
++        let stale = blocked
++            || self.pawns[i]
++                .path
++                .first()
++                .is_none_or(|&(dx, dy)| chebyshev((u32::from(dx), u32::from(dy)), them) > 1);
+         if stale {
+             // Un colon qui charge ne traverse pas ses propres pièges ; un
+             // pillard, lui, ne les voit pas venir.
+@@ -1091,6 +1177,16 @@ impl Sim {
+         EngageOutcome::Engaged
+     }
+ 
++    /// Une défense automatique réévalue sa cible pendant la poursuite.
++    /// L'attaque manuelle conserve son comportement et reste prioritaire.
++    pub(crate) fn do_defend(&mut self, i: usize, target: u32) {
++        if !self.may_engage(i, target) {
++            self.abandon_job(i);
++            return;
++        }
++        self.do_attack(i, target);
++    }
++
+     pub(crate) fn do_attack(&mut self, i: usize, target: u32) {
+         if self.pawns[i].is_raider_like() && self.pawns[i].hp < FLEE_HP {
+             self.pawns[i].path.clear();
+@@ -1214,7 +1310,101 @@ impl Sim {
+         }
+     }
+ 
++    /// Une charge par pillard : coût extérieur borné, récupérable tant que
++    /// le porteur n'a pas rejoint le bord. Le choix reste géométrique,
++    /// déterministe et limité à six recherches de chemin.
++    fn try_start_pillage(&mut self, i: usize) -> bool {
++        let from = self.pawns[i].tile();
++        let walker = self.walker(i);
++        let mut candidates: Vec<_> = self
++            .items
++            .iter()
++            .filter(|s| {
++                s.reserved_by.is_none()
++                    && s.kind.haulable()
++                    && !s.kind.is_animal_corpse()
++                    && self.map.room(s.x, s.y) == 0
++                    && self.map.passable_for(s.x, s.y, walker)
++            })
++            .map(|s| (chebyshev(from, (s.x, s.y)), s.x, s.y, s.id))
++            .collect();
++        candidates.sort_unstable();
++        for (_, x, y, item) in candidates.into_iter().take(FLEE_ATTEMPTS) {
++            let Some(path) = path::find_path_for(&self.map, from, (x, y), walker) else {
++                continue;
++            };
++            let Some(stack) = self.items.iter_mut().find(|s| s.id == item) else {
++                continue;
++            };
++            stack.reserved_by = Some(self.pawns[i].id);
++            self.pawns[i].set_path(path);
++            self.pawns[i].job = Job::Pillage { item };
++            return true;
++        }
++        false
++    }
++
++    pub(crate) fn do_pillage(&mut self, i: usize, item: u32) {
++        if self.pawns[i].hp < FLEE_HP {
++            self.abandon_job(i);
++            self.pawns[i].job = Job::Flee;
++            return;
++        }
++        // Si un défenseur vient l'intercepter, il se bat à nouveau. Même
++        // cadence physique que les recherches de travail, sans état ajouté.
++        if (self.tick + u64::from(self.pawns[i].id)) % crate::jobs::RETRY_TICKS == 0
++            && let Some(target) = self.nearest_reachable_enemy(i, DEFEND_RADIUS)
++        {
++            self.abandon_job(i);
++            self.pawns[i].job = Job::Attack { target };
++            return;
++        }
++        let Some(k) = self.items.iter().position(|s| s.id == item) else {
++            self.abandon_job(i);
++            return;
++        };
++        let stack = &self.items[k];
++        let walker = self.walker(i);
++        if stack.reserved_by != Some(self.pawns[i].id)
++            || self.map.room(stack.x, stack.y) != 0
++            || self.pawns[i]
++                .path
++                .iter()
++                .any(|&(x, y)| !self.map.passable_for(u32::from(x), u32::from(y), walker))
++        {
++            self.abandon_job(i);
++            return;
++        }
++        if self.pawns[i].is_moving() {
++            self.pawns[i].advance(&self.map);
++            return;
++        }
++        if self.pawns[i].tile() != (stack.x, stack.y) {
++            self.abandon_job(i);
++            return;
++        }
++        let kind = stack.kind;
++        let count = stack.count.min(PILLAGE_CARRY_MAX);
++        self.items[k].count -= count;
++        self.items[k].reserved_by = None;
++        if self.items[k].count == 0 {
++            self.items.remove(k);
++        }
++        self.pawns[i].carrying = Some((kind, count));
++        self.pawns[i].job = Job::Flee;
++    }
++
+     pub(crate) fn do_flee(&mut self, i: usize) {
++        // Une porte peut se fermer depuis le calcul du trajet, notamment
++        // quand le rapport de force bascule de tenir à veiller.
++        let walker = self.walker(i);
++        if self.pawns[i]
++            .path
++            .iter()
++            .any(|&(x, y)| !self.map.passable_for(u32::from(x), u32::from(y), walker))
++        {
++            self.pawns[i].path.clear();
++        }
+         if self.pawns[i].is_moving() {
+             self.pawns[i].advance(&self.map);
+             return;
+@@ -1324,7 +1514,11 @@ impl Sim {
+             }
+             let (x, y) = p.tile();
+             if let Some((kind, count)) = p.carrying {
+-                self.spawn_item(kind, count, x, y);
++                if p.gone && p.hp > 0 && p.faction == Faction::Raider && self.is_edge_tile((x, y)) {
++                    self.push_event(EventKind::LootStolen, (count << 8) | kind as u32);
++                } else {
++                    self.spawn_item(kind, count, x, y);
++                }
+             }
+             if p.hp == 0 {
+                 // L'**espèce** décide, pas la faction : une bête apprivoisée
+diff --git a/crates/sim/src/fire.rs b/crates/sim/src/fire.rs
+index ad41f19..6673b8b 100644
+--- a/crates/sim/src/fire.rs
++++ b/crates/sim/src/fire.rs
+@@ -973,6 +973,7 @@ impl Sim {
+                     | Job::Sleep { .. }
+                     | Job::Move { manual: true }
+                     | Job::Attack { .. }
++                    | Job::Defend { .. }
+                     | Job::Break { .. }
+                     | Job::Downed
+                     | Job::Idle
+diff --git a/crates/sim/src/jobs.rs b/crates/sim/src/jobs.rs
+index aa71abc..011be46 100644
+--- a/crates/sim/src/jobs.rs
++++ b/crates/sim/src/jobs.rs
+@@ -196,6 +196,7 @@ impl Sim {
+             match self.pawns[i].job.clone() {
+                 Job::Attack { target } => self.do_attack(i, target),
+                 Job::Flee => self.do_flee(i),
++                Job::Pillage { item } => self.do_pillage(i, item),
+                 // Un assiégeant patiente à son point d'entrée.
+                 Job::Wait { until } => self.do_wait(i, until),
+                 _ => self.raider_ai(i),
+@@ -240,6 +241,7 @@ impl Sim {
+                     | Job::Sleep { .. }
+                     | Job::Move { manual: true }
+                     | Job::Attack { .. }
++                    | Job::Defend { .. }
+             )
+             && self.food_available()
+         {
+@@ -290,6 +292,7 @@ impl Sim {
+                 progress,
+             } => self.do_cook(i, campfire, item, picked, progress),
+             Job::Attack { target } => self.do_attack(i, target),
++            Job::Defend { target } => self.do_defend(i, target),
+             Job::Flee => self.do_flee(i),
+             Job::Break { until } => self.do_break(i, until),
+             Job::Rescue { target, picked } => self.do_rescue(i, target, picked),
+@@ -327,7 +330,7 @@ impl Sim {
+             Job::Downed => {}
+             // Réservé aux assiégeants (traités plus haut) : un colon n'attend
+             // jamais. S'il s'en trouvait un, il reprendrait le travail.
+-            Job::Wait { .. } => self.pawns[i].job = Job::Idle,
++            Job::Wait { .. } | Job::Pillage { .. } => self.pawns[i].job = Job::Idle,
+         }
+     }
+ 
+@@ -341,6 +344,7 @@ impl Sim {
+                     | Job::Sleep { .. }
+                     | Job::Eat { .. }
+                     | Job::Attack { .. }
++                    | Job::Defend { .. }
+                     | Job::Move { manual: true }
+             )
+             || !self.rng.chance(1, BREAK_CHANCE)
+@@ -485,6 +489,10 @@ impl Sim {
+     // ------------------------------------------------------------------
+ 
+     fn find_job(&mut self, i: usize, salvo: &mut crate::fire::Salvo) {
++        let at = self.pawns[i].tile();
++        if self.map.room(at.0, at.1) == 0 && self.take_post(i) {
++            return;
++        }
+         if self.pawns[i].is_tired() {
+             self.start_sleep(i);
+             return;
+@@ -927,11 +935,16 @@ impl Sim {
+     /// Va manger la meilleure nourriture accessible : repas, puis baies, puis cru.
+     fn try_start_eat(&mut self, i: usize) -> bool {
+         let from = self.pawns[i].tile();
++        let walker = self.work_walker(from);
+         let mut candidates: Vec<(u32, u32, u32, u32, usize)> = self
+             .items
+             .iter()
+             .enumerate()
+-            .filter(|(_, s)| s.kind.is_food() && s.reserved_by.is_none())
++            .filter(|(_, s)| {
++                s.kind.is_food()
++                    && s.reserved_by.is_none()
++                    && self.map.passable_for(s.x, s.y, walker)
++            })
+             .map(|(k, s)| (s.kind.food_rank(), chebyshev(from, (s.x, s.y)), s.x, s.y, k))
+             .collect();
+         candidates.sort_unstable();
+@@ -1071,10 +1084,29 @@ impl Sim {
+     /// connaissent la maison et ne se plantent jamais sur les pointes (voir
+     /// `livestock`, et `Sim::spring_trap` qui les épargne aussi).
+     pub(crate) fn walker(&self, i: usize) -> Walker {
+-        if self.pawns[i].faction == Faction::Colony {
++        if self.pawns[i].is_colonist() && matches!(self.pawns[i].job, Job::Defend { .. }) {
++            self.work_walker(self.pawns[i].tile())
++        } else if self.pawns[i].faction == Faction::Colony {
+             Walker::COLONIST
+         } else {
+-            Walker::ANYONE
++            Walker {
++                avoids_doors: self.pawns[i].is_raider_like()
++                    && self.raid_stance() == crate::combat::Stance::Watch,
++                ..Walker::ANYONE
++            }
++        }
++    }
++
++    /// Les urgences et les besoins restent possibles dans l'abri, sans trajet
++    /// par l'extérieur. Les ordres manuels et le trajet de retour restent libres.
++    pub(crate) fn work_walker(&self, from: (u32, u32)) -> Walker {
++        Walker {
++            confined_room: if self.map.indoor_count() > 0 && self.raider_alive() {
++                self.map.room(from.0, from.1)
++            } else {
++                0
++            },
++            ..Walker::COLONIST
+         }
+     }
+ 
+@@ -1086,7 +1118,7 @@ impl Sim {
+         from: (u32, u32),
+         to: (u32, u32),
+     ) -> Option<Vec<path::Tile>> {
+-        path::find_path_for(&self.map, from, to, Walker::COLONIST)
++        path::find_path_for(&self.map, from, to, self.work_walker(from))
+     }
+ 
+     /// Chemin d'un colon vers une voisine de la cible.
+@@ -1095,7 +1127,7 @@ impl Sim {
+         from: (u32, u32),
+         target: (u32, u32),
+     ) -> Option<Vec<path::Tile>> {
+-        self.path_adjacent_for(from, target, Walker::COLONIST)
++        self.path_adjacent_for(from, target, self.work_walker(from))
+     }
+ 
+     /// Chemin vers la cible si elle est franchissable, sinon vers une voisine.
+diff --git a/crates/sim/src/lib.rs b/crates/sim/src/lib.rs
+index 43aebb1..6791974 100644
+--- a/crates/sim/src/lib.rs
++++ b/crates/sim/src/lib.rs
+@@ -294,6 +294,10 @@ pub enum EventKind {
+     /// ou dans l'autre. `arg` : la faction. Le nouveau palier se lit dans
+     /// `Sim::goodwill` (voir `factions::Relation`).
+     RelationChanged = 43,
++    /// Un pillard a quitté la carte avec des ressources. Le ramassage seul
++    /// n'est pas une perte définitive : tuer le porteur rend sa charge.
++    /// arg = quantité << 8 | ItemKind (8 bits de poids faible).
++    LootStolen = 44,
+ }
+ 
+ /// `arg` dépend du genre : nombre de pillards pour un raid, id du pawn sinon.
+@@ -946,7 +950,11 @@ impl Sim {
+                 let from = self.pawns[i].tile();
+                 // Même un ordre du joueur ne fait pas marcher un colon sur un
+                 // piège armé : il contourne, ou il n'y va pas.
+-                let walker = self.walker(i);
++                let walker = if self.pawns[i].faction == Faction::Colony {
++                    path::Walker::COLONIST
++                } else {
++                    self.walker(i)
++                };
+                 if let Some(path) = path::find_path_for(&self.map, from, (x, y), walker) {
+                     self.abandon_job(i);
+                     self.pawns[i].set_path(path);
+diff --git a/crates/sim/src/map.rs b/crates/sim/src/map.rs
+index 07ff644..8fd9a3b 100644
+--- a/crates/sim/src/map.rs
++++ b/crates/sim/src/map.rs
+@@ -859,7 +859,10 @@ impl Map {
+     /// `path::Walker::avoids_fire`), et il coûte cher sans être un mur — un
+     /// colon cerné par les flammes traverse plutôt que de rester planté.
+     pub fn move_cost_for(&self, x: u32, y: u32, walker: crate::path::Walker) -> Option<u32> {
+-        if walker.avoids_traps && self.feature(x, y) == Feature::SpikeTrap {
++        if (walker.avoids_traps && self.feature(x, y) == Feature::SpikeTrap)
++            || (walker.avoids_doors && self.feature(x, y).is_door())
++            || (walker.confined_room != 0 && self.room(x, y) != walker.confined_room)
++        {
+             return None;
+         }
+         let cost = self.move_cost(x, y)?;
+@@ -1194,6 +1197,18 @@ impl Map {
+         b: (u32, u32),
+         walker: crate::path::Walker,
+     ) -> Option<bool> {
++        // La couche des pièces exclut déjà les portes : deux pièces
++        // distinctes (ou dedans/dehors) ne communiquent pas quand elles
++        // sont fermées. C'est une preuve gratuite avant l'A*, sans nouvelle
++        // couche ni balayage. Une case de départ interdite peut s'échapper ;
++        // comme pour Regions, elle n'autorise donc pas ce raccourci.
++        if walker.avoids_doors
++            && !self.indoor_dirty
++            && self.passable_for(a.0, a.1, walker)
++            && self.room(a.0, a.1) != self.room(b.0, b.1)
++        {
++            return Some(false);
++        }
+         let ra = self.region_of_for(a.0, a.1, walker)?;
+         let rb = self.region_of_for(b.0, b.1, walker)?;
+         Some(ra == rb)
+diff --git a/crates/sim/src/path.rs b/crates/sim/src/path.rs
+index 022df52..3a391d4 100644
+--- a/crates/sim/src/path.rs
++++ b/crates/sim/src/path.rs
+@@ -39,6 +39,10 @@ pub struct Walker {
+     /// n'est pas une propriété du marcheur mais un court-circuit, posé par
+     /// `find_path_for` quand — et seulement quand — la carte brûle.
+     pub avoids_fire: bool,
++    /// Les portes sont fermées à ce marcheur pendant la veille.
++    pub avoids_doors: bool,
++    /// Une besogne automatique reste dans cette pièce (0 : aucune restriction).
++    pub confined_room: u8,
+ }
+ 
+ impl Walker {
+@@ -47,11 +51,15 @@ impl Walker {
+     pub const ANYONE: Walker = Walker {
+         avoids_traps: false,
+         avoids_fire: false,
++        avoids_doors: false,
++        confined_room: 0,
+     };
+     /// Un membre de la colonie : il contourne ses propres pièges.
+     pub const COLONIST: Walker = Walker {
+         avoids_traps: true,
+         avoids_fire: false,
++        avoids_doors: false,
++        confined_room: 0,
+     };
+ }
+ 
+@@ -77,6 +85,7 @@ pub fn find_path_for(
+     let walker = Walker {
+         avoids_traps: walker.avoids_traps && map.trap_count() > 0,
+         avoids_fire: map.fire_count() > 0,
++        ..walker
+     };
+     if !map.passable_for(to.0, to.1, walker) {
+         return None;
+diff --git a/crates/sim/src/pawn.rs b/crates/sim/src/pawn.rs
+index 62b6b2b..ef972d3 100644
+--- a/crates/sim/src/pawn.rs
++++ b/crates/sim/src/pawn.rs
+@@ -279,6 +279,17 @@ pub enum Job {
+         animal: u32,
+         progress: u32,
+     },
++    /// Défense choisie par la colonie : contrairement à une attaque manuelle,
++    /// elle réévalue la poursuite à chaque tick et ne quitte pas son enceinte.
++    /// Ajout en fin d'enum : les anciens indices postcard restent inchangés.
++    Defend {
++        target: u32,
++    },
++    /// Un pillard rejoint une pile extérieure, prend une charge et repart.
++    /// Ajout en fin d'enum pour garder les indices postcard précédents.
++    Pillage {
++        item: u32,
++    },
+ }
+ 
+ impl Job {
+@@ -304,7 +315,8 @@ impl Job {
+             Job::Farm { sow: true, .. } => 10,
+             Job::Farm { sow: false, .. } => 4,
+             Job::Cook { .. } => 11,
+-            Job::Attack { .. } => 12,
++            Job::Attack { .. } | Job::Defend { .. } => 12,
++            Job::Pillage { .. } => 31,
+             Job::Flee => 13,
+             Job::Break { .. } => 14,
+             Job::Downed => 15,
+diff --git a/crates/sim/src/scenario.rs b/crates/sim/src/scenario.rs
+index 2c8ccfc..aee6a9a 100644
+--- a/crates/sim/src/scenario.rs
++++ b/crates/sim/src/scenario.rs
+@@ -46,7 +46,10 @@ pub const FAST_FORWARD_TICKS: u32 = 3_000;
+ /// le troc. L'unification fait jouer à `demo` le scénario complet, celui du
+ /// test de déterminisme ; le hash change pour cette raison, pas parce que le
+ /// sim a bougé.
+-pub const DEMO_HASH: u64 = 0xe42d_5ed1_4b0c_dc69;
++/// 2026-09-19 : 524b9f04c307cf21 après le pillage extérieur. Les pillards
++/// sans cible atteignable prennent une charge et repartent avec ; leur trajet,
++/// les piles et le journal changent. La génération et TUNDRA_IDLE_HASH restent identiques.
++pub const DEMO_HASH: u64 = 0x524b_9f04_c307_cf21;
+ /// Graine de la partie décrite par `DEMO_HASH`.
+ pub const DEMO_SEED: u64 = 1;
+ /// Côté de la carte carrée de `DEMO_HASH`.
+diff --git a/crates/sim/tests/defense.rs b/crates/sim/tests/defense.rs
+index d672df2..6042bca 100644
+--- a/crates/sim/tests/defense.rs
++++ b/crates/sim/tests/defense.rs
+@@ -1042,14 +1042,14 @@ fn un_couard_rentre_mais_ne_se_bat_toujours_pas() {
+     assert!(
+         !matches!(
+             find_pawn(&s, coward).map(|p| p.job.clone()),
+-            Some(Job::Attack { .. })
++            Some(Job::Attack { .. } | Job::Defend { .. })
+         ),
+         "le couard a chargé"
+     );
+     assert!(
+         run_until(&mut s, 600, |s| matches!(
+             find_pawn(s, brave).map(|p| p.job.clone()),
+-            Some(Job::Attack { .. })
++            Some(Job::Attack { .. } | Job::Defend { .. })
+         )) || find_pawn(&s, intruder).is_none(),
+         "le brave n'a pas défendu la pièce"
+     );

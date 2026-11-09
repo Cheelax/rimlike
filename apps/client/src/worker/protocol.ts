@@ -236,6 +236,8 @@ export interface FrameMessage {
   readonly difficulty: number;
   /** Richesse de la colonie (`sim-wasm::wealth`), pour le HUD stock. */
   readonly wealth: number;
+  /** [posture (0 libre, 1 tenir, 2 veille), hostiles, préavis, forces, id]. */
+  readonly raidStatus: Uint32Array;
   /**
    * Id du marchand avec qui on peut traiter (`sim-wasm::trader_present`), −1
    * s'il n'y en a pas. C'est un pawn de faction 3 : son nom, sa position et sa
@@ -316,6 +318,7 @@ export function transferablesOf(message: WorkerToMain): ArrayBuffer[] {
       return [message.fire.buffer as ArrayBuffer];
     case "frame":
       return [
+        message.raidStatus.buffer as ArrayBuffer,
         message.pawns.buffer as ArrayBuffer,
         message.items.buffer as ArrayBuffer,
         message.blueprints.buffer as ArrayBuffer,
