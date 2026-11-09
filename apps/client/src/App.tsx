@@ -73,6 +73,7 @@ import {
   formatTemperature,
   formatTraderLeaves,
   formatWealth,
+  gameDay,
   freshnessLevel,
   hKeyAction,
   HEALTH_STRIDE,
@@ -2420,9 +2421,11 @@ export function App() {
       // Mini-carte : pawns, feu et rectangle de vue, à la cadence du HUD
       // seulement (jamais à chaque frame, voir l'en-tête de `Minimap.tsx`).
       minimapRef.current?.update(curPawns, f.animals, lastFire, renderer.viewBounds());
+      // Le décalage de départ vient du sim (la partie commence au matin).
+      const clockOffsetTicks = (f.timeOfDay - f.tick % f.ticksPerDay + f.ticksPerDay) % f.ticksPerDay;
       setStats({
         tick: f.tick,
-        day: Math.floor(f.tick / f.ticksPerDay) + 1,
+        day: gameDay(f.tick, f.ticksPerDay, clockOffsetTicks),
         hour,
         hash: lastHash,
         // Ticks par seconde mesurés dans le Worker, images par seconde ici.
@@ -2456,8 +2459,7 @@ export function App() {
         hasResearchBench: researchBenchCount > 0,
         hasForge: forgeCount > 0,
         ticksPerDay: f.ticksPerDay,
-        // Le décalage de départ vient du sim (la partie commence au matin).
-        clockOffsetTicks: (f.timeOfDay - f.tick % f.ticksPerDay + f.ticksPerDay) % f.ticksPerDay,
+        clockOffsetTicks,
         difficulty: f.difficulty,
         wealth: f.wealth,
         raidStatus: Array.from(f.raidStatus),

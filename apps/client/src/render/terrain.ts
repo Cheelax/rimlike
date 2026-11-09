@@ -674,15 +674,23 @@ export function moodIcon(mood: number): "☺" | "─" | "☹" {
 }
 
 /**
+ * Jour de jeu 1-indexé d'un tick absolu, qui change à minuit sur l'horloge
+ * affichée, comme le calendrier du sim (`climate::day_of_tick`). Le décalage
+ * vient de l'heure lue dans le sim (la partie commence au matin), sans
+ * recopier la règle Rust en TypeScript. Sans lui, « Jour 3 02:49 » côtoyait un
+ * calendrier déjà passé au lendemain, de minuit au matin.
+ */
+export function gameDay(tick: number, ticksPerDay: number, clockOffsetTicks: number): number {
+  return Math.floor((tick + clockOffsetTicks) / ticksPerDay) + 1;
+}
+
+/**
  * Horodatage d'une entrée du Journal des événements : « jour J hh:mm » depuis
  * un tick absolu (`sim-wasm::EVENT_STRIDE` : le tick de l'événement, pas celui
- * courant), sur le même calcul que l'horloge du HUD. Jour 1-indexé, comme
- * `stats.day`. Le décalage vient de l'heure lue dans le sim, sans recopier
- * en TypeScript la règle Rust qui fait commencer la partie au matin.
+ * courant), sur le même calcul que l'horloge et le jour du HUD (`gameDay`).
  */
 export function formatEventTime(tick: number, ticksPerDay: number, clockOffsetTicks: number): string {
-  const day = Math.floor(tick / ticksPerDay) + 1;
-  return `jour ${day} ${formatClock(tick + clockOffsetTicks, ticksPerDay)}`;
+  return `jour ${gameDay(tick, ticksPerDay, clockOffsetTicks)} ${formatClock(tick + clockOffsetTicks, ticksPerDay)}`;
 }
 
 /** Multiplication entière avant division : 07:12 ne s'arrondit pas en 07:11. */
