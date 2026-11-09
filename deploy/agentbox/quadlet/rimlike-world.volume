@@ -1,0 +1,4 @@
+# Volume nommé des données du monde (/data/world-state.json et ses fichiers
+# de quarantaine). Survit aux redéploiements ; seul `rimlike-ctl reset` le vide.
+[Volume]
+VolumeName=rimlike-world

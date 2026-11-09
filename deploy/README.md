@@ -5,6 +5,10 @@ WebSocket + serveur monde, voir `docs/protocol.md`) dans un conteneur. Le
 serveur ne simule rien : il numérote les ticks, ordonne les commandes et sert
 la géométrie du globe (`GET /world`).
 
+Hébergement de test partagé en place (podman sans root + Caddy + tunnel
+Cloudflare sortant + Access, sur la box agentbox) : voir
+[`agentbox/README.md`](agentbox/README.md).
+
 ## Construire l'image
 
 Le contexte de build est la **racine du dépôt** (l'image compile aussi

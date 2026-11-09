@@ -1,0 +1,10 @@
+[Unit]
+Description=Surveillance de l'hébergement de test rimlike (santé + tunnel) -> agent-notify
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/rimlike/rimlike-monitor
+StateDirectory=rimlike-monitor
+StateDirectoryMode=0700
+TimeoutStartSec=1min

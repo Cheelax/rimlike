@@ -1,0 +1,14 @@
+# Tunnel Cloudflare dédié à l'hébergement de test rimlike (installé en
+# /etc/cloudflared/rimlike.yml, voir README.md). Le tunnel est SORTANT :
+# aucun port entrant n'est ouvert sur agentbox. <TUNNEL_ID> : sortie de
+# `cloudflared tunnel create rimlike` (l'identifiant n'est pas un secret, le
+# fichier d'identifiants JSON, lui, en est un et ne quitte pas /etc/cloudflared).
+tunnel: <TUNNEL_ID>
+credentials-file: /run/credentials/cloudflared-rimlike.service/creds.json
+no-autoupdate: true
+# /ready et /metrics pour la surveillance locale (rimlike-monitor).
+metrics: 127.0.0.1:20242
+ingress:
+  - hostname: rimlike.zkorp.net
+    service: http://127.0.0.1:8790
+  - service: http_status:404

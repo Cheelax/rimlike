@@ -1,0 +1,30 @@
+# apps/server (relais WebSocket + serveur monde), image construite depuis le
+# checkout déployé par `rimlike-ctl deploy` (apps/server/Dockerfile du dépôt).
+[Unit]
+Description=rimlike — serveur relais + monde
+
+[Container]
+ContainerName=rimlike-server
+Image=localhost/rimlike-server:current
+Pull=never
+Pod=rimlike.pod
+Volume=rimlike-world.volume:/data
+EnvironmentFile=/srv/rimlike/deploy/server.env
+# GET /health, comme le HEALTHCHECK du Dockerfile — redéclaré ici : podman
+# construit au format OCI, qui ne conserve pas HEALTHCHECK. systemd attend
+# « healthy » avant de déclarer le service démarré.
+HealthCmd=node -e "require('node:http').get({host:'127.0.0.1',port:8787,path:'/health',timeout:3000},(r)=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
+HealthInterval=15s
+HealthStartPeriod=5s
+HealthTimeout=5s
+HealthRetries=3
+Notify=healthy
+StopTimeout=20
+
+[Service]
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

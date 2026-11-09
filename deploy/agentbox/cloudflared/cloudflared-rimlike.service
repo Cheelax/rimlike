@@ -1,0 +1,21 @@
+# Service système du tunnel rimlike, durci comme cloudflared-agentbox :
+# utilisateur dynamique, identifiants passés par LoadCredential (lisibles par
+# root seulement sur disque), aucun accès à /home.
+[Unit]
+Description=Cloudflare Tunnel rimlike (rimlike.zkorp.net)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+LoadCredential=creds.json:/etc/cloudflared/rimlike-credentials.json
+ExecStart=/usr/bin/cloudflared --config /etc/cloudflared/rimlike.yml tunnel run
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

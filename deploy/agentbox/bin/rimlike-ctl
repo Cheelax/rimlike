@@ -1,0 +1,200 @@
+#!/bin/bash
+# Exploitation de l'hébergement de test rimlike sur agentbox (voir ../README.md).
+#
+#   rimlike-ctl status                 état des services, /health, tunnel
+#   rimlike-ctl deploy [ref]           construit et déploie ref (origin/main par défaut)
+#   rimlike-ctl rollback [rev]         repasse sur une image déjà construite (la précédente par défaut)
+#   rimlike-ctl restart                redémarre le pod (le monde est conservé)
+#   rimlike-ctl logs [server|web|tunnel] [args journalctl]
+#   rimlike-ctl backup                 archive le volume du monde dans /srv/rimlike/backups
+#   rimlike-ctl restore <archive>      remplace le monde par une archive (sauvegarde d'abord)
+#   rimlike-ctl reset --yes            sauvegarde puis repart d'un monde vide
+#   rimlike-ctl smoke [url] [step]     test WebSocket (salle, monde, persistance)
+#
+# Lancé par root (sudo), il se relance sous l'utilisateur rimlike pour tout ce
+# qui touche au pod ; seuls `logs tunnel` et `status` lisent aussi le service
+# système cloudflared-rimlike.
+set -euo pipefail
+
+BASE=/srv/rimlike
+DEPLOY=$BASE/deploy
+CHECKOUT=$BASE/checkout
+STATE=$BASE/state
+BACKUPS=$BASE/backups
+USER_NAME=rimlike
+LOCAL_URL=http://127.0.0.1:8790
+KEEP_BACKUPS=30
+KEEP_IMAGES=5
+
+die() { echo "rimlike-ctl : $*" >&2; exit 1; }
+
+# Podman refuse de démarrer depuis un répertoire courant illisible pour rimlike
+# (le home de l'appelant de sudo, typiquement).
+cd "$BASE"
+
+as_rimlike() {
+  if [ "$(id -un)" = "$USER_NAME" ]; then
+    "$@"
+  elif [ "$(id -u)" = 0 ]; then
+    local uid; uid=$(id -u "$USER_NAME")
+    runuser -u "$USER_NAME" -- env XDG_RUNTIME_DIR=/run/user/$uid \
+      DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus HOME=/home/$USER_NAME "$@"
+  else
+    die "à lancer en root (sudo rimlike-ctl …) ou en tant que $USER_NAME"
+  fi
+}
+
+user_systemctl() { as_rimlike systemctl --user "$@"; }
+pod() { as_rimlike podman "$@"; }
+
+wait_health() {
+  local i
+  for i in $(seq 1 60); do
+    if curl -fsS -m 3 "$LOCAL_URL/health" >/dev/null 2>&1; then
+      echo "santé OK après ${i} s"
+      return 0
+    fi
+    sleep 1
+  done
+  die "/health ne répond pas après 60 s (voir : rimlike-ctl logs server)"
+}
+
+current_rev() { pod image inspect localhost/rimlike-server:current --format '{{ index .Labels "rimlike.rev" }}' 2>/dev/null || true; }
+
+cmd_status() {
+  echo "== services (utilisateur $USER_NAME)"
+  user_systemctl --no-pager --plain list-units 'rimlike*' || true
+  echo "== révision déployée : $(current_rev)"
+  echo "== /health (local)"
+  curl -fsS -m 5 "$LOCAL_URL/health" | (command -v jq >/dev/null && jq '{ok, rooms, roomsByState, connections, world, persistence}' || cat) || echo "injoignable"
+  echo
+  if systemctl list-unit-files cloudflared-rimlike.service >/dev/null 2>&1; then
+    echo "== tunnel : $(systemctl is-active cloudflared-rimlike.service 2>/dev/null || true)"
+    curl -fsS -m 3 http://127.0.0.1:20242/ready 2>/dev/null || echo "métriques cloudflared injoignables"
+    echo
+  fi
+  echo "== sauvegardes : $(ls -1 "$BACKUPS" 2>/dev/null | wc -l) (dernière : $(ls -1t "$BACKUPS" 2>/dev/null | head -1))"
+}
+
+cmd_backup() {
+  local label=${1:-manuel}
+  local out
+  out=$BACKUPS/world-$(date +%Y%m%d-%H%M%S)-$label.tar
+  # Le serveur écrit world-state.json de façon atomique (.tmp puis renommage) :
+  # l'export à chaud ne lit jamais un JSON à moitié écrit.
+  pod volume exists rimlike-world || { echo "pas encore de volume rimlike-world, rien à sauvegarder"; return 0; }
+  as_rimlike podman volume export rimlike-world --output "$out"
+  echo "sauvegarde : $out ($(du -h "$out" | cut -f1))"
+  # Rétention : les $KEEP_BACKUPS plus récentes.
+  ls -1t "$BACKUPS"/world-*.tar 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)) | while read -r f; do as_rimlike rm -f "$f"; done
+}
+
+build_images() {
+  local rev=$1
+  pod build --pull=newer --label rimlike.rev="$rev" \
+    -f "$CHECKOUT/apps/server/Dockerfile" -t "localhost/rimlike-server:$rev" "$CHECKOUT"
+  pod build --pull=newer --label rimlike.rev="$rev" \
+    -f "$DEPLOY/Containerfile.web" --ignorefile "$DEPLOY/web.containerignore" \
+    --build-context deploy="$DEPLOY" -t "localhost/rimlike-web:$rev" "$CHECKOUT"
+}
+
+switch_to() {
+  local rev=$1
+  pod image exists "localhost/rimlike-server:$rev" || die "image serveur $rev absente"
+  pod image exists "localhost/rimlike-web:$rev" || die "image web $rev absente"
+  local previous; previous=$(current_rev)
+  pod tag "localhost/rimlike-server:$rev" localhost/rimlike-server:current
+  pod tag "localhost/rimlike-web:$rev" localhost/rimlike-web:current
+  as_rimlike sh -c "echo \"$(date -Is) $rev (avant : ${previous:-aucune})\" >> '$STATE/deploys.log'"
+  user_systemctl restart rimlike-pod.service
+  wait_health
+  echo "en service : $rev"
+}
+
+cmd_deploy() {
+  local ref=${1:-origin/main}
+  as_rimlike git -C "$CHECKOUT" fetch --prune --quiet origin
+  local sha; sha=$(as_rimlike git -C "$CHECKOUT" rev-parse --verify "$ref^{commit}") || die "référence inconnue : $ref"
+  as_rimlike git -C "$CHECKOUT" checkout --quiet --detach --force "$sha"
+  as_rimlike git -C "$CHECKOUT" clean -fdxq
+  local rev; rev=$(as_rimlike git -C "$CHECKOUT" rev-parse --short=12 HEAD)
+  echo "construction de $rev ($ref)"
+  build_images "$rev"
+  cmd_backup "avant-$rev"
+  switch_to "$rev"
+  # Ménage : les $KEEP_IMAGES dernières révisions restent disponibles au rollback.
+  local repo
+  for repo in rimlike-server rimlike-web; do
+    pod images --sort created --format '{{.Tag}}' "localhost/$repo" | grep -vx current \
+      | tail -n +$((KEEP_IMAGES + 1)) | while read -r old; do pod untag "localhost/$repo:$old" "localhost/$repo:$old" >/dev/null || true; done
+  done
+  pod image prune -f >/dev/null || true
+}
+
+cmd_rollback() {
+  local rev=${1:-}
+  if [ -z "$rev" ]; then
+    rev=$(as_rimlike tail -n 1 "$STATE/deploys.log" | sed -n 's/.*(avant : \([0-9a-f]*\)).*/\1/p')
+    [ -n "$rev" ] || die "aucune révision précédente dans $STATE/deploys.log"
+  fi
+  echo "retour à $rev — si le format du fichier d'état a changé entre-temps, restaurer aussi la sauvegarde « avant-… » (rimlike-ctl restore)"
+  switch_to "$rev"
+}
+
+cmd_restore() {
+  local archive=${1:-}
+  [ -f "$archive" ] || die "archive introuvable : $archive"
+  cmd_backup avant-restauration
+  user_systemctl stop rimlike-pod.service
+  as_rimlike podman volume import rimlike-world "$archive"
+  user_systemctl start rimlike-pod.service
+  wait_health
+}
+
+cmd_reset() {
+  [ "${1:-}" = --yes ] || die "reset efface le monde (après sauvegarde) : relancer avec --yes"
+  cmd_backup avant-reset
+  user_systemctl stop rimlike-pod.service
+  # Le volume reste (quadlet le possède) : on le vide.
+  pod run --rm --pull=never -v rimlike-world:/data --user root --entrypoint sh \
+    localhost/rimlike-server:current -c 'rm -rf /data/* /data/.[!.]* 2>/dev/null; ls -A /data'
+  user_systemctl start rimlike-pod.service
+  wait_health
+  echo "monde vidé ; ancienne version dans $BACKUPS"
+}
+
+cmd_logs() {
+  local which=${1:-server}; shift || true
+  case $which in
+    server|web) journalctl --no-pager _SYSTEMD_USER_UNIT="rimlike-$which.service" "${@:--n100}" ;;
+    tunnel) journalctl --no-pager -u cloudflared-rimlike.service "${@:--n100}" ;;
+    *) die "logs : server, web ou tunnel" ;;
+  esac
+}
+
+cmd_smoke() {
+  local url=${1:-ws://127.0.0.1:8790} step=${2:-all}
+  # Le test tourne dans l'image serveur (node + ws), réseau de l'hôte.
+  # label=disable : deploy/ appartient à root, un podman sans root ne peut pas
+  # le réétiqueter (:z) pour SELinux. --user 0 : root du namespace = rimlike
+  # sur l'hôte, propriétaire de state/.
+  pod run --rm --pull=never --network host --security-opt label=disable --user 0 \
+    -v "$DEPLOY/bin/smoke.mjs:/app/smoke.mjs:ro" -v "$STATE:/state" -e SMOKE_STATE=/state/smoke.json \
+    ${CF_ACCESS_CLIENT_ID:+-e CF_ACCESS_CLIENT_ID} ${CF_ACCESS_CLIENT_SECRET:+-e CF_ACCESS_CLIENT_SECRET} \
+    --entrypoint node localhost/rimlike-server:current /app/smoke.mjs "$url" "$step"
+}
+
+[ $# -ge 1 ] || { sed -n '2,15p' "$0"; exit 1; }
+command=$1; shift
+case $command in
+  status) cmd_status ;;
+  deploy) cmd_deploy "$@" ;;
+  rollback) cmd_rollback "$@" ;;
+  restart) user_systemctl restart rimlike-pod.service; wait_health ;;
+  logs) cmd_logs "$@" ;;
+  backup) cmd_backup "${1:-manuel}" ;;
+  restore) cmd_restore "$@" ;;
+  reset) cmd_reset "$@" ;;
+  smoke) cmd_smoke "$@" ;;
+  *) die "commande inconnue : $command" ;;
+esac
