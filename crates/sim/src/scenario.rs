@@ -46,7 +46,10 @@ pub const FAST_FORWARD_TICKS: u32 = 3_000;
 /// le troc. L'unification fait jouer à `demo` le scénario complet, celui du
 /// test de déterminisme ; le hash change pour cette raison, pas parce que le
 /// sim a bougé.
-pub const DEMO_HASH: u64 = 0xe42d_5ed1_4b0c_dc69;
+/// 2026-09-19 : 524b9f04c307cf21 après le pillage extérieur. Les pillards
+/// sans cible atteignable prennent une charge et repartent avec ; leur trajet,
+/// les piles et le journal changent. La génération et TUNDRA_IDLE_HASH restent identiques.
+pub const DEMO_HASH: u64 = 0x524b_9f04_c307_cf21;
 /// Graine de la partie décrite par `DEMO_HASH`.
 pub const DEMO_SEED: u64 = 1;
 /// Côté de la carte carrée de `DEMO_HASH`.

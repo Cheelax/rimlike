@@ -43,6 +43,9 @@ button { -webkit-tap-highlight-color: transparent; }
 .colony-status > * { padding: 6px 9px; background: #202721e8; border: 1px solid #6e775644; border-radius: 5px; color: var(--ui-muted); }
 .colony-status button { color: var(--ui-accent); }
 .colony-status .danger { background: #542c28ef; color: #ffb09b; border-color: #b8644755; }
+.colony-status .raid-status { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left; white-space: normal; }
+.colony-status .raid-status strong { color: #ffe4d9; font-size: 12px; }
+.colony-status .raid-status:hover { border-color: #ffb09b; background: #66342eef; }
 .colonist-bar { top: 135px; left: 16px; right: 200px; max-width: none; flex-wrap: nowrap; gap: 7px; padding: 3px 1px 6px; overflow-x: auto; z-index: 2; scrollbar-width: thin; }
 .colonist-badge { display: grid; grid-template-columns: 30px minmax(40px, 1fr); grid-template-rows: 24px 7px; align-items: center; column-gap: 8px; row-gap: 2px; width: 116px; min-width: 116px; padding: 8px; border: 1px solid #6b7351aa; border-radius: 8px; color: var(--ui-text); background: #202721ef; text-align: left; }
 .colonist-badge:hover { background: var(--ui-raised); }

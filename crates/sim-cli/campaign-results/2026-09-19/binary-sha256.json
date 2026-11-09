@@ -1,0 +1,10 @@
+{
+  "purpose": "Identification des exécutables figés de mesure ; non requis pour recompiler les patches sources.",
+  "sha256": {
+    "rimlike-defense-sim-20260919": "de28743fd88760d989254c49646572c2ca1162d92c28fb6e41f174f7e92f6f45",
+    "rimlike-pillage-sim-20260919": "eeb114f80f1a51b13f016ec6b76917278cc0f2ba4f7318d30fd5deac66b05d00",
+    "rimlike-ratio200-sim-20260919": "1e6f4e09e7edb990378fd1f24f0ae0d275f56d63b9eab49c012c6073e0bc3ba3",
+    "rimlike-ratio250-sim-20260919": "6a440ac1fea0fa09f65f4c8cbb250ff63bd7c8c43f7ef1b451ef6939fca95c6b",
+    "rimlike-shelter-sim-20260919": "43d134e6d1bde08bbe6c82e3f6ba69b6dabddcf555cbac265dd7c8a2ca28aa9b"
+  }
+}

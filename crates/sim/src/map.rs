@@ -859,7 +859,10 @@ impl Map {
     /// `path::Walker::avoids_fire`), et il coûte cher sans être un mur — un
     /// colon cerné par les flammes traverse plutôt que de rester planté.
     pub fn move_cost_for(&self, x: u32, y: u32, walker: crate::path::Walker) -> Option<u32> {
-        if walker.avoids_traps && self.feature(x, y) == Feature::SpikeTrap {
+        if (walker.avoids_traps && self.feature(x, y) == Feature::SpikeTrap)
+            || (walker.avoids_doors && self.feature(x, y).is_door())
+            || (walker.confined_room != 0 && self.room(x, y) != walker.confined_room)
+        {
             return None;
         }
         let cost = self.move_cost(x, y)?;
@@ -1194,6 +1197,18 @@ impl Map {
         b: (u32, u32),
         walker: crate::path::Walker,
     ) -> Option<bool> {
+        // La couche des pièces exclut déjà les portes : deux pièces
+        // distinctes (ou dedans/dehors) ne communiquent pas quand elles
+        // sont fermées. C'est une preuve gratuite avant l'A*, sans nouvelle
+        // couche ni balayage. Une case de départ interdite peut s'échapper ;
+        // comme pour Regions, elle n'autorise donc pas ce raccourci.
+        if walker.avoids_doors
+            && !self.indoor_dirty
+            && self.passable_for(a.0, a.1, walker)
+            && self.room(a.0, a.1) != self.room(b.0, b.1)
+        {
+            return Some(false);
+        }
         let ra = self.region_of_for(a.0, a.1, walker)?;
         let rb = self.region_of_for(b.0, b.1, walker)?;
         Some(ra == rb)

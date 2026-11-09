@@ -237,6 +237,12 @@ class FakeSim implements RunnerSim {
     return this.wealthValue;
   }
 
+  raidStatusValue = new Uint32Array([0, 0, 0, 0, 0, 0xffffffff]);
+
+  raidStatus(): Uint32Array {
+    return this.raidStatusValue.slice();
+  }
+
   traderPresentValue = -1;
 
   traderPresent(): number {

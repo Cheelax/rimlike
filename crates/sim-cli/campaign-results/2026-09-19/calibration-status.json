@@ -1,0 +1,38 @@
+{
+  "finalized_at_utc": "2026-09-19T09:08:55.524587+00:00",
+  "note": "Contrôles complémentaires sur une version antérieure. Les quatre campagnes principales finales K1/K30, présent/absent, sont complètes. Aucun résultat partiel n est traité comme une campagne complète.",
+  "runs": [
+    {
+      "ratio": 200,
+      "mode": "absent",
+      "day_scale": 30,
+      "source": "pillage-source.patch before distant-shelter fix",
+      "status": "complete",
+      "elapsed_ms": 2158788
+    },
+    {
+      "ratio": 200,
+      "mode": "present",
+      "day_scale": 30,
+      "source": "pillage-source.patch before distant-shelter fix",
+      "status": "stopped_at_session_deadline",
+      "elapsed_seconds": 2298
+    },
+    {
+      "ratio": 250,
+      "mode": "absent",
+      "day_scale": 30,
+      "source": "pillage-source.patch before distant-shelter fix",
+      "status": "stopped_at_session_deadline",
+      "elapsed_seconds": 2284
+    },
+    {
+      "ratio": 250,
+      "mode": "present",
+      "day_scale": 30,
+      "source": "pillage-source.patch before distant-shelter fix",
+      "status": "stopped_at_session_deadline",
+      "elapsed_seconds": 2263
+    }
+  ]
+}

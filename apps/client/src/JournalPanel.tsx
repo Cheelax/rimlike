@@ -29,6 +29,7 @@ export interface JournalPanelProps {
   /** Du plus ancien au plus récent (comme reçu) ; le panneau affiche l'inverse. */
   readonly entries: readonly JournalEntry[];
   readonly ticksPerDay: number;
+  readonly clockOffsetTicks: number;
   readonly filter: JournalFilter;
   readonly onFilterChange: (filter: JournalFilter) => void;
   readonly onClose: () => void;
@@ -52,6 +53,7 @@ const FILTERS: { id: JournalFilter; label: string }[] = [
 export function JournalPanel({
   entries,
   ticksPerDay,
+  clockOffsetTicks,
   filter,
   onFilterChange,
   onClose,
@@ -90,7 +92,7 @@ export function JournalPanel({
                   : undefined
               }
             >
-              <span className="journal-time">{formatEventTime(e.tick, ticksPerDay)}</span> · {e.text}
+              <span className="journal-time">{formatEventTime(e.tick, ticksPerDay, clockOffsetTicks)}</span> · {e.text}
               {target && <span className="journal-target">⌖</span>}
             </li>
           );

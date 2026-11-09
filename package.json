@@ -9,10 +9,16 @@
     "build": "pnpm build:wasm && pnpm --filter client build",
     "test": "cargo test --workspace",
     "test:protocol": "pnpm --filter @rimlike/protocol test",
-    "test:client": "pnpm --filter client test",
+    "test:client": "pnpm build:native && pnpm --filter client test",
     "test:world": "pnpm --filter @rimlike/world test",
-    "test:server": "pnpm --filter server test",
+    "test:campaign": "node --test crates/sim-cli/scripts/compare-campaigns.test.mjs",
+    "compare:campaign": "node crates/sim-cli/scripts/compare-campaigns.mjs",
+    "test:server": "pnpm build:native && pnpm --filter server test",
     "lint": "cargo clippy --workspace --all-targets -- -D warnings && pnpm --filter client typecheck",
-    "fmt": "cargo fmt --all"
+    "fmt": "cargo fmt --all",
+    "build:native": "cargo build --release -p sim-host",
+    "bench:native": "pnpm build:native && pnpm --filter server exec tsx scripts/bench-native.ts",
+    "test:native": "pnpm build:native && pnpm --filter server exec vitest run test/native-sim.test.ts test/native-colonies.test.ts",
+    "dev:native": "pnpm build:native && pnpm --filter server exec tsx scripts/native-colony.ts"
   }
 }

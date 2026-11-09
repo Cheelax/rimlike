@@ -1,0 +1,17 @@
+[package]
+name = "sim-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Processus natif du sim, piloté par le serveur Node via stdin/stdout."
+
+[[bin]]
+name = "rimlike-native"
+path = "src/main.rs"
+
+[dependencies]
+sim = { path = "../sim" }
+serde.workspace = true
+postcard.workspace = true
+serde_json = "1"
+base64 = "0.22"

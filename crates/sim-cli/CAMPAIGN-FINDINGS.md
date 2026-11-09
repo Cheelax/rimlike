@@ -5064,3 +5064,296 @@ mieux étayée.
   maintenant, le régime des cartes **abandonnées**. Un banc « avec lutte » —
   mêmes vingt graines, colons libres — dirait ce que vaut vraiment
   `EXTINGUISH_TICKS` face au front. Il n'existe pas.
+
+## 17. La colonie tient seule — défense, pillage et retour à l'abri (2026-09-19)
+
+Chantier local de la branche `task/colonie-tient-seule`, non fusionné au moment
+du relevé. La première passe de la branche annonçait les raids et calculait une
+posture, mais ne fermait pas réellement les portes aux pillards et laissait
+certaines poursuites ou recherches de nourriture sortir de l'enceinte.
+Les mesures ci-dessous portent sur le comportement exécuté, pas seulement sur
+la décision affichée.
+
+### 17.1 Protocole et provenance
+
+30 graines **1 à 30**, 30 jours, 64×64, forêt tempérée, normal, calendrier 0 :
+printemps puis été. Deux cadences : K=1 (partie rapide) et K=30 (monde partagé).
+Deux joueurs : présent jusqu'à la fin ; absent dès **8 × ticks_per_day()**.
+Le joueur scripté ne donne alors plus aucun ordre ; besoins, météo, raids,
+travail automatique, croissance et mortalité continuent.
+
+La référence est **9cb635e**, avant prévenance et tactique, avec le harnais
+d'absence. La branche de départ est **9e8412f**. Données brutes, commandes, patches
+des états mesurés et empreintes de fichiers sont conservés dans
+[`campaign-results/2026-09-19/`](campaign-results/2026-09-19/README.md).
+
+`enclosed_at_absence` signifie qu'au moins une pièce fermée existe au départ.
+Ce n'est ni une preuve que tous les colons sont dedans, ni que tous les stocks
+et cultures sont protégés. La cohorte peut changer avant le jour 8 puisque la
+prévenance et la tactique s'appliquent aussi au joueur présent.
+
+**Les pertes ne sont pas interchangeables.** Le journal compte maintenant les
+charges emportées hors carte par des pillards vivants (`LootStolen`).
+La baisse nette de stock extérieur reste donnée séparément : elle mélange
+rangement, consommation, production, feu et vol. Les décès après départ
+comptent toutes les causes. Les causes individuelles sont attribuées par le
+harnais à l'état du tick précédent ; elles ne sont pas une preuve causale
+exclusive lorsque faim et combat se superposent. Aucun événement perdu dans
+les campagnes archivées de ce relevé.
+
+### 17.2 Seuil : courbe mesurée, puis contrôle final
+
+Première courbe, K=1, même source corrigée et seuil seul variable. Cette passe
+précède le pillage et les derniers correctifs de chemins ; elle choisit le
+seuil, puis les campagnes complètes vérifient l'ensemble.
+
+| Seuil de tenir (%) | Présent : vivantes | Présent : morts | Absent : vivantes | Absent : morts | Morts absents des colonies murées |
+|---:|---:|---:|---:|---:|---:|
+| 80 | 27/30 | 53 | 24/30 | 73 | 50 (25 graines) |
+| 100 | 28/30 | 40 | 24/30 | 68 | 48 (26 graines) |
+| 120 | 28/30 | 38 | 24/30 | 57 | 37 (26 graines) |
+| 150 | 28/30 | 29 | 25/30 | 44 | 24 (26 graines) |
+
+Le seuil **150** est retenu : parmi ces quatre points, il donne le meilleur
+bilan en absence et garde 28 colonies présentes. Sur un banc séparé de douze jours,
+trente colonies murées, faim et repos maintenus au maximum : sur les 84 bandes
+relevées, il distingue 60 décisions « tenir » et 24 « veille » ; 80 et 100
+ne distinguaient rien sur cet échantillon (toutes « tenir »).
+
+Deux contrôles supplémentaires, avec pillage mais **avant le correctif d'abri
+éloigné**, ont essayé 200 et 250. Ils ne justifient pas à eux seuls un changement
+du seuil du code corrigé : augmenter le seuil ne corrige pas une recherche qui
+oublie l'existence des murs.
+
+| Version de contrôle | Présent : vivantes | Présent : morts | Absent : vivantes | Absent : morts | Morts absents des colonies murées |
+|---|---:|---:|---:|---:|---:|
+| Seuil 200, K=1 | 27/30 | 27 | 24/30 | 46 | 26 (26 graines) |
+| Seuil 250, K=1 | 27/30 | 22 | 25/30 | 46 | 26 (26 graines) |
+| Seuil 200, K=30 | non achevée | — | 24/30 | 73 | 53 (26 graines) |
+| Seuil 250, K=30 | non achevée | — | non achevée | — | — |
+
+Les éventuels contrôles complémentaires non achevés sont signalés dans le tableau
+et dans `calibration-status.json`. Ils ne sont pas extrapolés. Les quatre campagnes
+principales de la version finale (K=1/K=30, présent/absent) sont toutes complètes.
+
+### 17.3 Ce qui change réellement
+
+- Prévenance naturelle d'une heure de jeu ; à K=30, cinq minutes réelles.
+  Le siège ajoute son attente. Un raid forcé de debug reste immédiat.
+- Rapport favorable : poste côté intérieur de la porte et `Job::Defend`.
+  Chaque tick réévalue la cible ; une cible qui repart dehors n'entraîne plus
+  les défenseurs. Un ordre manuel de déplacement ou d'attaque prime.
+- Rapport défavorable : portes infranchissables pour les pillards. Les chemins
+  d'attaque et de fuite déjà calculés sont invalidés s'ils traversent maintenant
+  un passage fermé. Les colons déjà dedans restent dans leur pièce pour les
+  besoins et les déplacements automatiques ; le repas intérieur reste accessible.
+- Le bétail dehors reste une cible. Faute de colon ou de bête atteignable, un
+  pillard prend au plus **20 unités** d'une pile extérieure non réservée puis
+  repart. Six candidats de chemin au plus. Une charge tombe si le porteur est
+  abattu ou disparaît sans atteindre vivant le bord ; elle n'est comptée comme
+  vol qu'à la sortie effective.
+- Le client lit un état de raid fourni par Rust : posture, effectif, délai.
+  Le bandeau permet de centrer la caméra sur la menace. Le journal indique le
+  genre et la quantité volés, à la même heure de jeu que le HUD.
+- Le dernier diagnostic révèle un défaut indépendant du seuil : si tous les
+  colons s'éloignent, leur barycentre peut sortir du rayon de recherche de
+  l'enceinte. La recherche locale avait alors oublié un abri existant. Elle
+  parcourt désormais la couche intérieure en secours, uniquement après le
+  compteur de pièces et à la cadence de retry, avec départage déterministe
+  `(distance, x, y)`, sans recherche de chemin supplémentaire dans ce balayage.
+
+**Preuve du dernier défaut :** le test contrôlé sur 80×80 échoue avant et passe
+après. Sur la graine 17 à K=30, sans joueur dès le jour 8, l'ancienne version
+perd **10 colons sous un raid au jour 28**, tous dehors ; la version corrigée
+termine avec **10 vivants, zéro mort**. Les deux traces sont archivées. Ce cas
+a motivé une correction de logique, pas une modification des dégâts, des armes,
+de `FLEE_HP` ni de la fréquence des raids.
+
+### 17.4 Référence → défense → pillage → abri corrigé
+
+| Version | Présent : vivantes | Présent : morts | Absent : vivantes | Absent : morts | Morts absents des colonies murées |
+|---|---:|---:|---:|---:|---:|
+| Référence K=1 | 18/30 | 173 | 18/30 | 179 | 118 (25 graines) |
+| Défense seule K=1 | 28/30 | 29 | 25/30 | 44 | 24 (26 graines) |
+| Pillage K=1, avant abri éloigné | 28/30 | 32 | 25/30 | 47 | 27 (26 graines) |
+| **Version corrigée K=1** | 28/30 | 30 | 25/30 | 47 | 27 (26 graines) |
+| Référence K=30 | 15/30 | 175 | 13/30 | 178 | 110 (25 graines) |
+| Défense seule K=30 | 27/30 | 41 | 23/30 | 62 | 43 (26 graines) |
+| Pillage K=30, avant abri éloigné | 26/30 | 55 | 23/30 | 63 | 44 (26 graines) |
+| **Version corrigée K=30** | 26/30 | 40 | 24/30 | 53 | 37 (26 graines) |
+
+**K=1** : présence 28 ≥ 16 (satisfait) ;
+extinctions en absence 5 ≤ 6 (satisfait) ;
+morts des colonies murées après départ 27 ≤ 39.33 (satisfait).
+Sur les **25 graines murées dans les deux versions**, les décès après
+départ passent de **118 à 23**.
+Cette seconde lecture évite de cacher le changement de population derrière le mot « murée ».
+
+**K=30** : présence 26 ≥ 13 (satisfait) ;
+extinctions en absence 6 ≤ 8.5 (satisfait) ;
+morts des colonies murées après départ 37 ≤ 36.67 (**non satisfait**).
+Sur les **25 graines murées dans les deux versions**, les décès après
+départ passent de **110 à 35**.
+Cette seconde lecture évite de cacher le changement de population derrière le mot « murée ».
+
+Le comparateur `scripts/compare-campaigns.mjs` recalcule ces critères et refuse
+des graines/configurations différentes, des campagnes tronquées et des
+événements perdus. Code 0 : les trois seuils passent ; 1 : un seuil échoue ;
+2 : entrées non comparables. Il vérifie les fractions sans arrondi favorable.
+
+### 17.5 Absence : détail par graine
+
+« Colons fin » est un effectif, pas le nombre de colonies ; « morts absents »
+exclut les décès avant le départ. Un stock extérieur qui augmente donne une
+baisse nette négative, conservée telle quelle. Les vols et pertes de bétail
+concernent exclusivement la période après départ.
+
+#### Partie rapide, K=1
+
+| Graine | Murée au départ avant → après | Colons fin avant → après | Morts absents avant → après | Vols absents après | Bétail perdu après | Baisse nette stock extérieur après |
+|---:|:---:|:---:|:---:|---:|---:|---:|
+| 1 | oui → oui | 0 → 10 | 0 → 0 | 0 | 1 | 24 |
+| 2 | oui → oui | 4 → 9 | 6 → 1 | 0 | 0 | 2 |
+| 3 | oui → oui | 2 → 8 | 6 → 2 | 0 | 0 | 462 |
+| 4 | oui → oui | 0 → 9 | 0 → 1 | 0 | 0 | 1 |
+| 5 | oui → oui | 3 → 10 | 6 → 0 | 22 | 0 | 124 |
+| 6 | non → non | 0 → 0 | 7 → 8 | 1 | 0 | 134 |
+| 7 | non → non | 0 → 0 | 0 → 0 | 0 | 0 | 0 |
+| 8 | oui → oui | 0 → 10 | 8 → 0 | 2 | 0 | 181 |
+| 9 | oui → oui | 2 → 6 | 5 → 4 | 1 | 0 | 70 |
+| 10 | non → oui | 0 → 6 | 0 → 4 | 0 | 0 | -2 |
+| 11 | oui → oui | 5 → 10 | 4 → 0 | 0 | 0 | 16 |
+| 12 | oui → oui | 0 → 8 | 8 → 2 | 32 | 0 | 757 |
+| 13 | oui → oui | 4 → 10 | 4 → 0 | 0 | 0 | 47 |
+| 14 | oui → oui | 0 → 10 | 0 → 0 | 140 | 0 | 815 |
+| 15 | oui → oui | 4 → 10 | 5 → 0 | 0 | 0 | 58 |
+| 16 | non → non | 0 → 0 | 2 → 4 | 0 | 0 | 82 |
+| 17 | oui → oui | 0 → 9 | 0 → 0 | 37 | 0 | 758 |
+| 18 | oui → oui | 4 → 10 | 6 → 0 | 1 | 0 | 413 |
+| 19 | oui → oui | 3 → 8 | 5 → 2 | 0 | 0 | 49 |
+| 20 | oui → oui | 2 → 9 | 4 → 1 | 0 | 0 | 12 |
+| 21 | oui → oui | 4 → 8 | 5 → 2 | 0 | 0 | -9 |
+| 22 | oui → oui | 3 → 10 | 7 → 0 | 0 | 0 | 26 |
+| 23 | oui → oui | 2 → 9 | 6 → 1 | 0 | 0 | 13 |
+| 24 | oui → oui | 4 → 10 | 4 → 0 | 0 | 0 | 5 |
+| 25 | oui → oui | 3 → 10 | 6 → 0 | 3 | 0 | 189 |
+| 26 | oui → oui | 0 → 0 | 6 → 6 | 1 | 1 | -47 |
+| 27 | oui → oui | 3 → 9 | 7 → 0 | 0 | 0 | 50 |
+| 28 | non → non | 0 → 0 | 0 → 0 | 0 | 0 | 0 |
+| 29 | oui → oui | 3 → 10 | 4 → 1 | 0 | 0 | 297 |
+| 30 | oui → oui | 2 → 10 | 6 → 0 | 0 | 0 | 115 |
+
+#### Rythme du monde, K=30
+
+| Graine | Murée au départ avant → après | Colons fin avant → après | Morts absents avant → après | Vols absents après | Bétail perdu après | Baisse nette stock extérieur après |
+|---:|:---:|:---:|:---:|---:|---:|---:|
+| 1 | oui → oui | 0 → 7 | 3 → 3 | 0 | 0 | 0 |
+| 2 | oui → oui | 0 → 10 | 7 → 0 | 0 | 0 | 3 |
+| 3 | oui → oui | 1 → 9 | 9 → 1 | 0 | 0 | -2 |
+| 4 | oui → oui | 3 → 6 | 5 → 3 | 0 | 0 | -246 |
+| 5 | oui → oui | 1 → 9 | 7 → 0 | 0 | 0 | 2 |
+| 6 | non → non | 0 → 0 | 0 → 0 | 0 | 0 | 126 |
+| 7 | non → non | 0 → 0 | 0 → 0 | 0 | 0 | 0 |
+| 8 | oui → oui | 0 → 10 | 7 → 0 | 0 | 0 | 0 |
+| 9 | oui → oui | 0 → 0 | 0 → 7 | 3 | 0 | -2 |
+| 10 | oui → oui | 0 → 7 | 0 → 3 | 1 | 0 | 0 |
+| 11 | oui → oui | 3 → 10 | 5 → 0 | 0 | 0 | -6 |
+| 12 | non → oui | 0 → 9 | 0 → 2 | 46 | 1 | 768 |
+| 13 | oui → oui | 3 → 10 | 6 → 0 | 0 | 0 | 0 |
+| 14 | oui → oui | 0 → 9 | 2 → 1 | 0 | 0 | 3 |
+| 15 | oui → oui | 3 → 9 | 5 → 1 | 0 | 0 | -1 |
+| 16 | non → non | 0 → 0 | 3 → 3 | 0 | 0 | 15 |
+| 17 | oui → oui | 3 → 10 | 5 → 0 | 0 | 0 | 855 |
+| 18 | oui → oui | 0 → 10 | 0 → 0 | 0 | 0 | -6 |
+| 19 | oui → oui | 0 → 9 | 5 → 1 | 0 | 0 | 2 |
+| 20 | oui → oui | 0 → 10 | 0 → 0 | 0 | 1 | 0 |
+| 21 | oui → oui | 3 → 10 | 6 → 0 | 0 | 0 | 1 |
+| 22 | oui → oui | 0 → 10 | 0 → 0 | 0 | 0 | 2 |
+| 23 | oui → oui | 3 → 10 | 6 → 0 | 0 | 0 | 3 |
+| 24 | oui → oui | 2 → 10 | 5 → 0 | 0 | 0 | -3 |
+| 25 | oui → oui | 0 → 8 | 8 → 2 | 0 | 0 | -13 |
+| 26 | oui → oui | 0 → 0 | 3 → 8 | 2 | 1 | -157 |
+| 27 | oui → oui | 2 → 9 | 5 → 1 | 0 | 0 | -4 |
+| 28 | non → non | 0 → 0 | 4 → 4 | 2 | 0 | 94 |
+| 29 | oui → oui | 3 → 8 | 5 → 1 | 0 | 0 | -11 |
+| 30 | oui → oui | 2 → 7 | 6 → 3 | 0 | 0 | 0 |
+
+
+### 17.6 Ce que les murs ne règlent pas
+
+- K=1 : 17 raid, 2 blessures, 25 famine, 3 feu. Vols après départ : 240 unités ; bétail perdu : 2.
+- K=30 : 12 raid, 5 blessures, 25 famine, 11 feu. Vols après départ : 54 unités ; bétail perdu : 3.
+
+Le dernier correctif réduit les décès de raid de 25 à 12 à K=30 en absence,
+mais les décès de famine passent de 22 à 25. Les trois décès supplémentaires
+sont tous sur la graine 26, qui s'éteint dans les deux versions. Sa trace finale
+retrouve exactement le bilan de la campagne : six famines et deux morts de raid.
+Le stock alimentaire est déjà vide au jour 11 sans ennemi ni feu ; la première
+mort de famine arrive au jour 13, toujours sans ennemi. Le raid du jour 20
+frappe ensuite une colonie déjà affamée. Cela ne prouve pas que le repli crée
+une pénurie : les trajectoires et arrivées de colons peuvent diverger.
+Ce cas garde le critère strict à **37**, un décès au-dessus du maximum entier
+de 36 ; le résultat n'est pas arrondi en réussite.
+
+La graine 9, dans la passe de pillage à K=30, perd sept colons par famine.
+La trace montre le stock alimentaire déjà vide au jour 14, sans ennemi ni
+incendie, puis un premier décès hors raid au jour 18. La culture posée avant
+le départ et les désignations restantes ne garantissent donc pas à elles
+seules l'autonomie alimentaire d'une colonie qui grandit. L'absence interrompt
+aussi les nouvelles désignations de récolte, la chasse et les achats du joueur
+scripté. Il faut mesurer ce contrat alimentaire séparément, sans maquiller
+ses morts en pertes de raid ni agrandir arbitrairement les cultures du témoin.
+
+La graine 30 perd deux colons dans un incendie au jour 11, sans raid, dans la
+passe de pillage. Une enceinte en bois n'est pas un refuge absolu contre le feu.
+Un colon à terre dehors n'est pas téléporté. Une entrée dont tous les chemins
+sont piégés ou bloqués n'est pas traversée de force. Les sièges conservent leur
+attente et l'état de besoin continue de vieillir pendant celle-ci.
+
+### 17.7 Validation
+
+- Suite Rust workspace : **432 réussis, zéro échec, 17 mesures ignorées** ;
+  format et Clippy `-D warnings` vérifiés. Régression d'abri : échec avant,
+  réussite après. Tests de portes réelles, poursuite, repas intérieur, ordre
+  manuel, chemins périmés, charge volée/récupérée et conservation des objets.
+- Fuzz : trois runs de 20 000 ticks, six commandes par tick, **360 000 commandes**,
+  hashes et snapshots contrôlés.
+- Trois fixtures natives rejouées en WASM : veille K30, défense engagée,
+  retour d'une colonie éloignée. Empreintes respectives
+  `a903ff3f3fdf431d`, `50282b580f8f9631`, `07c2b701bd89b09d`.
+- Le golden `demo` devient `524b9f04c307cf21` à cause du pillage ;
+  le golden toundra reste `ae9db4a01cb998d6`. La raison est inscrite avec la
+  constante. Le correctif d'abri éloigné ne change pas ces deux références.
+- Client : **523 tests**, typecheck et build de production ; serveur :
+  **244 tests**, typecheck et build de production. Protocole : **69 tests** ;
+  monde : **88 tests** ; comparateur de campagnes : **16 tests**.
+  Protocole réseau **4**, refus des clients 2 et 3.
+  Le bandeau, le pillage et l'heure du journal ont été vérifiés en navigateur.
+- Outillage : `--trace` ne modifie aucun ordre ; `--snapshot-out` exporte
+  une seule graine, refuse l'écrasement et produit un état restaurable.
+  Les tests vérifient la reprise et l'identité de la partie avec/sans trace.
+
+La fondation native (processus, boucle sans joueur, checkpoints, parité directe,
+benchmarks) fait l'objet de [docs/native-sim.md](../../docs/native-sim.md).
+Elle ne raccorde pas encore les salles WebSocket au moteur natif.
+
+### 17.8 Portée de la mesure
+
+Trente graines d'un biome, en normale, sur le printemps et l'été : ce n'est
+ni une garantie de survie sans préparation, ni une validation de l'hiver,
+des grandes villes ou du VPS. Une baisse des morts ne prouve pas leur absence.
+Les traces quotidiennes expliquent les états observés ; elles ne remplacent
+pas un journal exhaustif de toutes les décisions.
+
+Les campagnes finales K=30 sont réparties par graine sur huit processus,
+présent et absent dans le même pool. Les 60 sorties unitaires sont conservées ;
+la fusion vérifie les graines 1 à 30 et les paramètres, trie les résultats par
+graine et additionne les ticks. `elapsed_ms` est le temps mural partagé du pool ;
+`execution.sum_part_ms` conserve la somme des temps unitaires. Les durées ne
+sont donc pas celles d'une exécution séquentielle. Aucun état n'est partagé
+entre graines ; chaque partie utilise le même exécutable figé.
+
+Les binaires de chaque campagne ont été figés avant exécution. Le diagnostic
+et l'export ont été ajoutés sans changer les commandes du joueur scripté.
+Les durées des longues campagnes sont sensibles au nombre de mesures lancées
+en parallèle ; ne pas comparer leur temps mural comme un benchmark du sim.

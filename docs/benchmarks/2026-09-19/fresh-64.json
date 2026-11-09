@@ -1,0 +1,21 @@
+{
+  "protocol": 1,
+  "maps": 64,
+  "size": 128,
+  "ticks_per_map": 36000,
+  "batch_ticks": 3,
+  "day_scale": 30,
+  "create_ms": 87.88375500000001,
+  "elapsed_ms": 3655.773914,
+  "ticks_per_second": 630235.9101520741,
+  "all_maps_batch_p50_ms": 0.25204900000017005,
+  "all_maps_batch_p95_ms": 0.5571740000000318,
+  "realtime_batch_budget_ms": 50,
+  "native_empty_rss_kib": 2048,
+  "native_loaded_rss_kib": 10880,
+  "native_final_rss_kib": 11008,
+  "initial_snapshot_bytes": 6336037,
+  "checkpoint_bytes": 6338785,
+  "checkpoint_ms": 19.189428000000134,
+  "note": "Colonies neuves en forêt tempérée, machine locale. Pas un dimensionnement VPS ni une charge de fin de partie."
+}

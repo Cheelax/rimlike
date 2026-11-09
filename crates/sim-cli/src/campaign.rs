@@ -22,6 +22,7 @@
 // sim). Ce crate n'est pas le sim : il mesure du temps réel, c'est son rôle.
 #![allow(clippy::disallowed_types)]
 
+use std::io::Write;
 use std::time::Instant;
 
 use sim::climate::{Climate, HYPOTHERMIA_TEMP, Season, YEAR_DAYS};
@@ -1290,6 +1291,39 @@ impl Watched {
     }
 }
 
+/// Le joueur donne-t-il encore des ordres à ce tick ? `leaves_at` est le tick
+/// de son départ (`--absent-from J`, converti en ticks), `None` s'il reste
+/// jusqu'au bout. Le départ est **inclusif** : au tick du jour J, plus rien.
+fn player_acts(t: u64, leaves_at: Option<u64>) -> bool {
+    leaves_at.is_none_or(|at| t < at)
+}
+
+/// Ids des bêtes **de la colonie** vivantes, dans l'ordre des pawns. Sert au
+/// même comptage que `observe` pour les colons : une bête présente au tick
+/// d'avant et absente maintenant est morte.
+fn livestock_ids_into(sim: &Sim, out: &mut Vec<u32>) {
+    out.clear();
+    out.extend(
+        sim.pawns()
+            .iter()
+            .filter(|p| p.is_livestock() && p.is_alive())
+            .map(|p| p.id),
+    );
+}
+
+/// Unités d'objets posées **hors de toute pièce** (`Map::room` nul), donc hors
+/// enceinte. C'est le stock que la colonie laisse dehors : ce qu'un incendie
+/// emporte, ce que la péremption mange, et — le jour où le sim le permettra —
+/// ce qu'une bande de passage ramasserait. Les unités se comptent à plat : une
+/// baie vaut un bois, la question posée est « combien reste-t-il dehors ».
+fn outdoor_stock(sim: &Sim) -> u32 {
+    sim.items()
+        .iter()
+        .filter(|s| sim.map().room(s.x, s.y) == 0)
+        .map(|s| s.count)
+        .sum()
+}
+
 fn observe(sim: &Sim, out: &mut Vec<Watched>) {
     out.clear();
     for p in sim.pawns() {
@@ -1398,6 +1432,34 @@ struct Run {
     /// acquise. À lire avec `forges` : une technologie obtenue au jour 28 ne
     /// laisse pas le temps de miner vingt-cinq pierres.
     metallurgy_day: Option<u32>,
+    /// L'absence du joueur (`--absent-from J`), et ce qu'elle a coûté. Tous
+    /// ces champs valent `None`/0 quand la campagne est jouée avec un joueur
+    /// présent du premier au dernier tick : ce sont des **ajouts**, aucune
+    /// colonne d'avant ne change de sens.
+    ///
+    /// `enclosed_at_absence` est relevé **au tick où le joueur s'en va**, pas
+    /// en fin de partie : c'est lui qui dit si la colonie était murée quand
+    /// elle s'est retrouvée seule (`Run::enclosed` reste, lui, le relevé de
+    /// fin). `None` : la campagne s'arrête avant ce jour-là, ou le joueur
+    /// n'est jamais parti.
+    enclosed_at_absence: Option<bool>,
+    /// Morts de colons **depuis** le départ du joueur.
+    deaths_absent: u32,
+    /// Bêtes de la colonie vivantes au départ du joueur, et disparues depuis
+    /// (tuées par un pillard, par la faim ou par le feu — le joueur absent
+    /// n'en fait plus abattre).
+    livestock_at_absence: u32,
+    livestock_lost_absent: u32,
+    /// Unités d'objets posées **hors enceinte** (`Map::room` nul) au départ du
+    /// joueur, puis en fin de partie. Cette variation est un solde (feu,
+    /// péremption, rangement, production et pillage), pas une attribution
+    /// aux pillards : les vols effectifs ont leurs propres compteurs.
+    outdoor_stock_at_absence: u32,
+    outdoor_stock_end: u32,
+    /// Unités sorties de la carte dans la charge d'un pillard, selon le
+    /// journal (ni simple ramassage, ni différence de stock).
+    stolen_units: u32,
+    stolen_units_absent: u32,
     /// Événements annoncés par le sim mais lus trop tard (journal débordé).
     /// Doit rester à 0 : sinon les comptes de raids sont sous-évalués.
     lost_events: u32,
@@ -1411,6 +1473,14 @@ struct Run {
 impl Run {
     fn deaths_total(&self) -> u32 {
         self.deaths.iter().sum()
+    }
+
+    /// Ce que la colonie a laissé partir dehors depuis le départ du joueur.
+    /// Une variation négative (les colons ont rangé plus qu'ils n'ont perdu)
+    /// compte pour zéro : ce n'est pas une perte.
+    fn outdoor_stock_lost(&self) -> u32 {
+        self.outdoor_stock_at_absence
+            .saturating_sub(self.outdoor_stock_end)
     }
 }
 
@@ -1445,10 +1515,20 @@ struct Journal {
     /// **quand** elle tombe est la moitié de la réponse à « la colonie
     /// forge-t-elle ? ».
     metallurgy_tick: Option<u64>,
+    /// (tick, quantité) : garde la date exacte, même si drain lit après le départ.
+    loot: Vec<(u64, u32)>,
     lost: u32,
 }
 
 impl Journal {
+    fn stolen_since(&self, from: Option<u64>) -> u32 {
+        self.loot
+            .iter()
+            .filter(|(tick, _)| from.is_some_and(|at| *tick >= at))
+            .map(|(_, count)| count)
+            .sum()
+    }
+
     /// Lit les événements pas encore vus. Un `seq` manquant veut dire que le
     /// journal a débordé entre deux lectures : compté dans `lost`.
     fn drain(&mut self, sim: &Sim) {
@@ -1464,6 +1544,7 @@ impl Journal {
                     self.raiders += e.arg;
                 }
                 EventKind::RaidRepelled => self.raids_repelled += 1,
+                EventKind::LootStolen => self.loot.push((e.tick, e.arg >> 8)),
                 EventKind::FireStarted => self.fires += 1,
                 EventKind::FireOut => {
                     self.burned += e.arg;
@@ -1520,9 +1601,57 @@ struct Settings {
     /// parce que la journée est longue. C'est un biais assumé, et il grandit
     /// avec l'échelle — voir le §15 de `CAMPAIGN-FINDINGS.md`.
     day_scale: u32,
+    /// Jour de jeu à partir duquel le joueur scripté **s'absente** : il ne
+    /// pousse plus une seule commande (`--absent-from J`). Ce qu'il a posé
+    /// avant — zones, priorités, marquages, chantiers en cours — reste en
+    /// place : c'est une absence, pas une remise à zéro. La mise en place du
+    /// monde (difficulté, climat, calendrier) est émise au tick 0 dans tous
+    /// les cas ; elle vient du serveur, pas du joueur.
+    ///
+    /// `None` : le joueur reste jusqu'au bout, et la campagne est celle
+    /// d'avant, au bit près.
+    absent_from: Option<u64>,
+    /// Diagnostic seul, sur stderr : ne change aucun ordre ni aucun tick.
+    trace: bool,
 }
 
-fn play_seed(seed: u64, s: &Settings) -> Run {
+fn trace_colony(sim: &Sim, seed: u64, reason: &str) {
+    eprintln!(
+        "trace seed={seed} tick={} day={} reason={reason} indoor={} raid={:?} fire={}",
+        sim.tick(),
+        sim.tick() / u64::from(sim.ticks_per_day()),
+        sim.map().indoor_count(),
+        sim.raid_status(),
+        sim.map().fire_count(),
+    );
+    for p in sim
+        .pawns()
+        .iter()
+        .filter(|p| p.is_colonist() || p.is_raider_like())
+    {
+        let (x, y) = p.tile();
+        eprintln!(
+            "  pawn={} faction={:?} tile={x},{y} room={} hp={} hunger={} rest={} job={:?} path={}",
+            p.id,
+            p.faction,
+            sim.map().room(x, y),
+            p.hp,
+            p.hunger,
+            p.rest,
+            p.job,
+            p.path.len()
+        );
+    }
+    let mut food = std::collections::BTreeMap::<(u8, u8), u32>::new();
+    for s in sim.items().iter().filter(|s| s.kind.is_food()) {
+        *food
+            .entry((sim.map().room(s.x, s.y), s.kind as u8))
+            .or_default() += s.count;
+    }
+    eprintln!("  food_by_room_kind={food:?}");
+}
+
+fn play_seed(seed: u64, s: &Settings, snapshot: Option<&mut Vec<u8>>) -> Run {
     let mut sim = Sim::new_scaled(seed, s.size, s.size, s.biome, s.day_scale);
     let day = u64::from(sim.ticks_per_day());
     let total = day * s.days;
@@ -1535,11 +1664,33 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
     let mut colonists_day20 = None;
     let mut tame_orders = 0u32;
 
+    // Le départ du joueur, en ticks. `None` : il reste jusqu'au bout.
+    let leaves_at = s.absent_from.map(|j| j * day);
+    let mut enclosed_at_absence = None;
+    let mut deaths_absent = 0u32;
+    let mut livestock_at_absence = 0u32;
+    let mut livestock_lost_absent = 0u32;
+    let mut outdoor_stock_at_absence = 0u32;
+
     let mut prev: Vec<Watched> = Vec::new();
     let mut cur: Vec<Watched> = Vec::new();
     observe(&sim, &mut prev);
+    let mut prev_herd: Vec<u32> = Vec::new();
+    let mut cur_herd: Vec<u32> = Vec::new();
 
     for t in 0..total {
+        if s.trace && t % day == 0 {
+            trace_colony(&sim, seed, "day");
+        }
+        // Le joueur est parti dès que le tick du jour J est atteint : le
+        // relevé se fait donc **avant** le premier tick sans ordre.
+        let absent = !player_acts(t, leaves_at);
+        if leaves_at == Some(t) {
+            enclosed_at_absence = Some(sim.map().indoor_count() > 0);
+            livestock_at_absence = sim.livestock_count();
+            outdoor_stock_at_absence = outdoor_stock(&sim);
+            livestock_ids_into(&sim, &mut prev_herd);
+        }
         let mut cmds = Vec::new();
         if t == 0 {
             // La mise en place, comme le serveur monde la ferait : difficulté
@@ -1559,7 +1710,11 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
                 cmds.push(Command::SetCalendar { day_of_year: day });
             }
         }
-        if t % PLAN_INTERVAL == 0 {
+        // Un joueur absent ne donne plus un seul ordre : ni zone, ni coupe,
+        // ni chasse, ni troc. Rien d'autre ne change — les raids, la météo et
+        // le storyteller continuent (`docs/PLAN.md` §6 : l'absence coûte, elle
+        // ne tue pas).
+        if t % PLAN_INTERVAL == 0 && !absent {
             cmds.append(&mut plan(&sim, enclosure));
         }
         tame_orders += cmds
@@ -1575,9 +1730,32 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
         for w in &prev {
             if !cur.iter().any(|c| c.id == w.id) {
                 deaths[w.cause() as usize] += 1;
+                if s.trace {
+                    eprintln!(
+                        "trace death seed={seed} tick={} pawn={} cause={} hunger={} hurt={}",
+                        sim.tick(),
+                        w.id,
+                        w.cause().label(),
+                        w.hunger,
+                        w.hurt
+                    );
+                    trace_colony(&sim, seed, "death");
+                }
+                if absent {
+                    deaths_absent += 1;
+                }
             }
         }
         std::mem::swap(&mut prev, &mut cur);
+        // Le troupeau, même comptage : une bête présente au tick d'avant et
+        // absente maintenant est morte. Sans joueur, plus personne ne la fait
+        // abattre — ce qui disparaît est perdu.
+        if absent {
+            livestock_ids_into(&sim, &mut cur_herd);
+            livestock_lost_absent +=
+                prev_herd.iter().filter(|id| !cur_herd.contains(id)).count() as u32;
+            std::mem::swap(&mut prev_herd, &mut cur_herd);
+        }
 
         let tick = sim.tick();
         if tick % EVENT_POLL == 0 {
@@ -1593,6 +1771,9 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
 
     // Dernière lecture : les événements des soixante derniers ticks.
     journal.drain(&sim);
+    if let Some(bytes) = snapshot {
+        *bytes = sim.snapshot();
+    }
 
     let colonists = colonist_ids(&sim);
     let n = colonists.len() as u32;
@@ -1656,6 +1837,14 @@ fn play_seed(seed: u64, s: &Settings) -> Run {
         tame_orders,
         tamed: journal.tamed,
         metallurgy_day: journal.metallurgy_tick.map(|t| (t / day) as u32),
+        enclosed_at_absence,
+        deaths_absent,
+        livestock_at_absence,
+        livestock_lost_absent,
+        outdoor_stock_at_absence,
+        outdoor_stock_end: outdoor_stock(&sim),
+        stolen_units: journal.loot.iter().map(|(_, count)| count).sum(),
+        stolen_units_absent: journal.stolen_since(leaves_at),
         lost_events: journal.lost,
         deaths_announced: journal.deaths_announced,
         elapsed_ms: start.elapsed().as_millis(),
@@ -1743,8 +1932,33 @@ fn goodwill_cell(g: &[i32; factions::FACTION_COUNT]) -> String {
     g.iter().map(i32::to_string).collect::<Vec<_>>().join("/")
 }
 
-fn print_table(runs: &[Run]) {
-    println!(
+/// Les colonnes de l'absence, ajoutées **au bout** de la ligne et seulement
+/// quand `--absent-from` est passé : sans lui, le tableau est celui d'avant,
+/// caractère pour caractère.
+fn absent_header() -> String {
+    format!(
+        " {:>7} {:>8} {:>8} {:>8} {:>8}",
+        "mur j", "morts j", "bétail", "perdu", "dehors"
+    )
+}
+
+fn absent_cells(r: &Run) -> String {
+    format!(
+        " {:>7} {:>8} {:>8} {:>8} {:>8}",
+        match r.enclosed_at_absence {
+            Some(true) => "murée",
+            Some(false) => "ouverte",
+            None => "-",
+        },
+        r.deaths_absent,
+        r.livestock_at_absence,
+        r.livestock_lost_absent,
+        r.outdoor_stock_lost(),
+    )
+}
+
+fn print_table(runs: &[Run], absent: bool) {
+    print!(
         "{:>6} {:>14} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>8} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>8} {:>7}",
         "graine",
         "biome",
@@ -1782,8 +1996,12 @@ fn print_table(runs: &[Run]) {
         "enclosed",
         "ms"
     );
+    if absent {
+        print!("{}", absent_header());
+    }
+    println!();
     for r in runs {
-        println!(
+        print!(
             "{:>6} {:>14} {:>4} {:>4} {:>4} {:>6} {:>5} {:>5} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>5} {:>9} {:>6} {:>7} {:>7} {:>5} {:>6} {:>8} {:>6} {:>6} {:>6} {:>6} {:>7} {:>11} {:>6} {:>6} {:>8} {:>8} {:>7}",
             r.seed,
             r.biome.name(),
@@ -1821,6 +2039,10 @@ fn print_table(runs: &[Run]) {
             r.enclosed,
             r.elapsed_ms
         );
+        if absent {
+            print!("{}", absent_cells(r));
+        }
+        println!();
     }
 }
 
@@ -2040,6 +2262,37 @@ fn print_summary(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Dur
         let count = alive.len();
         tenths(mean_tenths(alive.into_iter(), count))
     });
+    // L'absence, s'il y en a eu une. Trois lignes ajoutées au bout du résumé,
+    // qui séparent les colonies **murées au jour J** des autres : c'est la
+    // règle du §6 (« l'absence coûte, elle ne tue pas ») qui se lit là, et
+    // elle ne veut rien dire sur une colonie sans enceinte.
+    if let Some(j) = s.absent_from {
+        let walled: Vec<&Run> = runs
+            .iter()
+            .filter(|r| r.enclosed_at_absence == Some(true))
+            .collect();
+        let open: Vec<&Run> = runs
+            .iter()
+            .filter(|r| r.enclosed_at_absence == Some(false))
+            .collect();
+        println!(
+            "  joueur absent          : à partir du jour {j} — colonies murées à ce moment-là : {}/{n}",
+            walled.len(),
+        );
+        let line = |label: &str, group: &[&Run]| {
+            let count = group.len();
+            let deaths: u32 = group.iter().map(|r| r.deaths_absent).sum();
+            let wiped = group.iter().filter(|r| r.colonists_end == 0).count();
+            let herd: u32 = group.iter().map(|r| r.livestock_lost_absent).sum();
+            let stock: u32 = group.iter().map(|r| r.outdoor_stock_lost()).sum();
+            let stolen: u32 = group.iter().map(|r| r.stolen_units_absent).sum();
+            println!(
+                "  — {label:<19}: {count} graines — éteintes {wiped}/{count}, morts depuis le départ {deaths}, bétail perdu {herd}, baisse nette du stock dehors {stock} unités, vols confirmés {stolen} unités",
+            );
+        };
+        line("murées au jour J", &walled);
+        line("sans enceinte", &open);
+    }
     println!(
         "  perf                   : {ticks} ticks en {} ms, {:.0} ticks/s",
         elapsed.as_millis(),
@@ -2070,9 +2323,18 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
         Some(c) => print!("{c}"),
         None => print!("null"),
     }
+    print!(
+        ", \"day_of_year\": {}, \"absent_from\": ",
+        s.day_of_year.unwrap_or(0)
+    );
+    match s.absent_from {
+        Some(j) => print!("{j}"),
+        None => print!("null"),
+    }
     println!(
-        ", \"day_of_year\": {}, \"ticks\": {ticks}, \"elapsed_ms\": {}}},",
-        s.day_of_year.unwrap_or(0),
+        ", \"first_seed\": {}, \"day_scale\": {}, \"ticks\": {ticks}, \"elapsed_ms\": {}}},",
+        s.first_seed,
+        s.day_scale,
         elapsed.as_millis()
     );
     println!("  \"runs\": [");
@@ -2084,7 +2346,7 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
             .collect();
         let goodwill: Vec<String> = r.goodwill.iter().map(i32::to_string).collect();
         println!(
-            "    {{\"seed\": {}, \"biome\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"worst_fire\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"enclosed\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"tame_orders\": {}, \"tamed\": {}, \"metallurgy_day\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
+            "    {{\"seed\": {}, \"biome\": {}, \"colonists_end\": {}, \"colonists_day10\": {}, \"colonists_day20\": {}, \"deaths\": {{{}}}, \"raids\": {}, \"raiders\": {}, \"raids_repelled\": {}, \"wealth\": {}, \"food_days_tenths\": {}, \"techs\": {}, \"livestock\": {}, \"fires\": {}, \"burned_tiles\": {}, \"worst_fire\": {}, \"mood_percent\": {}, \"armed\": {}, \"blueprints_left\": {}, \"enclosed\": {}, \"forges\": {}, \"ingots\": {}, \"swords\": {}, \"swordsmen\": {}, \"goodwill\": [{}], \"tributes\": {}, \"tame_orders\": {}, \"tamed\": {}, \"metallurgy_day\": {}, \"enclosed_at_absence\": {}, \"deaths_absent\": {}, \"livestock_at_absence\": {}, \"livestock_lost_absent\": {}, \"outdoor_stock_at_absence\": {}, \"outdoor_stock_end\": {}, \"stolen_units\": {}, \"stolen_units_absent\": {}, \"lost_events\": {}, \"deaths_announced\": {}, \"elapsed_ms\": {}}}{comma}",
             r.seed,
             r.biome as u8,
             r.colonists_end,
@@ -2114,6 +2376,17 @@ fn print_json(runs: &[Run], s: &Settings, ticks: u64, elapsed: std::time::Durati
             r.tame_orders,
             r.tamed,
             json_milestone(r.metallurgy_day),
+            match r.enclosed_at_absence {
+                Some(v) => v.to_string(),
+                None => "null".to_string(),
+            },
+            r.deaths_absent,
+            r.livestock_at_absence,
+            r.livestock_lost_absent,
+            r.outdoor_stock_at_absence,
+            r.outdoor_stock_end,
+            r.stolen_units,
+            r.stolen_units_absent,
             r.lost_events,
             r.deaths_announced,
             r.elapsed_ms,
@@ -2133,7 +2406,8 @@ rimlike-sim campaign — joue des colonies entières avec un joueur scripté et 
 USAGE :
     rimlike-sim campaign [--seeds N] [--days D] [--size W] [--difficulty L]
                          [--biome N] [--climate T] [--day-of-year J] [--seed S]
-                         [--day-scale K] [--json]
+                         [--day-scale K] [--absent-from J] [--json] [--trace]
+                         [--snapshot-out FICHIER]
 
 OPTIONS :
     --seeds N        nombre de graines jouées (défaut 30)
@@ -2160,7 +2434,21 @@ OPTIONS :
                      jours de jeu, soit trente fois plus de ticks. La cadence de
                      décision du joueur scripté, elle, reste en ticks réels
                      (biais assumé, voir CAMPAIGN-FINDINGS.md §15)
+    --absent-from J  le joueur scripté **s'absente** au jour de jeu J : à
+                     partir de là il ne pousse plus une seule commande. Ce
+                     qu'il a posé avant (zones, priorités, marquages,
+                     chantiers) reste ; les raids, la météo et le storyteller
+                     continuent — l'absence coûte, elle ne tue pas
+                     (docs/PLAN.md §6). Le tableau et le résumé gagnent alors
+                     cinq colonnes : enceinte fermée au jour J, morts de
+                     colons depuis, bêtes de la colonie à ce moment-là, bêtes
+                     perdues depuis, unités de stock perdues dehors
     --json           sortie machine (drapeau, sans valeur)
+    --trace          état quotidien et à chaque mort sur stderr ; les ordres,
+                     les ticks et la sortie JSON restent identiques
+    --snapshot-out FICHIER
+                     export postcard final (exige --seeds 1) ; refuse de
+                     remplacer un fichier existant, aucun effet sur le sim
 
 Chaque graine est jouée par le même joueur scripté : zone de stockage et de
 culture, coupe et récolte, feu de camp, lits, poste de fabrication, enceinte de
@@ -2196,13 +2484,15 @@ pub fn campaign(args: &[String]) -> u8 {
 }
 
 fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
-    // `--json` est un drapeau : il n'a pas de valeur, alors que `Options`
-    // n'accepte que des paires `--nom valeur`. On le retire avant l'analyse.
+    // Les deux drapeaux n'ont pas de valeur ; Options lit des paires.
     let mut json = false;
+    let mut trace = false;
     let mut rest: Vec<String> = Vec::with_capacity(args.len());
     for a in args {
         if a == "--json" {
             json = true;
+        } else if a == "--trace" {
+            trace = true;
         } else {
             rest.push(a.clone());
         }
@@ -2218,6 +2508,8 @@ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
         "day-of-year",
         "biome",
         "day-scale",
+        "absent-from",
+        "snapshot-out",
     ])?;
     let seeds = opts.u64_or("seeds", 30)?;
     if seeds == 0 {
@@ -2271,6 +2563,22 @@ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
     }
     let biome = Biome::from_u8(raw_biome as u8);
     let day_scale = crate::commands::parse_day_scale(&opts)?;
+    let raw_absent = opts.string("absent-from", "");
+    let absent_from = if raw_absent.is_empty() {
+        None
+    } else {
+        let j = raw_absent.parse::<u64>().map_err(|_| {
+            CliError::new(format!(
+                "--absent-from doit être un entier (jour de jeu), reçu « {raw_absent} »"
+            ))
+        })?;
+        if j >= days {
+            return Err(CliError::new(format!(
+                "--absent-from {j} tombe après la fin de la campagne (--days {days}) : le joueur ne s'absenterait jamais"
+            )));
+        }
+        Some(j)
+    };
     let settings = Settings {
         seeds,
         first_seed: opts.u64_or("seed", 1)?,
@@ -2281,8 +2589,26 @@ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
         day_of_year,
         biome,
         day_scale,
+        absent_from,
+        trace,
     };
 
+    let snapshot_path = opts.string("snapshot-out", "");
+    let mut snapshot_file = if snapshot_path.is_empty() {
+        None
+    } else {
+        if seeds != 1 {
+            return Err(CliError::new("--snapshot-out exige --seeds 1"));
+        }
+        Some(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&snapshot_path)
+                .map_err(|e| CliError::new(format!("--snapshot-out {snapshot_path} : {e}")))?,
+        )
+    };
+    let mut snapshot = Vec::new();
     let ticks_per_seed = u64::from(TICKS_PER_DAY) * u64::from(day_scale) * days;
     if !json {
         println!(
@@ -2300,15 +2626,24 @@ fn campaign_inner(args: &[String]) -> Result<u8, CliError> {
     let start = Instant::now();
     let mut runs = Vec::with_capacity(seeds as usize);
     for r in 0..seeds {
-        runs.push(play_seed(settings.first_seed.wrapping_add(r), &settings));
+        runs.push(play_seed(
+            settings.first_seed.wrapping_add(r),
+            &settings,
+            snapshot_file.as_ref().map(|_| &mut snapshot),
+        ));
     }
     let elapsed = start.elapsed();
+    if let Some(file) = snapshot_file.as_mut() {
+        file.write_all(&snapshot)
+            .and_then(|()| file.sync_all())
+            .map_err(|e| CliError::new(format!("--snapshot-out {snapshot_path} : {e}")))?;
+    }
     let ticks = ticks_per_seed * seeds;
 
     if json {
         print_json(&runs, &settings, ticks, elapsed);
     } else {
-        print_table(&runs);
+        print_table(&runs, settings.absent_from.is_some());
         print_summary(&runs, &settings, ticks, elapsed);
     }
     Ok(0)
@@ -2887,6 +3222,30 @@ mod tests {
         assert_eq!(journal.lost, 0, "journal débordé");
     }
 
+    #[test]
+    fn les_vols_se_comptent_a_la_sortie_et_a_la_date_de_l_evenement() {
+        let mut s = clearing();
+        let before = s.tick();
+        for (kind, count) in [(ItemKind::Wood, 7), (ItemKind::Metal, 3)] {
+            let id = s.spawn_pawn(0, 0, Faction::Raider);
+            let p = s.pawn_mut(id).unwrap();
+            p.carrying = Some((kind, count));
+            p.job = sim::Job::Flee;
+            s.step(&[]);
+        }
+        // Lecture volontairement tardive : le premier butin est sorti avant
+        // le départ du joueur, le second exactement à sa frontière.
+        let mut journal = Journal::default();
+        journal.drain(&s);
+        journal.drain(&s);
+        assert_eq!(journal.loot, vec![(before, 7), (before + 1, 3)]);
+        assert_eq!(journal.stolen_since(Some(before)), 10);
+        assert_eq!(journal.stolen_since(Some(before + 1)), 3);
+        assert_eq!(journal.stolen_since(Some(before + 2)), 0);
+        assert_eq!(journal.stolen_since(None), 0);
+        assert_eq!(journal.lost, 0);
+    }
+
     /// Le total brûlé et le **pire incendie** ne racontent pas la même chose :
     /// quatre cases, c'est peut-être un feu de quatre, peut-être deux feux de
     /// deux. Deux épisodes séparés dans le temps — trois cases d'un coup, puis
@@ -3427,6 +3786,84 @@ mod tests {
         assert_eq!(campaign_inner(&args).map_err(|e| e.0), Ok(0));
     }
 
+    /// Le départ du joueur est **inclusif** : au premier tick du jour J, il ne
+    /// donne déjà plus d'ordre.
+    #[test]
+    fn le_joueur_cesse_dagir_au_tick_du_jour_dit() {
+        assert!(player_acts(0, None), "sans absence, il agit toujours");
+        assert!(player_acts(u64::MAX, None));
+        assert!(player_acts(599, Some(600)));
+        assert!(
+            !player_acts(600, Some(600)),
+            "le tick du départ compte déjà"
+        );
+        assert!(!player_acts(601, Some(600)));
+        assert!(!player_acts(0, Some(0)), "parti dès le premier tick");
+    }
+
+    /// Le stock « dehors » est celui qu'aucune pièce n'abrite : c'est la
+    /// couche `indoor` qui tranche, pas la distance au barycentre.
+    #[test]
+    fn le_stock_dehors_ne_compte_que_les_piles_hors_piece() {
+        let map = map_from(&[
+            "#####....",
+            "#...#....",
+            "#...#....",
+            "#####....",
+            ".........",
+        ]);
+        let mut sim = Sim::from_map(1, map);
+        // Un pas pour que la couche « intérieur » soit calculée.
+        sim.step(&[]);
+        assert_eq!(outdoor_stock(&sim), 0, "carte nue");
+        sim.spawn_item(ItemKind::Wood, 7, 2, 2);
+        sim.step(&[]);
+        assert_eq!(
+            outdoor_stock(&sim),
+            0,
+            "sept bois à l'abri ne sont pas dehors"
+        );
+        sim.spawn_item(ItemKind::Berries, 5, 7, 4);
+        sim.step(&[]);
+        assert_eq!(outdoor_stock(&sim), 5, "cinq baies dehors");
+    }
+
+    /// L'instrument de la fiche `colonie-tient-seule` : à partir du jour dit,
+    /// le joueur ne pousse plus rien. La preuve la plus simple est la
+    /// richesse — une colonie dirigée abat des arbres et s'enrichit, une
+    /// colonie livrée à elle-même reste à sa dotation de départ.
+    #[test]
+    fn un_joueur_absent_ne_fait_plus_rien_batir() {
+        let base = |absent_from| Settings {
+            seeds: 1,
+            first_seed: 1,
+            days: 3,
+            size: 48,
+            difficulty: Difficulty::Normal,
+            climate: None,
+            day_of_year: None,
+            biome: Biome::TemperateForest,
+            day_scale: 1,
+            absent_from,
+            trace: false,
+        };
+        let present = play_seed(1, &base(None), None);
+        let absent = play_seed(1, &base(Some(0)), None);
+        assert!(
+            present.wealth > 2 * absent.wealth,
+            "joueur présent {} de richesse au jour 3, joueur absent {} : l'absence ne se voit pas",
+            present.wealth,
+            absent.wealth,
+        );
+        assert_eq!(
+            absent.enclosed_at_absence,
+            Some(false),
+            "aucune enceinte au tick 0, et le relevé doit le dire"
+        );
+        assert_eq!(present.enclosed_at_absence, None, "personne n'est parti");
+        assert_eq!(present.deaths_absent, 0);
+    }
+
     #[test]
     fn les_options_invalides_sont_refusees() {
         let bad: Vec<Vec<String>> = vec![
@@ -3438,6 +3875,16 @@ mod tests {
             // L'année fait 60 jours : 60 est déjà hors bornes.
             vec!["--day-of-year".into(), "60".into()],
             vec!["--day-of-year".into(), "hiver".into()],
+            // Un départ après la fin ne veut rien dire : le joueur ne
+            // s'absenterait jamais, et le rapport promettrait un relevé
+            // qu'il ne ferait pas.
+            vec![
+                "--days".into(),
+                "5".into(),
+                "--absent-from".into(),
+                "5".into(),
+            ],
+            vec!["--absent-from".into(), "jamais".into()],
             vec!["--inconnue".into(), "1".into()],
         ];
         for args in bad {

@@ -1,0 +1,437 @@
+diff --git a/crates/sim/src/combat.rs b/crates/sim/src/combat.rs
+index c2830eb..f69ed27 100644
+--- a/crates/sim/src/combat.rs
++++ b/crates/sim/src/combat.rs
+@@ -224,9 +224,9 @@ pub const REARM_TICKS: u32 = 100;
+ /// hash, et une bande qui perd la moitié des siens fait basculer la colonie
+ /// dans l'autre posture sans qu'on ait à y penser.
+ ///
+-/// Les valeurs ne sont **pas** un contrat avec le client : rien ne les
+-/// traverse la frontière WASM, aucun tampon ne les porte.
++/// Valeurs du tampon `raid_status` : libre 0, tenir 1, veille 2.
+ #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++#[repr(u8)]
+ pub enum Stance {
+     /// Rien à décider : pas de bande sur la carte, ou pas d'enceinte. Chacun
+     /// se bat où il est, comme avant cette fiche.
+@@ -252,7 +252,7 @@ pub enum Stance {
+ /// `measure_le_seuil_de_la_decision_tactique`, et `CAMPAIGN-FINDINGS.md`
+ /// §17). Le seuil retenu est celui qui maximise la survie du joueur **absent**
+ /// sans rien coûter au joueur **présent**.
+-pub const HOLD_RATIO_PERCENT: u32 = 100;
++pub const HOLD_RATIO_PERCENT: u32 = 80;
+ 
+ /// Rayon du balayage qui cherche l'abri de la colonie autour de son
+ /// barycentre. Une pièce tient en `map::ROOM_MAX_TILES` (200) cases et
+@@ -624,7 +624,7 @@ impl Sim {
+         }
+         if matches!(
+             self.pawns[i].job,
+-            Job::Attack { .. } | Job::Move { manual: true }
++            Job::Attack { .. } | Job::Defend { .. } | Job::Move { manual: true }
+         ) {
+             return false;
+         }
+@@ -637,7 +637,11 @@ impl Sim {
+             return false;
+         }
+         self.abandon_job(i);
+-        self.pawns[i].job = Job::Attack { target: id };
++        self.pawns[i].job = if !self.pawns[i].is_colonist() || self.raid_stance() == Stance::Free {
++            Job::Attack { target: id }
++        } else {
++            Job::Defend { target: id }
++        };
+         true
+     }
+ 
+@@ -699,6 +703,38 @@ impl Sim {
+         }
+     }
+ 
++    /// État de défense lu par le client, sans aucune règle côté interface :
++    /// posture, hostiles vivants, préavis restant, puissance alliée, puissance
++    /// ennemie, id du premier hostile (u32::MAX si aucun). Le premier ennemi
++    /// déjà en marche termine le préavis ; les corps à terre n'en prolongent pas.
++    pub fn raid_status(&self) -> [u32; 6] {
++        let mut count = 0;
++        let mut warning = u64::MAX;
++        let mut first = u32::MAX;
++        for p in self.pawns.iter().filter(|p| p.is_alive() && p.is_raider_like()) {
++            count += 1;
++            first = first.min(p.id);
++            if !p.is_downed() {
++                let left = match p.job {
++                    Job::Wait { until } => until.saturating_sub(self.tick),
++                    _ => 0,
++                };
++                warning = warning.min(left);
++            }
++        }
++        if count == 0 {
++            return [0, 0, 0, 0, 0, u32::MAX];
++        }
++        [
++            self.raid_stance() as u32,
++            count,
++            if warning == u64::MAX { 0 } else { warning.min(u64::from(u32::MAX)) as u32 },
++            self.colony_line_power(),
++            self.raid_line_power(),
++            first,
++        ]
++    }
++
+     /// Un colon peut-il courir sur cette cible, ou reste-t-il derrière ses
+     /// murs ? Hors raid et sans enceinte (`Stance::Free`), rien ne change.
+     /// Sinon on ne frappe de soi-même que ce qui est **au contact**, ce qui
+@@ -707,6 +743,9 @@ impl Sim {
+     /// (`Command::Attack`) ne passe pas par ici : il pose `Job::Attack` et
+     /// prime.
+     fn may_engage(&self, i: usize, target: u32) -> bool {
++        if !self.pawns[i].is_colonist() {
++            return true;
++        }
+         let stance = self.raid_stance();
+         if stance == Stance::Free {
+             return true;
+@@ -772,7 +811,7 @@ impl Sim {
+                     continue;
+                 }
+                 let (x, y) = (x as u32, y as u32);
+-                if !keep(self, x, y) {
++                if !keep(self, x, y) || !self.map.passable_for(x, y, path::Walker::COLONIST) {
+                     continue;
+                 }
+                 let cand = (chebyshev(from, (x, y)), x, y);
+@@ -843,10 +882,32 @@ impl Sim {
+                 | Job::Tame { .. }
+                 | Job::Slaughter { .. }
+         );
+-        if !droppable || self.raid_stance() == Stance::Free {
++        if self.raid_stance() == Stance::Free
++            || matches!(
++                self.pawns[i].job,
++                Job::Attack { .. } | Job::Defend { .. } | Job::Move { manual: true }
++            )
++        {
+             return;
+         }
+-        self.abandon_job(i);
++        let me = self.pawns[i].tile();
++        let room = self.map.room(me.0, me.1);
++        let unsafe_path = self.pawns[i]
++            .path
++            .iter()
++            .any(|&(x, y)| room != 0 && self.map.room(u32::from(x), u32::from(y)) != room);
++        // Dehors, les besoins attendent le retour ; dedans, on garde les
++        // soins, le repas et le sommeil dont le trajet reste dans la pièce.
++        let outside_need =
++            room == 0 && matches!(self.pawns[i].job, Job::Eat { .. } | Job::Sleep { .. });
++        let wandering_outside = matches!(self.pawns[i].job, Job::Move { manual: false })
++            && self.pawns[i]
++                .path
++                .first()
++                .is_some_and(|&(x, y)| self.map.room(u32::from(x), u32::from(y)) == 0);
++        if droppable || unsafe_path || outside_need || wandering_outside {
++            self.abandon_job(i);
++        }
+     }
+ 
+     /// Rejoindre son poste, et n'en plus bouger tant que la bande est là.
+@@ -1015,7 +1076,7 @@ impl Sim {
+             .filter_map(|p| {
+                 let (x, y) = p.tile();
+                 let d = chebyshev(me, (x, y));
+-                if d > radius {
++                if d > radius || (self.pawns[i].is_colonist() && !self.may_engage(i, p.id)) {
+                     return None;
+                 }
+                 // Le rang, et rien d'autre : la distance vraie reste celle qui
+@@ -1074,10 +1135,16 @@ impl Sim {
+             return EngageOutcome::Engaged;
+         }
+         // Le chemin est stocké inversé : `first()` est la destination.
+-        let stale = self.pawns[i]
++        let walker = self.walker(i);
++        let blocked = self.pawns[i]
+             .path
+-            .first()
+-            .is_none_or(|&(dx, dy)| chebyshev((u32::from(dx), u32::from(dy)), them) > 1);
++            .iter()
++            .any(|&(x, y)| !self.map.passable_for(u32::from(x), u32::from(y), walker));
++        let stale = blocked
++            || self.pawns[i]
++                .path
++                .first()
++                .is_none_or(|&(dx, dy)| chebyshev((u32::from(dx), u32::from(dy)), them) > 1);
+         if stale {
+             // Un colon qui charge ne traverse pas ses propres pièges ; un
+             // pillard, lui, ne les voit pas venir.
+@@ -1091,6 +1158,16 @@ impl Sim {
+         EngageOutcome::Engaged
+     }
+ 
++    /// Une défense automatique réévalue sa cible pendant la poursuite.
++    /// L'attaque manuelle conserve son comportement et reste prioritaire.
++    pub(crate) fn do_defend(&mut self, i: usize, target: u32) {
++        if !self.may_engage(i, target) {
++            self.abandon_job(i);
++            return;
++        }
++        self.do_attack(i, target);
++    }
++
+     pub(crate) fn do_attack(&mut self, i: usize, target: u32) {
+         if self.pawns[i].is_raider_like() && self.pawns[i].hp < FLEE_HP {
+             self.pawns[i].path.clear();
+diff --git a/crates/sim/src/fire.rs b/crates/sim/src/fire.rs
+index ad41f19..6673b8b 100644
+--- a/crates/sim/src/fire.rs
++++ b/crates/sim/src/fire.rs
+@@ -973,6 +973,7 @@ impl Sim {
+                     | Job::Sleep { .. }
+                     | Job::Move { manual: true }
+                     | Job::Attack { .. }
++                    | Job::Defend { .. }
+                     | Job::Break { .. }
+                     | Job::Downed
+                     | Job::Idle
+diff --git a/crates/sim/src/jobs.rs b/crates/sim/src/jobs.rs
+index aa71abc..282db33 100644
+--- a/crates/sim/src/jobs.rs
++++ b/crates/sim/src/jobs.rs
+@@ -240,6 +240,7 @@ impl Sim {
+                     | Job::Sleep { .. }
+                     | Job::Move { manual: true }
+                     | Job::Attack { .. }
++                    | Job::Defend { .. }
+             )
+             && self.food_available()
+         {
+@@ -290,6 +291,7 @@ impl Sim {
+                 progress,
+             } => self.do_cook(i, campfire, item, picked, progress),
+             Job::Attack { target } => self.do_attack(i, target),
++            Job::Defend { target } => self.do_defend(i, target),
+             Job::Flee => self.do_flee(i),
+             Job::Break { until } => self.do_break(i, until),
+             Job::Rescue { target, picked } => self.do_rescue(i, target, picked),
+@@ -341,6 +343,7 @@ impl Sim {
+                     | Job::Sleep { .. }
+                     | Job::Eat { .. }
+                     | Job::Attack { .. }
++                    | Job::Defend { .. }
+                     | Job::Move { manual: true }
+             )
+             || !self.rng.chance(1, BREAK_CHANCE)
+@@ -485,6 +488,10 @@ impl Sim {
+     // ------------------------------------------------------------------
+ 
+     fn find_job(&mut self, i: usize, salvo: &mut crate::fire::Salvo) {
++        let at = self.pawns[i].tile();
++        if self.map.room(at.0, at.1) == 0 && self.take_post(i) {
++            return;
++        }
+         if self.pawns[i].is_tired() {
+             self.start_sleep(i);
+             return;
+@@ -931,7 +938,11 @@ impl Sim {
+             .items
+             .iter()
+             .enumerate()
+-            .filter(|(_, s)| s.kind.is_food() && s.reserved_by.is_none())
++            .filter(|(_, s)| {
++                s.kind.is_food()
++                    && s.reserved_by.is_none()
++                    && self.map.passable_for(s.x, s.y, self.work_walker(from))
++            })
+             .map(|(k, s)| (s.kind.food_rank(), chebyshev(from, (s.x, s.y)), s.x, s.y, k))
+             .collect();
+         candidates.sort_unstable();
+@@ -1071,10 +1082,29 @@ impl Sim {
+     /// connaissent la maison et ne se plantent jamais sur les pointes (voir
+     /// `livestock`, et `Sim::spring_trap` qui les épargne aussi).
+     pub(crate) fn walker(&self, i: usize) -> Walker {
+-        if self.pawns[i].faction == Faction::Colony {
++        if self.pawns[i].is_colonist() && matches!(self.pawns[i].job, Job::Defend { .. }) {
++            self.work_walker(self.pawns[i].tile())
++        } else if self.pawns[i].faction == Faction::Colony {
+             Walker::COLONIST
+         } else {
+-            Walker::ANYONE
++            Walker {
++                avoids_doors: self.pawns[i].is_raider_like()
++                    && self.raid_stance() == crate::combat::Stance::Watch,
++                ..Walker::ANYONE
++            }
++        }
++    }
++
++    /// Les urgences et les besoins restent possibles dans l'abri, sans trajet
++    /// par l'extérieur. Les ordres manuels et le trajet de retour restent libres.
++    pub(crate) fn work_walker(&self, from: (u32, u32)) -> Walker {
++        Walker {
++            confined_room: if self.map.indoor_count() > 0 && self.raider_alive() {
++                self.map.room(from.0, from.1)
++            } else {
++                0
++            },
++            ..Walker::COLONIST
+         }
+     }
+ 
+@@ -1086,7 +1116,7 @@ impl Sim {
+         from: (u32, u32),
+         to: (u32, u32),
+     ) -> Option<Vec<path::Tile>> {
+-        path::find_path_for(&self.map, from, to, Walker::COLONIST)
++        path::find_path_for(&self.map, from, to, self.work_walker(from))
+     }
+ 
+     /// Chemin d'un colon vers une voisine de la cible.
+@@ -1095,7 +1125,7 @@ impl Sim {
+         from: (u32, u32),
+         target: (u32, u32),
+     ) -> Option<Vec<path::Tile>> {
+-        self.path_adjacent_for(from, target, Walker::COLONIST)
++        self.path_adjacent_for(from, target, self.work_walker(from))
+     }
+ 
+     /// Chemin vers la cible si elle est franchissable, sinon vers une voisine.
+diff --git a/crates/sim/src/lib.rs b/crates/sim/src/lib.rs
+index 43aebb1..6c24b74 100644
+--- a/crates/sim/src/lib.rs
++++ b/crates/sim/src/lib.rs
+@@ -946,7 +946,11 @@ impl Sim {
+                 let from = self.pawns[i].tile();
+                 // Même un ordre du joueur ne fait pas marcher un colon sur un
+                 // piège armé : il contourne, ou il n'y va pas.
+-                let walker = self.walker(i);
++                let walker = if self.pawns[i].faction == Faction::Colony {
++                    path::Walker::COLONIST
++                } else {
++                    self.walker(i)
++                };
+                 if let Some(path) = path::find_path_for(&self.map, from, (x, y), walker) {
+                     self.abandon_job(i);
+                     self.pawns[i].set_path(path);
+diff --git a/crates/sim/src/map.rs b/crates/sim/src/map.rs
+index 07ff644..f0a2525 100644
+--- a/crates/sim/src/map.rs
++++ b/crates/sim/src/map.rs
+@@ -859,7 +859,10 @@ impl Map {
+     /// `path::Walker::avoids_fire`), et il coûte cher sans être un mur — un
+     /// colon cerné par les flammes traverse plutôt que de rester planté.
+     pub fn move_cost_for(&self, x: u32, y: u32, walker: crate::path::Walker) -> Option<u32> {
+-        if walker.avoids_traps && self.feature(x, y) == Feature::SpikeTrap {
++        if (walker.avoids_traps && self.feature(x, y) == Feature::SpikeTrap)
++            || (walker.avoids_doors && self.feature(x, y).is_door())
++            || (walker.confined_room != 0 && self.room(x, y) != walker.confined_room)
++        {
+             return None;
+         }
+         let cost = self.move_cost(x, y)?;
+diff --git a/crates/sim/src/path.rs b/crates/sim/src/path.rs
+index 022df52..3a391d4 100644
+--- a/crates/sim/src/path.rs
++++ b/crates/sim/src/path.rs
+@@ -39,6 +39,10 @@ pub struct Walker {
+     /// n'est pas une propriété du marcheur mais un court-circuit, posé par
+     /// `find_path_for` quand — et seulement quand — la carte brûle.
+     pub avoids_fire: bool,
++    /// Les portes sont fermées à ce marcheur pendant la veille.
++    pub avoids_doors: bool,
++    /// Une besogne automatique reste dans cette pièce (0 : aucune restriction).
++    pub confined_room: u8,
+ }
+ 
+ impl Walker {
+@@ -47,11 +51,15 @@ impl Walker {
+     pub const ANYONE: Walker = Walker {
+         avoids_traps: false,
+         avoids_fire: false,
++        avoids_doors: false,
++        confined_room: 0,
+     };
+     /// Un membre de la colonie : il contourne ses propres pièges.
+     pub const COLONIST: Walker = Walker {
+         avoids_traps: true,
+         avoids_fire: false,
++        avoids_doors: false,
++        confined_room: 0,
+     };
+ }
+ 
+@@ -77,6 +85,7 @@ pub fn find_path_for(
+     let walker = Walker {
+         avoids_traps: walker.avoids_traps && map.trap_count() > 0,
+         avoids_fire: map.fire_count() > 0,
++        ..walker
+     };
+     if !map.passable_for(to.0, to.1, walker) {
+         return None;
+diff --git a/crates/sim/src/pawn.rs b/crates/sim/src/pawn.rs
+index 62b6b2b..26584fd 100644
+--- a/crates/sim/src/pawn.rs
++++ b/crates/sim/src/pawn.rs
+@@ -279,6 +279,12 @@ pub enum Job {
+         animal: u32,
+         progress: u32,
+     },
++    /// Défense choisie par la colonie : contrairement à une attaque manuelle,
++    /// elle réévalue la poursuite à chaque tick et ne quitte pas son enceinte.
++    /// Ajout en fin d'enum : les anciens indices postcard restent inchangés.
++    Defend {
++        target: u32,
++    },
+ }
+ 
+ impl Job {
+@@ -304,7 +310,7 @@ impl Job {
+             Job::Farm { sow: true, .. } => 10,
+             Job::Farm { sow: false, .. } => 4,
+             Job::Cook { .. } => 11,
+-            Job::Attack { .. } => 12,
++            Job::Attack { .. } | Job::Defend { .. } => 12,
+             Job::Flee => 13,
+             Job::Break { .. } => 14,
+             Job::Downed => 15,
+diff --git a/crates/sim/tests/defense.rs b/crates/sim/tests/defense.rs
+index d672df2..959ccfd 100644
+--- a/crates/sim/tests/defense.rs
++++ b/crates/sim/tests/defense.rs
+@@ -1011,7 +1011,7 @@ fn sans_enceinte_le_colon_charge_comme_avant() {
+     assert!(
+         run_until(&mut s, 300, |s| matches!(
+             find_pawn(s, hero).map(|p| p.job.clone()),
+-            Some(Job::Attack { .. })
++            Some(Job::Attack { .. } | Job::Defend { .. })
+         )),
+         "le colon n'a pas chargé : {:?}",
+         find_pawn(&s, hero).map(|p| p.job.clone())
+@@ -1042,14 +1042,14 @@ fn un_couard_rentre_mais_ne_se_bat_toujours_pas() {
+     assert!(
+         !matches!(
+             find_pawn(&s, coward).map(|p| p.job.clone()),
+-            Some(Job::Attack { .. })
++            Some(Job::Attack { .. } | Job::Defend { .. })
+         ),
+         "le couard a chargé"
+     );
+     assert!(
+         run_until(&mut s, 600, |s| matches!(
+             find_pawn(s, brave).map(|p| p.job.clone()),
+-            Some(Job::Attack { .. })
++            Some(Job::Attack { .. } | Job::Defend { .. })
+         )) || find_pawn(&s, intruder).is_none(),
+         "le brave n'a pas défendu la pièce"
+     );
+@@ -1105,7 +1105,7 @@ fn un_ordre_du_joueur_passe_avant_la_posture() {
+     assert!(
+         matches!(
+             find_pawn(&s, scout).map(|p| p.job.clone()),
+-            Some(Job::Attack { .. })
++            Some(Job::Attack { .. } | Job::Defend { .. })
+         ),
+         "l'ordre d'attaque a été refusé : {:?}",
+         find_pawn(&s, scout).map(|p| p.job.clone())

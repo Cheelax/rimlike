@@ -17,8 +17,8 @@ le multijoueur et le monde » plus bas).
   les vivres par le froid.
 - Une santé détaillée : parties du corps, blessures, saignements, soins, colons à
   terre, morts et tombes.
-- Des raids gérés par un storyteller à difficulté réglable, des armes (mêlée et
-  arc) et des pièges à pointes.
+- Des raids annoncés à l'avance, une défense autonome (tenir l'entrée ou se
+  replier derrière les portes), du pillage extérieur, des armes et des pièges.
 - De la faune à chasser et dépecer (viande, cuir), des vêtements à fabriquer et à
   porter selon la température.
 - Des saisons et un climat propre à chaque case du globe.
@@ -62,6 +62,9 @@ outils en ligne de commande du sim) : `AGENTS.md`.
 - `crates/sim` : la simulation, en Rust. Déterministe, sans rendu, sans réseau,
   sans horloge, compilée en natif et en WASM.
 - `crates/sim-wasm` : frontière wasm-bindgen, seule porte entre Rust et JavaScript.
+- `crates/sim-host` : moteur natif multi-cartes piloté par Node ; boucle autonome,
+  checkpoints et démonstrateur dans [docs/native-sim.md](docs/native-sim.md).
+  Le relais du monde partagé n'y est pas encore raccordé.
 - `apps/client` : Vite + React + Three.js. Lit l'état du sim, envoie des commandes.
 - `packages/protocol` (types, codec, logique lockstep pure) et `apps/server`
   (relais WebSocket : salles, horloge, ordre des commandes, snapshots) portent le

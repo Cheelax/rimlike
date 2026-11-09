@@ -279,6 +279,17 @@ pub enum Job {
         animal: u32,
         progress: u32,
     },
+    /// Défense choisie par la colonie : contrairement à une attaque manuelle,
+    /// elle réévalue la poursuite à chaque tick et ne quitte pas son enceinte.
+    /// Ajout en fin d'enum : les anciens indices postcard restent inchangés.
+    Defend {
+        target: u32,
+    },
+    /// Un pillard rejoint une pile extérieure, prend une charge et repart.
+    /// Ajout en fin d'enum pour garder les indices postcard précédents.
+    Pillage {
+        item: u32,
+    },
 }
 
 impl Job {
@@ -304,7 +315,8 @@ impl Job {
             Job::Farm { sow: true, .. } => 10,
             Job::Farm { sow: false, .. } => 4,
             Job::Cook { .. } => 11,
-            Job::Attack { .. } => 12,
+            Job::Attack { .. } | Job::Defend { .. } => 12,
+            Job::Pillage { .. } => 31,
             Job::Flee => 13,
             Job::Break { .. } => 14,
             Job::Downed => 15,

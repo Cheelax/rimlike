@@ -1,0 +1,216 @@
+trace seed=26 tick=0 day=0 reason=day indoor=0 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=29,29 room=0 hp=1000 hunger=800000 rest=900000 job=Idle path=0
+  pawn=2 faction=Colony tile=28,28 room=0 hp=1000 hunger=800000 rest=900000 job=Idle path=0
+  pawn=3 faction=Colony tile=29,28 room=0 hp=1000 hunger=800000 rest=900000 job=Idle path=0
+  food_by_room_kind={}
+trace seed=26 tick=432000 day=1 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=23,17 room=1 hp=1000 hunger=517639 rest=299946 job=Sleep { in_bed: false } path=0
+  pawn=2 faction=Colony tile=23,17 room=1 hp=1000 hunger=517084 rest=322446 job=Sleep { in_bed: true } path=0
+  pawn=3 faction=Colony tile=23,17 room=1 hp=1000 hunger=517469 rest=301112 job=Sleep { in_bed: false } path=0
+  food_by_room_kind={(1, 2): 6, (1, 4): 8, (1, 12): 2}
+trace seed=26 tick=864000 day=2 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=27,29 room=0 hp=1000 hunger=335254 rest=431550 job=Idle path=0
+  pawn=2 faction=Colony tile=24,22 room=1 hp=1000 hunger=996688 rest=380342 job=Cook { campfire: (23, 23), item: 105, picked: true, progress: 189336 } path=0
+  pawn=3 faction=Colony tile=19,34 room=0 hp=1000 hunger=335599 rest=431192 job=Idle path=0
+  food_by_room_kind={(1, 2): 32, (1, 3): 6, (1, 4): 9, (1, 12): 8}
+trace seed=26 tick=1296000 day=3 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=15,32 room=0 hp=1000 hunger=823498 rest=574292 job=Move { manual: false } path=4
+  pawn=2 faction=Colony tile=31,53 room=0 hp=1000 hunger=783961 rest=527380 job=Idle path=0
+  pawn=3 faction=Colony tile=63,55 room=0 hp=1000 hunger=826327 rest=577514 job=Idle path=0
+  food_by_room_kind={(1, 2): 18, (1, 3): 1, (1, 4): 10, (1, 12): 4}
+trace seed=26 tick=1728000 day=4 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=23,19 room=1 hp=1000 hunger=649825 rest=716676 job=Idle path=0
+  pawn=2 faction=Colony tile=31,25 room=0 hp=1000 hunger=584068 rest=672628 job=Move { manual: false } path=9
+  pawn=3 faction=Colony tile=23,60 room=0 hp=1000 hunger=668179 rest=728848 job=Move { manual: false } path=2
+  food_by_room_kind={(1, 2): 47, (1, 3): 2, (1, 4): 10}
+trace seed=26 tick=2160000 day=5 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=15,33 room=0 hp=1000 hunger=437950 rest=861924 job=Idle path=0
+  pawn=2 faction=Colony tile=23,54 room=0 hp=1000 hunger=371982 rest=815012 job=Chat { with: 3, ticks: 1904 } path=0
+  pawn=3 faction=Colony tile=25,53 room=0 hp=1000 hunger=463233 rest=870158 job=Chat { with: 2, ticks: 1903 } path=0
+  pawn=169 faction=Colony tile=19,47 room=0 hp=1000 hunger=684463 rest=288208 job=Move { manual: false } path=7
+  food_by_room_kind={(1, 2): 23, (1, 3): 3, (1, 4): 10, (1, 12): 11}
+trace seed=26 tick=2592000 day=6 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=25,17 room=1 hp=1000 hunger=886238 rest=583658 job=Sleep { in_bed: true } path=0
+  pawn=2 faction=Colony tile=26,17 room=1 hp=1000 hunger=854565 rest=881142 job=Sleep { in_bed: true } path=0
+  pawn=3 faction=Colony tile=23,17 room=1 hp=1000 hunger=909569 rest=524230 job=Sleep { in_bed: true } path=0
+  pawn=169 faction=Colony tile=61,24 room=0 hp=1000 hunger=473047 rest=429876 job=Idle path=0
+  food_by_room_kind={(1, 2): 54, (1, 3): 8, (1, 4): 10, (1, 12): 1}
+trace seed=26 tick=3024000 day=7 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=24,17 room=1 hp=1000 hunger=668813 rest=687736 job=Sleep { in_bed: true } path=0
+  pawn=2 faction=Colony tile=5,31 room=0 hp=1000 hunger=573028 rest=297860 job=Move { manual: false } path=1
+  pawn=3 faction=Colony tile=27,19 room=1 hp=1000 hunger=721261 rest=930460 job=Farm { sow: false, x: 27, y: 19, progress: 257588 } path=0
+  pawn=169 faction=Colony tile=38,13 room=0 hp=1000 hunger=963775 rest=571902 job=Idle path=0
+  food_by_room_kind={(1, 2): 35, (1, 3): 4, (1, 4): 10}
+trace seed=26 tick=3456000 day=8 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=13,8 room=0 hp=1000 hunger=405358 rest=326414 job=Idle path=0
+  pawn=2 faction=Colony tile=13,7 room=0 hp=1000 hunger=359887 rest=439170 job=Move { manual: false } path=2
+  pawn=3 faction=Colony tile=51,53 room=0 hp=1000 hunger=428611 rest=268060 job=Move { manual: false } path=4
+  pawn=169 faction=Colony tile=45,27 room=0 hp=1000 hunger=756775 rest=714644 job=Idle path=0
+  food_by_room_kind={(1, 2): 90, (1, 3): 6, (1, 4): 10}
+trace seed=26 tick=3888000 day=9 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=10,51 room=0 hp=853 hunger=895258 rest=469156 job=Move { manual: false } path=1
+  pawn=2 faction=Colony tile=9,44 room=0 hp=1000 hunger=847441 rest=581912 job=Tend { target: 1, progress: 0 } path=1
+  pawn=3 faction=Colony tile=17,58 room=0 hp=1000 hunger=917407 rest=410444 job=Move { manual: false } path=1
+  pawn=169 faction=Colony tile=16,59 room=0 hp=1000 hunger=546861 rest=855954 job=Move { manual: false } path=2
+  pawn=261 faction=Colony tile=11,48 room=0 hp=1000 hunger=462966 rest=608644 job=Idle path=0
+  food_by_room_kind={(1, 2): 15, (1, 3): 1, (1, 4): 5}
+trace seed=26 tick=4320000 day=10 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=48,57 room=0 hp=1000 hunger=682876 rest=612972 job=Idle path=0
+  pawn=2 faction=Colony tile=27,9 room=0 hp=1000 hunger=661831 rest=724654 job=Idle path=0
+  pawn=3 faction=Colony tile=38,38 room=0 hp=1000 hunger=704611 rest=552470 job=Move { manual: false } path=1
+  pawn=169 faction=Colony tile=23,17 room=1 hp=1000 hunger=297625 rest=621006 job=Sleep { in_bed: true } path=0
+  pawn=261 faction=Colony tile=3,22 room=0 hp=1000 hunger=956392 rest=751386 job=Idle path=0
+  food_by_room_kind={(1, 2): 3, (1, 3): 3, (1, 4): 1}
+trace seed=26 tick=4752000 day=11 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=45,25 room=0 hp=880 hunger=0 rest=754998 job=Idle path=0
+  pawn=2 faction=Colony tile=34,26 room=0 hp=1000 hunger=197156 rest=869544 job=Idle path=0
+  pawn=3 faction=Colony tile=22,15 room=0 hp=891 hunger=0 rest=694496 job=Idle path=0
+  pawn=169 faction=Colony tile=29,42 room=0 hp=1000 hunger=79402 rest=336296 job=Move { manual: false } path=1
+  pawn=261 faction=Colony tile=46,26 room=0 hp=1000 hunger=41647 rest=895560 job=Break { until: 4835047 } path=0
+  food_by_room_kind={}
+trace seed=26 tick=5184000 day=12 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=34,18 room=0 hp=637 hunger=0 rest=898456 job=Move { manual: false } path=5
+  pawn=2 faction=Colony tile=46,50 room=0 hp=1000 hunger=103556 rest=207144 job=Break { until: 5264094 } path=3
+  pawn=3 faction=Colony tile=38,59 room=0 hp=1000 hunger=180040 rest=837238 job=Idle path=0
+  pawn=169 faction=Colony tile=50,25 room=0 hp=1000 hunger=57654 rest=479754 job=Break { until: 5274660 } path=2
+  pawn=261 faction=Colony tile=26,17 room=1 hp=1000 hunger=116855 rest=360250 job=Sleep { in_bed: true } path=0
+  food_by_room_kind={}
+trace seed=26 tick=5616000 day=13 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=1 faction=Colony tile=31,54 room=0 hp=123 hunger=0 rest=236056 job=Break { until: 5716158 } path=2
+  pawn=2 faction=Colony tile=17,53 room=0 hp=540 hunger=0 rest=541058 job=Idle path=0
+  pawn=3 faction=Colony tile=23,17 room=1 hp=1000 hunger=68154 rest=751576 job=Sleep { in_bed: true } path=0
+  pawn=169 faction=Colony tile=55,36 room=0 hp=649 hunger=0 rest=622496 job=Move { manual: false } path=3
+  pawn=261 faction=Colony tile=41,54 room=0 hp=581 hunger=0 rest=374828 job=Move { manual: false } path=3
+  food_by_room_kind={}
+trace death seed=26 tick=5718721 pawn=1 cause=famine hunger=0 hurt=true
+trace seed=26 tick=5718721 day=13 reason=death indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=2 faction=Colony tile=8,34 room=0 hp=417 hunger=0 rest=383508 job=Break { until: 5786683 } path=2
+  pawn=3 faction=Colony tile=15,39 room=0 hp=924 hunger=0 rest=821714 job=Idle path=0
+  pawn=169 faction=Colony tile=38,43 room=0 hp=732 hunger=546312 rest=464946 job=Idle path=0
+  pawn=261 faction=Colony tile=26,17 room=1 hp=560 hunger=0 rest=461076 job=Sleep { in_bed: true } path=0
+  pawn=287 faction=Colony tile=17,18 room=0 hp=1000 hunger=572607 rest=681738 job=Idle path=0
+  food_by_room_kind={}
+trace seed=26 tick=6048000 day=14 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=2 faction=Colony tile=4,3 room=0 hp=366 hunger=0 rest=824136 job=Break { until: 6074671 } path=2
+  pawn=3 faction=Colony tile=61,29 room=0 hp=844 hunger=0 rest=316864 job=Idle path=0
+  pawn=169 faction=Colony tile=30,21 room=0 hp=932 hunger=0 rest=764164 job=Break { until: 6056468 } path=7
+  pawn=261 faction=Colony tile=14,25 room=0 hp=445 hunger=69441 rest=517570 job=Break { until: 6125921 } path=3
+  pawn=287 faction=Colony tile=23,17 room=1 hp=905 hunger=0 rest=348370 job=Sleep { in_bed: true } path=0
+  food_by_room_kind={}
+trace seed=26 tick=6480000 day=15 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=2 faction=Colony tile=24,17 room=1 hp=744 hunger=138259 rest=842294 job=Sleep { in_bed: true } path=0
+  pawn=3 faction=Colony tile=34,53 room=0 hp=988 hunger=241188 rest=510800 job=Idle path=0
+  pawn=169 faction=Colony tile=3,27 room=0 hp=1000 hunger=603718 rest=907980 job=Idle path=0
+  pawn=261 faction=Colony tile=16,48 room=0 hp=819 hunger=7132 rest=660312 job=Break { until: 6571347 } path=0
+  pawn=287 faction=Colony tile=27,15 room=0 hp=1000 hunger=290211 rest=376552 job=Idle path=0
+  food_by_room_kind={}
+trace seed=26 tick=6912000 day=16 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=2 faction=Colony tile=58,42 room=0 hp=447 hunger=0 rest=303762 job=Break { until: 6928457 } path=3
+  pawn=3 faction=Colony tile=45,30 room=0 hp=611 hunger=0 rest=690058 job=Idle path=0
+  pawn=169 faction=Colony tile=29,21 room=1 hp=798 hunger=0 rest=245580 job=Break { until: 6927902 } path=6
+  pawn=261 faction=Colony tile=24,43 room=0 hp=1000 hunger=97454 rest=803770 job=Move { manual: false } path=6
+  pawn=287 faction=Colony tile=45,39 room=0 hp=677 hunger=0 rest=518936 job=Idle path=0
+  food_by_room_kind={}
+trace seed=26 tick=7344000 day=17 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=2 faction=Colony tile=45,50 room=0 hp=743 hunger=219384 rest=496266 job=Idle path=0
+  pawn=3 faction=Colony tile=21,38 room=0 hp=1000 hunger=127909 rest=831726 job=Idle path=0
+  pawn=169 faction=Colony tile=12,32 room=0 hp=1000 hunger=810388 rest=422332 job=Chat { with: 346, ticks: 1339 } path=0
+  pawn=261 faction=Colony tile=15,34 room=0 hp=1000 hunger=828452 rest=946512 job=Idle path=0
+  pawn=287 faction=Colony tile=26,56 room=0 hp=1000 hunger=584758 rest=661320 job=Move { manual: false } path=1
+  pawn=346 faction=Colony tile=11,34 room=0 hp=1000 hunger=424564 rest=413604 job=Chat { with: 169, ticks: 1339 } path=0
+  food_by_room_kind={}
+trace seed=26 tick=7776000 day=18 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=2 faction=Colony tile=15,26 room=0 hp=1000 hunger=54814 rest=642230 job=Move { manual: false } path=6
+  pawn=3 faction=Colony tile=23,17 room=1 hp=649 hunger=0 rest=777210 job=Sleep { in_bed: true } path=0
+  pawn=169 faction=Colony tile=30,48 room=0 hp=946 hunger=0 rest=564716 job=Chat { with: 287, ticks: 34 } path=0
+  pawn=261 faction=Colony tile=36,23 room=0 hp=914 hunger=0 rest=284112 job=Move { manual: false } path=2
+  pawn=287 faction=Colony tile=29,49 room=0 hp=788 hunger=0 rest=805136 job=Chat { with: 169, ticks: 33 } path=0
+  pawn=346 faction=Colony tile=19,13 room=0 hp=703 hunger=0 rest=555988 job=Idle path=0
+  food_by_room_kind={}
+trace seed=26 tick=8208000 day=19 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=2 faction=Colony tile=45,61 room=0 hp=647 hunger=0 rest=786404 job=Idle path=0
+  pawn=3 faction=Colony tile=31,49 room=0 hp=413 hunger=621585 rest=313142 job=Idle path=0
+  pawn=169 faction=Colony tile=37,54 room=0 hp=707 hunger=624414 rest=708174 job=Idle path=0
+  pawn=261 faction=Colony tile=8,31 room=0 hp=671 hunger=627105 rest=427212 job=Move { manual: false } path=3
+  pawn=287 faction=Colony tile=24,18 room=1 hp=1000 hunger=136781 rest=946446 job=Move { manual: false } path=2
+  pawn=346 faction=Colony tile=1,0 room=0 hp=271 hunger=0 rest=890976 job=Break { until: 8277869 } path=1
+  food_by_room_kind={}
+trace death seed=26 tick=8435281 pawn=346 cause=famine hunger=0 hurt=true
+trace seed=26 tick=8435281 day=19 reason=death indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=2 faction=Colony tile=21,30 room=0 hp=376 hunger=0 rest=437862 job=Break { until: 8440426 } path=5
+  pawn=3 faction=Colony tile=19,59 room=0 hp=743 hunger=177697 rest=771890 job=Tend { target: 287, progress: 59300 } path=0
+  pawn=169 faction=Colony tile=17,59 room=0 hp=961 hunger=101601 rest=359632 job=Chat { with: 287, ticks: 2049 } path=0
+  pawn=261 faction=Colony tile=13,48 room=0 hp=1000 hunger=182902 rest=882738 job=Idle path=0
+  pawn=287 faction=Colony tile=19,59 room=0 hp=1000 hunger=363968 rest=597904 job=Chat { with: 169, ticks: 2049 } path=0
+  food_by_room_kind={(1, 3): 1}
+trace seed=26 tick=8640000 day=20 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=2 faction=Colony tile=29,4 room=0 hp=235 hunger=0 rest=124004 job=Break { until: 8654603 } path=1
+  pawn=3 faction=Colony tile=48,29 room=0 hp=630 hunger=0 rest=458032 job=Tend { target: 287, progress: 500 } path=0
+  pawn=169 faction=Colony tile=5,29 room=0 hp=770 hunger=0 rest=917504 job=Break { until: 8727704 } path=0
+  pawn=261 faction=Colony tile=23,55 room=0 hp=851 hunger=0 rest=568880 job=Break { until: 8689104 } path=0
+  pawn=287 faction=Colony tile=48,29 room=0 hp=945 hunger=0 rest=284046 job=Break { until: 8658218 } path=0
+  food_by_room_kind={}
+trace death seed=26 tick=8836801 pawn=2 cause=famine hunger=0 hurt=true
+trace seed=26 tick=8836801 day=20 reason=death indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  pawn=3 faction=Colony tile=26,17 room=1 hp=395 hunger=0 rest=863992 job=Sleep { in_bed: true } path=0
+  pawn=169 faction=Colony tile=30,53 room=0 hp=535 hunger=0 rest=615698 job=Break { until: 8849483 } path=2
+  pawn=261 faction=Colony tile=9,50 room=0 hp=616 hunger=0 rest=267074 job=Break { until: 8905405 } path=1
+  pawn=287 faction=Colony tile=23,17 room=1 hp=710 hunger=0 rest=795258 job=Sleep { in_bed: true } path=0
+  food_by_room_kind={}
+trace death seed=26 tick=9053211 pawn=261 cause=famine hunger=0 hurt=true
+trace seed=26 tick=9053211 day=20 reason=death indoor=49 raid=[1, 3, 0, 263, 150, 374] fire=0
+  pawn=3 faction=Colony tile=29,21 room=1 hp=192 hunger=695628 rest=631002 job=Idle path=0
+  pawn=169 faction=Colony tile=26,19 room=1 hp=329 hunger=98112 rest=283900 job=Break { until: 9160661 } path=3
+  pawn=287 faction=Colony tile=63,30 room=0 hp=453 hunger=0 rest=641028 job=Break { until: 9068825 } path=2
+  pawn=371 faction=Colony tile=27,19 room=1 hp=1000 hunger=212772 rest=441848 job=Idle path=0
+  pawn=374 faction=Raider tile=33,51 room=0 hp=1000 hunger=1000000 rest=1000000 job=Attack { target: 261 } path=0
+  pawn=375 faction=Raider tile=33,51 room=0 hp=1000 hunger=1000000 rest=1000000 job=Attack { target: 261 } path=0
+  pawn=376 faction=Raider tile=33,51 room=0 hp=1000 hunger=1000000 rest=1000000 job=Idle path=0
+  food_by_room_kind={}
+trace death seed=26 tick=9053927 pawn=3 cause=raid hunger=693972 hurt=true
+trace seed=26 tick=9053927 day=20 reason=death indoor=49 raid=[2, 3, 0, 195, 150, 374] fire=0
+  pawn=169 faction=Colony tile=26,19 room=1 hp=329 hunger=96456 rest=282796 job=Defend { target: 376 } path=0
+  pawn=287 faction=Colony tile=63,30 room=0 hp=452 hunger=0 rest=639924 job=Break { until: 9068825 } path=2
+  pawn=371 faction=Colony tile=27,19 room=1 hp=1000 hunger=211116 rest=440744 job=Defend { target: 376 } path=0
+  pawn=374 faction=Raider tile=30,21 room=0 hp=1000 hunger=1000000 rest=1000000 job=Attack { target: 3 } path=0
+  pawn=375 faction=Raider tile=30,21 room=0 hp=1000 hunger=1000000 rest=1000000 job=Idle path=0
+  pawn=376 faction=Raider tile=30,21 room=0 hp=786 hunger=1000000 rest=1000000 job=Idle path=0
+  food_by_room_kind={}
+trace death seed=26 tick=9054801 pawn=371 cause=raid hunger=209115 hurt=true
+trace seed=26 tick=9054801 day=20 reason=death indoor=49 raid=[2, 3, 0, 123, 150, 374] fire=0
+  pawn=169 faction=Colony tile=25,20 room=1 hp=277 hunger=94455 rest=281462 job=Break { until: 9162018 } path=3
+  pawn=287 faction=Colony tile=63,30 room=0 hp=451 hunger=0 rest=638590 job=Break { until: 9068825 } path=2
+  pawn=374 faction=Raider tile=30,21 room=0 hp=1000 hunger=1000000 rest=1000000 job=Attack { target: 169 } path=0
+  pawn=375 faction=Raider tile=30,21 room=0 hp=1000 hunger=1000000 rest=1000000 job=Attack { target: 169 } path=0
+  pawn=376 faction=Raider tile=30,21 room=0 hp=789 hunger=1000000 rest=1000000 job=Attack { target: 169 } path=0
+  food_by_room_kind={}
+trace death seed=26 tick=9055099 pawn=169 cause=famine hunger=93765 hurt=true
+trace seed=26 tick=9055099 day=20 reason=death indoor=49 raid=[2, 3, 0, 65, 150, 374] fire=0
+  pawn=287 faction=Colony tile=63,30 room=0 hp=451 hunger=0 rest=638130 job=Break { until: 9068825 } path=2
+  pawn=374 faction=Raider tile=30,21 room=0 hp=1000 hunger=1000000 rest=1000000 job=Attack { target: 169 } path=0
+  pawn=375 faction=Raider tile=30,21 room=0 hp=1000 hunger=1000000 rest=1000000 job=Attack { target: 169 } path=0
+  pawn=376 faction=Raider tile=30,21 room=0 hp=789 hunger=1000000 rest=1000000 job=Idle path=0
+  food_by_room_kind={}
+trace death seed=26 tick=9056347 pawn=287 cause=famine hunger=0 hurt=true
+trace seed=26 tick=9056347 day=20 reason=death indoor=49 raid=[2, 2, 0, 0, 100, 374] fire=0
+  pawn=374 faction=Raider tile=55,28 room=0 hp=1000 hunger=1000000 rest=1000000 job=Attack { target: 287 } path=0
+  pawn=375 faction=Raider tile=55,28 room=0 hp=1000 hunger=1000000 rest=1000000 job=Idle path=0
+  food_by_room_kind={}
+trace seed=26 tick=9072000 day=21 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  food_by_room_kind={}
+trace seed=26 tick=9504000 day=22 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  food_by_room_kind={}
+trace seed=26 tick=9936000 day=23 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  food_by_room_kind={}
+trace seed=26 tick=10368000 day=24 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  food_by_room_kind={}
+trace seed=26 tick=10800000 day=25 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  food_by_room_kind={}
+trace seed=26 tick=11232000 day=26 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  food_by_room_kind={}
+trace seed=26 tick=11664000 day=27 reason=day indoor=49 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  food_by_room_kind={}
+trace seed=26 tick=12096000 day=28 reason=day indoor=0 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  food_by_room_kind={}
+trace seed=26 tick=12528000 day=29 reason=day indoor=0 raid=[0, 0, 0, 0, 0, 4294967295] fire=0
+  food_by_room_kind={}

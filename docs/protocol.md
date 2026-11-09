@@ -30,7 +30,7 @@ Constantes partagées (`packages/protocol/src/messages.ts`) :
 
 | Constante | Valeur | Rôle |
 |---|---|---|
-| `PROTOCOL_VERSION` | 3 | Incrémentée à chaque changement incompatible (3 : échelle du jour, §3.2 ; 2 : identité par jeton, §11.2) |
+| `PROTOCOL_VERSION` | 4 | Incrémentée à chaque changement incompatible (4 : défense autonome et pillage, nouveaux jobs des snapshots ; 3 : échelle du jour, §3.2 ; 2 : identité par jeton, §11.2) |
 | `TICK_RATE` | 60 | Ticks de sim par seconde |
 | `BUNDLE_TICKS` | 3 | Ticks par bundle, donc 20 bundles/s |
 | `BUNDLE_INTERVAL_MS` | 50 | Période d'émission d'un bundle |
@@ -57,6 +57,10 @@ Constantes partagées (`packages/protocol/src/messages.ts`) :
 | `FACTION_COUNT` | 3 | Factions PNJ du sim (§14), l'ordre du triplet de réputation |
 | `GOODWILL_MIN` / `GOODWILL_MAX` | −100 / 100 | Bornes d'une réputation (§14) |
 | `DEFAULT_GOODWILL` | `[-20, -20, 10]` | Réputation d'un joueur que le monde n'a jamais vu agir (§14) |
+
+Le moteur natif et sa boucle de colonies autonomes sont décrits dans
+[docs/native-sim.md](native-sim.md). Ils restent séparés de ce relais : aucune salle
+WebSocket ne passe encore automatiquement à l'autorité native.
 
 ## 2. Transport et format
 

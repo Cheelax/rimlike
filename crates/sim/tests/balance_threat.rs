@@ -19,6 +19,7 @@
 
 use sim::combat::{GRACE_DAYS, MAX_RAIDERS};
 use sim::health::SEVERITY_MAX;
+use sim::map::Feature;
 use sim::pawn::NEED_MAX;
 use sim::storyteller::POINTS_PER_RAIDER;
 use sim::{
@@ -355,5 +356,147 @@ fn difficile_laisse_passer_le_dixieme_jour() {
         alive * 2 >= SEEDS as u32,
         "{alive} colonies sur {SEEDS} passent le jour {DAYS} en difficile \
          (il en faut la moitié) — colons restants : {survivors:?}"
+    );
+}
+
+// ----------------------------------------------------------------------
+// Le seuil de la décision tactique (fiche `colonie-tient-seule`)
+// ----------------------------------------------------------------------
+
+/// Demi-côté de l'enceinte du relevé : onze cases d'intérieur, sous les
+/// `map::ROOM_MAX_TILES` (200) qu'une pièce a le droit d'occuper.
+const MEASURE_PEN: u32 = 6;
+
+/// Une colonie **murée** de la graine, porte au sud. C'est le décor de la
+/// décision tactique : sans enceinte, il n'y a rien à décider
+/// (`combat::Stance::Free`).
+///
+/// `None` quand les trois colons de départ ne tiennent pas dans le carré :
+/// la graine est alors sautée plutôt que jouée de travers.
+fn walled_colony(seed: u64) -> Option<Sim> {
+    let mut s = Sim::new(seed, SIZE, SIZE);
+    let (cx, cy) = s.colony_center()?;
+    if cx < MEASURE_PEN + 1
+        || cy < MEASURE_PEN + 1
+        || cx + MEASURE_PEN + 1 >= SIZE
+        || cy + MEASURE_PEN + 1 >= SIZE
+    {
+        return None;
+    }
+    for d in 0..=2 * MEASURE_PEN {
+        for (x, y) in [
+            (cx - MEASURE_PEN + d, cy - MEASURE_PEN),
+            (cx - MEASURE_PEN + d, cy + MEASURE_PEN),
+            (cx - MEASURE_PEN, cy - MEASURE_PEN + d),
+            (cx + MEASURE_PEN, cy - MEASURE_PEN + d),
+        ] {
+            s.map_mut().set_feature(x, y, Feature::WallWood);
+        }
+    }
+    s.map_mut()
+        .set_feature(cx, cy + MEASURE_PEN, Feature::DoorWood);
+    s.map_mut().refresh_indoor();
+    if s.map().indoor_count() == 0 {
+        return None;
+    }
+    let all_in = s
+        .pawns()
+        .iter()
+        .filter(|p| p.is_colonist() && p.is_alive())
+        .all(|p| {
+            let (x, y) = p.tile();
+            s.map().room(x, y) != 0
+        });
+    if !all_in { None } else { Some(s) }
+}
+
+/// **Le relevé du seuil.** Ce n'est pas un test : c'est la mesure qui a servi
+/// à fixer `combat::HOLD_RATIO_PERCENT`, gardée pour qu'on puisse la rejouer.
+///
+/// ```sh
+/// cargo test -p sim --test balance_threat -- --ignored --nocapture \
+///     measure_le_seuil_de_la_decision_tactique
+/// ```
+///
+/// Sur trente colonies murées de trois colons, jouées douze jours de jeu, on
+/// note à **chaque bande annoncée** le rapport de force que la colonie voit :
+/// ce qu'elle peut aligner (`Sim::colony_line_power`) contre ce qui arrive
+/// (`Sim::raid_line_power`), en pourcentage. La sortie donne la distribution
+/// et, pour quatre seuils candidats, combien de bandes tomberaient du côté
+/// « tenir la porte » et combien du côté « veille ».
+///
+/// Ce que ce relevé **ne** dit pas : laquelle des deux postures sauve le plus
+/// de colons. Ça, seule la campagne le dit, et c'est elle qui a tranché
+/// (`crates/sim-cli/CAMPAIGN-FINDINGS.md` §17) : le seuil retenu est celui
+/// qui maximise la survie du joueur absent sans coûter au joueur présent.
+#[test]
+#[ignore = "relevé de mesure, pas un test : --ignored --nocapture"]
+fn measure_le_seuil_de_la_decision_tactique() {
+    const SEEDS: u64 = 30;
+    const DAYS: u64 = 12;
+    const THRESHOLDS: [u32; 4] = [80, 100, 120, 150];
+
+    let mut ratios: Vec<u32> = Vec::new();
+    let mut played = 0u32;
+    for seed in 1..=SEEDS {
+        let Some(mut s) = walled_colony(seed) else {
+            continue;
+        };
+        played += 1;
+        let mut band = 0;
+        for _ in 0..DAYS * DAY {
+            feed(&mut s);
+            let before = raiders(&s);
+            s.step(&[]);
+            if raiders(&s) <= before {
+                continue;
+            }
+            band += 1;
+            let theirs = s.raid_line_power();
+            let mine = s.colony_line_power();
+            if theirs > 0 {
+                ratios.push(mine * 100 / theirs);
+            }
+        }
+        println!(
+            "graine {seed:>2} : {band} bandes, {} colons debout en fin",
+            colonists(&s)
+        );
+    }
+    ratios.sort_unstable();
+    let n = ratios.len();
+    assert!(n > 0, "aucune bande annoncée sur {played} colonies murées");
+    println!(
+        "\n{played} colonies murées, {n} bandes annoncées — rapport de force en % \
+         (colonie / bande) :"
+    );
+    println!(
+        "  min {} — médiane {} — max {}",
+        ratios[0],
+        ratios[n / 2],
+        ratios[n - 1]
+    );
+    println!("  {ratios:?}");
+    println!("\nissues par seuil :");
+    for t in THRESHOLDS {
+        let hold = ratios.iter().filter(|&&r| r >= t).count();
+        println!(
+            "  seuil {t:>3} % : tenir la porte {hold:>3} / {n}  ({} %)   veille {:>3}",
+            hold * 100 / n,
+            n - hold
+        );
+    }
+    // Le relevé n'a de sens que si les deux postures sont réellement
+    // atteintes au seuil retenu : un seuil qui ne bascule jamais ne décide
+    // rien, et le mesurer serait se mentir.
+    let hold = ratios
+        .iter()
+        .filter(|&&r| r >= sim::combat::HOLD_RATIO_PERCENT)
+        .count();
+    assert!(
+        hold > 0 && hold < n,
+        "au seuil retenu ({} %), {hold} bandes sur {n} tombent du côté « tenir » : \
+         la décision n'en est plus une",
+        sim::combat::HOLD_RATIO_PERCENT
     );
 }

@@ -13,6 +13,7 @@ import { factionDefinite } from "./factions";
 import { FactionsPanel } from "./FactionsPanel";
 import { HelpPanel } from "./HelpPanel";
 import { FirstStepsPanel } from "./FirstStepsPanel";
+import { raidNotice } from "./raidStatus";
 import { FIRST_STEPS, loadFirstSteps, nextStep, saveFirstSteps, type FirstStepId } from "./firstSteps";
 import { JournalPanel, type JournalEntry, type JournalFilter } from "./JournalPanel";
 import { Minimap, type MinimapHandle } from "./Minimap";
@@ -67,6 +68,7 @@ import {
   EVENT_STRIDE,
   eventLabel,
   FEATURE,
+  formatClock,
   formatInjury,
   formatTemperature,
   formatTraderLeaves,
@@ -390,10 +392,13 @@ interface Stats {
   colonistBadges: ColonistBadge[];
   /** Ticks d'un jour de jeu (`frame.ticksPerDay`), pour l'horodatage du Journal. */
   ticksPerDay: number;
+  clockOffsetTicks: number;
   /** Dose de menace courante, suivant `render/terrain.ts::DIFFICULTY` (`frame.difficulty`). */
   difficulty: number;
   /** Richesse de la colonie (`frame.wealth`), affichée dans le HUD stock. */
   wealth: number;
+  /** Posture et préavis calculés dans le sim. */
+  raidStatus: number[];
   /** Id du marchand présent (`frame.traderPresent`), −1 s'il n'y en a pas. */
   traderPresent: number;
   /** Ticks avant que le marchand ne reprenne la route (`frame.traderLeavesIn`), 0 si absent. */
@@ -472,8 +477,10 @@ const INITIAL: Stats = {
   hasForge: false,
   colonistBadges: [],
   ticksPerDay: TICKS_PER_DAY,
+  clockOffsetTicks: 0,
   difficulty: DIFFICULTY.Normal,
   wealth: 0,
+  raidStatus: [0, 0, 0, 0, 0, 0xffffffff],
   traderPresent: -1,
   traderLeavesIn: 0,
   traderOffers: [],
@@ -2077,6 +2084,11 @@ export function App() {
         rpc: (method: string, ...args: unknown[]) => bridge.rpc(method, ...args),
         /** Même chemin que l'UI. Le tampon est copié : l'appelant garde le sien. */
         issue: (bytes: Uint8Array) => bridge.issue(bytes.slice()),
+        /** Scène de test en mémoire : préserve la sauvegarde locale du joueur. */
+        loadSnapshot: (bytes: Uint8Array) => {
+          if (multi) throw new Error("Chargement de scène réservé au solo");
+          bridge.load(bytes.slice());
+        },
         get frame() {
           return lastFrame;
         },
@@ -2141,10 +2153,7 @@ export function App() {
         setStats((prev) => ({ ...prev, tps: 0, fps, drawCalls: renderer.drawCalls, lag: netState?.lag ?? 0 }));
         return;
       }
-      const tod = f.timeOfDay / f.ticksPerDay;
-      const minutes = Math.floor(tod * 24 * 60);
-      const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
-      const mm = String(minutes % 60).padStart(2, "0");
+      const hour = formatClock(f.timeOfDay, f.ticksPerDay);
       let info: PawnInfo | null = null;
       let colonists = 0;
       let hostiles = 0;
@@ -2414,7 +2423,7 @@ export function App() {
       setStats({
         tick: f.tick,
         day: Math.floor(f.tick / f.ticksPerDay) + 1,
-        hour: `${hh}:${mm}`,
+        hour,
         hash: lastHash,
         // Ticks par seconde mesurés dans le Worker, images par seconde ici.
         tps: f.tps,
@@ -2447,8 +2456,11 @@ export function App() {
         hasResearchBench: researchBenchCount > 0,
         hasForge: forgeCount > 0,
         ticksPerDay: f.ticksPerDay,
+        // Le décalage de départ vient du sim (la partie commence au matin).
+        clockOffsetTicks: (f.timeOfDay - f.tick % f.ticksPerDay + f.ticksPerDay) % f.ticksPerDay,
         difficulty: f.difficulty,
         wealth: f.wealth,
+        raidStatus: Array.from(f.raidStatus),
         traderPresent: f.traderPresent,
         traderLeavesIn: f.traderLeavesIn,
         traderOffers: Array.from(f.traderOffers),
@@ -2715,6 +2727,7 @@ export function App() {
   // `stats.day`), Y = longueur d'une saison (`sim::climate::SEASON_DAYS`).
   const seasonDays = Math.max(1, Math.floor(stats.yearDays / 4));
   const dayInSeason = (stats.dayOfYear % seasonDays) + 1;
+  const raid = raidNotice(stats.raidStatus, stats.ticksPerDay);
   const workRows: { id: number; prio: number[] }[] = [];
   for (let o = 0; o + PRIORITY_STRIDE <= stats.priorities.length; o += PRIORITY_STRIDE) {
     workRows.push({ id: stats.priorities[o], prio: stats.priorities.slice(o + 1, o + PRIORITY_STRIDE) });
@@ -2939,7 +2952,11 @@ export function App() {
           <div className="colony-status">
             <span>{stats.colonists} colons{stats.livestockCount > 0 ? ` · ${stats.livestockCount} animaux apprivoisés` : ""}</span>
             {stats.blueprints > 0 && <span>{stats.blueprints} chantiers</span>}
-            {stats.hostiles > 0 && <span className="danger">{stats.hostiles} ennemis</span>}
+            {raid && <button className="raid-status danger" title={raid.detail}
+              aria-label={`Observer le raid : ${raid.label}. ${raid.posture}`}
+              onClick={() => raid.target !== null && actionsRef.current?.focusPawn(raid.target)}>
+              <strong>{raid.posture}</strong><span>{raid.label}</span>
+            </button>}
             {stats.fireCount > 0 && <span className="danger">Incendie · {stats.fireCount} cases</span>}
             {stats.traderPresent >= 0 && <button onClick={() => setShowTrade(true)}>Marchand · {formatTraderLeaves(stats.traderLeavesIn, stats.ticksPerDay)}</button>}
             {currentTechInfo && <button onClick={() => setShowResearch(true)}>{TECHS[currentTechInfo.tech]?.name} · {researchPercent(currentTechInfo.progress, currentTechInfo.cost)} %</button>}
@@ -3246,6 +3263,7 @@ export function App() {
             <JournalPanel
               entries={eventLogRef.current}
               ticksPerDay={stats.ticksPerDay}
+              clockOffsetTicks={stats.clockOffsetTicks}
               filter={journalFilter}
               onFilterChange={setJournalFilter}
               onClose={() => setShowJournal(false)}

@@ -184,6 +184,7 @@ entière, et l'identité à K = 1 puisque `tick % 1 == 0` est toujours vrai.
 | `TRADER_STAY`, `TRADER_GRUDGE_EXTRA`, `TRADER_GRUDGE_TICKS` | jours | un jour d'étal, quinze jours de rancune |
 | `FADE_PER_DAY` = 1 | jours | un point par jour, déclenché sur `ticks_per_day()` |
 | `SIEGE_TICKS` = 1 200 | **physique** | **cas tranché** : « le temps de fermer une porte » — vingt secondes réelles données au joueur pendant l'assaut. Ce délai n'a de sens qu'en temps réel |
+| `RAID_WARNING_DIVISOR` = 24 (`Sim::raid_warning_ticks` = `ticks_per_day() / 24`) | **jours** | **cas tranché le 2026-09-10, fiche `colonie-tient-seule`** : la prévenance mesure **le temps de rentrer**, pas le temps de courir. Ce qu'elle doit couvrir, c'est un colon parti bûcheronner qui repose sa hache et regagne l'enceinte — une tâche de journée, pas un geste. Laissée en ticks réels, elle vaudrait à K = 30 un cinquantième de journée de jeu : la bande serait sur la colonie avant que le bûcheron ait eu le temps de compter comme absent. Elle est donc écrite en heures de jeu et suit `ticks_per_day` par construction : 600 ticks à K = 1 (dix secondes réelles), 18 000 à K = 30 (cinq minutes réelles). **Ne pas confondre avec `SIEGE_TICKS`**, qui reste physique et **s'ajoute** à elle : la prévenance dit « ils arrivent », le siège dit « ils s'installent » |
 | `WEALTH_CACHE_TICKS` = 600 | calcul | fraîcheur d'un cache ; non étiré il est simplement plus frais à grand K |
 
 ### `fastforward.rs` — la carte gelée
@@ -209,7 +210,7 @@ entière, et l'identité à K = 1 puisque `tick % 1 == 0` est toujours vrai.
 |---|---|
 | travail (× K) | 23 |
 | physique (inchangée) | 19 |
-| jours (suit par construction) | 30 |
+| jours (suit par construction) | 31 |
 | calcul (inchangée, vérifiée) | 13 |
 
 Les entrées comptent des **lignes de la table**, pas des constantes : une
@@ -217,9 +218,9 @@ ligne comme `BuildKind::work_ticks` en porte dix à elle seule.
 
 ## Ce que la mesure a trouvé aux frontières
 
-Deux croisements de familles se voient à la campagne (`CAMPAIGN-FINDINGS.md`
-§15.4, §15.5 et §15.11), et il faut les connaître avant de ranger une durée
-nouvelle :
+Trois croisements de familles se voient à la campagne (`CAMPAIGN-FINDINGS.md`
+§15.4, §15.5, §15.11 et §17), et il faut les connaître avant de ranger une
+durée nouvelle :
 
 - **l'hémostase contre le saignement** : `HEMOSTASIS_TICKS` était du travail, le
   saignement est physique. À K = 30, la compression arrivait après que le blessé
@@ -239,6 +240,16 @@ nouvelle :
   durée du feu : à grand K, le **vent** ne tourne plus non plus (il se lit dans
   le bruit de la période météo), ce qui joue en sens inverse et **borne**
   l'incendie.
+- **la prévenance contre la marche d'une bande** (2026-09-10, fiche
+  `colonie-tient-seule`) : le troisième couple, et le premier qu'on ait rangé
+  *en le sachant*. La bande approche à la vitesse de la marche, qui est
+  physique ; le colon qu'on veut faire rentrer, lui, lâche une tâche de
+  journée. `RAID_WARNING_DIVISOR` est donc **en jours** : à K = 30 la
+  prévenance vaut cinq minutes réelles, largement de quoi traverser la carte,
+  alors qu'un délai physique de dix secondes n'y aurait rien couvert. C'est le
+  cas symétrique de l'hémostase — là on avait mis du travail en face d'une
+  course physique et on perdait ; ici on met du jeu en face d'une marche
+  physique, et c'est le sens voulu.
 
 La leçon générale : quand une durée d'une famille **court contre** une durée
 de l'autre, l'échelle change le vainqueur. Un classement isolément défendable
