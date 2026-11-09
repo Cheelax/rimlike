@@ -670,6 +670,13 @@ est un joueur de plus, présent partout.
 
 ## 8. Journal des décisions
 
+- 2026-11-09 (fin) : **le jeu reste un bac à sable, sans fin ni objectif imposé** (Thomas).
+  Le bilan de jeu proposait de donner un objectif au solo (jalons, cap de l'hiver ou fin par
+  un comptoir) ; refusé : on ne fixe pas de but à la partie. Ce qui tire le joueur en avant
+  doit venir des systèmes eux-mêmes (menaces, saisons, factions, monde partagé), pas d'une
+  liste de buts. Ne pas rouvrir sans argument nouveau. Restent de la feuille de route du
+  bilan : `colons-lisibles`, puis `premiers-sons`, puis le branchement du moteur natif.
+
 - 2026-11-09 (suite) : **le solo démarre en partie rapide.** Revient sur le défaut posé le
   2026-09-10 (PR #17 : « le solo n'est pas un autre jeu que le monde »). Argument nouveau,
   tiré d'une partie jouée pour le bilan : au rythme du monde, un mur prend 75 s et une
